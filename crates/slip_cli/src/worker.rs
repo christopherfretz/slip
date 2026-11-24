@@ -101,13 +101,15 @@ fn phase_name(phase: Phase) -> &'static str {
 ///
 /// With `negatives` (the map task's, always) the parse records Kiln's
 /// lookup log and a shard with `inputs` gets its negative inputs
-/// (`spec/model.md` §8.6, work package WP-117). Without, it is the parse
-/// of before WP-117: what the measurement of the log's cost compares
-/// against (`spec/landed/verify/WP-117.md`).
+/// (`spec/model.md` §8.6, work package WP-117) and its found lookups
+/// (§8.7, work package WP-135). Without, it is the parse of before WP-117:
+/// what the measurement of the log's cost compares against
+/// (`spec/landed/verify/WP-117.md`).
 ///
 /// # Errors
 ///
-/// The parse task's, and the walk's (above).
+/// The parse task's, the walk's (above), and `negatives::record`'s (the
+/// tree changed during the parse).
 pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<Shard, String> {
     let rules = RuleTable::empty();
     let options = Options {
@@ -122,12 +124,17 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
     parse.lookups = negatives;
     let directory = &observer.command.directory;
     let (mut shard, ran) = parse_observer_with(observer, Phase::Map, round, parse, |unit| {
-        let places = unit.lookups().map(|l| crate::negatives::places(directory, l));
+        let places = unit.lookups().map(|l| {
+            (crate::negatives::places(directory, l), crate::negatives::found_places(directory, l))
+        });
         (map_unit(unit, &options, &identity), places)
     })?;
     let (walked, places) = ran.map_or((None, None), |(w, p)| (w, p));
-    if negatives && shard.inputs.is_some() {
-        shard.negatives = places;
+    if negatives && let Some(inputs) = &shard.inputs {
+        if let Some((missed, found)) = places {
+            shard.found = Some(crate::negatives::record(found, inputs)?);
+            shard.negatives = Some(missed);
+        }
     }
     let output = match walked {
         Some(Ok(output)) => output,

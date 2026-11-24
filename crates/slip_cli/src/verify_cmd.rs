@@ -340,6 +340,7 @@ mod tests {
             rule_use: None,
             spellings: None,
             negatives: None,
+            found: None,
         }
         .to_bytes()
     }

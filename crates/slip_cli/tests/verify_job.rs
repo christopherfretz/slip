@@ -507,6 +507,7 @@ fn p2_map_shard_not_ok() {
     failed.outcome.status = Status::Failed;
     failed.inputs = None;
     failed.negatives = None;
+    failed.found = None;
     failed.counters.clear();
     tree.put_map(&o, &failed);
     let v = tree.verify(&o);
@@ -563,6 +564,7 @@ fn s5_2_pre_shard_altered_fails_the_job() {
     let mut phase = m;
     phase.phase = Phase::Verify;
     phase.negatives = None;
+    phase.found = None;
     std::fs::write(&path, phase.to_bytes()).unwrap();
     let e = tree.verify_with(&o, &tree.params(Declared::none())).unwrap_err();
     assert!(e.contains(&format!("is for observer {} Verify round 0", o.id)), "{e}");
@@ -2201,16 +2203,14 @@ fn n1_link_retargeted_since() {
     assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
 }
 
-// Beyond N1: a symbolic link outside the roots through which the map
-// parse FOUND `cfg.h`, retargeted after the map phase to a directory with
-// another `cfg.h`. The place was found, so it is no negative; O2 compares
-// the files both parses read by real path, and the post parse reads
-// `ext-b/cfg.h`, which the map parse did not. With an edit that
-// compensates, the verdict is `verified` in a world the map phase never
-// saw. Closing it needs the map shard to keep where each found lookup led
-// (a positive counterpart of the negatives): WP-135.
+// Beyond N1 (WP-135's first attack): a symbolic link outside the roots
+// through which the map parse FOUND `cfg.h`, retargeted after the map
+// phase to a directory with another `cfg.h`. The place was found, so it is
+// no negative; O2 compares the files both parses read by real path, and
+// the post parse reads `ext-b/cfg.h`, which the map parse did not. With an
+// edit that compensates, the sums agree. N2 (i) refuses: the found place
+// `lnk/cfg.h` now leads to `ext-b/cfg.h`, not to the input it led to.
 #[test]
-#[ignore = "needs: a record of where the map parse's found lookups led (WP-135)"]
 fn o2_link_to_a_found_header_retargeted() {
     let tree = Tree::new("o2-retarget", &[("a.cpp", CFG_PRE)]);
     write(&tree.post.join("a.cpp"), CFG_POST);
@@ -2218,9 +2218,199 @@ fn o2_link_to_a_found_header_retargeted() {
     write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
     link("ext-a", &tree.base.join("lnk"));
     let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("lnk"))]);
+    let m = tree.map(&o);
+    let found = m.found.as_ref().expect("found in a map shard");
+    let inputs = m.inputs.as_ref().unwrap();
+    let place = found.places.iter().find(|p| p.path == bytes(&tree.base.join("lnk/cfg.h")));
+    let place = place.unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!(inputs[place.input as usize].path, bytes(&tree.base.join("ext-a/cfg.h")));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("ext-b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let b = &tree.base;
+    assert_eq!(reason(&v), led(&b.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+    check_post_shard(&v);
+}
+
+// ----- N2 (§5.3, work package WP-135): every found lookup of the map parse
+// leads where it led, and the inputs that were one file are one file.
+
+fn led(place: &Path, now: &Path, then: &Path) -> String {
+    format!(
+        "pre-image: {} now leads to {}, not to {} (run `slip parse` again)",
+        place.display(),
+        now.display(),
+        then.display()
+    )
+}
+
+fn merged(a: &Path, b: &Path) -> String {
+    format!(
+        "pre-image: {} and {} are one file now, two at the map phase (run `slip parse` again)",
+        a.display(),
+        b.display()
+    )
+}
+
+fn separated(a: &Path, b: &Path) -> String {
+    format!(
+        "pre-image: {} and {} were one file at the map phase, two now (run `slip parse` again)",
+        a.display(),
+        b.display()
+    )
+}
+
+/// `lnk` (outside the roots) leads to `ext-a` at the map phase; `a.cpp`
+/// includes `<cfg.h>` with `-I` the path `dir`, which reaches `lnk`.
+fn retarget_tree(name: &str, dir: impl Fn(&Tree) -> PathBuf) -> (Tree, Observer) {
+    let tree = Tree::new(name, &[("a.cpp", CFG_PRE)]);
+    write(&tree.post.join("a.cpp"), CFG_POST);
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    link("ext-a", &tree.base.join("lnk"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &dir(&tree))]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    (tree, o)
+}
+
+// A link retargeted to another link that leads to the same directory: the
+// place leads to the same real file. Not refused (no edit: verified).
+#[test]
+fn n2_link_retargeted_to_the_same_file() {
+    let tree = Tree::new("n2-same", &[("a.cpp", CFG_PRE)]);
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+    link("ext-a", &tree.base.join("lnk"));
+    link("ext-a", &tree.base.join("lnk2"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("lnk"))]);
+    tree.map(&o);
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("lnk2", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// A link in the subject root that leads outside, retargeted after the map
+// phase in both trees (so G6 sees the same link in each): the place is
+// under the subject root as written and is checked all the same.
+#[test]
+fn n2_place_under_the_subject_root_retargeted() {
+    let tree = Tree::new("n2-subject-link", &[("a.cpp", CFG_PRE)]);
+    write(&tree.post.join("a.cpp"), CFG_POST);
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    // Relative targets: the same bytes in both trees.
+    let to = |d: &str| format!("../{d}");
+    link(&to("ext-a"), &tree.subject.join("lnk"));
+    link(&to("ext-a"), &tree.post.join("lnk"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.subject.join("lnk"))]);
     tree.map(&o);
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    for root in [&tree.subject, &tree.post] {
+        std::fs::remove_file(root.join("lnk")).unwrap();
+        link(&to("ext-b"), &root.join("lnk"));
+    }
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let (s, b) = (&tree.subject, &tree.base);
+    assert_eq!(reason(&v), led(&s.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+}
+
+// The place spelled through the subject root, `s/../lnk/cfg.h` (the
+// source's `"../lnk/cfg.h"` beside `s/a.cpp`; a command word spelled so is
+// G5's to refuse): under it as written, outside it in fact. Refused.
+#[test]
+fn n2_place_spelled_through_the_subject_root() {
+    let main = |c: &str| CFG_PRE.replace("<cfg.h>", "\"../lnk/cfg.h\"").replace("USE_NEW\n", c);
+    let tree = Tree::new("n2-dotdot", &[("a.cpp", main("USE_NEW\n").as_str())]);
+    write(&tree.post.join("a.cpp"), &main("!USE_NEW\n"));
+    write(&tree.base.join("ext-a/cfg.h"), "#define USE_NEW 0\n");
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    link("ext-a", &tree.base.join("lnk"));
+    let o = tree.observer();
+    let m = tree.map(&o);
+    let place = tree.subject.join("../lnk/cfg.h");
+    let found = m.found.as_ref().unwrap();
+    assert!(found.places.iter().any(|p| p.path == bytes(&place)), "{found:?}");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("ext-b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let b = &tree.base;
+    assert_eq!(reason(&v), led(&place, &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+}
+
+// A link outside the roots retargeted into the subject root (which has a
+// `cfg.h` there and in the post tree): refused, by whichever guard first.
+#[test]
+fn n2_link_retargeted_into_the_subject() {
+    let (tree, o) = retarget_tree("n2-into", |t| t.base.join("lnk"));
+    write(&tree.subject.join("inc/cfg.h"), "#define USE_NEW 1\n");
+    write(&tree.post.join("inc/cfg.h"), "#define USE_NEW 1\n");
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link(tree.subject.join("inc").to_str().unwrap(), &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// A link outside the roots that led into the subject root, retargeted out
+// of it: refused.
+#[test]
+fn n2_link_retargeted_out_of_the_subject() {
+    let tree = Tree::new("n2-out", &[("a.cpp", CFG_PRE), ("inc/cfg.h", "#define USE_NEW 0\n")]);
+    write(&tree.post.join("a.cpp"), CFG_POST);
+    write(&tree.base.join("ext-b/cfg.h"), "#define USE_NEW 1\n");
+    link(tree.subject.join("inc").to_str().unwrap(), &tree.base.join("lnk"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("lnk"))]);
+    tree.map(&o);
+    std::fs::remove_file(tree.base.join("lnk")).unwrap();
+    link("ext-b", &tree.base.join("lnk"));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+}
+
+// Without the record, fail closed.
+#[test]
+fn n2_map_shard_without_found() {
+    let (tree, o, mut m) = cfg_tree("n2-none", CFG_PRE, CFG_PRE, &["ext"]);
+    assert!(m.found.is_some());
+    m.found = None;
+    tree.put_map(&o, &m);
+    let v = tree.verify(&o);
+    assert_eq!(
+        reason(&v),
+        "pre-image: the map shard has no record of where its lookups led (run `slip parse` again)"
+    );
+}
+
+// An absolute name the front end first read through another spelling:
+// Kiln's log does not record a lookup by an absolute name (Kiln WP-2620),
+// and `Lookups::read` holds the first spelling only, so the absolute place
+// is in no record and its link retargeted is not seen.
+#[test]
+#[ignore = "needs: kiln (the lookup log to record absolute names, Kiln WP-2620)"]
+fn n2_absolute_name_first_read_through_another_spelling() {
+    let tree = Tree::new("n2-absolute", &[]);
+    let abs = tree.base.join("lnk/cfg.h");
+    let main = |cond: &str| {
+        format!(
+            "#include <cfg.h>\n#include \"{}\"\n#if {cond}\nint f() {{ return 2; }}\n#else\nint f() {{ return 1; }}\n#endif\n",
+            abs.display()
+        )
+    };
+    write(&tree.subject.join("a.cpp"), &main("USE_NEW"));
+    write(&tree.post.join("a.cpp"), &main("!USE_NEW"));
+    write(&tree.base.join("ext-a/cfg.h"), "#undef USE_NEW\n#define USE_NEW 0\n");
+    write(&tree.base.join("ext-b/cfg.h"), "#undef USE_NEW\n#define USE_NEW 1\n");
+    link("ext-a", &tree.base.join("lnk"));
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("ext-a"))]);
+    tree.map(&o);
     std::fs::remove_file(tree.base.join("lnk")).unwrap();
     link("ext-b", &tree.base.join("lnk"));
     let v = tree.verify(&o);
@@ -2997,21 +3187,86 @@ fn o2_input_merged_by_symbolic_link() {
     assert_eq!(reason(&v), moved(&a, &tree.base.join("ext/b.h")));
 }
 
-// R1b, the stated limit (spec/verify.md §5.1): `ext/a.h` replaced by a
-// hard link of the identical `ext/b.h`. Its path, size and bytes are as
-// recorded, and two inputs that are one file at the map phase are
-// legitimate (deduplicated stores), so nothing recorded tells this from a
-// good tree: the verdict is `verified` in a world the map phase never saw.
-// Closing it needs the map shard to record which inputs were one file:
-// WP-135. This test records today's answer; WP-135 turns it into a refusal.
+// R1b (WP-135's second attack): `ext/a.h` replaced by a hard link of the
+// identical `ext/b.h`. Its path, size and bytes are as recorded, and the
+// edit compensates the two becoming one file (the sums agree). N2 (ii)
+// refuses: two inputs the map phase recorded as two files are one now.
 #[test]
-fn o2_limit_inputs_merged_by_hard_link_wp135() {
-    let (tree, o, _) = merge_tree("o2-merge-hardlink");
+fn o2_inputs_merged_by_hard_link() {
+    let (tree, o, m) = merge_tree("o2-merge-hardlink");
+    assert_eq!(m.found.as_ref().unwrap().classes, Vec::<Vec<u64>>::new());
     let a = tree.base.join("ext/a.h");
     std::fs::remove_file(&a).unwrap();
     std::fs::hard_link(tree.base.join("ext/b.h"), &a).unwrap();
     let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), merged(&a, &tree.base.join("ext/b.h")));
+}
+
+/// `a.cpp` embeds `ext/a.h` and `ext/b.h`, a hard link of it at the map
+/// phase: two inputs (each a consulted path of its own real path; a hard
+/// link of a file the preprocessor entered is that file's buffer, so only
+/// consulted paths make two inputs of one file), one class.
+const CONSULT: &str =
+    "const char a[] = {\n#embed <a.h>\n};\nconst char b[] = {\n#embed <b.h>\n};\n";
+
+fn hard_linked_tree(name: &str, main: &str) -> (Tree, Observer, Shard) {
+    let tree = Tree::new(name, &[("a.cpp", main)]);
+    write(&tree.base.join("ext/a.h"), MERGE_HDR);
+    std::fs::hard_link(tree.base.join("ext/a.h"), tree.base.join("ext/b.h")).unwrap();
+    let ext = tree.base.join("ext");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &ext), arg("--embed-dir=", &ext)]);
+    let m = tree.map(&o);
+    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    (tree, o, m)
+}
+
+// Two inputs that are hard links of one another at the map phase and stay
+// so: legitimate (deduplicated stores), verified.
+#[test]
+fn n2_hard_linked_inputs_that_stay() {
+    let (tree, o, m) = hard_linked_tree("n2-hard-stay", CONSULT);
+    let inputs = m.inputs.as_ref().unwrap();
+    let at = |p: &str| inputs.iter().position(|f| f.path == bytes(&tree.base.join(p))).unwrap();
+    let (a, b) = (at("ext/a.h") as u64, at("ext/b.h") as u64);
+    assert_eq!(m.found.as_ref().unwrap().classes, vec![vec![a.min(b), a.max(b)]]);
+    let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+}
+
+// As above, the two separated after the map phase (a copy of equal bytes):
+// refused by N2 (ii).
+#[test]
+fn n2_hard_linked_inputs_separated() {
+    let (tree, o, _) = hard_linked_tree("n2-hard-split", CONSULT);
+    let b = tree.base.join("ext/b.h");
+    std::fs::remove_file(&b).unwrap();
+    write(&b, MERGE_HDR);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), separated(&tree.base.join("ext/a.h"), &b));
+}
+
+// A hard link the front end read as one buffer (`#pragma once` skips the
+// second include): one input, and the place `ext/b.h` led to it by
+// identity. Kept: verified. Separated (equal bytes): refused by N2 (i).
+#[test]
+fn n2_hard_link_read_as_one_buffer() {
+    let (tree, o, m) = hard_linked_tree("n2-hard-one", MERGE_PRE);
+    let a = tree.base.join("ext/a.h");
+    let b = tree.base.join("ext/b.h");
+    let inputs = m.inputs.as_ref().unwrap();
+    assert!(!inputs.iter().any(|f| f.path == bytes(&b)), "{inputs:?}");
+    let found = m.found.as_ref().unwrap();
+    let place = found.places.iter().find(|p| p.path == bytes(&b)).expect("ext/b.h found");
+    assert_eq!(inputs[place.input as usize].path, bytes(&a));
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    std::fs::remove_file(&b).unwrap();
+    write(&b, MERGE_HDR);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), led(&b, &b, &a));
 }
 
 // R2: the directory of an unread input (named by an `-I` word) replaced by
