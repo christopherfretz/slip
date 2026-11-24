@@ -1,9 +1,12 @@
 # KR9 — what a name bound in a substitution whose result Kiln does not keep
 
 A request from Slip to Kiln, and the Slip-side record of the exchange
-about Kiln's WP-3540. Status: **draft, not sent** (stage 0 of
+about Kiln's WP-3540. Status: **sent 2026-11-24** (stage 0 of
 [docs/wp/WP-153.md](../wp/WP-153.md); revised after the design review
 and the supervisor's rulings of 2026-11-24; §10 lists what changed).
+**Ruled the same day: Slip's digest reads roots for all four kinds**
+(§5.3), so the region of §5.1 is not asked unless a kind falls back to
+rows.
 Kiln was read at `4a83f6e3c` (Slip's pin). Kiln's WP-3540 note itself
 was not read: §2 and §3 are the supervisor's summary of it, of the
 answers given, and of Kiln's answer of 2026-11-24 (§2.1), which is
@@ -404,11 +407,14 @@ parallel table behind its own switch. **Asked, per kind:**
 | `Satisfaction` | not complete: three pieces | two of them: the substituted requirements kept (G6; §5.4 item 6 needs it for instantiated bodies in any case), and the atom cache's entry holding its expression (G4). Not the third: a failed atom needs no root, only the fact that it failed. What its names bound before the failing one is in rows, which a digest on roots does not read: a limit Slip states |
 | the kinds of §5.4 | — | as `DefaultArg` |
 
-Slip recommends to its supervisor to read roots for all four kinds.
-Concepts are where operators are, so `Satisfaction` on rows alone
-would leave the lookups a migration moves unseen. **What do the two
-pieces for `Satisfaction` cost, and when could `subst_roots` exist for
-each kind?**
+**Ruled (Slip's supervisor, 2026-11-24): Slip's digest reads roots
+for all four kinds.** Concepts are where operators are, so
+`Satisfaction` on rows alone would leave the lookups a migration moves
+unseen. **What do the two pieces for `Satisfaction` cost, and can
+`subst_roots` come per kind with the stage that gives the kind's keys
+(`PartialMatch` with stage 1, and so on) and not later?** Slip's stage
+for a kind starts when the pin has both the kind's keys and its
+roots.
 
 The guarantees Slip needs of a root:
 
@@ -497,6 +503,21 @@ Each of items 1 to 5 was read in Kiln's source at the pin.
 6. **A requires-expression in an instantiated body.** Its substituted
    requirements are not kept (G6). Needed: kept, in the instantiated
    body as in a root.
+7. **Two shapes with no `specs()` row**, met by the second review of
+   Slip's WP-139 (the rename reads `specs()` to decide whether a
+   dependent name binds its subject; with no row the name stays
+   `unresolved` and the rename leaves it). The need here is the edit
+   planning's, not the digest's.
+   - A dependent name in **a partial specialisation's argument list**
+     (`template <class T> struct PS<T, sizeof(T::s())>`, used as
+     `PS<n::S<int>, 4>`): no row at the pin. Kiln's stage 1 gives its
+     rows under the `PartialMatch` key; nothing more is asked.
+   - A dependent name in **a deduction guide**
+     (`template <class T> DG(T, Arr<sizeof(T::s())>) -> DG<T>;`). The
+     review's probe did not use the guide, so it shows nothing about
+     Kiln. **A question**: when class template argument deduction
+     substitutes a guide, are its names' rows recorded, and under what
+     key? It goes with item 3.
 
 **Questions** (frames of `kiln/crates/kiln_sema/src/templ/stack.rs`
 that Slip did not read further): does the substitution bind a name of
@@ -607,14 +628,15 @@ destructor. Slip builds its own first and replaces it.
 
 ## 6. Still open between Slip and Kiln
 
-1. **The form** (§5.3): the cost and the time of the two pieces for
-   `Satisfaction`; the root after conversion for `DefaultArg`; the
-   adjusted parameter in an `Alias` root; when `subst_roots` could
-   exist per kind. Slip's supervisor rules per kind on these answers
-   (the proposal's §3.13).
-2. §5.1: the region's cost, asked only as an input to that ruling; the
-   alias residual; redeclarations. Needed before Slip builds anything
-   on rows, and not otherwise.
+1. **The form** (§5.3), ruled as roots for all four kinds: the cost
+   and the time of the two pieces for `Satisfaction`; the root after
+   conversion for `DefaultArg`; the adjusted parameter in an `Alias`
+   root; `subst_roots` per kind with the kind's stage; the guarantees
+   G1 to G8.
+2. §5.1: not asked now. The region, the alias residual and
+   redeclarations are needed only if a kind falls back to rows; Kiln's
+   rough cost for the region is welcome as an input should that
+   happen.
 3. §5.5: the condition for a key; the count of failures.
 4. §4, P2: which substitutions give "stays dependent" rows, and the
    cost of all.
