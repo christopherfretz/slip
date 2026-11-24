@@ -284,7 +284,14 @@ came from, and nothing about the rest:
   although the dependency's binary still defines the entity in `legacy`
   (pitfall row N34).
 - A dependency that itself opens `acme`, before and after, has the same
-  keys in both images, and the owned members of `acme` are still mapped.
+  keys in both images, and the owned members of `acme` are still mapped:
+  their keys agree. The namespace's own unit is not: the post-image's
+  `acme` is keyed as the dependency's namespace, so the pre-image's unit
+  `legacy` has no partner, the run reports `removed legacy`, and the rule
+  is used by no level (`via 0`). A correct move into a namespace that a
+  dependency opens therefore does not verify today: a stated limit,
+  `docs/wp/WP-140.md` ("Open questions"; fixtures
+  `stale/dependency-opens-target-moved` and `-kept-moved`).
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -634,6 +641,14 @@ which §2.1 refuses, and beside a rename of the function it would hide
 the rename, WP-111 review F1). `slip declare` says so on standard error,
 one note per such line (`spec/exec.md` §8.8); `Resolved.unwritten`
 lists their line numbers.
+
+Both answers to a line that changes no key are meant, and they differ
+for a reason. For an entity with C language linkage the line is a true
+statement about the source (the declaration moved) that needs no rule,
+because its key does not hold the namespace: a note, no rule. For any
+other entity a `relocate` whose target is its own source declares
+nothing (`relocate n::C => n :: =`): it is the error `Refused` (an
+identity rule).
 
 **A namespace split in two.** A namespace rule says that the owned
 members of the namespace moved together. A namespace whose members went
@@ -2310,10 +2325,11 @@ file, is counted as an owned member is: `direct(r)` unless its key is in
 observer that left it is stale; kept, an observer that moved it is stale
 by `kept_via`: both are right, since the dependency's binary holds the
 name and it cannot move. An entity the dependency itself declares in
-`legacy` (one declaration in a file read-only by its own path) stays
-uncounted (`crates/slip_digest/tests/rules/stale/inclusion-chain-left`,
+`legacy` (one declaration in a file read-only by its own path, or whose
+name a read-only file's macro spells) stays uncounted
+(`crates/slip_digest/tests/rules/stale/inclusion-chain-left`,
 `-left-kept`, `-moved`, `-moved-kept`, `-readonly-declaration`,
-`-readonly-expansion`). Its
+`-readonly-expansion`, `-spelled-in-dependency`). Its
 namespace is keyed in its own view, the dependency view, as its key is;
 the chain of levels is climbed as for an owned member. *The cost*,
 beside "The cost of the include-chain rule" (§2.1): an observer whose
@@ -2975,6 +2991,14 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   translation unit only (a `kept` given per file, as above, or an entity
   of internal linkage told apart by its unit) would let it be declared
   with a namespace rule; until then it fails closed.
+- **A move into a namespace that a dependency opens** (§2.1, "So `acme`
+  mapped to `legacy`"; `docs/wp/WP-140.md`). Relocating `legacy` into
+  `acme` when a read-only header also opens `acme` maps every owned
+  member, but the post-image's `acme` is keyed as the dependency's
+  namespace, so the unit `legacy` has no partner: `removed legacy`, and
+  the rule's `via` is 0. The move is correct and does not verify; it
+  fails closed. The fixtures `rules/stale/dependency-opens-target-moved`
+  and `dependency-opens-target-kept-moved` hold today's answer.
 - **Ownership differs between observers** (§2.1). An entity the
   dependency declares only in a header some observers do not include is
   owned in those and a dependency entity in the others. Each comparison

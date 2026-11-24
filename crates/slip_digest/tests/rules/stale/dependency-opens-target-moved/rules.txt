@@ -1,0 +1,5 @@
+# WP-111 re-check (the reviewer's zz-dep-opens-target-moved): dependency-opens-target-kept-moved
+# without kept.txt. Moving g into acme, which read-only dep.h opens: g's keys agree, but the post-
+# image's acme is keyed as the dependency's namespace, so the unit legacy has no partner and the
+# rule is used by no level (via 0). A stated limit, docs/wp/WP-140.md: today's answer, not a goal.
+relocate legacy => :: acme
