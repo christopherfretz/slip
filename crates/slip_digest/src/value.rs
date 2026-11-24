@@ -447,28 +447,20 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
     let sm = w.sm;
     w.name_values.get_or_insert_with(|| {
         let mut nv = NameValues::default();
-        let origin_of = |c: ConstValueId| match ast.consts.scalar(c) {
+        // The string literal a pointer value points into, and its origin.
+        let string = |c: ConstValueId| match ast.consts.scalar(c) {
             Some(Scalar::Pointer {
                 ty: _,
-                base: PtrBase::StringLit { lit: _, origin },
+                base: PtrBase::StringLit { lit, origin },
                 offset: _,
                 designated: _,
                 past: _,
                 unions: _,
-            }) => Some(origin),
+            }) => Some((lit, origin)),
             _ => None,
         };
-        let lit_of = |c: ConstValueId| match ast.consts.scalar(c) {
-            Some(Scalar::Pointer {
-                ty: _,
-                base: PtrBase::StringLit { lit, origin: _ },
-                offset: _,
-                designated: _,
-                past: _,
-                unions: _,
-            }) => Some(lit),
-            _ => None,
-        };
+        let origin_of = |c: ConstValueId| string(c).map(|(_, o)| o);
+        let lit_of = |c: ConstValueId| string(c).map(|(l, _)| l);
         let mut uses: Vec<(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)> =
             ast.exprs.cold.source_loc.iter().map(|(e, v)| (e, *v)).collect();
         uses.sort_unstable_by_key(|&(e, _)| e.index());

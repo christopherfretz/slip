@@ -6649,9 +6649,13 @@ mode), since Kiln records it on the declaration that holds the
 initialiser
 (`tests/resolved/value/instantiated-static-member`, `variable-template`,
 `instantiated-out-of-line`). For any other variable the check runs with
-the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
-it has no `value` unit, while the same constant initialised on its
-out-of-line definition has one ("Open questions").
+the declaration and a later use does not make the unit appear. An
+in-class `static const int x = 1;` is evaluated when it is checked, as
+the out-of-line form is, so it has a `value` unit, used or not (Kiln
+WP-2504, `kiln_sema/src/class/members.rs:560-570`, in the pin since
+WP-066; at `913a490bb` it was never evaluated and had none:
+`tests/differ/_/in-class-static-const-value-through-another-unit`,
+`tests/resolved/value/in-class-static`).
 
 A block-scope variable (not a block-scope `extern`) has no unit, and its
 uses read its value without writing it (`DeclRefExpr` `non_odr_use_constant`).
@@ -7180,13 +7184,11 @@ below. What they left open:
   functions left `Deferred` in numbers, the fix is a stored mark from
   Kiln, or widening the class to every member function and every friend
   defined in a class, at the cost of a resolved unit for each.
-- **Evaluation of in-class static constants** (§11.3). Kiln records
-  `eval` for `const int S::x = 1;` at its declaration and never for the
-  in-class `static const int x = 1;`, so the two ways of writing one
-  constant differ by the resolved unit `value`
-  (`tests/equal/_/var-init-in-class-or-out-of-line`, pending). The fix is
-  Kiln evaluating both alike, or a rule that writes no `value` for a
-  constant whose value the variable's own unit already determines.
+- **Evaluation of in-class static constants** (§11.3): closed. Kiln
+  WP-2504 (in the pin since WP-066) records `eval` for the in-class
+  `static const int x = 1;` as for `const int S::x = 1;`, so the two
+  ways of writing one constant have one `value` unit
+  (`tests/equal/_/var-init-in-class-or-out-of-line`).
 
 ### Defaults inside a template template parameter's head
 
