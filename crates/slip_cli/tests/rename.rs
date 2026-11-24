@@ -22,7 +22,6 @@ use slip_model::formats::content_id;
 use slip_model::result::{State, TransformResult};
 use slip_model::transform_run::StepName::{Apply, Conclude, Map, Reduce, Scan, Verify, Write};
 use slip_model::transform_run::{StepName, TransformRun};
-use slip_model::transform::Transform;
 use slip_model::{Digest, Phase, Plan, Shard};
 
 const SLIP: &str = env!("CARGO_BIN_EXE_slip");
@@ -1375,7 +1374,7 @@ fn reduced_as_before(t: &Tree, plan: &str) -> EditSet {
         .map(|b| Shard::from_bytes(&b).unwrap().edits.unwrap().transform)
         .unwrap();
     let trfm = t.path("store").join("transforms").join(format!("{request}.trfm"));
-    let transform = Transform::from_bytes(&std::fs::read(trfm).unwrap()).unwrap();
+    let transform = slip_model::Transform::from_bytes(&std::fs::read(trfm).unwrap()).unwrap();
     let scratch = t.path("reduce-scratch");
     std::fs::create_dir_all(&scratch).unwrap();
     let shards = AsBefore { store, plan, observers };
@@ -1384,17 +1383,17 @@ fn reduced_as_before(t: &Tree, plan: &str) -> EditSet {
 }
 
 // spec/edits.md §8.2, §10.2 (WP-157): `reduce` after an interrupted map
-// refuses the round, with `--allow-unparsed` too (which `reduce` takes
-// and ignores): status 3, the message names the main file of an observer
-// with no shard, and the store has no edit set.
+// refuses the round: status 3, the message names the main file of an
+// observer with no shard, and the store has no edit set, whatever the
+// threads. `--allow-unparsed` is not `reduce`'s option (exec.md §8): a
+// usage error, and no edit set either.
 #[test]
 fn s10_2_reduce_refuses_an_interrupted_map() {
     let (t, plan, order) = interrupted_map("sigint-map-reduce", "f(x)");
-    for extra in [&[][..], &["--allow-unparsed"][..]] {
-        let mut args = vec!["reduce", "--plan", &plan, "--round", "1", "--store", "store"];
-        args.extend_from_slice(extra);
-        let reduce = t.slip(&args);
-        assert_eq!(reduce.code(), Some(3), "{extra:?}: {reduce:?}");
+    for jobs in ["1", "4"] {
+        let reduce =
+            t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store", "-j", jobs]);
+        assert_eq!(reduce.code(), Some(3), "-j {jobs}: {reduce:?}");
         // The least selected position with no shard: the third observer.
         assert!(
             reduce.stderr.contains(&format!(
@@ -1404,8 +1403,21 @@ fn s10_2_reduce_refuses_an_interrupted_map() {
             "{reduce:?}"
         );
         assert!(!reduce.has_line("edits "), "{reduce:?}");
-        assert_eq!(edit_sets(&t), 0, "{extra:?}");
+        assert_eq!(edit_sets(&t), 0, "-j {jobs}");
     }
+    let reduce = t.slip(&[
+        "reduce",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--store",
+        "store",
+        "--allow-unparsed",
+    ]);
+    assert_eq!(reduce.code(), Some(2), "{reduce:?}");
+    assert!(reduce.stderr.contains("unknown option `--allow-unparsed`"), "{reduce:?}");
+    assert_eq!(edit_sets(&t), 0);
     // No record names an edit set: `reduce` publishes none, and `map`'s
     // has none.
     let records = transform_runs(&t, "store", &plan);
@@ -1524,10 +1536,12 @@ fn s10_2_reduce_refuses_an_unusable_map_shard() {
     ]);
     assert_eq!(map.code(), Some(0), "{map:?}");
     let bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan"))).unwrap();
-    let second = &Plan::from_bytes(&bytes).unwrap().observers[1];
-    let main = String::from_utf8_lossy(&second.main.path).into_owned();
+    // The first: the shard `reduce` would read the request from, so the
+    // check is seen to come before anything else reads the round.
+    let first = &Plan::from_bytes(&bytes).unwrap().observers[0];
+    let main = String::from_utf8_lossy(&first.main.path).into_owned();
     let plan_id = Digest::from_hex(&plan).unwrap();
-    let path = t.store("store").shard_path(&plan_id, Phase::Map, 1, &second.id);
+    let path = t.store("store").shard_path(&plan_id, Phase::Map, 1, &first.id);
     // Replaced, not written through: no other name of the file sees it.
     std::fs::remove_file(&path).unwrap();
     std::fs::write(&path, b"not a shard").unwrap();
