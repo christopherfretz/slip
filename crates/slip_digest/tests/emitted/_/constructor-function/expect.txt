@@ -1,0 +1,5 @@
+marked init()
+marked fini()
+marked-a S::s<int>()::<definition>
+# Not constant-initialised as far as the AST says (a declared unit).
+marked-a x

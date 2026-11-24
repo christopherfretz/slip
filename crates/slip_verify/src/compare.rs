@@ -85,6 +85,8 @@ impl Exemptions {
             FindingKind::Added => Some(&self.created),
             FindingKind::Indeterminate
             | FindingKind::DerivedChanged
+            | FindingKind::DerivedOnlyPre
+            | FindingKind::DerivedOnlyPost
             | FindingKind::DerivedIndeterminate => None,
         }
     }
@@ -318,7 +320,7 @@ fn check_groups(groups: &[&Group], post: bool) -> Result<(), CompareError> {
         if units.windows(2).any(|w| (w[0].key, w[0].digest) >= (w[1].key, w[1].digest)) {
             return Err(CompareError::UnitsNotAscending { class, file: file(), post });
         }
-        if units.iter().any(|u| u.flags & !Unit::INDETERMINATE != 0) {
+        if units.iter().any(|u| u.flags & !Unit::FLAGS != 0) {
             return Err(CompareError::BadFlags { class, file: file(), post });
         }
         if u64::try_from(units.len()).ok() != Some(g.count) {
@@ -350,6 +352,8 @@ struct Occ<'a> {
     key: Digest,
     digest: Digest,
     indeterminate: bool,
+    /// The unit is marked "emitted unreferenced" (flag bit 1, WP-155).
+    emitted: bool,
     class: GroupClass,
     file: &'a [u8],
     /// The group's unit list is not the same in both of the images given
@@ -376,6 +380,7 @@ impl<'a> Multisets<'a> {
             key: u.key,
             digest: u.digest,
             indeterminate: u.is_indeterminate(),
+            emitted: u.is_emitted(),
             class: g.class,
             file: &g.file,
             differs,
@@ -404,8 +409,10 @@ fn multisets<'a>(pre: &[&'a Group], post: &[&'a Group]) -> (Multisets<'a>, Multi
         &after,
         |g| group_id(g),
         |_, here, there| {
+            // The mark is part of no digest and no sum (WP-155): a group
+            // differs when its units do without it, as its sum does.
             let differs = match (here, there) {
-                ([x], [y]) => units_of(x) != units_of(y),
+                ([x], [y]) => !same_units(units_of(x), units_of(y)),
                 _ => true,
             };
             for g in here {
@@ -419,6 +426,20 @@ fn multisets<'a>(pre: &[&'a Group], post: &[&'a Group]) -> (Multisets<'a>, Multi
     p.sort();
     q.sort();
     (p, q)
+}
+
+/// Whether two unit lists are the same, the mark "emitted unreferenced"
+/// left out (it is part of no digest, `digest.md` §11).
+fn same_units(x: &[Unit], y: &[Unit]) -> bool {
+    let strip = |u: &Unit| (u.key, u.digest, u.flags & !Unit::EMITTED);
+    x.len() == y.len() && x.iter().map(strip).eq(y.iter().map(strip))
+}
+
+/// Whether a one-sided derived key is emitted (§4 step 3, WP-155): `run`
+/// (the key's units in the image that has `only`, its difference) has a
+/// marked unit, in a group that differs, whose digest is in `only`.
+fn emitted(run: &[Occ<'_>], only: &[Digest]) -> bool {
+    run.iter().any(|o| o.emitted && o.differs && only.contains(&o.digest))
 }
 
 /// `R(k) = P(k) − Q(k)` and `A(k) = Q(k) − P(k)` (§4 step 2), as multisets
@@ -461,7 +482,8 @@ fn first_file<'a>(run: &[Occ<'a>], keep: impl Fn(&Occ<'a>) -> bool) -> Option<&'
     run.iter().filter(|o| keep(o)).map(|o| (o.class, o.file)).min().map(|(_, file)| file)
 }
 
-/// A finding of kind `changed`, `removed`, `added` or `derived_changed`
+/// A finding of kind `changed`, `removed`, `added`, `derived_changed`,
+/// `derived_only_pre` or `derived_only_post`
 /// for `key` (§6): `pre`/`post` from `R(k)`/`A(k)` when it has exactly one
 /// element; `file` from the first group that differs between the images
 /// and holds a unit of the key, in the pre-image, else in the post-image.
@@ -604,6 +626,13 @@ pub fn compare_groups(
             }
             // Step 4 took the key: it is a difference, not a count.
             _ if step4.binary_search(&key).is_ok() => {}
+            // Emitted unreferenced (WP-155): a finding, once per key.
+            (false, true) if emitted(pk, &r) => {
+                findings.push(difference(FindingKind::DerivedOnlyPre, key, pk, qk));
+            }
+            (true, false) if emitted(qk, &a) => {
+                findings.push(difference(FindingKind::DerivedOnlyPost, key, pk, qk));
+            }
             (false, true) => only_pre += 1,
             (true, false) => only_post += 1,
         }

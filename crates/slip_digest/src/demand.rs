@@ -224,6 +224,7 @@ fn write_part(
         collided: false,
         view: None,
         denotes: None,
+        emitted: false,
     }
 }
 

@@ -1,0 +1,38 @@
+# R24 (WP-155, spec/verify.md §4 step 3): n::S::s, a member template, is
+# renamed h. Each use asks for T::s() of n::S in an unevaluated operand,
+# which found the member template and instantiated it (its return type is
+# deduced from its body), and its body instantiated Reg<int>::r, whose
+# initialiser calls puts before main. After the rename T::s() finds
+# Base::s: the same declared units, but Reg<int>::r is no longer
+# instantiated, so "registered" is no longer printed. Every unit that
+# differs is a derived one only the pre-image has; until WP-155 each tree
+# verified (review of WP-153, part A).
+# pre: a default template argument (zz153-a1).
+good: none the rename is what drops the instantiation; any new name does
+bad:  mismatch derived_only_pre Reg<int>::r::<definition>
+# pre-2: a substitution failure that discards the candidate (zz153-b1).
+good-2: none as pre
+bad-2:  mismatch derived_only_pre Reg<int>::r::<definition>
+# pre-3: a partial specialisation that does not match (zz153-c1).
+good-3: none as pre
+bad-3:  mismatch derived_only_pre Reg<int>::r::<definition>
+# pre-4: decltype of a variable's type (zz153-d1).
+good-4: none as pre
+bad-4:  mismatch derived_only_pre Reg<int>::r::<definition>
+# pre-5 to pre-8: the mirror, h renamed s: n::S::s now hides Base::s and
+# Reg<int>::r is now instantiated.
+good-5: none the rename is what adds the instantiation
+bad-5:  mismatch derived_only_post Reg<int>::r::<definition>
+good-6: none as pre-5
+bad-6:  mismatch derived_only_post Reg<int>::r::<definition>
+good-7: none as pre-5
+bad-7:  mismatch derived_only_post Reg<int>::r::<definition>
+good-8: none as pre-5
+bad-8:  mismatch derived_only_post Reg<int>::r::<definition>
+# pre-9: the member template is a constructor function (zz153-f1): its
+# instantiation ran before main.
+good-9: none as pre
+bad-9:  mismatch derived_only_pre n::S::s<int>()::<definition>
+# pre-10: the member template is `used`: its instantiation was emitted.
+good-10: none as pre
+bad-10:  mismatch derived_only_pre n::S::s<int>()::<definition>

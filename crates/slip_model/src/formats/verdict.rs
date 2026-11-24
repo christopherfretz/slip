@@ -38,10 +38,13 @@ impl Enumeration for FindingKind {
         (FindingKind::Indeterminate, 3, "indeterminate"),
         (FindingKind::DerivedChanged, 4, "derived_changed"),
         (FindingKind::DerivedIndeterminate, 5, "derived_indeterminate"),
+        (FindingKind::DerivedOnlyPre, 6, "derived_only_pre"),
+        (FindingKind::DerivedOnlyPost, 7, "derived_only_post"),
     ];
     const UNLISTED: &'static str = "unlisted FindingKind value";
     const EXPECTED: &'static str = "expected one of \"changed\", \"removed\", \"added\", \
-         \"indeterminate\", \"derived_changed\", \"derived_indeterminate\"";
+         \"indeterminate\", \"derived_changed\", \"derived_indeterminate\", \
+         \"derived_only_pre\", \"derived_only_post\"";
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +236,12 @@ pub(super) fn violation(v: &Verdict, cx: Context) -> Option<(Loc, &'static str)>
         }
         if f.kind == FindingKind::Removed && f.post.is_some() {
             return Some((Loc::FindingPost(i), "a removed finding has a post digest"));
+        }
+        if f.kind == FindingKind::DerivedOnlyPost && f.pre.is_some() {
+            return Some((Loc::FindingPre(i), "a derived_only_post finding has a pre digest"));
+        }
+        if f.kind == FindingKind::DerivedOnlyPre && f.post.is_some() {
+            return Some((Loc::FindingPost(i), "a derived_only_pre finding has a post digest"));
         }
     }
     // 6.

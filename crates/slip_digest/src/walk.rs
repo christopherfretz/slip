@@ -660,10 +660,12 @@ pub(crate) fn run_kept<R>(
         let (e, class) = w.queue[i];
         i += 1;
         let saved = w.names_start();
-        if let Some(u) = crate::units::write(&mut w, e, class) {
+        if let Some(mut u) = crate::units::write(&mut w, e, class) {
             // Its resolved units (`demand.rs`), after it.
             let mut resolved = Vec::new();
             crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
+            // The mark "emitted unreferenced" (`emitted.rs`, WP-155).
+            crate::emitted::mark(&mut w, e, &mut u, &mut resolved);
             if let Some(d) = w.names_end(saved) {
                 fed.push((written.len(), d));
             }

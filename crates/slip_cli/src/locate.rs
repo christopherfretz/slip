@@ -229,10 +229,10 @@ fn place(f: &Finding, key: &Digest, pre: Option<&Side>, post: &Side) -> Option<W
                 }),
             }
         }
-        FindingKind::Removed => {
+        FindingKind::Removed | FindingKind::DerivedOnlyPre => {
             Some(Where { pre: first_of_least(pre?, key, |_| true)?, post: Site::default() })
         }
-        FindingKind::Added => {
+        FindingKind::Added | FindingKind::DerivedOnlyPost => {
             Some(Where { pre: Site::default(), post: first_of_least(post, key, |_| true)? })
         }
         FindingKind::Indeterminate | FindingKind::DerivedIndeterminate => {

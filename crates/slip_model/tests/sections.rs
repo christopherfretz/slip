@@ -375,7 +375,7 @@ fn map_shard() -> Shard {
 const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
 /// `tu_digest` of `map_shard`'s groups.
 const MAP_TU: &str = "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4";
-const MAP_TRAILER: &str = "83f39b51dfb0d5b2503a379e3b7910e238a65b4fcdf3a3d62dea1c88ccb78967";
+const MAP_TRAILER: &str = "6d6be4d804142ba3da682e0b7a9001973c97cffc4b1fccc3e142954a740f0a49";
 
 fn map_shard_bytes() -> Vec<u8> {
     hex(&[
@@ -386,7 +386,7 @@ fn map_shard_bytes() -> Vec<u8> {
         "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
         "04 0f  01  0c 64 69 67 65 73 74 2e 75 6e 69 74 73  03", // counters: digest.units = 3
         "13 96 02",           // digests, 278 bytes:
-        "02",                 //   scheme 2      @78
+        "03",                 //   scheme 3      @78
         MAP_TU,               //   tu            @79
         "03",                 //   3 groups      @111
         "00  02 2f 61  02  01", //   declared "/a" count 2 (@116), indeterminate 1 (@117)   @112
@@ -478,7 +478,7 @@ fn verify_shard() -> Shard {
 
 const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
 const VERIFY_TU: &str = "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc";
-const VERIFY_TRAILER: &str = "99e5b3f6579c40d7e217b94e61e42ed6260f5a5c942466aad35560836e452056";
+const VERIFY_TRAILER: &str = "ca72e896668f572232668e728d1ba3e846805921c1785bb1c3c2a73a2f4bd1eb";
 
 fn verify_shard_bytes() -> Vec<u8> {
     hex(&[
@@ -489,7 +489,7 @@ fn verify_shard_bytes() -> Vec<u8> {
         "02 04  00 00 00 00",   // outcome: ok, 0, 0, ""
         "04 01  00",            // counters: []
         "13 8b 01",             // digests, 139 bytes:
-        "02",                   //   scheme 2                 @64
+        "03",                   //   scheme 3                 @64
         VERIFY_TU,              //   tu                       @65
         "01",                   //   1 group
         "00  02 2f 61  01  00", //   declared "/a" count 1, indeterminate 0   @98
@@ -926,7 +926,7 @@ fn digests_1_only_for_status_ok() {
 // digests rule 2 (spec/digest.md §11): the scheme is SCHEME.
 #[test]
 fn digests_2_scheme() {
-    for scheme in [0, 1, 3] {
+    for scheme in [0, 1, 2, 4] {
         let mut s = map_shard();
         s.digests.as_mut().unwrap().scheme = scheme;
         assert_eq!(rejected(&s, "sections.digests.scheme"), 78);
@@ -1049,14 +1049,23 @@ fn digests_6_units_length_is_count() {
     assert_eq!(rejected(&s, "sections.digests.groups[1].units"), 319);
 }
 
-// digests rule 6 (spec/digest.md §11): flags are 0 or 1.
+// digests rule 6 (spec/digest.md §11): flags have no bit but bits 0
+// (indeterminate) and 1 (emitted unreferenced, WP-155).
 #[test]
 fn digests_6_unit_flags() {
-    for flags in [2, 3, u64::MAX] {
+    for flags in [4, 5, 6, 7, u64::MAX] {
         let mut s = map_shard();
         units(&mut s, 0)[1].flags = flags;
         resum(&mut s);
         assert_eq!(rejected(&s, "sections.digests.groups[0].units[1].flags"), 281);
+    }
+    // Bit 1 is accepted, with bit 0 and without it (on a unit whose
+    // group then counts no indeterminate unit).
+    for (unit, flags) in [(1, 3), (0, 2)] {
+        let mut s = map_shard();
+        units(&mut s, 0)[unit].flags = flags;
+        resum(&mut s);
+        round_trip(&s);
     }
 }
 
@@ -1081,7 +1090,7 @@ fn digests_6d_indeterminate_is_the_number_flagged() {
     round_trip(&s);
     // Checked after 6c (flags) and before 6e (digest).
     let mut s = map_shard();
-    units(&mut s, 0)[1].flags = 2;
+    units(&mut s, 0)[1].flags = 4;
     resum(&mut s);
     rejected(&s, "sections.digests.groups[0].units[1].flags");
     let mut s = map_shard();
@@ -1321,6 +1330,17 @@ fn verdict_4b_order_by_rank() {
     };
     round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::Indeterminate));
     round_trip(&kinds(FindingKind::DerivedChanged, FindingKind::DerivedIndeterminate));
+    // WP-155: the two one-sided kinds rank between derived_changed and
+    // indeterminate.
+    let mut s = kinds(FindingKind::DerivedChanged, FindingKind::DerivedOnlyPost);
+    verdict(&mut s).findings[1].pre = None;
+    round_trip(&s);
+    let mut s = kinds(FindingKind::DerivedOnlyPre, FindingKind::Indeterminate);
+    verdict(&mut s).findings[0].post = None;
+    round_trip(&s);
+    let mut s = kinds(FindingKind::Indeterminate, FindingKind::DerivedOnlyPost);
+    verdict(&mut s).findings[1].pre = None;
+    assert_eq!(rejected(&s, "sections.verdict.findings[1]"), 439);
     let mut s = kinds(FindingKind::Added, FindingKind::DerivedChanged);
     verdict(&mut s).findings[0].pre = None;
     round_trip(&s);
@@ -1339,7 +1359,7 @@ fn verdict_4b_order_by_rank() {
 }
 
 // spec/verify.md §6: `FindingKind::rank` is the table of §6, a bijection
-// onto 0..=5, and every kind's number in the format is what it was (the
+// onto 0..=7 (the last two kinds since WP-155), and every kind's number in the format is what it was (the
 // kind byte of a finding in binary, its name in JSON).
 #[test]
 fn finding_kind_rank_and_number() {
@@ -1348,13 +1368,15 @@ fn finding_kind_rank_and_number() {
         (Changed, 0u8, 0u8, "changed"),
         (Removed, 1, 1, "removed"),
         (Added, 2, 2, "added"),
-        (Indeterminate, 3, 4, "indeterminate"),
+        (Indeterminate, 3, 6, "indeterminate"),
         (DerivedChanged, 4, 3, "derived_changed"),
-        (DerivedIndeterminate, 5, 5, "derived_indeterminate"),
+        (DerivedIndeterminate, 5, 7, "derived_indeterminate"),
+        (DerivedOnlyPre, 6, 4, "derived_only_pre"),
+        (DerivedOnlyPost, 7, 5, "derived_only_post"),
     ];
     let mut ranks: Vec<u8> = table.iter().map(|&(k, _, _, _)| k.rank()).collect();
     ranks.sort_unstable();
-    assert_eq!(ranks, [0, 1, 2, 3, 4, 5]);
+    assert_eq!(ranks, [0, 1, 2, 3, 4, 5, 6, 7]);
     for (kind, number, rank, name) in table {
         assert_eq!(kind.rank(), rank, "{kind:?}");
         let mut s = verify_shard();
@@ -1379,6 +1401,8 @@ fn verdict_5_finding_fields() {
         FindingKind::Added,
         FindingKind::DerivedChanged,
         FindingKind::DerivedIndeterminate,
+        FindingKind::DerivedOnlyPre,
+        FindingKind::DerivedOnlyPost,
     ] {
         let mut s = verify_shard();
         let f = &mut verdict(&mut s).findings[1];
@@ -1394,6 +1418,16 @@ fn verdict_5_finding_fields() {
     assert_eq!(rejected(&s, "sections.verdict.findings[1].pre"), 476);
     let mut s = verify_shard();
     verdict(&mut s).findings[1].post = Some(d(0x48));
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].post"), 509);
+    // WP-155: derived_only_post has no pre, derived_only_pre no post, at
+    // the same bytes as added and removed.
+    let mut s = verify_shard();
+    verdict(&mut s).findings[1].kind = FindingKind::DerivedOnlyPost;
+    assert_eq!(rejected(&s, "sections.verdict.findings[1].pre"), 476);
+    let mut s = verify_shard();
+    let f = &mut verdict(&mut s).findings[1];
+    f.kind = FindingKind::DerivedOnlyPre;
+    f.post = Some(d(0x48));
     assert_eq!(rejected(&s, "sections.verdict.findings[1].post"), 509);
 }
 
@@ -1460,7 +1494,7 @@ fn unlisted_values_and_opt_tags() {
     let verify = verify_shard_bytes();
     for (at, from, to) in [
         (206, 1, 3),
-        (309, 0, 6),
+        (309, 0, 8),
         (439, 1, 0x40),
         (310, 1, 2),
         (379, 1, 2),

@@ -2027,10 +2027,11 @@ mod tests {
         while i < w.queue.len() {
             let (e, class) = w.queue[i];
             i += 1;
-            if let Some(u) = crate::units::write(w, e, class) {
+            if let Some(mut u) = crate::units::write(w, e, class) {
                 // Its resolved units after it, as `run_with` writes them.
                 let mut resolved = Vec::new();
                 crate::demand::resolved_units(w, e, &u, &mut resolved);
+                crate::emitted::mark(w, e, &mut u, &mut resolved);
                 written.push(u);
                 written.append(&mut resolved);
             }

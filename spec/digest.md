@@ -246,7 +246,10 @@ them.
 Derived units are compared when both parses have them. A derived unit that
 only one parse has is not by itself a difference (`verify.md` says when it
 is reported): the reference that demanded it is in some unit, and that
-unit's digest differs.
+unit's digest differs, except where the demand is recorded in no unit (a
+substitution whose result is not kept, a candidate no longer considered);
+a one-sided derived unit marked emitted unreferenced (§11) is therefore a
+finding of its own (`verify.md` §4 step 3, WP-155).
 
 ## 3. Keys
 
@@ -1267,7 +1270,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              2; changes whenever any stream, key or table of this spec changes (rule below)
+Digests := scheme: uv              3; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -1275,13 +1278,15 @@ Group   := class:  GroupClass
            file:   bytes           the subject path of a file; empty for class `tu`
            count:  uv              units in the group
            indeterminate: uv       units in the group with the indeterminate flag
-           digest: digest          H("slip.group.v1", list<Unit>) over the group's units
+           digest: digest          H("slip.group.v1", list<Unit>) over the group's units,
+                                   each unit's flags without bit 1
            units:  opt<list<Unit>> sorted by (key, digest); present when detail was asked for
 
 GroupSum   := class, file, count, indeterminate, digest
 GroupClass := declared = 0 | derived = 1 | tu = 2
 
-Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
+Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; bit 1: emitted
+                                                         unreferenced (WP-155, below); other bits must be 0
 ```
 
 From the first release, `scheme` changes with every change to a stream,
@@ -1312,6 +1317,23 @@ whose key is another unit's with a different digest is a collision,
 indeterminate (fails closed). No comparison goes from a difference of a
 member to equal. No baseline of scheme 2 is recorded, so it shares the
 number.
+
+It is 3 since WP-155: a unit carries flag bit 1, **emitted unreferenced**,
+when it holds the definition of an entity the translation unit emits
+whether or not anything refers to it (the rule, and the Kiln fields it
+reads, are `spec/landed/verify/WP-155.md` §1): the resolved unit
+`definition` of an entity of the definition class (`digest-kinds.md`
+§11.9), else the entity's own unit. The flag is part of no unit's digest
+(no stream, key or table row changes: every unit digest is what it was
+under scheme 2), nor of the group's: `group_digest` hashes a unit's
+flags without bit 1, so every group digest and `tu` is what it was under
+scheme 2 too. The scheme moves because a shard of scheme 2 holds no
+mark: compared with one of scheme 3, a one-sided marked unit would be
+read as unmarked, a wrong `verified` (`verify.md` §4 step 3). The move
+voids every recorded baseline of scheme 2 (its digests stay valid, its
+marks are missing): the shard goldens of `crates/slip_model` are blessed
+again with the package; `bench/baselines` and the corpus invariants are
+the supervisor's to record again.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the

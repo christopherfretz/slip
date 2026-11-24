@@ -50,9 +50,16 @@ pub const fn map_of(status: Status) -> MapShard {
 /// An `ok` map shard, the one the verdicts name.
 pub const MAP_OK: Option<MapShard> = Some(map_of(Status::Ok));
 
-/// The six counters of `spec/verify.md` §7.2 by kind and
-/// `verify.findings`, sorted.
+/// The six counters of `spec/verify.md` §7.2 by kind before WP-155,
+/// the two it added zero, and `verify.findings`, sorted.
 pub fn counters(by_kind: [u64; 6]) -> Vec<Counter> {
+    let [a, b, c, d, e, f] = by_kind;
+    counters_all([a, b, c, d, e, f, 0, 0])
+}
+
+/// The eight counters of §7.2 by kind (WP-155 added `derived_only_pre`
+/// and `derived_only_post`, last), and `verify.findings`, sorted.
+pub fn counters_all(by_kind: [u64; 8]) -> Vec<Counter> {
     let names = [
         "verify.findings.changed",
         "verify.findings.removed",
@@ -60,6 +67,8 @@ pub fn counters(by_kind: [u64; 6]) -> Vec<Counter> {
         "verify.findings.indeterminate",
         "verify.findings.derived_changed",
         "verify.findings.derived_indeterminate",
+        "verify.findings.derived_only_pre",
+        "verify.findings.derived_only_post",
     ];
     let mut v: Vec<Counter> = names
         .iter()

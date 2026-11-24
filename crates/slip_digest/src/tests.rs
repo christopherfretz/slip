@@ -227,6 +227,7 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         collided: false,
         view: None,
         denotes: None,
+        emitted: false,
     }
 }
 

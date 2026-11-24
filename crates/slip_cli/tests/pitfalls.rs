@@ -53,8 +53,16 @@ const BOUND: Duration = Duration::from_mins(3);
 const INDETERMINATE: [&str; 2] = ["indeterminate", "derived_indeterminate"];
 
 /// The kinds a `mismatch <kind> <entity>` line may name.
-const KINDS: [&str; 6] =
-    ["changed", "removed", "added", "derived_changed", "indeterminate", "derived_indeterminate"];
+const KINDS: [&str; 8] = [
+    "changed",
+    "removed",
+    "added",
+    "derived_changed",
+    "indeterminate",
+    "derived_indeterminate",
+    "derived_only_pre",
+    "derived_only_post",
+];
 
 /// How a line with ` @ <file>:<line>` is met (`spec/pitfalls.md` §1 "Places").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,7 +537,7 @@ impl Found {
         let _ = write!(s, ", {} group(s):", groups.len());
         for g in groups.iter().take(4) {
             let _ = write!(s, " [{} {}", g.kind, g.name);
-            let site = if g.kind == "removed" {
+            let site = if matches!(g.kind.as_str(), "removed" | "derived_only_pre") {
                 g.pre.as_ref()
             } else {
                 g.post.as_ref().or(g.pre.as_ref())
@@ -644,7 +652,7 @@ fn wanted_met(
     let mut absent = false;
     let mut asked: Option<bool> = None;
     for g in groups {
-        let side = if w.kind == "removed" {
+        let side = if matches!(w.kind.as_str(), "removed" | "derived_only_pre") {
             g.pre.as_ref()
         } else if w.kind == "changed"
             && at_place(g.pre.as_ref(), at) != at_place(g.post.as_ref(), at)

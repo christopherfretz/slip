@@ -6999,6 +6999,18 @@ Reading `eval` in the own unit would make it depend on whether some use
 had evaluated the initialiser (a constant expression, a `static_assert`,
 a template argument).
 
+The mark "emitted unreferenced" (flag bit 1, `digest.md` §11; WP-155,
+`spec/landed/verify/WP-155.md` §1) is set on the `definition` unit of a
+variable or function the translation unit emits whether or not anything
+refers to it, and it does read `eval`: a variable whose state is not
+`Value` is marked. It is a flag, part of no digest, so the paragraph
+above does not apply to it; what it does inherit is that whether a use
+evaluated the initialiser can decide it. That only adds marks: a
+variable whose initialiser is a constant is `Value` once evaluated and
+emits nothing either way, and one that is not evaluated is marked. A
+mark too many is a finding too many (`verify.md` §4 step 3), never a
+missing one.
+
 A class template specialisation whose instantiation failed has a unit
 and no `definition`, like a function declared and not defined. One
 that was only named has `SpecInfo` kind `Undeclared` and no unit at all

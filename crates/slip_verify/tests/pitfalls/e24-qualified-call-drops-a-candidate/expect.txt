@@ -1,0 +1,12 @@
+# E24 (WP-155, spec/verify.md §4 step 3): a call requalified ::f to keep
+# naming the function it called. The qualified name stops
+# argument-dependent lookup, so the template lib::f, a viable candidate
+# that lost to the non-template, is no longer considered (zz153-q4): its
+# default argument instantiated probe<lib::X> and Tr<lib::X>::r, whose
+# initialiser calls puts before main. The call is the same; the program
+# no longer prints "registered".
+good: none any requalification stops argument-dependent lookup
+bad:  mismatch derived_only_pre Tr<lib::X>::r::<definition>
+# pre-2: the candidate instantiated only a constant (zz153-q3, a trait's
+# static constexpr member): nothing is emitted, the edit is correct.
+good-2: verified

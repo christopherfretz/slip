@@ -100,13 +100,15 @@ impl State {
 }
 
 /// The counters of §7.2 by kind, in the order of `FindingKind`'s numbers.
-const BY_KIND: [(FindingKind, &str); 6] = [
+const BY_KIND: [(FindingKind, &str); 8] = [
     (FindingKind::Changed, "verify.findings.changed"),
     (FindingKind::Removed, "verify.findings.removed"),
     (FindingKind::Added, "verify.findings.added"),
     (FindingKind::Indeterminate, "verify.findings.indeterminate"),
     (FindingKind::DerivedChanged, "verify.findings.derived_changed"),
     (FindingKind::DerivedIndeterminate, "verify.findings.derived_indeterminate"),
+    (FindingKind::DerivedOnlyPre, "verify.findings.derived_only_pre"),
+    (FindingKind::DerivedOnlyPost, "verify.findings.derived_only_post"),
 ];
 
 /// The number of a finding kind in the format, as an index of [`BY_KIND`].
@@ -118,6 +120,8 @@ fn kind_index(kind: FindingKind) -> usize {
         FindingKind::Indeterminate => 3,
         FindingKind::DerivedChanged => 4,
         FindingKind::DerivedIndeterminate => 5,
+        FindingKind::DerivedOnlyPre => 6,
+        FindingKind::DerivedOnlyPost => 7,
     }
 }
 
@@ -130,6 +134,8 @@ fn kind_name(kind: FindingKind) -> &'static str {
         FindingKind::Indeterminate => "indeterminate",
         FindingKind::DerivedChanged => "derived_changed",
         FindingKind::DerivedIndeterminate => "derived_indeterminate",
+        FindingKind::DerivedOnlyPre => "derived_only_pre",
+        FindingKind::DerivedOnlyPost => "derived_only_post",
     }
 }
 
@@ -140,12 +146,12 @@ fn counter(shard: &Shard, name: &str) -> Option<u64> {
 }
 
 /// The counts of the verdict's findings by kind (§7.2), checked against the
-/// verdict: `Err` (the reason, WP-114) if one of the six is missing, if
+/// verdict: `Err` (the reason, WP-114) if one of the eight is missing, if
 /// they do not add up to `total`, if `verify.findings` is missing or is
 /// not `total` (the job writes it with every verdict, §7.2), or if the
 /// verdict lists more findings of a kind than its counter says.
-fn counts_by_kind(shard: &Shard, verdict: &Verdict) -> Result<[u64; 6], String> {
-    let mut counts = [0u64; 6];
+fn counts_by_kind(shard: &Shard, verdict: &Verdict) -> Result<[u64; 8], String> {
+    let mut counts = [0u64; 8];
     for (i, (_, name)) in BY_KIND.iter().enumerate() {
         counts[i] =
             counter(shard, name).ok_or_else(|| format!("the shard has no counter {name}"))?;
@@ -167,11 +173,11 @@ fn counts_by_kind(shard: &Shard, verdict: &Verdict) -> Result<[u64; 6], String> 
             verdict.total
         ));
     }
-    let mut listed = [0u64; 6];
+    let mut listed = [0u64; 8];
     for f in &verdict.findings {
         listed[kind_index(f.kind)] += 1;
     }
-    if let Some(i) = (0..6).find(|&i| listed[i] > counts[i]) {
+    if let Some(i) = (0..8).find(|&i| listed[i] > counts[i]) {
         return Err(format!(
             "the shard's verdict lists {} findings of kind {}, its counter {}",
             listed[i],
@@ -208,7 +214,7 @@ struct Judged<'s> {
     state: State,
     /// For `Verified`, `Mismatch` and `Unverifiable`: the verdict and its
     /// counts by kind.
-    verdict: Option<(&'s Verdict, [u64; 6])>,
+    verdict: Option<(&'s Verdict, [u64; 8])>,
     /// For a `Failed` shard the table refused (not one of status `failed`,
     /// whose own message stands): why (§7.1, WP-114).
     reason: Option<String>,
@@ -1332,6 +1338,9 @@ impl Report {
                 &[&text(&f.name)],
             );
             let _ = writeln!(out, "  first {}", path(&g.first));
+            if let Some(sentence) = says(f) {
+                let _ = writeln!(out, "  says {}", text(&sentence));
+            }
             if let Some(w) = &f.location {
                 site_line(&mut out, "  pre  ", &w.pre);
                 site_line(&mut out, "  post ", &w.post);
@@ -1557,6 +1566,26 @@ fn escape(bytes: &[u8]) -> String {
 
 fn path(bytes: &[u8]) -> String {
     escape(bytes)
+}
+
+/// The sentence of a `derived_only_pre` or `derived_only_post` finding
+/// (§7.1 `says`, WP-155, `spec/landed/verify/WP-155.md` §3); `None` for
+/// every other kind. The entity is the finding's name without the resolved
+/// unit's `::<definition>`; the mark is one bit, so the sentence names no
+/// particular reason (an initialiser, a destructor, an attribute).
+fn says(f: &Finding) -> Option<String> {
+    let now = match f.kind {
+        FindingKind::DerivedOnlyPre => "is no longer instantiated",
+        FindingKind::DerivedOnlyPost => "is now instantiated",
+        _ => return None,
+    };
+    let name = f.name.strip_suffix("::<definition>").unwrap_or(&f.name);
+    let who = if name.is_empty() { "the entity".to_owned() } else { format!("`{name}`") };
+    Some(format!(
+        "{who} {now} in this translation unit (the translation unit emits it unreferenced: \
+         its initialiser or destructor runs, or it is a `constructor`, `destructor` or `used` \
+         function or variable)"
+    ))
 }
 
 fn text(s: &str) -> String {

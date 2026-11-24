@@ -260,14 +260,18 @@ fn rename_ns(from_post: &str, to_pre: &str) -> Rule {
 }
 
 /// The §7.2 counters every verdict shard has.
-const VERIFY_COUNTERS: [&str; 12] = [
+const VERIFY_COUNTERS: [&str; 16] = [
     "verify.derived.only_post",
+    "verify.derived.only_post.emitted",
     "verify.derived.only_pre",
+    "verify.derived.only_pre.emitted",
     "verify.exemptions.used",
     "verify.findings",
     "verify.findings.changed",
     "verify.findings.derived_changed",
     "verify.findings.derived_indeterminate",
+    "verify.findings.derived_only_post",
+    "verify.findings.derived_only_pre",
     "verify.findings.added",
     "verify.findings.indeterminate",
     "verify.findings.removed",

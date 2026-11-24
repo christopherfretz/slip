@@ -24,6 +24,8 @@ pub(crate) fn build(written: &[Written], detail: &Detail<'_>) -> (Digests, Total
     let mut by_group: BTreeMap<(GroupClass, Vec<u8>), Vec<Unit>> = BTreeMap::new();
     for u in written {
         let flags = if u.cause.is_some() { Unit::INDETERMINATE } else { 0 };
+        // The mark (`emitted.rs`, WP-155): part of no digest.
+        let flags = if u.emitted { flags | Unit::EMITTED } else { flags };
         by_group.entry((u.class, u.file.clone())).or_default().push(Unit {
             key: u.key,
             digest: u.digest,

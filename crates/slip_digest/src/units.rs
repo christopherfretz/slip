@@ -68,6 +68,10 @@ pub(crate) struct Written {
     /// name is not one a namespace has. `names::names` reports a view unit
     /// as `<denotes> (the owned part of <namespace>)` (WP-140 review F4).
     pub denotes: Option<String>,
+    /// Whether the unit holds the definition of an entity the translation
+    /// unit emits unreferenced (`emitted.rs`, WP-155): `Unit::EMITTED`,
+    /// part of no digest.
+    pub emitted: bool,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -652,6 +656,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         collided: false,
         view: None,
         denotes: None,
+        emitted: false,
     })
 }
 
@@ -921,6 +926,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         default_argument: None,
         view: None,
         denotes: None,
+        emitted: false,
     }
 }
 
