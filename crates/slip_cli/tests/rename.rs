@@ -1139,3 +1139,88 @@ fn s10_6_rename_interrupted_after_its_verify_phase() {
     assert_eq!(apply.code(), Some(1), "{apply:?}");
     assert_eq!(t.snapshot().get("src/h.h"), before.get("src/h.h"));
 }
+
+// ----- unchanged by identity (§8.2; WP-076 fix round, B2) -------------------
+
+/// The reviewer's probe: `f` only in `a.cpp`; the set given to `check`
+/// adds `h.h` with an edit in a group only `b.cpp` compiles, and `b.cpp`
+/// reaches `h.h` as `spelled`. No rules: `b.cpp` read an overlay file by
+/// identity, so it is not `unchanged`, and the result is not `verified`.
+/// `None` when the volume does not make `spelled` the file `h.h` (a
+/// case-sensitive volume, for `H.h`).
+fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<TransformResult> {
+    let t = Tree::new(name);
+    let h = "#pragma once\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
+    t.write("src/h.h", h);
+    if link {
+        std::fs::hard_link(t.path("src/h.h"), t.path(&format!("src/{spelled}"))).unwrap();
+    } else if !t.path(&format!("src/{spelled}")).exists() {
+        return None;
+    }
+    t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
+    t.write("src/b.cpp", &format!("#define B_SIDE\n#include \"{spelled}\"\nint g() {{ return k(); }}\n"));
+    t.db(&["src/a.cpp", "src/b.cpp"]);
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    assert_eq!(set.files.len(), 1, "{out:?}");
+    for e in &mut set.edits {
+        e.pieces = vec![Piece::Literal(b"f".to_vec())];
+    }
+    let mut fr = set.files[0].clone();
+    fr.path = t.path("src/h.h").to_str().unwrap().as_bytes().to_vec();
+    fr.size = h.len() as u64;
+    fr.content = slip_model::hash::content_digest(h.as_bytes());
+    set.files.push(fr);
+    set.files.sort_by(|a, b| a.path.cmp(&b.path));
+    let hf = file_of(&set, &t, "src/h.h");
+    let af = file_of(&set, &t, "src/a.cpp");
+    for e in &mut set.edits {
+        e.file = af;
+    }
+    let mut extra = set.edits[0].clone();
+    let at = h.find("return 1").unwrap() as u64 + 7;
+    extra.file = hf;
+    extra.lo = at;
+    extra.hi = at + 1;
+    extra.pieces = vec![Piece::Literal(b"2".to_vec())];
+    set.edits.push(extra);
+    set.edits.sort_by_key(|e| (e.file, e.lo));
+    set.validate().unwrap();
+    std::fs::write(t.path("none.decl"), Declared::none().to_bytes()).unwrap();
+    std::fs::write(t.path("k.edts"), set.to_bytes()).unwrap();
+    let out = t.slip(&[
+        "check", "--plan", &plan, "--round", "1", "--edits", "k.edts", "--declared", "none.decl",
+        "--store", "store",
+    ]);
+    let id = out.id("result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let r = TransformResult::from_bytes(&bytes).unwrap();
+    assert_eq!(r.tally.unchanged, 0, "b.cpp read the overlay's h.h: {out:?}");
+    // `check` gave it a job (by identity), rather than leaving the report
+    // to refuse `unchanged` (`failed`): the job's verdict is not
+    // `verified`. (On this branch the job says `unverifiable`, "pre-image:
+    // <spelling> changed since the map phase": its O2 matches the
+    // overlay by path; reported to the coordinator.)
+    assert_eq!(r.tally.failed, 0, "{out:?}");
+    assert_eq!(r.tally.verified, 1, "a.cpp only: {out:?}");
+    assert_eq!(r.tally.mismatch + r.tally.unverifiable, 1, "{out:?}");
+    assert!(
+        !matches!(r.state, State::Verified | State::VerifiedWithResidue),
+        "{:?}: {out:?}",
+        r.state
+    );
+    Some(r)
+}
+
+#[test]
+fn s8_2_unchanged_by_identity_case_spelling() {
+    if unchanged_by_identity("identity-case", "H.h", false).is_none() {
+        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
+    }
+}
+
+#[test]
+fn s8_2_unchanged_by_identity_hard_link() {
+    assert!(unchanged_by_identity("identity-link", "hl.h", true).is_some());
+}

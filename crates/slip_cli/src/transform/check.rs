@@ -8,9 +8,11 @@
 //! (`slip_verify::conclude`) the result's. This module decides which
 //! observers get a verify job (§8.2) and gathers what they need.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use slip_apply::{ApplyError, Blobs as _};
@@ -26,7 +28,7 @@ use slip_model::transform::{Transform, TransformKind};
 use slip_model::transform_run::StepName;
 use slip_model::{Digest, Overlay, Phase, Plan, Shard, Status};
 use slip_verify::conclude::{Facts, Scan, conclude};
-use slip_verify::run::{Header, Report};
+use slip_verify::run::{FileId, Header, Report};
 
 use super::lines::edit_set_summary;
 use super::map::{observers_at, pool_error, selection};
@@ -120,14 +122,16 @@ fn apply_error(e: ApplyError) -> CommandError {
 
 /// What one pass over the round's map shards says of the selected
 /// observers (WP-076): by selected position, whether the shard is `ok`
-/// and whether it read an overlay file (§8.2); the owned paths some `ok`
-/// shard read, sorted; and the main files of the others.
+/// and whether it read an overlay file (§8.2, by identity); the owned
+/// paths some `ok` shard read, sorted; the main files of the others; and
+/// the identity of every file found, for the report.
 #[derive(Debug, Default)]
 struct Pass {
     ok: Vec<bool>,
     read_overlay: Vec<bool>,
     read_by_some: Vec<Vec<u8>>,
     unparsed_mains: Vec<Vec<u8>>,
+    identities: BTreeMap<Vec<u8>, FileId>,
 }
 
 /// The observer's map shard of the round, if it is one: present, decoded,
@@ -146,17 +150,76 @@ fn map_shard(
     })
 }
 
+/// The identity of the file at `path` (device, inode; links followed),
+/// each distinct path looked up once a run (WP-076 fix round, B2).
+#[derive(Default)]
+struct Identities(HashMap<Vec<u8>, Option<FileId>>);
+
+impl Identities {
+    fn of(&mut self, path: &[u8]) -> Option<FileId> {
+        if let Some(id) = self.0.get(path) {
+            return *id;
+        }
+        let id = std::fs::metadata(std::ffi::OsStr::from_bytes(path))
+            .ok()
+            .map(|m| (m.dev(), m.ino()));
+        self.0.insert(path.to_vec(), id);
+        id
+    }
+
+    /// Every identity found, by path.
+    fn found(self) -> BTreeMap<Vec<u8>, FileId> {
+        self.0.into_iter().filter_map(|(p, id)| Some((p, id?))).collect()
+    }
+}
+
+/// §8.2 and WP-076 decision 2: every selected observer has a map shard
+/// of the round, `ok` or not; one with none, or with bytes that are not
+/// its shard, did not finish the map phase (an interrupted `map`: its job
+/// cancelled or never run) and is not an unparsed observer
+/// (`--allow-unparsed` accepts those, not these).
 fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandError> {
     let mut pass = Pass::default();
     let mut read = BTreeSet::new();
+    let mut ids = Identities::default();
+    // An overlay file with no identity now could be read under any
+    // spelling: every `ok` observer then gets a job.
+    let mut overlaid = BTreeSet::new();
+    let mut all_read = false;
+    for f in &overlay.files {
+        match ids.of(&f.path) {
+            Some(id) => {
+                overlaid.insert(id);
+            }
+            None => all_read = true,
+        }
+    }
     for &i in input.selected {
         let o = &input.plan.observers[i];
-        let shard = map_shard(input.store, &input.plan_id, input.round, &o.id)?
-            .filter(|s| s.outcome.status == Status::Ok);
-        let inputs = shard.as_ref().and_then(|s| s.inputs.as_deref()).unwrap_or(&[]);
-        pass.ok.push(shard.is_some());
-        pass.read_overlay.push(inputs.iter().any(|f| overlay.find(&f.path).is_some()));
-        if shard.is_none() {
+        let read_now = verify_cmd::read_map_shard(input.store, &input.plan_id, input.round, &o.id)
+            .map_err(command_error)?;
+        let shard = match read_now {
+            Some(verify_cmd::MapRead::Shard(s, _)) => *s,
+            found => {
+                return Err(CommandError::Input(format!(
+                    "{}: {} map shard of round {}: the round's map phase did not finish for \
+                     this observer (interrupted?); run `slip map` again",
+                    String::from_utf8_lossy(&o.main.path),
+                    if found.is_none() { "no" } else { "an unusable" },
+                    input.round
+                )));
+            }
+        };
+        let ok = shard.outcome.status == Status::Ok;
+        let inputs = if ok { shard.inputs.as_deref().unwrap_or(&[]) } else { &[] };
+        pass.ok.push(ok);
+        // By path, or else by identity; an input that cannot be looked up
+        // gets a job, which reads it itself (WP-076 decision 2).
+        pass.read_overlay.push(ok && (all_read || inputs.iter().any(|f| {
+            overlay.find(&f.path).is_some()
+                || ids.of(&f.path).is_none_or(|id| overlaid.contains(&id))
+        })));
+        if !ok {
             pass.unparsed_mains.push(o.main.path.clone());
         }
         for f in inputs {
@@ -166,6 +229,7 @@ fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandEr
         }
     }
     pass.read_by_some = read.into_iter().collect();
+    pass.identities = ids.found();
     Ok(pass)
 }
 
@@ -240,6 +304,7 @@ fn verify(
     let mut report = Report::new(header, declared.1);
     report.overlay(overlay.0, overlay.1);
     report.pre_round(input.round);
+    report.identities(pass.identities.clone());
     let last = verify_cmd::last_shards(&summary.run);
     for (k, &i) in input.selected.iter().enumerate() {
         if !pass.ok[k] {

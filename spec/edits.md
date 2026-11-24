@@ -1501,8 +1501,18 @@ whether that observer has an entity a rule renames. With no rules, an
 observer that read no overlay file is `unchanged` and gets no job
 (`verify.md` §5.5).
 
-An observer **read** an overlay file if the file's path is in the
-`inputs` of its map shard.
+An observer **read** an overlay file if some path in the `inputs` of its
+map shard is the file: the overlay's path itself, or else a path that
+is the same file by identity (device and inode, links followed: a hard
+link, another spelling on a case-insensitive volume), as §7.1 matches
+an entry to the file a unit reads. The coordinator looks each distinct
+path up once a run. An input it cannot look up, or an overlay file it
+cannot, is taken as read: the observer gets a job, which reads its
+files itself. The trusted base does not take the coordinator's choice
+for `unchanged`: it is given the identities found, by path, and refuses
+`unchanged` (the observer is `failed`) when one of the observer's inputs
+or one of the overlay's files has none, or when an input has the
+identity of an overlay file.
 
 ("Open questions": a trusted filter of keys in the map shard would let
 most observers that read no overlay file skip the job.)
