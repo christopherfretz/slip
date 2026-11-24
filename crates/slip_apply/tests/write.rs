@@ -1922,6 +1922,16 @@ fn s2_1_another_case_is_not_canonical() {
             on_disk: Some(b"/w/a.cc".to_vec())
         }))
     );
+    // Before any ownership decision: the owned root in another case is
+    // not `NotOwned` (bytes) but `NotCanonical`.
+    let (o2, id2) = one_file("/W/a.cc", b"a", b"b");
+    assert_eq!(
+        write(&o2, id2, &vendor_ownership(), &tree, &w, &w),
+        Err(WriteError::Refused(Refused::NotCanonical {
+            path: b"/W/a.cc".to_vec(),
+            on_disk: Some(b"/w/a.cc".to_vec())
+        }))
+    );
     // `recover` checks every path of its journal first, and keeps it.
     let j = Journal::of_write(&o, id);
     w.0.borrow_mut().journal = Some(j.to_bytes());
