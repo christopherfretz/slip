@@ -14,7 +14,9 @@ use slip_model::{Digest, Plan};
 use slip_reduce::{Options, ReduceError};
 
 use super::lines::{edit_set_details, edit_set_summary};
-use super::store::{DiskFiles, StoreShards, request_of_round, selected_of_round};
+use super::store::{
+    DiskFiles, StoreShards, map_phase_finished, request_of_round, selected_of_round,
+};
 use super::{CommandError, failure, store_error};
 use crate::args::{DEFAULT_STORE, PlanSource, ReduceArgs};
 use crate::commands::{self, Failure, load_plan, open_store, token_pool};
@@ -97,9 +99,6 @@ pub(crate) fn main(
     };
     let (plan, plan_id) = load_plan(&store, x)?;
     let selected = selected_of_round(&store, plan_id, &plan, a.round).map_err(failure)?;
-    let shards = StoreShards::new(&store, plan_id, &plan, a.round, &selected);
-    let (request_id, request) =
-        request_of_round(&store, plan_id, a.round, &shards).map_err(failure)?;
 
     // The CPU tokens that can be had without waiting, at least one thread
     // (as `plan` hashes, §8.1).
@@ -112,10 +111,30 @@ pub(crate) fn main(
         }
     }
     let threads = held.len().max(1);
-    let reduced =
-        reduce_round(&store, plan_id, &plan, a.round, &selected, (request_id, &request), threads);
+    // WP-157: an edit set is of a finished map phase (`spec/edits.md`
+    // §10.2). A selected observer with no map shard of the round, or an
+    // unusable one, refuses the round before anything is read for the
+    // request or folded: `slip_reduce` would take it for an unparsed
+    // observer. `rename` reaches `reduce_round` only after a map phase
+    // that finished (`pool::run_with` returns a summary only when every
+    // observer has its shard), so the check is here, not there.
+    let finished = map_phase_finished(&store, plan_id, &plan, a.round, &selected, threads);
+    let reduced = finished.and_then(|()| {
+        let shards = StoreShards::new(&store, plan_id, &plan, a.round, &selected);
+        let (request_id, request) = request_of_round(&store, plan_id, a.round, &shards)?;
+        let reduced = reduce_round(
+            &store,
+            plan_id,
+            &plan,
+            a.round,
+            &selected,
+            (request_id, &request),
+            threads,
+        )?;
+        Ok((reduced, request))
+    });
     drop(held);
-    let (set_id, set, declared) = reduced.map_err(failure)?;
+    let ((set_id, set, declared), request) = reduced.map_err(failure)?;
 
     edit_set_summary(
         set_id,

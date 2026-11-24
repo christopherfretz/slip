@@ -2480,7 +2480,14 @@ The whole run of a script as one command is M3's
 - `reduce` runs §5 over the map shards of a round, with the request the
   shards name, and publishes the edit set and the declared changes. It
   prints `edits <id>`, `state <state>`, and `declared <id>` if there is
-  one.
+  one. An edit set is always of a finished map phase, and this is
+  `reduce`'s promise: before it reads anything else, every observer the
+  round's map phase selected has a map shard of the round, `ok` or not
+  (§8.2). One with none, or with bytes that are not its shard (an
+  interrupted `map`: its job cancelled or never started), is an input
+  error naming its main file, the same as `check`'s, whatever
+  `--allow-unparsed` says; no edit set is written. `apply` cannot know
+  the round and does not check it again.
 - `check` takes an edit set, which need not be the one reduce made, builds
   the overlay, runs the verify phase (§8.2, §8.3), scans and concludes.
   `--declared` defaults to the declared changes of the edit set (§6.2),

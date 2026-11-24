@@ -17,12 +17,13 @@ use std::time::{Duration, Instant};
 use slip_exec::store::{Access, Store};
 use slip_model::declared::Declared;
 use slip_model::edits::Piece;
-use slip_model::editset::EditSet;
+use slip_model::editset::{EditSet, SetState};
 use slip_model::formats::content_id;
 use slip_model::result::{State, TransformResult};
 use slip_model::transform_run::StepName::{Apply, Conclude, Map, Reduce, Scan, Verify, Write};
 use slip_model::transform_run::{StepName, TransformRun};
-use slip_model::{Digest, Plan};
+use slip_model::transform::Transform;
+use slip_model::{Digest, Phase, Plan, Shard};
 
 const SLIP: &str = env!("CARGO_BIN_EXE_slip");
 const BOUND: Duration = Duration::from_mins(3);
@@ -908,8 +909,8 @@ fn mkfifo(t: &Tree, rel: &str) {
 }
 
 // §10.6, exec.md §7: `rename` interrupted during its map phase: killed by
-// the signal, a transform run record of the round, no result, the tree
-// untouched.
+// the signal, a transform run record of the round, no edit set (WP-157),
+// no result, the tree untouched.
 #[test]
 fn s10_6_rename_interrupted_in_map() {
     use std::os::unix::process::ExitStatusExt as _;
@@ -929,6 +930,11 @@ fn s10_6_rename_interrupted_in_map() {
     assert_eq!(records.len(), 1, "{out:?}");
     assert_eq!(steps(&records[0]), [Map]);
     assert_eq!(records[0].result, None);
+    // WP-157, item 2: `rename`'s reduce step is not reached after a map
+    // phase that did not finish (the pool returns no summary then): no
+    // edit set, and the record names none.
+    assert_eq!(records[0].edits, None);
+    assert_eq!(edit_sets(&t), 0);
     let results = t.path("store").join("results");
     assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
     assert_eq!(t.read("src/h.h"), "#pragma once\nint f(int);\n");
@@ -1265,25 +1271,24 @@ fn map_shards(t: &Tree, plan: &str) -> usize {
     std::fs::read_dir(dir).map_or(0, |d| d.flatten().count())
 }
 
-// §8.2, §8.5; exec.md §7: `map -j 1` over four observers (a job at a
-// time, in plan order), interrupted once two have their shards and the
-// third's job blocks on a fifo: that job is cancelled, the fourth never
-// starts. Then `reduce` and `check`, with and without
-// `--allow-unparsed`: an observer with no map shard of the round did not
-// finish the phase; it is no unparsed observer, and `check` refuses the
-// round whatever `--allow-unparsed` says.
-#[test]
-fn s8_5_an_interrupted_map_is_not_unparsed() {
+/// WP-076's should-fix 4 (WP-157's fixture): `map -j 1` over four
+/// observers (a job at a time, in plan order), interrupted once two have
+/// their shards and the third's job blocks on a fifo: that job is
+/// cancelled, the fourth never starts. Every unit calls `f` through
+/// `call` (`f(x)`, or a macro that makes the edit set refused). The tree,
+/// the plan's id and the main files in plan order.
+fn interrupted_map(name: &str, call: &str) -> (Tree, String, Vec<String>) {
     use std::os::unix::process::ExitStatusExt as _;
-    let t = Tree::new("sigint-map-check");
-    t.write("src/h.h", "#pragma once\nint f(int);\n");
+    let t = Tree::new(name);
+    let define = if call.starts_with("CALL") { "#define CALL(x) f(x)\n" } else { "" };
+    t.write("src/h.h", &format!("#pragma once\nint f(int);\n{define}"));
     let units = ["src/a.cpp", "src/b.cpp", "src/c.cpp", "src/d.cpp"];
     for (k, u) in units.iter().enumerate() {
         let n = &u[4..5];
         t.write(&format!("src/p{n}.h"), "\n");
         t.write(
             u,
-            &format!("#include \"h.h\"\n#include \"p{n}.h\"\nint g{k}(int x) {{ return f(x); }}\n"),
+            &format!("#include \"h.h\"\n#include \"p{n}.h\"\nint g{k}(int x) {{ return {call}; }}\n"),
         );
     }
     t.db(&units);
@@ -1324,22 +1329,116 @@ fn s8_5_an_interrupted_map_is_not_unparsed() {
     assert_eq!(map_shards(&t, &plan), 2);
     std::fs::remove_file(t.path(&fifo)).unwrap();
     t.write(&fifo, "\n");
-    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
-    // `reduce` accepts the round from the two shards there are (WP-075's;
-    // reported to the coordinator).
-    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
-    let edits = reduce.id("edits");
-    // Neither the observer whose job was cancelled nor the one never
-    // started is unparsed.
-    let missing: Vec<&String> = order[2..].iter().collect();
+    (t, plan, order)
+}
+
+/// The edit sets in the store.
+fn edit_sets(t: &Tree) -> usize {
+    std::fs::read_dir(t.path("store").join("edits")).map_or(0, |d| d.flatten().count())
+}
+
+/// The round's map shards as `slip_reduce` reads them, an absent one
+/// `None`: what `reduce` did before WP-157.
+struct AsBefore {
+    store: Store,
+    plan: Digest,
+    observers: Vec<Digest>,
+}
+
+impl slip_reduce::Shards for AsBefore {
+    fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
+        self.store
+            .read_shard(&self.plan, Phase::Map, 1, &self.observers[index])
+            .map_err(|e| e.to_string())
+    }
+
+    fn len(&self) -> usize {
+        self.observers.len()
+    }
+
+    fn observer(&self, index: usize) -> Digest {
+        self.observers[index]
+    }
+}
+
+/// The edit set `reduce` made of round 1 before WP-157, from the shards
+/// there are: the set a `check` of an unfinished round is given.
+fn reduced_as_before(t: &Tree, plan: &str) -> EditSet {
+    let store = t.store("store");
+    let plan = Digest::from_hex(plan).unwrap();
+    let bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan"))).unwrap();
+    let observers: Vec<Digest> =
+        Plan::from_bytes(&bytes).unwrap().observers.iter().map(|o| o.id).collect();
+    let request = observers
+        .iter()
+        .find_map(|o| store.read_shard(&plan, Phase::Map, 1, o).unwrap())
+        .map(|b| Shard::from_bytes(&b).unwrap().edits.unwrap().transform)
+        .unwrap();
+    let trfm = t.path("store").join("transforms").join(format!("{request}.trfm"));
+    let transform = Transform::from_bytes(&std::fs::read(trfm).unwrap()).unwrap();
+    let scratch = t.path("reduce-scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let shards = AsBefore { store, plan, observers };
+    let options = slip_reduce::Options::new(scratch);
+    slip_reduce::reduce(&transform, request, plan, 1, &shards, &options).unwrap().edits
+}
+
+// spec/edits.md §8.2, §10.2 (WP-157): `reduce` after an interrupted map
+// refuses the round, with `--allow-unparsed` too (which `reduce` takes
+// and ignores): status 3, the message names the main file of an observer
+// with no shard, and the store has no edit set.
+#[test]
+fn s10_2_reduce_refuses_an_interrupted_map() {
+    let (t, plan, order) = interrupted_map("sigint-map-reduce", "f(x)");
     for extra in [&[][..], &["--allow-unparsed"][..]] {
-        let mut args =
-            vec!["check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store"];
+        let mut args = vec!["reduce", "--plan", &plan, "--round", "1", "--store", "store"];
+        args.extend_from_slice(extra);
+        let reduce = t.slip(&args);
+        assert_eq!(reduce.code(), Some(3), "{extra:?}: {reduce:?}");
+        // The least selected position with no shard: the third observer.
+        assert!(
+            reduce.stderr.contains(&format!(
+                "{}: no map shard of round 1: the round's map phase did not finish",
+                order[2]
+            )),
+            "{reduce:?}"
+        );
+        assert!(!reduce.has_line("edits "), "{reduce:?}");
+        assert_eq!(edit_sets(&t), 0, "{extra:?}");
+    }
+    // No record names an edit set: `reduce` publishes none, and `map`'s
+    // has none.
+    let records = transform_runs(&t, "store", &plan);
+    assert!(records.iter().all(|r| r.edits.is_none()), "{records:?}");
+}
+
+// §8.2, §8.5; exec.md §7: `check` of the same round, given the edit set
+// `reduce` made of it before WP-157: an observer with no map shard of the
+// round did not finish the phase; it is no unparsed observer, and `check`
+// refuses the round whatever `--allow-unparsed` says.
+#[test]
+fn s8_5_an_interrupted_map_is_not_unparsed() {
+    let (t, plan, order) = interrupted_map("sigint-map-check", "f(x)");
+    let set = reduced_as_before(&t, &plan);
+    assert_eq!(set.state, SetState::Accepted);
+    std::fs::write(t.path("before.edts"), set.to_bytes()).unwrap();
+    for extra in [&[][..], &["--allow-unparsed"][..]] {
+        let mut args = vec![
+            "check",
+            "--plan",
+            &plan,
+            "--round",
+            "1",
+            "--edits",
+            "before.edts",
+            "--store",
+            "store",
+        ];
         args.extend_from_slice(extra);
         let check = t.slip(&args);
         assert_eq!(check.code(), Some(3), "{extra:?}: {check:?}");
         assert!(
-            missing.iter().any(|m| check.stderr.contains(&format!(
+            order[2..].iter().any(|m| check.stderr.contains(&format!(
                 "{m}: no map shard of round 1: the round's map phase did not finish"
             ))),
             "{check:?}"
@@ -1349,6 +1448,124 @@ fn s8_5_an_interrupted_map_is_not_unparsed() {
     }
     let results = t.path("store").join("results");
     assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
+}
+
+// §8.1, §8.2 (WP-157, item 4): a refused set is concluded with no apply
+// step, so `check` reads no map shard for it; it refuses an unfinished
+// round all the same, before it concludes, rather than take the missing
+// observers for unparsed ones in a `refused` result.
+#[test]
+fn s8_1_check_of_a_refused_set_of_an_interrupted_map() {
+    let (t, plan, order) = interrupted_map("sigint-map-refused", "CALL(x)");
+    let set = reduced_as_before(&t, &plan);
+    assert_eq!(set.state, SetState::Refused);
+    assert_eq!(set.unparsed.len(), 2, "the old reduce took them for unparsed");
+    std::fs::write(t.path("before.edts"), set.to_bytes()).unwrap();
+    for extra in [&[][..], &["--allow-unparsed"][..]] {
+        let mut args = vec![
+            "check",
+            "--plan",
+            &plan,
+            "--round",
+            "1",
+            "--edits",
+            "before.edts",
+            "--store",
+            "store",
+        ];
+        args.extend_from_slice(extra);
+        let check = t.slip(&args);
+        assert_eq!(check.code(), Some(3), "{extra:?}: {check:?}");
+        assert!(
+            check.stderr.contains(&format!(
+                "{}: no map shard of round 1: the round's map phase did not finish",
+                order[2]
+            )),
+            "{check:?}"
+        );
+        assert!(!check.has_line("result "), "{check:?}");
+    }
+    let results = t.path("store").join("results");
+    assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
+}
+
+// §10.2 (WP-157): every selected observer has a map shard, one of them
+// not `ok`: `reduce` accepts the round as before, with that observer
+// unparsed.
+#[test]
+fn s10_2_reduce_of_a_round_with_a_shard_not_ok() {
+    let t = Tree::three_files("reduce-not-ok");
+    t.write("src/c.cpp", "int broken( {\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let map = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store",
+    ]);
+    assert_eq!(map.code(), Some(1), "{map:?}");
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
+    assert_eq!(reduce.value("state"), Some("accepted"), "{reduce:?}");
+    let set = edit_set(&t, "store", &reduce.id("edits"));
+    assert_eq!(set.unparsed.len(), 1);
+    assert_eq!(set.edits.len(), 3);
+}
+
+// §10.2 (WP-157): a map shard of the round overwritten with other bytes
+// is not its shard: `reduce` refuses the round naming that observer's
+// main file, and writes no edit set.
+#[test]
+fn s10_2_reduce_refuses_an_unusable_map_shard() {
+    let t = Tree::three_files("reduce-unusable");
+    let plan = t.plan("store");
+    let map = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store",
+    ]);
+    assert_eq!(map.code(), Some(0), "{map:?}");
+    let bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan"))).unwrap();
+    let second = &Plan::from_bytes(&bytes).unwrap().observers[1];
+    let main = String::from_utf8_lossy(&second.main.path).into_owned();
+    let plan_id = Digest::from_hex(&plan).unwrap();
+    let path = t.store("store").shard_path(&plan_id, Phase::Map, 1, &second.id);
+    // Replaced, not written through: no other name of the file sees it.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"not a shard").unwrap();
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    assert_eq!(reduce.code(), Some(3), "{reduce:?}");
+    assert!(
+        reduce.stderr.contains(&format!(
+            "{main}: an unusable map shard of round 1: the round's map phase did not finish"
+        )),
+        "{reduce:?}"
+    );
+    assert_eq!(edit_sets(&t), 0);
+}
+
+// §10.2 (WP-157): the check reads the observers the round's map phase
+// selected, not the plan's. `map --only b.cpp` selects the plan's second
+// observer: `reduce` accepts the round, though the first has no shard.
+#[test]
+fn s10_2_reduce_of_a_partial_round_reads_the_selected() {
+    let t = Tree::three_files("reduce-partial");
+    let plan = t.plan("store");
+    let map = t.slip(&[
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store", "--only", "b.cpp",
+    ]);
+    assert_eq!(map.code(), Some(0), "{map:?}");
+    let bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan"))).unwrap();
+    let order: Vec<String> = Plan::from_bytes(&bytes)
+        .unwrap()
+        .observers
+        .iter()
+        .map(|o| String::from_utf8_lossy(&o.main.path).into_owned())
+        .collect();
+    assert!(order[0].ends_with("a.cpp") && order[1].ends_with("b.cpp"), "{order:?}");
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
+    assert_eq!(reduce.value("state"), Some("accepted"), "{reduce:?}");
+    assert_eq!(edit_sets(&t), 1);
 }
 
 // ----- a given --declared (WP-076 fix round, should-fix 3; A5) --------------

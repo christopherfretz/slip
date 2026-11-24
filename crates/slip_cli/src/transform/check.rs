@@ -35,7 +35,10 @@ use super::map::{observers_at, pool_error, selection};
 use super::report::{Details, details, result_summary};
 use super::residue::{extensions, residue};
 use super::run_record::{Clock, Record, install_signals, interrupted, run_id};
-use super::store::{DiskFiles, StoreBlobs, StoreShards, request_of_round, selected_of_round};
+use super::store::{
+    DiskFiles, StoreBlobs, StoreShards, map_phase_finished, map_shard_of_round, request_of_round,
+    selected_of_round,
+};
 use super::{CommandError, command_error, failure, read_checked, store_error};
 use crate::args::{self, CheckArgs, TransformOptions};
 use crate::commands::{self, open_store};
@@ -174,9 +177,9 @@ impl Identities {
 
 /// §8.2 and WP-076 decision 2: every selected observer has a map shard
 /// of the round, `ok` or not; one with none, or with bytes that are not
-/// its shard, did not finish the map phase (an interrupted `map`: its job
-/// cancelled or never run) and is not an unparsed observer
-/// (`--allow-unparsed` accepts those, not these).
+/// its shard, did not finish the map phase and is not an unparsed
+/// observer (`--allow-unparsed` accepts those, not these): the error of
+/// `store::map_shard_of_round`, which `reduce` gives too (WP-157).
 fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandError> {
     let mut pass = Pass::default();
     let mut read = BTreeSet::new();
@@ -195,20 +198,7 @@ fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandEr
     }
     for &i in input.selected {
         let o = &input.plan.observers[i];
-        let read_now = verify_cmd::read_map_shard(input.store, &input.plan_id, input.round, &o.id)
-            .map_err(command_error)?;
-        let shard = match read_now {
-            Some(verify_cmd::MapRead::Shard(s, _)) => *s,
-            found => {
-                return Err(CommandError::Input(format!(
-                    "{}: {} map shard of round {}: the round's map phase did not finish for \
-                     this observer (interrupted?); run `slip map` again",
-                    String::from_utf8_lossy(&o.main.path),
-                    if found.is_none() { "no" } else { "an unusable" },
-                    input.round
-                )));
-            }
-        };
+        let shard = map_shard_of_round(input.store, &input.plan_id, input.round, o)?;
         let ok = shard.outcome.status == Status::Ok;
         let inputs = if ok { shard.inputs.as_deref().unwrap_or(&[]) } else { &[] };
         pass.ok.push(ok);
@@ -636,6 +626,13 @@ fn prepare(
              transform {transform_id})",
             a.round
         )));
+    }
+    if set.state == SetState::Refused {
+        // WP-157: a refused set is concluded with no apply step, so the
+        // map pass of `check` (`map_pass`) never reads the round; the
+        // round is refused here instead, with the same error, rather than
+        // concluded with its missing observers taken for unparsed ones.
+        map_phase_finished(store, plan_id, plan, a.round, selected, 1).map_err(failure)?;
     }
     let declared = match (&a.declared, set.state) {
         (Some(x), SetState::Accepted) => {
