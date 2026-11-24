@@ -5,7 +5,10 @@
 //! Each row repeats, `rounds` times, one sequence of create, link, unlink
 //! and rename in a directory of its own under `<dir>`, then reads the
 //! names the sequence must have left with known contents. A read that
-//! returns other bytes, or fails, is a **wrong read**. A row the harness or
+//! returns other bytes, or fails, is a **wrong read**; so is a step of the
+//! sequence that fails (a `create_new` of a name just unlinked that finds
+//! it still there, `EEXIST`): the round is counted, its names removed at
+//! the start of the next, and the row goes on. A row the harness or
 //! the store relies on must have none; the others are the patterns the
 //! harness and the store do not use, run to show why.
 
@@ -58,6 +61,7 @@ pub const ROWS: &[Row] = &[
         relied: false,
         what: "T linked to L and unlinked; T created again",
     },
+    Row { name: "tmp-again-after-rename", relied: true, what: "T renamed to D; T created again" },
     Row {
         name: "unique-tmp-link",
         relied: true,
@@ -93,7 +97,8 @@ pub const DEFAULT_ROUNDS: u64 = 20_000;
 
 const USAGE: &str = "usage: cargo xtask fscheck <dir> [--rounds <n>] [--row <name>]…\n\
 rows: link-unlink-create link-rename-over copy-unlink-create copy-rename-over\n      \
-fresh-beside-links link-read-both tmp-again-after-link unique-tmp-link";
+fresh-beside-links link-read-both tmp-again-after-link tmp-again-after-rename\n      \
+unique-tmp-link";
 
 /// Parses the arguments after `fscheck`; `Err` is a usage error's message.
 pub fn parse(args: &[String]) -> Result<Request, String> {
@@ -191,7 +196,7 @@ pub fn run(request: &Request, read: Reader<'_>, print: &mut dyn FnMut(&str)) -> 
                 }
             }
             Err(e) => {
-                print(&format!("{:<22}error: {e}", row.name));
+                print(&format!("{:<24}error: {e}", row.name));
                 failed.push(row.name);
             }
         }
@@ -208,7 +213,7 @@ pub fn run(request: &Request, read: Reader<'_>, print: &mut dyn FnMut(&str)) -> 
 /// `<row> rounds <n> wrong <w> <seconds>s relied on|not relied on: <what>`.
 pub fn line(o: &Outcome) -> String {
     format!(
-        "{:<22}rounds {} wrong {} {:.1}s  {}: {}",
+        "{:<24}rounds {} wrong {} {:.1}s  {}: {}",
         o.row.name,
         o.rounds,
         o.wrong,
@@ -219,8 +224,8 @@ pub fn line(o: &Outcome) -> String {
 }
 
 /// Runs one row in a new directory `<dir>/fscheck.<pid>.<row>`, removed at
-/// the end. An I/O error of the sequence itself (not of a checked read)
-/// ends the row with `Err`.
+/// the end. A step of a round that fails is a wrong read of that round;
+/// only failing to make or remove the row's directory is `Err`.
 pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Outcome, String> {
     let base = dir.join(format!("fscheck.{}.{}", std::process::id(), row.name));
     if fs::symlink_metadata(&base).is_ok() {
@@ -231,11 +236,16 @@ pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Ou
     }
     let mut probe = Probe { read, wrong: 0, first: None };
     let t0 = Instant::now();
-    let result = (0..rounds).try_for_each(|i| round(&base, row.name, i, &mut probe));
+    for i in 0..rounds {
+        if let Err(e) = round(&base, row.name, i, &mut probe) {
+            probe.wrong += 1;
+            if probe.first.is_none() {
+                probe.first = Some(format!("round {i}: a step failed: {e}"));
+            }
+        }
+    }
     let seconds = t0.elapsed().as_secs_f64();
-    let removed = fs::remove_dir_all(&base).map_err(|e| at(&base, e));
-    result?;
-    removed?;
+    fs::remove_dir_all(&base).map_err(|e| at(&base, e))?;
     Ok(Outcome { row, rounds, wrong: probe.wrong, first: probe.first, seconds })
 }
 
@@ -378,6 +388,20 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             unlink(&t)?;
             create(&t, &post)?;
             p.check(&l, &pre);
+            p.check(&t, &post);
+        }
+        "tmp-again-after-rename" => {
+            // A store's publish (or a report's, or `apply`'s patch): the
+            // temporary renamed to its final name, the temporary's name
+            // made again by a later process with the same pid.
+            let t = tmp.join(format!("{k}.0.tmp"));
+            let d = tree.join(format!("entry{k}"));
+            start(&[&t, &d])?;
+            create(&t, &pre)?;
+            rename(&t, &d)?;
+            p.check(&d, &pre);
+            create(&t, &post)?;
+            p.check(&d, &pre);
             p.check(&t, &post);
         }
         "unique-tmp-link" => {
