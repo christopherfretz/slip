@@ -1224,3 +1224,98 @@ fn s8_2_unchanged_by_identity_case_spelling() {
 fn s8_2_unchanged_by_identity_hard_link() {
     assert!(unchanged_by_identity("identity-link", "hl.h", true).is_some());
 }
+
+// ----- an interrupted map (WP-076 fix round, should-fix 4) ------------------
+
+/// The map shards of round 1 of `plan` in the store.
+fn map_shards(t: &Tree, plan: &str) -> usize {
+    let dir = t.path("store").join("shards").join(plan).join("map.1");
+    std::fs::read_dir(dir).map_or(0, |d| d.flatten().count())
+}
+
+// §8.2, §8.5; exec.md §7: `map -j 1` over four observers (a job at a
+// time, in plan order), interrupted once two have their shards and the
+// third's job blocks on a fifo: that job is cancelled, the fourth never
+// starts. Then `reduce` and `check`, with and without
+// `--allow-unparsed`: an observer with no map shard of the round did not
+// finish the phase; it is no unparsed observer, and `check` refuses the
+// round whatever `--allow-unparsed` says.
+#[test]
+fn s8_5_an_interrupted_map_is_not_unparsed() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let t = Tree::new("sigint-map-check");
+    t.write("src/h.h", "#pragma once\nint f(int);\n");
+    let units = ["src/a.cpp", "src/b.cpp", "src/c.cpp", "src/d.cpp"];
+    for (k, u) in units.iter().enumerate() {
+        let n = &u[4..5];
+        t.write(&format!("src/p{n}.h"), "\n");
+        t.write(
+            u,
+            &format!("#include \"h.h\"\n#include \"p{n}.h\"\nint g{k}(int x) {{ return f(x); }}\n"),
+        );
+    }
+    t.db(&units);
+    let plan = t.plan("store");
+    let bytes = std::fs::read(t.path("store").join("plans").join(format!("{plan}.plan"))).unwrap();
+    let order: Vec<String> = Plan::from_bytes(&bytes)
+        .unwrap()
+        .observers
+        .iter()
+        .map(|o| String::from_utf8_lossy(&o.main.path).into_owned())
+        .collect();
+    // The third observer's own header becomes a fifo.
+    let third = &order[2];
+    let n = &third[third.len() - 5..third.len() - 4];
+    let fifo = format!("src/p{n}.h");
+    std::fs::remove_file(t.path(&fifo)).unwrap();
+    mkfifo(&t, &fifo);
+    let mut cmd = Command::new(SLIP);
+    cmd.args([
+        "map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store", "-j", "1",
+    ])
+    .current_dir(&t.root)
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    let mut child = cmd.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while map_shards(&t, &plan) < 2 {
+        assert!(Instant::now() < deadline, "no two map shards");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = Command::new("kill").args(["-INT", &child.id().to_string()]).status().unwrap();
+    assert!(sent.success());
+    let status = wait_bounded(&mut child, Duration::from_mins(1));
+    assert_eq!(status.signal(), Some(2));
+    assert_eq!(map_shards(&t, &plan), 2);
+    std::fs::remove_file(t.path(&fifo)).unwrap();
+    t.write(&fifo, "\n");
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    // `reduce` accepts the round from the two shards there are (WP-075's;
+    // reported to the coordinator).
+    assert_eq!(reduce.code(), Some(0), "{reduce:?}");
+    let edits = reduce.id("edits");
+    // Neither the observer whose job was cancelled nor the one never
+    // started is unparsed.
+    let missing: Vec<&String> = order[2..].iter().collect();
+    for extra in [&[][..], &["--allow-unparsed"][..]] {
+        let mut args = vec![
+            "check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store",
+        ];
+        args.extend_from_slice(extra);
+        let check = t.slip(&args);
+        assert_eq!(check.code(), Some(3), "{extra:?}: {check:?}");
+        assert!(
+            missing.iter().any(|m| check.stderr.contains(&format!(
+                "{m}: no map shard of round 1: the round's map phase did not finish"
+            ))),
+            "{check:?}"
+        );
+        assert!(!check.has_line("result "), "{check:?}");
+        assert!(!check.has_line("verify:"), "{check:?}");
+    }
+    let results = t.path("store").join("results");
+    assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
+}
