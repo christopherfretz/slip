@@ -1133,13 +1133,15 @@ one guard of §5.3:
 | G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`, `a3_post_directory_becomes_a_link`, `a3_link_deeper_in_the_word`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject`, `g5_missing_prefix_under_a_post_root` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest; and every file the map parse read, under no subject root, that the post parse did not read is still a regular file at its own real path, of that size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums`, `o2_found_outside_header_deleted*`, `o2_has_include_true_then_deleted*`, `o2_unread_*`, `o2_merged_inputs_pair`, `o2_input_merged_by_symbolic_link` |
 | N1 | no file has appeared, outside every subject root, at a place where the map parse looked for one and found none (its negative inputs, `model.md` §8.6; an image other than the identity) | `verify_job.rs` `f4b_*`, `n1_*`; `crates/slip_kiln/tests/lookups.rs` `missed_*` for the places |
+| N2 | every place where the map parse found a file leads, now, to the file it led to, and the inputs that were one file at the map phase are one file now, no more and no fewer (`model.md` §8.7; an image other than the identity) | `verify_job.rs` `o2_link_to_a_found_header_retargeted`, `o2_inputs_merged_by_hard_link`, `n2_*`; `crates/slip_kiln/tests/lookups.rs` `found_*` for the places |
 | G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
 
 The rewrite is what makes a verdict possible, not what makes it safe: a
 word it misses or spells wrongly leads the parse into the subject, and G1
 or L1 refuses; a path that leads somewhere else outside every root (a
 miss of the rewrite) names files that are the same in both images (O2),
-and finds no file where the map parse found none (N1).
+and finds no file where the map parse found none (N1), and every
+spelling the map parse found a file by reaches that file still (N2).
 So `-DROOT="/s"` is safe not because G1 refuses something but because a
 string becomes a file name only by naming a directory or a file to the
 front end, which a lookup or a read then shows (L1, G1).
@@ -1177,45 +1179,39 @@ miss a file the two images spell differently. The command itself is the
 plan's (§8, "The command").
 
 Two holes are known and pinned by tests that wait (`#[ignore = "needs:
-…"]`, `crates/slip_cli/tests/verify_job.rs`):
+…"]`, `crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
+recording a lookup of an absolute name (Kiln WP-2620; Kiln has been asked
+to):
 
 - **An absolute name looked for and not found** (F7 of the re-check):
   `#if __has_include("<s>/new.h")` with an edit that adds `new.h`. Kiln's
-  log does not record it (Kiln `spec/pp.md`, "Lookup log"); Kiln has been
-  asked to. `slip_kiln::Lookups` already lists an absolute name where it
+  log does not record it (Kiln `spec/pp.md`, "Lookup log").
+  `slip_kiln::Lookups` already lists an absolute name where it
   is, whatever the form, so L1 refuses it with no new code once the log
   holds it. Test: `f7_absolute_has_include`; the absolute name is then
   also a negative input (`crates/slip_kiln/tests/lookups.rs`
   `missed_absolute_name`, waiting too).
-
-- **A path that resolves elsewhere while every recorded file still
-  exists unchanged**: a symbolic link outside every root, through which
-  the map parse found a file, retargeted after the map phase to a
-  directory with another file of that name. The place was found, so it
-  is no negative input; the file the map parse read is still there,
-  unchanged, so O2's second part passes; and O2's first part compares
-  only files both parses read, by real path, which the post parse's new
-  file is not. Closing it needs the map shard to keep where each found
-  lookup led (the place as written and the real path it reached),
-  checked as N1 checks the negatives (work package WP-135). Test:
-  `o2_link_to_a_found_header_retargeted`.
-
-- **Two recorded inputs made one file by a hard link**: `ext/a.h`
-  replaced after the map phase by a hard link of `ext/b.h`, of the same
-  bytes (with `#pragma once`, the second include is then skipped). Each
-  path is still its own real path, a regular file of the size and digest
-  recorded, so O2 passes; and two inputs that are one file at the map
-  phase are legitimate (a deduplicated store), so "no two inputs are one
-  file now" would refuse good trees. Closing it needs the map shard to
-  record which inputs were one file (WP-135). Test:
-  `o2_limit_inputs_merged_by_hard_link_wp135`, which records today's
-  answer, `verified`.
+- **An absolute name found, through a link retargeted since, when the
+  front end first read its file through another spelling**: `#include
+  <cfg.h>` found in `ext-a`, then `#include "/b/lnk/cfg.h"` with `lnk ->
+  ext-a`, retargeted after the map phase to a directory with another
+  `cfg.h`. The second lookup is in no log, and `Lookups::read` holds the
+  file's first spelling only, so the place `/b/lnk/cfg.h` is not in the
+  shard's `found` (`model.md` §8.7) and N2 does not see it move. An
+  absolute name that is its file's first spelling is a place of `found`
+  and is checked. `Lookups::found` lists an absolute name once the log
+  holds it, so N2 refuses it with no new code. Test:
+  `n2_absolute_name_first_read_through_another_spelling`.
 
   But for these two, every way for the map parse's files to be no longer
   the ones a lookup reaches is refused: a file deleted, changed, made a
   link to another (its real path is no longer its own), or shadowed by
   one that appeared, in a directory that was absent or a duplicate of a
-  listed one (O2, N1).
+  listed one (O2, N1); a place where a lookup found its file that now
+  leads to another (a link retargeted, outside the roots or under one),
+  and two inputs made one file, or one file made two, by hard links (N2,
+  work package WP-135: `o2_link_to_a_found_header_retargeted`,
+  `o2_inputs_merged_by_hard_link`).
 
 F4b of the re-check (a file outside both roots that appears after the map
 phase and shadows one the map parse read, with an edit that compensates)
@@ -1286,7 +1282,7 @@ post-image's bytes being a blob in the store.
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
 2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
-   and, with an image other than the identity, O2 then N1 (tree form), or
+   and, with an image other than the identity, O2, N1 then N2 (tree form), or
    guards O1, O2 then N1 (overlay form); `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
    L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
@@ -1330,6 +1326,7 @@ only withdraws: guard G3.
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
+| N2 | step 2, tree form other than the identity, after N1: the pre shard has a `found` section (`model.md` §8.7), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), for each two inputs of the pre shard of which at least one is under no subject root (as O2 (ii) judges it, on the path as recorded), each taken where the post parse would read it (an input under a subject root at its post tree's counterpart `p/x`; any other at its path) and both of which exist now: they are one file now (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b`, by index into `inputs`, the inputs' recorded paths) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -1380,6 +1377,36 @@ cut as §6 says.
   identity image it is not checked, as O2. A pre shard without the
   section (written before work package WP-117, or by another writer) is
   refused: `slip parse` writes it again.
+- **N2** is N1's counterpart for what the map parse found: N1 sees a
+  search that now ends earlier, N2 a place where a lookup found its file
+  that now leads to another (a link retargeted since: the place is
+  walked as written, so a link anywhere on the way is seen), and inputs
+  merged into one file, or one file split in two, by hard links. O2
+  cannot see either: the file read is still there, unchanged, at its own
+  real path. It does not judge whether a file exists or what it holds
+  (O2 does, for what is outside the subject; the post tree, for what is
+  under it): a file deleted since walks to its own path, which is the
+  input's, and passes. It compares two routes and two identities, never
+  device numbers across hosts: the section records the partition, and
+  both sides of each comparison are read now. **Under a subject root**
+  it is checked all the same, unlike N1: the place `s/lnk/h.h`, `lnk` a
+  link in the subject to a directory outside, leads where `lnk` leads,
+  which the post tree's copy of the link may lead to as well (G6 sees
+  the same link in both trees and passes); and the place as written
+  says nothing of where it leads (`s/../lnk/h.h` is outside). A place
+  that led to a subject file and still does passes, whatever the edit
+  did to the file, since the walk is the same. In (ii), two inputs that
+  are both under a subject root are not compared: the post tree stands
+  for both, and a post tree made of hard links to the subject is
+  legitimate (§5.1). An input outside that was one file with one under a
+  subject root is compared with the post tree's counterpart: the edit
+  that changes the subject's file changes the outside one too, which the
+  post tree does not show, so a post tree that is a copy is refused
+  there. Two inputs that were one file at the map phase and still are
+  (stores that deduplicate) pass. With the identity image it is not
+  checked, as O2. A pre shard without the section (written before work
+  package WP-135, or by another writer) is refused: `slip parse` writes
+  it again.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map
   phase saw. A subject edited in place after the map phase (the identity
   image used to compare "the tree now" with "the tree as planned") can
@@ -2014,10 +2041,10 @@ observer `failed`, with an empty message.
   N1 (§5.3) knows the places the map parse looked for a file and found
   none only from Kiln's lookup log and the command's own search
   directories: an absolute name, a toolchain directory Kiln's driver
-  dropped and a module probe are not checked; nor is a path that
-  resolves elsewhere while every file the map parse read is still there
-  unchanged (a link outside the roots through which a file was found,
-  retargeted since: §5.1, "What remains outside").
+  dropped and a module probe are not checked. Guard N2 knows the places
+  the map parse found a file from the same log and from the files'
+  first spellings: an absolute name found for a file first read through
+  another spelling is not checked (§5.1, "What remains outside").
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
