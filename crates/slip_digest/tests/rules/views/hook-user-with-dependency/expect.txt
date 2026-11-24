@@ -1,0 +1,4 @@
+# WP-140 review F1 (WP-146): the other observer of hook-definer-without-dependency. dep.h's
+# legacy::hook is the dependency's here, so the call to it stays legacy::hook: equal, right for
+# this observer alone.
+use 1 via 1 direct 0

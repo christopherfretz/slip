@@ -18,6 +18,7 @@
 mod declared;
 mod geometry;
 mod groups;
+mod meter;
 mod outcome;
 mod pass1;
 mod records;
@@ -25,10 +26,12 @@ mod runs;
 mod set;
 mod subjects;
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use slip_model::Digest;
 use slip_model::declared::Declared;
@@ -39,7 +42,9 @@ use slip_model::transform::{Transform, TransformKind};
 use slip_model::wire::Encoder;
 
 pub use crate::declared::declared;
+pub use crate::meter::Peak;
 
+use crate::meter::Meter;
 use crate::pass1::{Ctx, Joined};
 use crate::records::{Key, Sample, Val};
 use crate::runs::{BasisEntry, BasisReader, Cleanup, RunReader, Scratch};
@@ -82,13 +87,20 @@ pub trait Shards: Sync {
     fn observer(&self, index: usize) -> Digest;
 }
 
-/// What reduce made: the edit set, and its declared changes if it was
-/// accepted (§6.2).
+/// What reduce made: the edit set, its declared changes if it was
+/// accepted (§6.2), and the most it held at once (§5.6), which is not part
+/// of the edit set.
 #[derive(Clone, Debug)]
 pub struct Reduced {
     pub edits: EditSet,
     pub declared: Option<Declared>,
+    pub peak: Peak,
 }
+
+/// The first pass starts a run only while it is fewer than
+/// `WINDOW_PER_THREAD × threads` runs ahead of the earliest run not yet
+/// folded, so at most that many runs' joined states wait (§5.6).
+pub const WINDOW_PER_THREAD: usize = 4;
 
 /// Why reduce made no edit set.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +137,7 @@ impl Least {
         Least(Mutex::new(None))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<(usize, String)>> {
+    fn lock(&self) -> MutexGuard<'_, Option<(usize, String)>> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
@@ -147,29 +159,42 @@ impl Least {
     }
 }
 
+/// A panic's payload, kept to be resumed in the caller.
+type Payload = Box<dyn Any + Send + 'static>;
+
 /// Runs `job(0..count)` on up to `threads` threads, each taking the next
-/// index. Stops handing out work after the first `Err` and returns it.
-/// Nothing is kept per job: a job folds its result into shared state, so
-/// that memory does not grow with the number of runs (§5.6).
+/// index; the threads spawned are at most `count` (one with one job or
+/// one thread, on the caller's thread). Stops handing out work after the
+/// first `Err` and returns it. A job that panics stops the hand-out too,
+/// and its panic, the first one's payload, is resumed in the caller once
+/// every thread has returned. Nothing is kept per job: a job folds its
+/// result into shared state, so that memory does not grow with the number
+/// of runs (§5.6).
 fn pool(
     threads: usize,
     count: usize,
     job: &(dyn Fn(usize) -> Result<(), String> + Sync),
 ) -> Result<(), String> {
     let next = AtomicUsize::new(0);
-    let failed = Mutex::new(None::<String>);
+    let failed = Mutex::new((None::<String>, None::<Payload>));
     let work = || {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             if i >= count {
                 break;
             }
-            match job(i) {
-                Ok(()) => {}
-                Err(e) => {
+            match catch_unwind(AssertUnwindSafe(|| job(i))) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
                     next.store(count, Ordering::Relaxed);
                     let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    f.get_or_insert(e);
+                    f.0.get_or_insert(e);
+                    break;
+                }
+                Err(payload) => {
+                    next.store(count, Ordering::Relaxed);
+                    let mut f = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    f.1.get_or_insert(payload);
                     break;
                 }
             }
@@ -186,8 +211,164 @@ fn pool(
         });
     }
     match failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        (_, Some(payload)) => resume_unwind(payload),
+        (Some(e), None) => Err(e),
+        (None, None) => Ok(()),
+    }
+}
+
+/// The state the workers of the first pass share (see [`first_pass`]).
+struct Fold {
+    /// The next run to start: runs `..started` have been handed out.
+    started: usize,
+    /// The earliest run not yet folded: runs `..folded` are in `joined`.
+    folded: usize,
+    /// Runs that finished before an earlier one, by run: all in
+    /// `folded + 1 .. folded + window`.
+    waiting: BTreeMap<usize, Joined>,
+    joined: Joined,
+    /// No more runs are handed out: a run failed, or a worker panicked.
+    stop: bool,
+    failed: Option<String>,
+    /// The payload of the first run that panicked, resumed in the caller.
+    panic: Option<Payload>,
+}
+
+fn lock(m: &Mutex<Fold>) -> MutexGuard<'_, Fold> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Stops the first pass and wakes every worker when a worker unwinds
+/// outside a run (a run's own panic is caught, see [`first_pass`]), so
+/// that no worker waits for a run that the panicking one will never fold.
+/// Such a panic is not caught: with one thread it reaches the caller as it
+/// is; with several, `std::thread::scope` joins the workers and raises its
+/// own panic ("a scoped thread panicked"), the original's payload lost.
+struct WakeOnPanic<'a> {
+    state: &'a Mutex<Fold>,
+    wake: &'a Condvar,
+}
+
+impl Drop for WakeOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            lock(self.state).stop = true;
+            self.wake.notify_all();
+        }
+    }
+}
+
+/// The first pass over `count` runs on up to `threads` threads: `job(r)`
+/// is run `r`'s joined state, folded into one in run order (§5.6). The
+/// threads spawned are at most `count` (one with one run or one thread,
+/// on the caller's thread), whatever `threads` is.
+///
+/// **Back-pressure.** A worker starts run `r` only if `r < folded +
+/// window`, `window = WINDOW_PER_THREAD × threads` (both saturating, so
+/// that no `threads` makes it wrap to 0), `folded` the earliest
+/// run not yet folded; otherwise it waits on `wake`. So every run in
+/// `waiting` is in `folded + 1 .. folded + window`: at most `window - 1`
+/// states wait, `window` with the run just finished before it is folded
+/// (`reduce.peak.waiting_runs`).
+///
+/// **No deadlock.** A worker waits only between runs, never while it holds
+/// one, and only while `started >= folded + window`. Then `started >
+/// folded` (the window is at least 1), so run `folded` has been handed out
+/// to a worker that is running it, not waiting: that worker finishes it
+/// (or fails, or panics) without needing any other worker. When it
+/// finishes, run `folded` is folded, `folded` grows, and it wakes every
+/// waiting worker (`notify_all`), each of which checks the condition
+/// again under the lock. When `started == folded` no worker waits (the
+/// condition is false), so the earliest unfolded run can always be started.
+/// A failed run stops the hand-out and wakes everyone: each worker
+/// finishes the run it holds and returns, and the first error is the
+/// result, as before the window. A run that panics is caught: the worker
+/// stops the hand-out, keeps the first payload under the lock, wakes
+/// everyone and returns; once every worker has returned, the caller
+/// resumes that payload (`resume_unwind`), so the run's own panic reaches
+/// the caller with any number of threads. A panic of a worker outside a
+/// run (in the fold) is [`WakeOnPanic`]'s.
+///
+/// With one thread the condition is never true (each run is folded before
+/// the next is started) and the runs are run in order on the caller's
+/// thread, as before the window.
+fn first_pass(
+    threads: usize,
+    count: usize,
+    meter: &Meter,
+    job: &(dyn Fn(usize) -> Result<Joined, String> + Sync),
+) -> Result<Joined, String> {
+    let window = WINDOW_PER_THREAD.saturating_mul(threads.max(1));
+    let state = Mutex::new(Fold {
+        started: 0,
+        folded: 0,
+        waiting: BTreeMap::new(),
+        joined: Joined::default(),
+        stop: false,
+        failed: None,
+        panic: None,
+    });
+    let wake = Condvar::new();
+    let work = || {
+        let _wake = WakeOnPanic { state: &state, wake: &wake };
+        let mut s = lock(&state);
+        loop {
+            if s.stop || s.started >= count {
+                break;
+            }
+            if s.started >= s.folded.saturating_add(window) {
+                s = wake.wait(s).unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            let r = s.started;
+            s.started += 1;
+            drop(s);
+            let out = catch_unwind(AssertUnwindSafe(|| job(r)));
+            s = lock(&state);
+            let f = &mut *s;
+            match out {
+                Ok(Ok(part)) => {
+                    f.waiting.insert(r, part);
+                    meter.waiting.at(f.waiting.len());
+                    let before = f.folded;
+                    while let Some(p) = f.waiting.remove(&f.folded) {
+                        f.joined.join(p);
+                        f.folded += 1;
+                    }
+                    if f.folded != before {
+                        wake.notify_all();
+                    }
+                }
+                Ok(Err(e)) => {
+                    f.stop = true;
+                    f.failed.get_or_insert(e);
+                    wake.notify_all();
+                }
+                Err(payload) => {
+                    f.stop = true;
+                    f.panic.get_or_insert(payload);
+                    wake.notify_all();
+                }
+            }
+        }
+    };
+    let n = threads.min(count).max(1);
+    if n == 1 {
+        work();
+    } else {
+        std::thread::scope(|sc| {
+            for _ in 0..n {
+                sc.spawn(work);
+            }
+        });
+    }
+    let f = state.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(payload) = f.panic {
+        resume_unwind(payload);
+    }
+    match f.failed {
         Some(e) => Err(e),
-        None => Ok(()),
+        None => Ok(f.joined),
     }
 }
 
@@ -205,6 +386,7 @@ fn first_pass_run(
     let mut records: BTreeMap<Key, Val> = BTreeMap::new();
     let mut joined = Joined::default();
     let mut entries = Vec::with_capacity(end - start);
+    let meter = ctx.meter;
     for index in start..end {
         // Every index, read or not: the merge counts the indices of each
         // observer (§5.7: one observer once in a plan).
@@ -234,8 +416,9 @@ fn first_pass_run(
             }
         }
     }
-    runs::write_basis(&scratch.basis(), start, &entries)?;
-    runs::write_run(scratch.run(0, run), &records)?;
+    meter.records.at(records.len());
+    runs::write_basis(&scratch.basis(), start, &entries, meter)?;
+    runs::write_run(scratch.run(0, run), &records, meter)?;
     Ok(joined)
 }
 
@@ -244,6 +427,7 @@ fn first_pass_run(
 /// `files`. Also checks that the shard is the one the first pass read.
 fn second_pass_run(
     shards: &dyn Shards,
+    meter: &Meter,
     scratch: &Scratch,
     fan_in: usize,
     run: usize,
@@ -254,7 +438,7 @@ fn second_pass_run(
     let start = run * fan_in;
     let end = (start + fan_in).min(n);
     let mut seen: BTreeMap<u32, BTreeSet<(u64, Digest)>> = BTreeMap::new();
-    let mut basis = BasisReader::open(&scratch.basis(), start)?;
+    let mut basis = BasisReader::open(&scratch.basis(), start, meter)?;
     for index in start..end {
         let entry = basis.next()?;
         let Some(id) = entry.shard else { continue };
@@ -264,9 +448,9 @@ fn second_pass_run(
         let changed = "the shard changed between the two passes of reduce";
         // The id of what this pass read against the id of what the first
         // pass read: bytes that no longer decode changed too.
-        let shard = match shards.open(index) {
+        let (shard, _held) = match shards.open(index) {
             Ok(Some(bytes)) => match pass1::decode(&bytes) {
-                Ok((s, again)) if again == id => s,
+                Ok((s, again)) if again == id => (s, meter.sections.hold()),
                 _ => {
                     least.offer(index, changed.into());
                     continue;
@@ -298,14 +482,14 @@ fn second_pass_run(
 
 /// The basis of the set (§6) and its unparsed observers, from the basis
 /// file, in plan order.
-fn basis_of(scratch: &Scratch, n: usize) -> Result<(Digest, Vec<Digest>), String> {
+fn basis_of(scratch: &Scratch, n: usize, meter: &Meter) -> Result<(Digest, Vec<Digest>), String> {
     let mut hasher = Hasher::new();
     hasher.update(BASIS_TAG.as_bytes()).update(&[0]);
     let mut enc = Encoder::new();
     enc.count(n);
     hasher.update(enc.as_bytes());
     let mut unparsed = Vec::new();
-    let mut reader = BasisReader::open(&scratch.basis(), 0)?;
+    let mut reader = BasisReader::open(&scratch.basis(), 0, meter)?;
     for _ in 0..n {
         let b = reader.next()?;
         let mut enc = Encoder::new();
@@ -349,8 +533,9 @@ pub fn reduce(
         return Err(ReduceError::Options("threads is 0, not at least 1".into()));
     }
     let scratch = Scratch::new(&options.scratch);
-    let mut cleanup = Cleanup::new(&scratch);
-    let r = run(request, request_id, plan, round, shards, options, &scratch, &mut cleanup);
+    let meter = Meter::default();
+    let mut cleanup = Cleanup::new(&scratch, options.fan_in);
+    let r = run(request, request_id, plan, round, shards, options, &scratch, &mut cleanup, &meter);
     drop(cleanup);
     r
 }
@@ -365,6 +550,7 @@ fn run(
     options: &Options,
     scratch: &Scratch,
     cleanup: &mut Cleanup<'_>,
+    meter: &Meter,
 ) -> Result<Reduced, ReduceError> {
     let fan_in = options.fan_in;
     let n = shards.len();
@@ -374,39 +560,29 @@ fn run(
     };
 
     // Pass 1.
-    let ctx = Ctx { request, request_id, round, shards };
+    let ctx = Ctx { request, request_id, round, shards, meter };
     let n_runs = n.div_ceil(fan_in).max(1);
     cleanup.basis = true;
-    runs::create_basis(&scratch.basis(), n).map_err(ReduceError::Io)?;
-    cleanup.levels.push(n_runs);
+    runs::create_basis(&scratch.basis(), n, meter).map_err(ReduceError::Io)?;
+    cleanup.runs = n_runs;
     let least = Least::new();
-    // The runs' states are joined in run order as they finish: only the
-    // runs that finish before an earlier one are held (§5.6).
-    let folding = Mutex::new((0usize, BTreeMap::<usize, Joined>::new(), Joined::default()));
-    pool(options.threads, n_runs, &|r| {
-        let part = first_pass_run(&ctx, scratch, fan_in, r, &least)?;
-        let mut f = folding.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (next, waiting, joined) = &mut *f;
-        waiting.insert(r, part);
-        while let Some(p) = waiting.remove(next) {
-            joined.join(p);
-            *next += 1;
-        }
-        Ok(())
+    // The runs' states are joined in run order as they finish; the runs
+    // that finish before an earlier one wait, at most a window of them
+    // (§5.6, [`first_pass`]).
+    let mut joined = first_pass(options.threads, n_runs, meter, &|r| {
+        first_pass_run(&ctx, scratch, fan_in, r, &least)
     })
     .map_err(ReduceError::Io)?;
-    let mut joined = folding.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).2;
     // Merge.
     let mut level = 0;
     let mut count = n_runs;
     while count > 1 {
         let next = count.div_ceil(fan_in);
-        cleanup.levels.push(next);
         let lv = level;
         pool(options.threads, next, &|g| {
             let inputs: Vec<PathBuf> =
                 (g * fan_in..((g + 1) * fan_in).min(count)).map(|i| scratch.run(lv, i)).collect();
-            runs::merge(&inputs, scratch.run(lv + 1, g))?;
+            runs::merge(&inputs, scratch.run(lv + 1, g), meter)?;
             for p in &inputs {
                 std::fs::remove_file(p).map_err(|e| runs::io(p, &e))?;
             }
@@ -431,7 +607,7 @@ fn run(
     // The merged stream opens with the observer records (they sort first):
     // a plan that names one observer twice is an error at the second index
     // that names it, the least with every error of the first pass (§5.7).
-    let mut reader = RunReader::open(scratch.run(level, 0)).map_err(ReduceError::Io)?;
+    let mut reader = RunReader::open(scratch.run(level, 0), meter).map_err(ReduceError::Io)?;
     let mut first = None;
     while let Some((k, v)) = reader.next().map_err(ReduceError::Io)? {
         let (Key::Observer(o), Val::Sample(s)) = (&k, &v) else {
@@ -483,7 +659,7 @@ fn run(
         // A union: the order in which runs finish does not matter.
         let joined_seen = Mutex::new(BTreeMap::<u32, BTreeSet<(u64, Digest)>>::new());
         pool(options.threads, n_runs, &|r| {
-            let part = second_pass_run(shards, scratch, fan_in, r, &wanted, &least)?;
+            let part = second_pass_run(shards, meter, scratch, fan_in, r, &wanted, &least)?;
             let mut all = joined_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for (pid, s) in part {
                 all.entry(pid).or_default().extend(s);
@@ -500,7 +676,8 @@ fn run(
     builder.groups(request.indivisible, &refused_subjects, !selection.refusals.is_empty());
 
     // The set.
-    let (basis, unparsed) = basis_of(scratch, n).map_err(ReduceError::Io)?;
+    let (basis, unparsed) = basis_of(scratch, n, meter).map_err(ReduceError::Io)?;
+    let unparsed_held = unparsed.len();
     let set_subjects: Vec<_> = joined
         .subjects
         .iter()
@@ -548,5 +725,5 @@ fn run(
     set.validate()
         .map_err(|e| ReduceError::Io(format!("reduce made an edit set its reader refuses: {e}")))?;
     let declared = declared(&set, &request.ownership).map_err(ReduceError::Io)?;
-    Ok(Reduced { edits: set, declared })
+    Ok(Reduced { edits: set, declared, peak: meter.peak(unparsed_held) })
 }

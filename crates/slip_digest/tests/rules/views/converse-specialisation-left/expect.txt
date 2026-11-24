@@ -1,0 +1,4 @@
+# Row (c): the converse, with an owned opening left in the dependency's legacy that holds an explicit
+# specialisation of the dependency's template Tr (a dependency entity, which cannot move).
+# WP-140: legacy's owned view has the key of its own: no unit added. Nothing owned is left: not stale.
+use 1 via 1 direct 0
