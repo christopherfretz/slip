@@ -245,7 +245,7 @@ fn s5_1_from_args() {
 
 // `spec/exec.md` §8.4: the image of a job. `from_post(to_post)` gives the
 // image back; a root that is not now the real path of a directory is
-// refused; the overlay form needs WP-074.
+// refused; an overlay not in the store is refused (WP-074).
 #[test]
 fn s5_1_from_post() {
     let dir = Dir::new("post");
@@ -258,10 +258,9 @@ fn s5_1_from_post() {
     .unwrap();
     assert_eq!(Image::from_post(&store, &image.to_post()).unwrap(), image);
     assert_eq!(Image::from_post(&store, &Image::identity().to_post()).unwrap(), Image::identity());
-    assert_eq!(
-        Image::from_post(&store, &PostImage::Overlay(Digest([1; 32]))).unwrap_err(),
-        "the overlay image needs WP-074"
-    );
+    // WP-074: an overlay is read from the store; one not there is `Err`.
+    let e = Image::from_post(&store, &PostImage::Overlay(Digest([1; 32]))).unwrap_err();
+    assert!(e.starts_with(&format!("the overlay {} is not in the store", Digest([1; 32]))), "{e}");
     std::os::unix::fs::symlink(&post, dir.0.join("link")).unwrap();
     let link = bytes(&dir.0.join("link"));
     let e =

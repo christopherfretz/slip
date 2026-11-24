@@ -953,9 +953,11 @@ fn worker_phase_task() {
     let e = task.run(&job).unwrap_err();
     assert!(e.ends_with(&format!("has the content id {declared_id}, not {other}")), "{e}");
 
-    // The overlay image.
+    // The overlay image (WP-074): one that is not in the store fails the
+    // job.
     job.post = Some(Post { image: PostImage::Overlay(Digest([2; 32])), ..post.clone() });
-    assert_eq!(task.run(&job).unwrap_err(), "the overlay image needs WP-074");
+    let e = task.run(&job).unwrap_err();
+    assert!(e.starts_with(&format!("the overlay {} is not in the store", Digest([2; 32]))), "{e}");
 
     // A good job: the worker's `--findings 1 --locate 0`.
     job.post = Some(post.clone());

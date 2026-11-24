@@ -1315,8 +1315,9 @@ checked elsewhere:
 - by `slip apply --write`, for the files it replaces, before it writes
   (`spec/edits.md` §7.3 step 1, `stale_file`);
 - by the overlay form, which reads the subject on disk as its pre-image
-  and so must check the sums of the subject's inputs and the subject's
-  negatives on every run (`docs/wp/WP-074.md` decides it).
+  and so checks the sums of the subject's inputs and the subject's
+  negatives on every run: O1, O2, the subject's sums, N1 and N2 of §5.2
+  step 2 (`spec/landed/exec/WP-074.md` §5).
 
 N2 (ii)'s comparison of identities at the recorded paths of subject
 inputs is stricter than the claim needs: a subject changed in content is
@@ -1472,15 +1473,30 @@ post-image's bytes being a blob in the store.
   parses again, until no such file is left. Step 1 is the last of these
   parses; each gives strictly more of the overlay than the one before, so
   their number is bounded by the overlay's files, and the shard does not
-  depend on it. A blob is checked against its digest when it is read; one
-  that is absent or does not hash to its name fails the job
-  (`spec/exec.md` §5.4).
+  depend on it. A blob is checked against its digest and the overlay's
+  size when it is read; one that is absent, does not hash to its name or
+  is of another size fails the job (`spec/exec.md` §5.4). Before anything
+  is given, the job reads the identity (device and file number, links
+  followed) of every overlay file's path, once: an overlay two of whose
+  entries are one file now (hard links; two spellings of a name on a
+  volume that ignores case) gives that file two post-images, and the job
+  fails naming both paths, whatever the observer reads (the run's input
+  is wrong, as with a blob that does not match). An entry with no regular
+  file at its path now is never given to the front end (it can replace
+  only a file that is there): read by the post-image, the parse does not
+  find it and the observer is `not_parsed`; listed by the pre shard and
+  not read, O2 (ii) makes it `unverifiable` (`is gone since the map
+  phase`).
 - **What guards it.** G1 and L1 guard the tree form's rewrite and have
   no meaning here: there is no subject root, and reading a subject file that the
-  overlay does not name is reading the post-image. In its place are the
-  two guards O1 and O2 of §5.3 (with G4), over the `inputs` of step 1: an overlaid
-  file was read with the overlay's content, and a file that is not
-  overlaid has the content the map phase saw. A file in only one of the
+  overlay does not name is reading the post-image. In their place are,
+  over the `inputs` of step 1 (§5.2 step 2, in this order): G4; O1 (an
+  overlaid file was read with the overlay's content, through the overlay);
+  O2 (i) (a file that is not overlaid has the content the map phase saw);
+  the subject's sums (the overlay was made from the pre-image the map
+  phase read, then O2 (ii) over the files the map parse read and the post
+  parse did not); N1 and N2 (no header appeared, no found place leads
+  elsewhere). A file in only one of the
   two `inputs` lists is not an error: an edit can change what is
   included, and the comparison of digests is what judges that.
 
@@ -1507,7 +1523,9 @@ post-image's bytes being a blob in the store.
    §10.2 when the overlay has obligations.
 2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
    and, with an image other than the identity, O2, N1 then N2 (tree form), or
-   guards O1, O2 then N1 (overlay form); `comparable` (§3). The first that fails makes
+   guards G4, O1, O2, the subject's sums, N1 then N2 (overlay form,
+   `spec/landed/exec/WP-074.md` §5: G1, L1, G5 and G6 do not run);
+   `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
    L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
    by `slip_kiln::ParseOptions::lookups`).
@@ -1547,10 +1565,11 @@ only withdraws: guard G3.
 | G6 | step 2, tree form other than the identity, after G5 and before O2, with or without the run's files: (i) for every file the post-image parse read, resolving the path as the front end spelled it (from the post command's `directory`), every symbolic link followed at a place under a post root (`p/D/n`) is, at `s/D/n` in the subject, a symbolic link with the same target bytes; (ii) for the real path `p/Y` of each file read under a post root, its subject path `s/Y`, resolved in the subject component by component up to the first component that does not exist, has no symbolic link among its existing components; (iii) for every place the parse looked at, as the front end spelled it from the post command's `directory` (each directory of the search list, each location tried, found or not, each file read), whose walk in the file system (component by component, symbolic links followed) is under a post root and then under none (*leaves the post root*), the same route walked from the subject (from the subject's counterpart `s/D` of the first directory `p/D` under a post root the walk was in, with the components it had left there) ends at the same place. A place is the real path the walk reached with the components it could not resolve (from a missing component, or one under a file); the post walk's place is taken to the subject when it is under a post root (a route that leaves and comes back in must come back to the subject's counterpart). A walk that follows more than 40 symbolic links is refused. A link with an absolute target passes (i) only with the same bytes in both trees; with other bytes it is refused, and must be: in place of the subject the post tree's link names what it names now, which is not the subject's | (i) `post-image: <spelled path> follows the link <p/D/n>, which is <a directory, a file, missing, or a link to <target>> in the subject`; (ii) `post-image: <p/Y> stands for <s/Y>, which the subject reaches through the link <s/…>`; (iii) `post-image: <searches <d> \| looks for <name> in <d> \| reads <name>>, which leaves the post root: <place> here, <place> from the subject`, or `…, which leaves the post root: more than 40 symbolic links <here \| from the subject>` (the first; (i) over every file read, then (ii), then (iii) in the order of the places above) |
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
-| O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
-| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
+| O1 | step 2, overlay form: first, every entry of the post-image parse's `inputs` that is an overlay file (by path, or else by identity, device and file number now) was read by the front end through the overlay (`slip_kiln::Unit::overlaid`; a path consulted and not entered, as by `__has_include`, only if the overlay file was given); then every entry whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order, of the first part, then of the second) |
+| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed; overlay form: (ii) runs within the subject's sums, over every entry of the pre shard's `inputs` the post-image parse's do not list (there is no subject root) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order), or, overlay form, when the entry is an overlay file by identity and not by path, `pre-image: <path> is another name of the overlay's <overlay path>`; (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
-| N2 | step 2, tree form other than the identity, after N1: the pre shard has a `found` section (`model.md` §8.8), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice, for each two inputs of the pre shard: each at its recorded path, and each taken where the post parse would read it (an input under a subject root, as O2 (ii) judges it on the path as recorded, at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
+| S | step 2, overlay form, after O2 (the subject's sums): every entry of the pre shard's `inputs` whose path the overlay names has the overlay's `pre` size and content digest (the overlay was made from the pre-image the map phase read); then O2 (ii), over every entry | `pre-image: the overlay was made from another <path> than the map phase read` (the first such path, in path order); then O2 (ii)'s |
+| N2 | step 2, tree form other than the identity, after N1, and overlay form (with no subject root, every place): the pre shard has a `found` section (`model.md` §8.8), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice, for each two inputs of the pre shard: each at its recorded path, and each taken where the post parse would read it (an input under a subject root, as O2 (ii) judges it on the path as recorded, at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -1653,11 +1672,11 @@ cut as §6 says.
 
   Two inputs that were one file at the map phase and still are
   (stores that deduplicate) pass. With the identity image it is not
-  checked, as O2; nor with the overlay form today, which is not
-  implemented: since the overlay form reads the subject on disk as
-  its pre-image, it must also check the sums of the subject's inputs and
-  the subject's negatives on every run (§5.1, "The claim";
-  `docs/wp/WP-074.md` decides it). A pre shard without the section (written before work
+  checked, as O2. With the overlay form it is checked over every place
+  (there is no subject root): the overlay form reads the subject on disk
+  as its pre-image, so it checks the sums of the subject's inputs and the
+  subject's negatives on every run (§5.1, "The claim";
+  `spec/landed/exec/WP-074.md` §5). A pre shard without the section (written before work
   package WP-135, or by another writer) is refused: `slip parse` writes
   it again.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map
