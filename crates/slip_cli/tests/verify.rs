@@ -737,8 +737,11 @@ fn s4_4_names_note_for_a_respelled_template_parameter() {
     let (out, report) = f.verify_report(&plan, &img);
     assert_verdict(&out, &report, "verified");
     assert_eq!(u64_at(&report, "names_changed.total"), 1, "{report:?}");
-    let notes: Vec<&str> =
-        out.stdout.lines().filter(|l| l.starts_with("note: name-derived string changed: ")).collect();
+    let notes: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("note: name-derived string changed: "))
+        .collect();
     assert_eq!(notes.len(), 1, "{out:?}");
     assert!(
         notes[0].starts_with("note: name-derived string changed: h<int>(int, int) @ "),
