@@ -1,0 +1,4 @@
+transform <id>
+edit 0 t.cpp:18:5-18:6 tiers 0 = spell("W::g()" "g")
+edit 1 t.cpp:19:5-19:6 tiers 0 = spell("O::I::g()" "g")
+edit 2 t.cpp:20:5-20:6 tiers 0 = spell("X::g()" "g")

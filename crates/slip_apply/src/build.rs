@@ -311,7 +311,7 @@ fn lengths(lay: &mut Layout<'_>) -> Result<(), ApplyError> {
         for p in &lay.set.edits[e].pieces {
             let add = match p {
                 Piece::Literal(b) => b.len() as u64,
-                Piece::Spelled { text, .. } => text.len() as u64,
+                Piece::Spelled { text, .. } | Piece::Identifier { text, .. } => text.len() as u64,
                 Piece::Copy(_) => {
                     copy += 1;
                     copy_length(lay, &lay.copies[copy - 1])

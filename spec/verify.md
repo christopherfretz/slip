@@ -2369,7 +2369,9 @@ Obligation := file: uv        index into the overlay's `files`
 ```
 
 The bytes `[lo, hi)` of the post-image file are the text of one spelled
-piece of one accepted edit, and `key` is the `KeyId` the piece carries.
+piece, or of one identifier piece with a key (`api.md` §7.2 rule 6;
+WP-132), of one accepted edit, and `key` is the `KeyId` the piece
+carries. The two are one obligation: nothing below tells them apart.
 Apply derives the range when it composes the post-image
 (`spec/edits.md` §7.1). The obligations of a run are the `spellings`
 list of its overlay, sorted by `(file, lo, hi, key)` with no two equal;

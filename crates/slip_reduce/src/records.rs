@@ -31,6 +31,7 @@ pub(crate) enum KPiece {
     Literal(Vec<u8>),
     Copy(Site),
     Spelled { key: Digest, text: Vec<u8> },
+    Identifier { text: Vec<u8>, key: Option<Digest> },
 }
 
 /// One record of a site.
@@ -282,6 +283,13 @@ pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
                         &mut e
                     }
                     KPiece::Spelled { key, text } => e.u8(2).digest(key).bytes(text),
+                    KPiece::Identifier { text, key } => {
+                        e.u8(3).bytes(text);
+                        match key {
+                            None => e.u8(0),
+                            Some(k) => e.u8(1).digest(k),
+                        }
+                    }
                 };
             }
         }
@@ -437,6 +445,14 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
                     0 => KPiece::Literal(w(d.bytes())?.to_vec()),
                     1 => KPiece::Copy(dsite(&mut d)?),
                     2 => KPiece::Spelled { key: w(d.digest())?, text: w(d.bytes())?.to_vec() },
+                    3 => KPiece::Identifier {
+                        text: w(d.bytes())?.to_vec(),
+                        key: match w(d.u8())? {
+                            0 => None,
+                            1 => Some(w(d.digest())?),
+                            _ => return Err(bad("an option tag")),
+                        },
+                    },
                     _ => return Err(bad("a piece tag")),
                 });
             }

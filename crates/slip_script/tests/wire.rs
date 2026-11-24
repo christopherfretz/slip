@@ -797,7 +797,7 @@ fn s3_5_unknown_operation_is_254() {
     let w = world();
     let mut h = host(&w.fake);
     let mut unknown: Vec<u32> =
-        vec![0, 1, 24, 31, 38, 47, 52, 63, 68, 79, 85, 255, 256, 1 << 16, u32::MAX];
+        vec![0, 1, 25, 31, 38, 47, 52, 63, 69, 79, 85, 255, 256, 1 << 16, u32::MAX];
     unknown.extend(3..=15);
     for op in unknown {
         for (i, b) in [(vec![], vec![]), (vec![1, 2], vec![]), (vec![], b"x".to_vec())] {
@@ -1538,6 +1538,9 @@ impl Subject for Liar<'_> {
     fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity> {
         self.fake.lookup(global, components)
     }
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        self.fake.lookup_in(scope, identifier)
+    }
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         match (self.lie, v) {
             (Lie::IdentifierNone, Value::Entity(_)) => None,
@@ -1603,6 +1606,12 @@ impl Subject for Liar<'_> {
     }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         self.fake.references_at(r)
+    }
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        self.fake.references_named_at(r)
+    }
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        self.fake.declarations_named_at(r)
     }
     fn found_directly(&self, r: Reference) -> bool {
         self.fake.found_directly(r)

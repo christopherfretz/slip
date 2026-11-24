@@ -1,11 +1,13 @@
-// spec: §7.2 rule 1
-// The sibling spelling is for an edit of `extent_of(R)` (spec/api.md §7.2
-// rule 1: "If the edit is `replace(extent_of(R), c)`"). Here each edit
-// replaces `name_range_of(R)`. For `f(2)`, unqualified, the name range is
-// the extent, so the rule applies. For `n::f(1)` the name range `f` is the
-// extent of no reference, so "otherwise" (rule 2) holds: the fully
-// qualified text replaces `f`, after the qualifier written. What that
-// text means there is verification's to check (rule 5).
+// spec: §6.1 rule 8
+// `lookup(scope, identifier)` in a specialisation of a class template
+// (spec/api.md §6.1 rule 8), which `lookup` of a qualified name never
+// reaches (rule 5). The implicit instantiation `W<long>` is the parent of
+// the referent of `x.a`, a member of the instantiation (§5.5). It is a
+// scope (no `wrong_kind`), and its members are those written in the
+// definition it was instantiated from, the primary template's: `a` and `c`
+// are found in it, and they are the template's own `a` and `c`, not
+// members of the instantiation. `b`, a member of the explicit
+// specialisation `W<int>`, is not.
 #include <slip/meta.h>
 
 using namespace slip;
@@ -43,6 +45,16 @@ consteval void note(std::string_view s) { report(severity::note, s); }
 consteval info one(std::string_view name) { return lookup(name)[0]; }
 
 consteval void transform() {
-  info g = one("n::g");
-  for (info r : references_to(one("n::f"))) replace(name_range_of(r), spell(g));
+  info w = one("W");
+  for (info r : references_to(one("W::a"))) {
+    info s = parent_of(referent_of(r));
+    if (s == w) continue;
+    note("W<long>'s a: " + num(lookup(s, "a").size()));
+    note("W<long>'s c: " + num(lookup(s, "c").size()));
+    note("W<long>'s b: " + num(lookup(s, "b").size()));
+    note("W<long>'s a is W::a: " + std::string(lookup(s, "a") == lookup(w, "a") ? "yes" : "no"));
+    for (info e : lookup(s, "c")) report(e, severity::note, "found c");
+  }
+  note("W's a: " + num(lookup(w, "a").size()));
+  note("W's b: " + num(lookup(w, "b").size()));
 }

@@ -236,6 +236,13 @@ fn raw_edits(x: &Edits) -> Raw {
                 Piece::Spelled { key, text } => {
                     r.e.uv(2).digest(key).bytes(text);
                 }
+                Piece::Identifier { text, key } => {
+                    r.e.uv(3).bytes(text);
+                    match key {
+                        None => r.e.u8(0),
+                        Some(k) => r.e.u8(1).digest(k),
+                    };
+                }
             }
         }
         r.mark(format!("{at}.subjects"));
@@ -730,6 +737,107 @@ fn piece_json() {
     }
 }
 
+fn ident(text: &[u8], key: Option<Digest>) -> Piece {
+    Piece::Identifier { text: text.to_vec(), key }
+}
+
+/// The sample with claim 1's piece an identifier piece, keyed or not.
+fn with_identifier(key: Option<Digest>) -> Edits {
+    let mut x = sample();
+    x.claims[1].pieces = vec![ident(b"g", key)];
+    x
+}
+
+// §4.2 (WP-132): an identifier piece, tag 3, `(bytes, opt<KeyId>)`, with
+// and without its key: both round trips, and its JSON form, one member
+// `identifier` with `key` only when present.
+#[test]
+fn identifier_piece_round_trip_and_json() {
+    for key in [None, Some(d(0x10))] {
+        round_trip(&map_shard(with_identifier(key)));
+        let v = map_shard(with_identifier(key)).to_json();
+        let piece = v
+            .get("sections")
+            .unwrap()
+            .get("edits")
+            .unwrap()
+            .get("claims")
+            .unwrap()
+            .as_array()
+            .unwrap()[1]
+            .get("pieces")
+            .unwrap()
+            .clone();
+        let want = match key {
+            None => r#"[{"identifier":"g"}]"#.to_owned(),
+            Some(k) => format!(r#"[{{"identifier":"g","key":"{k}"}}]"#),
+        };
+        assert_eq!(json::write_compact(&piece).unwrap(), want);
+    }
+    // Byte for byte: tag 3, the bytes, then the opt tag and the key.
+    let s = map_shard(with_identifier(Some(d(0x10))));
+    let bytes = s.to_bytes();
+    let p = at(&s, "sections.edits.claims[1].pieces[0]");
+    assert_eq!(&bytes[p..p + 4], [3, 1, b'g', 1]);
+    assert_eq!(bytes[p + 4..p + 36], [0x10; 32]);
+    let s = map_shard(with_identifier(None));
+    let bytes = s.to_bytes();
+    let p = at(&s, "sections.edits.claims[1].pieces[0]");
+    assert_eq!(&bytes[p..p + 4], [3, 1, b'g', 0]);
+    // JSON errors: a key member alone, in the wrong order, or not a key.
+    let base = ["sections", "edits", "claims", "1", "pieces", "0"];
+    for (new, path) in [
+        (r#"{"key": "00"}"#, "sections.edits.claims[1].pieces[0].key"),
+        (r#"{"key": "00", "identifier": "g"}"#, "sections.edits.claims[1].pieces[0]"),
+        (r#"{"identifier": "g", "key": "00"}"#, "sections.edits.claims[1].pieces[0].key"),
+        (r#"{"identifier": 1}"#, "sections.edits.claims[1].pieces[0].identifier"),
+    ] {
+        let mut v = map_shard(with_identifier(None)).to_json();
+        set(&mut v, &base, parse(new));
+        assert_eq!(Shard::from_json(&v).unwrap_err().path, path, "{new}");
+    }
+}
+
+// §4.2, §4.7 row 9 (WP-132): an identifier piece's bytes are one plain
+// identifier (`spec/api.md` §6.1 rule 1), an invariant the reader checks:
+// empty, a leading digit, a keyword, an alternative token, a qualified
+// name, a byte outside the basic set are Malformed at the piece. With or
+// without a key.
+#[test]
+fn identifier_piece_is_plain() {
+    for key in [None, Some(d(0x10))] {
+        for text in [&b""[..], b"1g", b"class", b"and", b"n::g", b"a b", b"g$", b"\xc3\xa9"] {
+            let what = broken(
+                |x| x.claims[1].pieces = vec![ident(text, key)],
+                "sections.edits.claims[1].pieces[0]",
+            );
+            assert_eq!(what, "an identifier piece's text is not one plain identifier");
+        }
+        // The identifiers with special meaning are identifiers.
+        for text in [&b"final"[..], b"override", b"import", b"module", b"_G9"] {
+            let mut x = sample();
+            x.claims[1].pieces = vec![ident(text, key)];
+            map_shard(x).validate().unwrap();
+        }
+    }
+}
+
+// §4.2 (WP-132): a reader refuses a piece tag it does not list as
+// Malformed at the tag, whatever follows. This is how a reader of before
+// WP-132, which lists tags 0 to 2, refuses an identifier piece: the format
+// versions stay, and an old reader fails at the first identifier piece
+// rather than misreading it. Shown here with tag 4, the first unlisted.
+#[test]
+fn identifier_piece_unlisted_tag_is_refused() {
+    for key in [None, Some(d(0x10))] {
+        let s = map_shard(with_identifier(key));
+        let bytes = s.to_bytes();
+        let p = at(&s, "sections.edits.claims[1].pieces[0]");
+        let e = Shard::from_bytes(&patch(&bytes, p, 3, 4)).expect_err("tag 4 is unlisted");
+        assert_eq!((e.kind, e.offset, e.what), (ErrorKind::Malformed, p, "unlisted Piece value"));
+    }
+}
+
 // spec/model.md §10, spec/landed/edits/WP-060.md §2: members named and
 // ordered as the fields (`macro_site` is `macro`); enumerations by name.
 #[test]
@@ -854,7 +962,7 @@ fn edits_unlisted_values() {
     for (at, from, to) in [
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
-        (143, 0, 3),  // piece tag
+        (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
         (187, 0, 11), // reason
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
@@ -1699,6 +1807,10 @@ fn piece_and_claim_order() {
         Piece::Spelled { key: d(1), text: b"z".to_vec() },
         Piece::Spelled { key: d(2), text: b"a".to_vec() },
         Piece::Spelled { key: d(2), text: b"b".to_vec() },
+        ident(b"a", None),
+        ident(b"a", Some(d(1))),
+        ident(b"a", Some(d(2))),
+        ident(b"b", None),
     ];
     for (i, a) in ps.iter().enumerate() {
         for (j, b) in ps.iter().enumerate() {

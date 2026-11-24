@@ -104,6 +104,7 @@ fn kpieces(edits: &Edits, pieces: &[Piece]) -> Vec<KPiece> {
             Piece::Literal(b) => KPiece::Literal(b.clone()),
             Piece::Copy(place) => KPiece::Copy(site_of(edits, place)),
             Piece::Spelled { key, text } => KPiece::Spelled { key: *key, text: text.clone() },
+            Piece::Identifier { text, key } => KPiece::Identifier { text: text.clone(), key: *key },
         })
         .collect()
 }

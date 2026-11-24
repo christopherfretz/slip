@@ -86,15 +86,23 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §7.1 rule 5 | `code/s7.1-r5-cat-pieces` |  |
 | §7.1 rule 5 | `code/s7.1-r5-cat-refuses-an-info` |  |
 | §7.1 rule 6 | `code/s7.1-r6-immutable-and-merged` |  |
+| §7.1 rule 7 | `code/s7.1-r7-identifier` |  |
+| §7.1 rule 7 | `code/s7.1-r7-identifier-refusals` |  |
 | §7.2 rule 1 | `code/s7.2-r1-another-scope` |  |
+| §7.2 rule 1 | `code/s7.2-r1-at-a-declaration-name` |  |
+| §7.2 rule 1 | `code/s7.2-r1-at-a-qualified-name-range` |  |
 | §7.2 rule 1 | `code/s7.2-r1-exactly-one-spelled-piece` |  |
+| §7.2 rule 1 | `code/s7.2-r1-name-range-not-a-sibling` |  |
 | §7.2 rule 1 | `code/s7.2-r1-no-name-range` |  |
-| §7.2 rule 1 | `code/s7.2-r1-only-at-the-extent` |  |
 | §7.2 rule 1 | `code/s7.2-r1-several-references-one-extent` |  |
 | §7.2 rule 1 | `code/s7.2-r1-sibling` |  |
 | §7.2 rule 1 | `code/s7.2-r1-through-a-using-declaration` |  |
 | §7.2 rule 2 | `code/s7.2-r2-fully-qualified` |  |
 | §7.2 rule 2 | `code/s7.2-r2-unnamed-enumeration` | the text of the spelling is `::n::A` as rule 2 says, but the host names the key of the enumerator `n::A`, where spec/verify.md §6.1 names the members of an unnamed enumeration under it, `n::(anonymous enum 0)::A` |
+| §7.2 rule 6 | `code/s7.2-r6-a-declaration-and-a-reference-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-a-redeclaration-and-a-reference-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-references-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-which-ranges-take-the-key` |  |
 | §7.3 rule 1 | `effects/s7.3-r1-replace-and-delete` |  |
 | §7.3 rule 2 | `effects/s7.3-r2-not-editable` |  |
 | §7.3 rule 2 | `effects/s7.3-r2-refusals` |  |
@@ -108,6 +116,7 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §7.5 rule 1 | `effects/s7.5-r1-expect-changed` |  |
 | §7.5 rule 2 | `effects/s7.5-r2-expect-changed-refusals` |  |
 | §7.5 rule 3 | `effects/s7.5-r3-expect-renamed` |  |
+| §7.5 rule 3 | `effects/s7.5-r3-identifier-and-expect-renamed` |  |
 | §7.5 rule 4 | `effects/s7.5-r4-idempotent` |  |
 | §7.6 rule 1 | `effects/s7.6-r1-identity-is-content` |  |
 | §7.6 rule 1 | `effects/s7.6-r1-tiers-are-a-set` |  |
@@ -138,7 +147,7 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §10.2 | `examples/rename/use-through-a-using-declaration` |  |
 | §10.2 | `examples/rename/variable-of-the-same-name` |  |
 
-63 directories, 1 xfail.
+72 directories, 1 xfail.
 <!-- /api-table -->
 
 `effects/s5.4-r4-an-edit-of-a-tier-1-range` is in the §5.4 table of
@@ -253,6 +262,9 @@ question was left out.
   (`code/s7.2-r1-only-at-the-extent`; the host does what the text says).
   The text should give a name range the identifier alone (the qualifier
   that is written stays), or make `spell` at a name range an error.
+  Resolved by WP-132 (`spec/landed/api/WP-132.md`): the sibling form
+  applies at a name range, and anything else there is refused; the
+  directory is now `code/s7.2-r1-at-a-qualified-name-range`.
 - **§7 has no piece for an identifier.** §10.2 respells a declaration's
   name with `text(to)`, a literal; there is no structural way to say
   "this identifier", so nothing checks that `to` is one, nor keeps a
@@ -260,6 +272,8 @@ question was left out.
   (`f(x)` to `g(f(x))`, §7.1 rule 3 (a)'s example) also needs literal
   punctuation. This is §7's text escape hatch, and the suite uses it
   only for identifiers and single punctuation tokens.
+  WP-132 adds `identifier(n)` and `lookup(scope, identifier)`; the wrap
+  stays M4's.
 - **§10.2 misses a use through a using-declaration without a report.**
   `using lib::old_name;` names the function, but §6.5 rule 4 says the
   name in a using-declaration is not a reference in version 0, so the

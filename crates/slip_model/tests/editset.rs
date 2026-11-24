@@ -263,6 +263,13 @@ fn raw_set(x: &EditSet) -> Raw {
                 Piece::Spelled { key, text } => {
                     r.e.uv(2).digest(key).bytes(text);
                 }
+                Piece::Identifier { text, key } => {
+                    r.e.uv(3).bytes(text);
+                    match key {
+                        None => r.e.u8(0),
+                        Some(k) => r.e.u8(1).digest(k),
+                    };
+                }
             }
         }
         r.mark(format!("{at}.subjects"));
@@ -1863,6 +1870,25 @@ fn set_pieces() {
         |x| x.edits[1].pieces[0] = Piece::Literal(Vec::new()),
         "sections.set.edits[1].pieces[0]",
     );
+    // WP-132: an identifier piece's bytes are one plain identifier.
+    for text in [&b""[..], b"class", b"n::g"] {
+        let what = broken(
+            |x| x.edits[1].pieces[0] = Piece::Identifier { text: text.to_vec(), key: None },
+            "sections.set.edits[1].pieces[0]",
+        );
+        assert_eq!(what, "an identifier piece's text is not one plain identifier");
+    }
+}
+
+// §6.1, `spec/edits.md` §4.2 (WP-132): an edit set with identifier pieces,
+// with and without a key, round trips.
+#[test]
+fn identifier_pieces_round_trip() {
+    for key in [None, Some(d(0x10))] {
+        let mut x = sample();
+        x.edits[1].pieces = vec![Piece::Identifier { text: b"g".to_vec(), key }];
+        round_trip(&x);
+    }
 }
 
 // §6.1 row 9: an edit's subjects and notes strictly ascending, its tiers
