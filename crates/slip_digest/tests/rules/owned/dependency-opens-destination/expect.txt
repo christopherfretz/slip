@@ -1,5 +1,4 @@
 # Ownership: acme is opened by dep.h, so the namespace acme is the dependency's
 # and keeps its key; the owned Mine is keyed in its own view (rule 2), as
-# legacy::Mine. Only the namespace unit legacy, which only owned code opened,
-# is gone: a declared removal.
-removed legacy
+# legacy::Mine. WP-140: acme has an owned opening, so it has a unit in the
+# owned view too, keyed legacy: the pre-image's legacy has its partner. Equal.

@@ -1,4 +1,7 @@
 # The name token is spelled in dep.h's DEP_NAME: a dependency entity.
+# WP-140: the owned acme has dependency members, so it has a unit in the dependency
+# view too (acme, unmapped), which the pre-image has not: `added acme`.
 changed user()
+added acme
 added acme::legacy_init()
 removed legacy::legacy_init()

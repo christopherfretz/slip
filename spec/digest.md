@@ -473,7 +473,40 @@ above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
 keyed: the same namespace can have two keys in one walk, one for its
 owned members and one for its dependency members, and its own unit has
-the key of its own ownership. Every site that writes a key (a unit's
+the key of its own ownership.
+
+**A namespace's unit in each view** (WP-140). A namespace has a unit
+under the key of each view in which it has an opening or a member: the
+**owned view** (the rules applied along its chain) if one of its
+declarations lies in an owned file (bullet 1 of `verify.md` §2.1, per
+declaration) or an owned entity is keyed with it as its namespace
+parent; the **dependency view** (no rule) if one of its declarations
+does not, or a dependency entity is keyed under it. Its own ownership's
+view is its own unit. A unit in the other view is written only when that
+view exists and its key differs from the namespace's own key, so that a
+table that maps nothing adds none (and the dedup below is not relied
+on). Every such unit has the namespace's **one digest**, the digest of
+its own unit (every opening: the `inline` bit and the attributes of the
+whole chain), and the own unit's cause, merged with the view key's; a
+view whose key cannot be formed makes the own unit indeterminate. The
+digest is not per view: a fact that one view's openings hold (an
+`inline` written only by the dependency, a `[[deprecated]]` added by an
+owned opening) changes what the other view's members mean
+(`spec/landed/digest/WP-140.md`, why option A, a digest per view,
+was rejected; fixtures
+`tests/rules/views/inline-reopened-plain`, `deprecated-owned-opening`,
+`deprecated-dependency-opening`). Its cost: an attribute that applies
+only to the declarations of its own opening (`visibility`) changes both
+views' units, and fails closed (`views/visibility-owned-opening`). So a
+move into a namespace that a dependency also opens compares the owned
+view's unit with the pre-image's namespace (`verify.md` §2.1). Units are
+added, never changed: no key or digest of a member moves, and no
+pre-image (digested under the empty table) has a unit in a view. A
+**reference** to a namespace (an alias's target, a using-directive, a
+qualifier, a using-declaration's key) writes the namespace's own key, in
+any view (`verify.md` "Open questions" lists every such place).
+
+Every site that writes a key (a unit's
 own, a reference from another unit's stream, a parent, a
 specialisation's template name) takes it through the one mapping, so an
 entity and every reference to it agree (WP-110). With `R` empty none of
@@ -1121,7 +1154,11 @@ number: the number exists to void recorded baselines, and there is none
 to void. It is 2 since WP-113 (the row `enclosing`, `spec/digest-kinds.md`
 §1.7); WP-107's rule 9 (an aligned typedef is written as sugar,
 `spec/digest-kinds.md` §4.2) landed in it the same day, before a baseline
-of scheme 2 was recorded.
+of scheme 2 was recorded. WP-140 (a namespace's unit in each view,
+§3.4) changes no stream, key or table row: it adds namespace units to a
+post-image digested under a table that maps a chain with openings or
+members of both ownerships, which opens equalities and closes no wrong
+equal; no baseline of scheme 2 is recorded, so it shares the number.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the
@@ -1129,7 +1166,9 @@ of scheme 2 was recorded.
   derives from (the template, the class, the function). The single `tu`
   group holds the order unit and every namespace: a namespace is reopened
   wherever its members are, and which file opens it first is not a fact
-  about it. Builtins are in the derived group with the empty path.
+  about it. A namespace's unit in a view that is not its own (§3.4,
+  WP-140) is there too, beside its own unit. Builtins are in the derived
+  group with the empty path.
 - The file of a declaration is the file of its location, or of the
   outermost macro expansion that produced it. A **subject path** is the real
   path of that file, with the root of a post-image mapped back to the root

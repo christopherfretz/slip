@@ -1,0 +1,31 @@
+# N46 (WP-140): spec/verify.md §2.1, a move into a namespace that dep/ also
+# opens. Setting: dep/ opens acme (not legacy), and owned code moves legacy's
+# members into its own openings of acme. acme is then a dependency namespace,
+# keyed as the dependency's; it also has a unit in the owned view (keyed
+# legacy under the merged rule, with the namespace's one digest), which is the
+# pre-image's legacy's partner. Until WP-140 every good tree was `mismatch
+# removed legacy`.
+# pre/good: the move. bad: the moved opening carries [[deprecated]], which
+# makes the dependency's acme deprecated (the namespace's one digest, every
+# opening).
+good:   verified
+bad:    mismatch changed acme
+# pre-2: nested, acme::detail opened by both.
+good-2: verified
+# pre-3: dep/'s acme::v1 is inline, the pre-image's legacy::v1 is not: moved
+# there, g is now found as acme::g, and the namespace's one digest is inline
+# in the owned view too.
+good-3: none no correct edit moves legacy::v1 into an inline namespace and keeps it not inline
+bad-3:  mismatch changed legacy::v1
+# pre-4: h stays in legacy, declared kept; g moves.
+good-4: verified
+# pre-5: dep/ also opens legacy (Old), which owned code uses; good-5 moves g
+# and leaves the dependency's legacy::Old alone (the motivating migration's
+# shape: the dependency keeps the old namespace).
+good-5: verified
+# Not rows here, with where each is held: a member left behind with no kept
+# line is caught by the run's stale check (verdict not_verified, the observer
+# verified), which this catalogue has no line for (rules/views/member-left:
+# direct 1); a bad tree that edits dep/ is refused (dep/ must not differ),
+# so a dependency's declaration moved into acme is row N34's macro shape
+# (and rules/owned/n34-*, which still differ).

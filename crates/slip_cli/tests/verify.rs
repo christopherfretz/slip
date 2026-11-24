@@ -1365,6 +1365,57 @@ fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
     );
 }
 
+// WP-140, `spec/verify.md` "Open questions" (a reference to a namespace
+// that two views key): `old` relocated into `fresh`, which read-only
+// `dep/d.h` also opens, with an owned alias and an owned using-directive
+// redirected from `old` to `fresh`. A reference writes the namespace's own
+// key (the dependency's `fresh`), so the relocation alone is `mismatch`:
+// `changed L` (the alias has a key of its own) and the directive removed
+// and added (it is keyed by its content). Declared, `changed L`, and the
+// directive's pre-image unit removed and its post-image unit created, it
+// is `verified`: what a user can declare today to get past each.
+#[test]
+fn wp140_redirected_references_declared() {
+    let f = Fixture::new("wp140-references");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\n");
+    let pre = "#include \"dep/d.h\"\nnamespace old { int f(int x) { return x; } }\nnamespace L = old;\nusing namespace old;\nint u0() { return L::f(1) + f(2); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("old", "fresh"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    let mut found = groups(&report);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("added".to_owned(), "<using_directive fresh>".to_owned()),
+            ("changed".to_owned(), "L".to_owned()),
+            ("removed".to_owned(), "<using_directive old>".to_owned()),
+        ],
+        "{out:?}"
+    );
+    f.write(
+        "t.txt",
+        "relocate old => :: fresh\nchanged L\nremoved <using_directive old>\ncreated <using_directive fresh>\n",
+    );
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"), "{out:?}");
+}
+
 // WP-111 (WP-053 review F2): an `--owned` entry that covers no file a
 // selected pre-image read (here the post tree) is a warning, the status
 // unchanged; one that covers a file is not.

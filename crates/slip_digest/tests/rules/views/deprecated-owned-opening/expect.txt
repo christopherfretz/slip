@@ -1,5 +1,5 @@
 # The moved opening carries [[deprecated]]: the dependency's acme becomes deprecated.
-# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+# WP-140: the namespace's one digest is deprecated in both views' units: changed acme.
+# One of the three cases why the digest is not per view (a per-view digest would be equal).
 changed acme
-removed legacy
-use 1 via 0 direct 0
+use 1 via 1 direct 0

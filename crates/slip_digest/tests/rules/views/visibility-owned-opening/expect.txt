@@ -1,5 +1,5 @@
 # The moved opening carries a visibility attribute, which applies to its own declarations only.
-# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+# WP-140: changed acme, a stated limit that fails closed: the namespace's one digest holds the
+# attribute, which the members' own rows hold already (option B+ was not taken).
 changed acme
-removed legacy
-use 1 via 0 direct 0
+use 1 via 1 direct 0

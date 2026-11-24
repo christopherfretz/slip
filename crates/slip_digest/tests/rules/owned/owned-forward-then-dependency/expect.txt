@@ -1,8 +1,9 @@
 # Late is the dependency's: it moved, and so did acme (opened by dep.h).
+# WP-140: acme's unit in the owned view (legacy) partners the pre-image's
+# legacy: no `removed legacy`; Late still differs.
 changed use()
 added acme
 added acme::Late
 added acme::Late::v
-removed legacy
 removed legacy::Late
 removed legacy::Late::v

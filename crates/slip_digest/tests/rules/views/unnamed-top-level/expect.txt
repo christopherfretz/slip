@@ -1,4 +1,3 @@
 # The top-level unnamed namespace, opened by both; legacy inside it moves to acme inside it, which dep.h opens.
-# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
-removed (anonymous namespace)::legacy
-use 1 via 0 direct 0
+# WP-140: equal, via 1.
+use 1 via 1 direct 0
