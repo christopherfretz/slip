@@ -2,3 +2,4 @@
 # Caught only by a failed parse (spec/pitfalls.md §5).
 good: verified
 bad:  not_parsed
+xfail good: WP-141 Addendum 3: `namespace L = legacy;` is left while the owned `acme` is keyed `legacy`, so L names only the part the rule leaves (R2, by key): `changed L`, as `views/g-alias-left-no-dependency-acme`. Whether good's line becomes `not_verified` is for the coordinator

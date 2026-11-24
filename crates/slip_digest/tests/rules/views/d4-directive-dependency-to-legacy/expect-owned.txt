@@ -1,5 +1,7 @@
 # Every file owned.
-added <using_directive legacy>
+# Addendum 3 (the guard is by key): the added directive now names the part the rule moves
+# (`legacy` is not one view key whose E(k) is it alone); before, plain.
+added <using_directive legacy (the part the rule moves)>
 added acme::Dep
 changed d
 removed <using_directive acme>

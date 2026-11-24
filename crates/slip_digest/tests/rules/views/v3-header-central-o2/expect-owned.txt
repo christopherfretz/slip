@@ -1,5 +1,9 @@
 # Every file owned.
+# Addendum 3 (the guard is by key): `legacy` is not one view key whose E(k) is it alone,
+# so the directive names the part the rule moves (R2's readings). Equal before (the image-wide guard).
+added <using_directive acme (the part the rule moves)>
 added acme::Dep
+removed <using_directive legacy>
 removed acme
 removed acme::Dep
 use 1 via 1 direct 2

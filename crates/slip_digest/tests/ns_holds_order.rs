@@ -21,6 +21,10 @@ use slip_model::transform::Ownership;
 /// The dependency's `legacy`, read-only, which never migrates, and its
 /// `acme`, which the owned part moves into (so `acme` has two view keys).
 const DEP: &str = "namespace legacy { struct Old {}; }\nnamespace acme { struct Dep {}; }\n";
+/// The same without the dependency's `acme` (the original form): no
+/// namespace has two view keys, and the key `legacy` is held by two
+/// namespace entities (Addendum 3).
+const DEP_NO_ACME: &str = "namespace legacy { struct Old {}; }\n";
 /// The owned part moved into `acme`.
 const MEMBER: &str = "namespace acme { int g(int); }\n";
 /// The directive that names `legacy`.
@@ -42,9 +46,9 @@ fn table() -> RuleTable {
 
 /// Digests `main.cpp` = `#include "dep.h"` then `body`, `dep.h`
 /// read-only, under the rule.
-fn digest(body: &str) -> Output {
+fn digest(dep: &str, body: &str) -> Output {
     let main = format!("#include \"dep.h\"\n{body}");
-    let files = [("main.cpp", main.as_str()), ("dep.h", DEP)];
+    let files = [("main.cpp", main.as_str()), ("dep.h", dep)];
     let snippet = slip_kiln::snippet::Snippet {
         files: &files,
         main: "main.cpp",
@@ -100,10 +104,11 @@ fn directives(out: &Output) -> Vec<(String, Digest)> {
     v
 }
 
-#[test]
-fn e_k_does_not_depend_on_the_order_of_members() {
-    let member_first = digest(&format!("{MEMBER}{DIRECTIVE}"));
-    let directive_first = digest(&format!("{DIRECTIVE}{MEMBER}"));
+/// The directive's unit in both orders, over `dep`: the same, and the
+/// part the rule leaves in both.
+fn same_in_both_orders(dep: &str) {
+    let member_first = digest(dep, &format!("{MEMBER}{DIRECTIVE}"));
+    let directive_first = digest(dep, &format!("{DIRECTIVE}{MEMBER}"));
     let a = directives(&member_first);
     let b = directives(&directive_first);
     assert_eq!(a.len(), 1, "one directive: {a:?}");
@@ -114,4 +119,18 @@ fn e_k_does_not_depend_on_the_order_of_members() {
         assert!(name.contains("the part the rule leaves"), "a part in both orders: {name}");
     }
     assert_eq!(a, b, "the directive's unit is the same in both orders");
+}
+
+#[test]
+fn e_k_does_not_depend_on_the_order_of_members() {
+    same_in_both_orders(DEP);
+}
+
+// The original form, without the dependency's `acme`: under Addendum 2's
+// image-wide guard the directive was plain here (no namespace has two
+// view keys), for the wrong reason; by key (Addendum 3) the key `legacy`
+// is held by two namespaces, so it is the part the rule leaves.
+#[test]
+fn e_k_does_not_depend_on_the_order_of_members_one_view_key_each() {
+    same_in_both_orders(DEP_NO_ACME);
 }

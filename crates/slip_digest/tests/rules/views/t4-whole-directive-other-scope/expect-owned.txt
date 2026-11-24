@@ -1,6 +1,10 @@
 # Every file owned.
+# Addendum 3 (the guard is by key): both directives name the part the rule moves; before,
+# only `other::<using_directive legacy>` was added (the image-wide guard gave one reading).
+added <using_directive acme (the part the rule moves)>
 added acme::Dep
-added other::<using_directive legacy>
+added other::<using_directive legacy (the part the rule moves)>
+removed <using_directive legacy>
 removed acme
 removed acme::Dep
 use 1 via 1 direct 2

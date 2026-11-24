@@ -87,9 +87,6 @@ pub(crate) struct NsRefState {
     /// (`Walk::write_canonical_nns`): set by an R1 site just before it
     /// writes its qualifier, taken by that write.
     pub pending: Option<Vec<DeclId>>,
-    /// Whether some namespace of the image has two view keys (R2's
-    /// guard), made on first need.
-    two_views: Option<bool>,
 }
 
 /// One namespace entity.
@@ -392,10 +389,9 @@ impl Walk<'_> {
             self.write_ref(s, ns);
             return;
         }
-        // The guard (Addendum 2): with one view key everywhere (no
-        // namespace of the image has two), every reference is written as
-        // before, whatever else shares a key (Q6 is WP-144's).
-        if !self.ns_two_views() {
+        // The guard, by key (Addendum 3): plain iff the namespace has one
+        // view key and no other namespace holds something under it.
+        if self.ns_r2_plain(ns) {
             self.write_ref(s, ns);
             return;
         }
@@ -673,22 +669,25 @@ impl Walk<'_> {
         table.info.get(&n).is_some_and(|i| i.holds[usize::from(view)])
     }
 
-    /// R2's guard (Addendum 2): whether some namespace of the image has
-    /// two view keys. Without one, every key is one view's and no
-    /// reference to a namespace changes.
-    pub(crate) fn ns_two_views(&mut self) -> bool {
-        if let Some(b) = self.ns_refs.two_views {
-            return b;
+    /// R2's guard, by key (Addendum 3): a reference to `ns` that R2
+    /// covers is written plain iff `ns` has exactly one view key `k` and
+    /// no other namespace entity holds something under `k` (`E(k)` is `ns`
+    /// alone, or empty when `ns` holds nothing: no other reading can
+    /// differ from the key). A namespace whose own key has a cause has no
+    /// view key and is written plain, with that cause. When a view key of
+    /// some namespace cannot be formed, whether it is `k` is not known: not
+    /// plain (fails closed). Per reference; no image-wide shortcut.
+    pub(crate) fn ns_r2_plain(&mut self, ns: DeclId) -> bool {
+        let keys = self.ns_view_keys(ns);
+        match keys.as_slice() {
+            [] => true,
+            [(_, k)] => {
+                let by_key = self.ns_by_key();
+                by_key.cause.is_none()
+                    && by_key.map.get(k).is_none_or(|v| v.iter().all(|&n| n == ns))
+            }
+            _ => false,
         }
-        let aborts = self.aborts;
-        let b = self.ns_rules() && {
-            let table = self.ns_table();
-            table.order.iter().any(|&n| self.ns_view_keys(n).len() >= 2)
-        };
-        if self.aborts == aborts {
-            self.ns_refs.two_views = Some(b);
-        }
-        b
     }
 
     /// The view keys of namespace `ns` (its own key, and its other view's
@@ -746,7 +745,7 @@ impl Walk<'_> {
             KeyRes::Key { id, cause: None, .. } => Some(id),
             KeyRes::Key { .. } | KeyRes::None(_) => None,
         };
-        if !self.ns_rules() || self.directive_scope(d).is_none() || !self.ns_two_views() {
+        if !self.ns_rules() || self.directive_scope(d).is_none() || self.ns_r2_plain(ns) {
             return plain(self);
         }
         match self.whole_reading(d, ns) {
@@ -811,7 +810,7 @@ pub(crate) fn notes(w: &mut Walk<'_>, written: &[crate::units::Written]) -> Vec<
         let ns = w.entity(ast.resolve_alias(t));
         let table = w.ns_table();
         let Some(&ni) = table.info.get(&ns) else { continue };
-        if !w.ns_two_views() {
+        if w.ns_r2_plain(ns) {
             // One reading (the guard of `write_ns_whole`).
             continue;
         }
@@ -863,32 +862,20 @@ impl Walk<'_> {
 /// `Ref::part` says which part it names (`spec/landed/digest/WP-141.md`
 /// §8.6, provisional): `<using_directive legacy (the part the rule
 /// leaves)>` for a namespace that is the dependency's, `(the part the
-/// rule moves)` for an owned one. `names` is sorted by key.
-pub(crate) fn part_names(
-    w: &Walk<'_>,
-    written: &[crate::units::Written],
-    names: &mut [(Digest, String)],
-) {
-    if w.ns_refs.part.is_empty() || names.is_empty() {
+/// rule moves)` for an owned one. Applied per unit by `names::names`,
+/// so that a unit's name alone is the one among the walk's (two
+/// directives can share a key, one naming a part and one not).
+pub(crate) fn part_name(w: &Walk<'_>, u: &crate::units::Written, name: &mut String) {
+    let Some(d) = u.entity else { return };
+    let Some(&owned) = w.ns_refs.part.get(&d) else { return };
+    if u.view.is_some() || w.ast.decls.get(d).kind() != DeclKind::UsingDirective {
         return;
     }
-    for u in written {
-        let Some(d) = u.entity else { continue };
-        let Some(&owned) = w.ns_refs.part.get(&d) else { continue };
-        if u.view.is_some() || w.ast.decls.get(d).kind() != DeclKind::UsingDirective {
-            continue;
-        }
-        let Ok(i) = names.binary_search_by(|(k, _)| k.cmp(&u.key)) else { continue };
-        let what = if owned { " (the part the rule moves)" } else { " (the part the rule leaves)" };
-        let n = &mut names[i].1;
-        if n.contains(what) {
-            continue;
-        }
-        if n.ends_with('>') {
-            n.insert_str(n.len() - 1, what);
-        } else {
-            n.push_str(what);
-        }
+    let what = if owned { " (the part the rule moves)" } else { " (the part the rule leaves)" };
+    if name.ends_with('>') {
+        name.insert_str(name.len() - 1, what);
+    } else {
+        name.push_str(what);
     }
 }
 

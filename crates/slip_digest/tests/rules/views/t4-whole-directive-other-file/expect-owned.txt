@@ -1,6 +1,9 @@
 # Every file owned.
+# Addendum 3 (the guard is by key): the directive in dirs.h names the part the rule moves,
+# so it is removed and added under its part name; before, `changed <using_directive legacy>`.
+added <using_directive legacy (the part the rule moves)>
 added acme::Dep
-changed <using_directive legacy>
+removed <using_directive legacy>
 removed acme
 removed acme::Dep
 use 1 via 1 direct 2

@@ -682,8 +682,7 @@ pub(crate) fn run_kept<R>(
         + crate::keys::mark_mapped_collisions(&w, input, &mut written);
     let collisions = collisions + crate::units::mark_part_collisions(&mut written);
     let namespace_parts = crate::ns_refs::notes(&mut w, &written);
-    let mut names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
-    crate::ns_refs::part_names(&w, &written, &mut names);
+    let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let mut counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
