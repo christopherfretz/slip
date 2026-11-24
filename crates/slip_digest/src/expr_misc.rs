@@ -1235,7 +1235,8 @@ mod reach_tests {
     // gives the same verdict wherever the walk began. A chain
     // `c7 -> c6 -> ... -> c0` of nested defaults at a lowered limit: a
     // use whose nesting passes the limit is indeterminate, one under it
-    // determinate, in every order of first use (the memo neither spreads
+    // determinate, in ascending, descending and mixed order and with each
+    // use first on a fresh memo (the memo neither spreads
     // a depth error to a shorter chain nor lets a longer one through).
     #[test]
     fn the_nesting_limit_does_not_depend_on_the_order() {
@@ -1269,7 +1270,17 @@ mod reach_tests {
             let mut mixed = descending.clone();
             let last = mixed.len() - 1;
             mixed.swap(1, last);
-            for order in [ascending, descending, mixed] {
+            // Each use first on a fresh memo, then the rest from the
+            // shallowest: a walk begun at `c5` meets the limit with `c2`
+            // (nesting 3) on the stack, which must stay determinate.
+            let firsts = ascending.iter().map(|&first| {
+                let mut order = vec![first];
+                order.extend(ascending.iter().copied().filter(|&u| u != first));
+                order
+            });
+            let orders: Vec<Vec<(ExprId, usize)>> =
+                [ascending.clone(), descending, mixed].into_iter().chain(firsts).collect();
+            for order in orders {
                 w.default_reach.clear();
                 for &(e, nesting) in &order {
                     let got = default_reach_within(w, e, LIMIT);
