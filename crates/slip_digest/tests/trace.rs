@@ -706,17 +706,15 @@ fn s6_1_back_referenced_statement_is_marked() {
     assert_eq!(inner, 11, "{:#?}", f.marks);
 }
 
-
 // §6.1 "A unit's place", item 3 of WP-128: the place of a unit of each
 // kind of derived or front-end-made declaration, in each image of an edit.
 
 /// The first mark `(line, node)` of the unit named `name` in `src`.
 fn place_of(s: &Sided, name: &str) -> (u64, &'static str) {
-    let t = s
-        .traces
-        .iter()
-        .find(|t| s.names.get(&t.key).is_some_and(|n| n == name))
-        .unwrap_or_else(|| panic!("no unit {name}: {:?}", s.names.values().collect::<Vec<_>>()));
+    let t =
+        s.traces.iter().find(|t| s.names.get(&t.key).is_some_and(|n| n == name)).unwrap_or_else(
+            || panic!("no unit {name}: {:?}", s.names.values().collect::<Vec<_>>()),
+        );
     let m = &t.marks[0];
     assert_eq!(m.file, b"main.cpp", "{name}");
     (m.line, m.node)
@@ -748,10 +746,11 @@ fn s6_1_place_of_an_implicit_instantiation() {
             "int u() { return f<int>(); }",
         ])
     };
-    assert_places(&src("1"), &src("2"), &[
-        ("f<int>()", 2, 2, "specialisation"),
-        ("f<int>()::<definition>", 2, 2, "resolved"),
-    ]);
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[("f<int>()", 2, 2, "specialisation"), ("f<int>()::<definition>", 2, 2, "resolved")],
+    );
 }
 
 // An explicit instantiation: of a function template, at its pattern
@@ -768,11 +767,15 @@ fn s6_1_place_of_an_explicit_instantiation() {
             "template int f<int>(); template struct S<int>;",
         ])
     };
-    assert_places(&src("1"), &src("2"), &[
-        ("f<int>()", 1, 1, "specialisation"),
-        ("S<int>", 3, 3, "specialisation"),
-        ("S<int>::m()", 2, 2, "function"),
-    ]);
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("f<int>()", 1, 1, "specialisation"),
+            ("S<int>", 3, 3, "specialisation"),
+            ("S<int>::m()", 2, 2, "function"),
+        ],
+    );
 }
 
 // An explicit specialisation: at the specialisation the source wrote, of
@@ -795,12 +798,16 @@ fn s6_1_place_of_an_explicit_specialisation() {
             "int u() { S<short> a; S<long> b; return pick<int>() + v<int> + a.m() + b.m(); }",
         ])
     };
-    assert_places(&src("2"), &src("3"), &[
-        ("pick<int>()", 3, 3, "specialisation"),
-        ("S<short>", 4, 4, "specialisation"),
-        ("v<int>", 6, 6, "specialisation"),
-        ("S<long>::m()", 7, 7, "function"),
-    ]);
+    assert_places(
+        &src("2"),
+        &src("3"),
+        &[
+            ("pick<int>()", 3, 3, "specialisation"),
+            ("S<short>", 4, 4, "specialisation"),
+            ("v<int>", 6, 6, "specialisation"),
+            ("S<long>::m()", 7, 7, "function"),
+        ],
+    );
     let removed = src("2").replace("template <> int pick<int>() { return 2; }", "");
     assert_places(&src("2"), &removed, &[("pick<int>()", 3, 1, "specialisation")]);
 }
@@ -818,11 +825,15 @@ fn s6_1_place_of_a_member_of_an_instantiated_class() {
             "int u() { S<int> s; return s.m(); }",
         ])
     };
-    assert_places(&src("1"), &src("2"), &[
-        ("S<int>", 1, 1, "specialisation"),
-        ("S<int>::m()", 3, 3, "function"),
-        ("S<int>::k", 2, 2, "field"),
-    ]);
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("S<int>", 1, 1, "specialisation"),
+            ("S<int>::m()", 3, 3, "function"),
+            ("S<int>::k", 2, 2, "field"),
+        ],
+    );
 }
 
 // A defaulted special member: explicitly defaulted, at its declaration
@@ -843,11 +854,15 @@ fn s6_1_place_of_a_defaulted_special_member() {
             "int u() { D d; D e = d; S<int> s; return e.x + s.y; }",
         ])
     };
-    assert_places(&src("1"), &src("2"), &[
-        ("D::D()", 2, 2, "function"),
-        ("D::D(const D &)", 1, 1, "function"),
-        ("S<int>::S()", 6, 6, "function"),
-    ]);
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("D::D()", 2, 2, "function"),
+            ("D::D(const D &)", 1, 1, "function"),
+            ("S<int>::S()", 6, 6, "function"),
+        ],
+    );
 }
 
 // A lambda's call operator: no unit of its own; the closure is part of
@@ -872,11 +887,15 @@ fn s6_1_place_of_a_lambdas_call_operator() {
         ])
     };
     let (pre, post) = (src("1", "2"), src("3", "4"));
-    assert_places(&pre, &post, &[
-        ("l", 2, 2, "variable"),
-        ("t<int>()", 5, 5, "specialisation"),
-        ("t<int>()::<definition>", 5, 5, "resolved"),
-    ]);
+    assert_places(
+        &pre,
+        &post,
+        &[
+            ("l", 2, 2, "variable"),
+            ("t<int>()", 5, 5, "specialisation"),
+            ("t<int>()::<definition>", 5, 5, "resolved"),
+        ],
+    );
     let s = sites(&pre, &post);
     for (name, line) in [("l", 3), ("t<int>()::<definition>", 6)] {
         assert!(
