@@ -22,7 +22,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use slip_model::digests::Unit;
+use slip_model::digests::{GroupClass, Unit};
 
 /// The names each side must mark: side A's and side B's.
 fn lines(dir: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
@@ -75,6 +75,22 @@ fn one(dir: &Path) -> Result<(), String> {
         let got = marked(d);
         if &got != want {
             problems.push(format!("side {side} marks {got:?}, expected {want:?}"));
+        }
+        // The counter `digest.units.derived.emitted` (spec/digest.md §12).
+        let derived_marked = d
+            .output
+            .digests
+            .groups
+            .iter()
+            .filter(|g| g.class == GroupClass::Derived)
+            .flat_map(|g| g.units.as_deref().unwrap_or(&[]))
+            .filter(|u| u.is_emitted())
+            .count() as u64;
+        let counted = d.output.counters.iter().find(|c| c.name == "digest.units.derived.emitted");
+        if counted.map(|c| c.value) != Some(derived_marked) {
+            problems.push(format!(
+                "side {side}: counter {counted:?}, {derived_marked} marked derived units"
+            ));
         }
         for (k, v) in &d.units {
             if v.iter().any(|u| u.flags & !Unit::FLAGS != 0) {

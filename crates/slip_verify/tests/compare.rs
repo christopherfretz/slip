@@ -589,8 +589,10 @@ fn s4_3_emitted_with_indeterminate_exemptions_and_declared_units() {
 fn s4_1_the_mark_is_part_of_no_sum() {
     assert_eq!(group_digest(&[ue(1, 1), u(2, 2)]), group_digest(&[u(1, 1), u(2, 2)]));
     assert_ne!(group_digest(&[ui(1, 1)]), group_digest(&[u(1, 1)]));
-    let pre = Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[ue(1, 1)])] };
-    let post = Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[u(1, 1)])] };
+    let pre =
+        Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[ue(1, 1)])] };
+    let post =
+        Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[u(1, 1)])] };
     let pre = Digests { tu: tu_digest(&pre.groups), ..pre };
     let post = Digests { tu: tu_digest(&post.groups), ..post };
     assert_eq!(pre.tu, post.tu);

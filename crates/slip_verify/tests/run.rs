@@ -43,8 +43,9 @@ const BINDING: Binding = Binding { overlay: None, declared: Digest([0x02; 32]), 
 /// The six counters of §7.2 by kind before WP-155, the two it added
 /// zero, and `verify.findings`, sorted.
 fn counters(by_kind: [u64; 6]) -> Vec<Counter> {
-    let [a, b, c, d, e, f] = by_kind;
-    counters_all([a, b, c, d, e, f, 0, 0])
+    let mut all = [0; 8];
+    all[..6].copy_from_slice(&by_kind);
+    counters_all(all)
 }
 
 /// The eight counters of §7.2 by kind (WP-155 added `derived_only_pre`

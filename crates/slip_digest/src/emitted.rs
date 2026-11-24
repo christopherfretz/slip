@@ -31,10 +31,12 @@
 //! digest: [`mark`] only sets `Written::emitted`.
 
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::attr::AttrKind;
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, DefinitionBits, TemplLinkKind, VarEvalState};
-use slip_kiln::kiln::ast::types::TypeView;
 use slip_kiln::kiln::ast::QualType;
+use slip_kiln::kiln::ast::attr::AttrKind;
+use slip_kiln::kiln::ast::decl::{
+    DeclFlags, DeclKind, DefinitionBits, TemplLinkKind, VarEvalState,
+};
+use slip_kiln::kiln::ast::types::TypeView;
 
 use crate::demand::Property;
 use crate::units::Written;
@@ -85,9 +87,8 @@ pub(crate) fn mark(w: &mut Walk<'_>, e: DeclId, own: &mut Written, resolved: &mu
 /// module documentation.
 fn emits(w: &mut Walk<'_>, e: DeclId, rep: DeclId, def: DeclId, var: bool) -> bool {
     let ast = w.ast;
-    let has = |k: AttrKind| {
-        ast.inherited_attr(rep, k).is_some() || ast.inherited_attr(def, k).is_some()
-    };
+    let has =
+        |k: AttrKind| ast.inherited_attr(rep, k).is_some() || ast.inherited_attr(def, k).is_some();
     if has(AttrKind::USED) {
         return true;
     }
@@ -119,7 +120,7 @@ fn constant_initialised(w: &mut Walk<'_>, e: DeclId, rep: DeclId, ty: Option<Qua
         return true;
     }
     let initialised = chain.iter().any(|&d| ast.decls.var(d).is_some_and(|v| v.init.is_some()));
-    !initialised && ty.is_some_and(|q| class_of(w, q).is_none())
+    !initialised && ty.is_some_and(|q| matches!(class_of(w, q), Held::Other))
 }
 
 /// Whether an object of type `q` needs destruction: through arrays and
@@ -127,21 +128,29 @@ fn constant_initialised(w: &mut Walk<'_>, e: DeclId, rep: DeclId, ty: Option<Qua
 /// not trivial. What cannot be read is taken as needing it.
 fn destructed(w: &Walk<'_>, q: QualType) -> bool {
     match class_of(w, q) {
-        Some(Some(rd)) => {
+        Held::Class(rd) => {
             let ast = w.ast;
             ast.definition(rd)
                 .and_then(|d| ast.decls.record(d))
                 .is_none_or(|r| !r.defn.contains(DefinitionBits::TRIVIAL_DTOR))
         }
-        Some(None) => true,
-        None => false,
+        Held::Unread => true,
+        Held::Other => false,
     }
 }
 
-/// The class of type `q` through arrays and references: `Some(Some(rd))`
-/// for a class, `Some(None)` when it cannot be read (a chain past
-/// [`TYPE_LIMIT`]), `None` for any other type.
-fn class_of(w: &Walk<'_>, q: QualType) -> Option<Option<DeclId>> {
+/// What a type holds through arrays and references.
+enum Held {
+    /// A class.
+    Class(DeclId),
+    /// Not read: a chain past [`TYPE_LIMIT`].
+    Unread,
+    /// Any other type.
+    Other,
+}
+
+/// The class of type `q` through arrays and references.
+fn class_of(w: &Walk<'_>, q: QualType) -> Held {
     let types = &w.ast.types;
     let mut cur = q;
     for _ in 0..TYPE_LIMIT {
@@ -152,10 +161,10 @@ fn class_of(w: &Walk<'_>, q: QualType) -> Option<Option<DeclId>> {
             | TypeView::DependentSizedArray { elem: x, .. }
             | TypeView::LValueRef(x)
             | TypeView::RValueRef(x) => x,
-            _ => return types.as_record(cur).map(Some),
+            _ => return types.as_record(cur).map_or(Held::Other, Held::Class),
         };
     }
-    Some(None)
+    Held::Unread
 }
 
 /// `d` is a template's pattern, a partial specialisation or a

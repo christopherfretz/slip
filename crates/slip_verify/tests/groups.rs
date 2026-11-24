@@ -83,7 +83,7 @@ fn class_for(rng: &mut Rng) -> GroupClass {
 /// derived key, from the key alone, so that the generator draws what it
 /// drew before the mark.
 fn marked(class: GroupClass, k: u64) -> u64 {
-    if class == GroupClass::Derived && k % 3 == 0 { Unit::EMITTED } else { 0 }
+    if class == GroupClass::Derived && k.is_multiple_of(3) { Unit::EMITTED } else { 0 }
 }
 
 fn base(rng: &mut Rng) -> Image {

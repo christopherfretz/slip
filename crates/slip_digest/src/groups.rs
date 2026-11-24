@@ -15,6 +15,8 @@ use crate::{Cause, Detail};
 pub(crate) struct Totals {
     pub units: u64,
     pub derived: u64,
+    /// Derived units marked emitted unreferenced (WP-155).
+    pub derived_emitted: u64,
     pub groups: u64,
     pub indeterminate: u64,
 }
@@ -56,6 +58,7 @@ pub(crate) fn build(written: &[Written], detail: &Detail<'_>) -> (Digests, Total
         });
         let count = units.len() as u64;
         let indeterminate = units.iter().filter(|u| u.is_indeterminate()).count() as u64;
+        let emitted = units.iter().filter(|u| u.is_emitted()).count() as u64;
         let digest = group_digest(&units);
         let mut g = Group { class, file, count, indeterminate, digest, units: None };
         let keep = match detail {
@@ -73,6 +76,7 @@ pub(crate) fn build(written: &[Written], detail: &Detail<'_>) -> (Digests, Total
         totals.units += count;
         if class == GroupClass::Derived {
             totals.derived += count;
+            totals.derived_emitted += emitted;
         }
         totals.indeterminate += indeterminate;
         totals.groups += 1;
@@ -94,6 +98,7 @@ pub(crate) fn counters(
     let mut by_name: BTreeMap<String, u64> = BTreeMap::new();
     by_name.insert("digest.units".into(), totals.units);
     by_name.insert("digest.units.derived".into(), totals.derived);
+    by_name.insert("digest.units.derived.emitted".into(), totals.derived_emitted);
     by_name.insert("digest.groups".into(), totals.groups);
     by_name.insert("digest.indeterminate".into(), totals.indeterminate);
     by_name.insert("digest.collisions".into(), collisions);

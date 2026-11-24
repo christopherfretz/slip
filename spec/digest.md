@@ -299,8 +299,11 @@ initialiser or destructor runs, or a function with the attribute
 `constructor`, `destructor` or `used`. Such a demand is written in no
 unit, so the argument of the paragraph above does not hold for it: the
 derived units it made are on one side only and no unit both sides have
-differs, and `spec/verify.md` §4 step 3 reports nothing. It holds
-whether the substitution succeeded or failed after the name bound.
+differs. Since WP-155 such a definition's unit carries the mark
+emitted unreferenced (§11), and `spec/verify.md` §4 step 3 reports the
+one-sided marked unit as `derived_only_pre` or `derived_only_post`. It
+holds whether the substitution succeeded or failed after the name
+bound.
 
 The same behaviour changes with no name bound to another entity, when
 a candidate is no longer considered:
@@ -324,11 +327,11 @@ Write the call `::f(lib::X(), 0)`: the callee is the same function,
 argument-dependent lookup no longer supplies `lib::f`, its default
 template argument is not substituted, `Tr<lib::X>::r` is not
 instantiated, and the program no longer prints. No record of what
-names bound can see this. Only WP-155 closes it: a derived unit that
-is emitted whether or not it is referenced, and that one image only
-has, is a finding. WP-155 is a package of its own and comes first.
+names bound can see this. WP-155 closes it: a derived unit that is
+marked emitted unreferenced, and that one image only has, is a finding
+(here `derived_only_pre Tr<lib::X>::r::<definition>`; pitfall row E24).
 `spec/landed/digest/WP-153.md` §1 has the programs and what closes
-each.
+each; `spec/landed/verify/WP-155.md` has the mark and the rule.
 
 The limit of names is the same, outside any template, for a name in
 an operand that is not dependent and that only a type or a value holds
@@ -1486,6 +1489,7 @@ comparison of unit sets (`verify.md`).
 |---|---|
 | `digest.units` | units, declared and derived |
 | `digest.units.derived` | derived units |
+| `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
