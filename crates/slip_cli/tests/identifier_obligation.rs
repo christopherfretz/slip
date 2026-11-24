@@ -11,6 +11,11 @@
 //! and the fold of §10.3 makes it `denotes_other`: a located obligation
 //! finding, in a unit declared changed.
 //!
+//! And the right rename (`RIGHT`, no `S::h`): both references, the
+//! unqualified one in `S::k` and the qualified `n::f(2)`, are keyed, apply
+//! derives two obligations, and both hold under the run's rules and fail
+//! without them (the key is `n::f`'s, the name in the post-image `n::h`).
+//!
 //! The transform runs in the host over a parsed subject; the edit set is
 //! the run's edits as reduce would accept them, with nothing else in it;
 //! apply's `build` is the product's; the check and the fold are the
@@ -54,6 +59,7 @@ consteval void transform() {
 }
 "#;
 
+/// The wrong rename: `h(1)` in `S` finds the member `S::h`.
 const PRE: &str = "namespace n {
 int f(int);
 struct S {
@@ -61,6 +67,16 @@ struct S {
   int k() { return f(1); }
 };
 }
+";
+
+/// The right rename: nothing named `h` captures a reference.
+const RIGHT: &str = "namespace n {
+int f(int);
+struct S {
+  int k() { return f(1); }
+};
+}
+int u() { return n::f(2); }
 ";
 
 const MAIN: &str = "main.cpp";
@@ -78,8 +94,8 @@ fn transform_file() -> PathBuf {
     path
 }
 
-/// The transform run in the host over `PRE`.
-fn run() -> RunOutput {
+/// The transform run in the host over `pre`.
+fn run(pre: &'static str) -> RunOutput {
     let file = transform_file();
     let resource = resource();
     std::thread::scope(|s| {
@@ -88,7 +104,7 @@ fn run() -> RunOutput {
             .spawn_scoped(s, || {
                 driver::with_transform(&resource, &[], &file, driver::STACK, |loaded| {
                     let mut l = loaded.expect("the transform loads");
-                    let files = [(MAIN, PRE)];
+                    let files = [(MAIN, pre)];
                     let snippet =
                         Snippet { files: &files, main: MAIN, include: &[""], std: "c++20" };
                     parse_with_tables(&snippet, &Extra::default(), |p: &Parsed<'_>| {
@@ -132,7 +148,7 @@ fn piece(p: &output::Piece) -> Piece {
 }
 
 /// The run's edits as an accepted edit set over the one file.
-fn edit_set(out: &RunOutput, path: &[u8]) -> EditSet {
+fn edit_set(out: &RunOutput, path: &[u8], pre: &str) -> EditSet {
     let set = EditSet {
         scheme: SCHEME,
         plan: Digest([1; 32]),
@@ -142,8 +158,8 @@ fn edit_set(out: &RunOutput, path: &[u8]) -> EditSet {
         state: SetState::Accepted,
         files: vec![FileRef {
             path: path.to_vec(),
-            size: PRE.len() as u64,
-            content: content_digest(PRE.as_bytes()),
+            size: pre.len() as u64,
+            content: content_digest(pre.as_bytes()),
         }],
         subjects: vec![],
         rules: vec![],
@@ -200,7 +216,7 @@ fn check(post: &str, rules: &RuleTable, obligations: &[Obligation]) -> Vec<Spell
 
 #[test]
 fn wp132_a_keyed_identifier_piece_that_denotes_another_entity_fails_located() {
-    let out = run();
+    let out = run(PRE);
     // The host: no key at the declaration's name, `n::f`'s key at the
     // reference; the rename and the unit of the reference declared.
     let at = |lo: usize| PRE.match_indices('f').map(|(i, _)| i).nth(lo).unwrap() as u32;
@@ -222,7 +238,7 @@ fn wp132_a_keyed_identifier_piece_that_denotes_another_entity_fails_located() {
     let path = b"/src/main.cpp".to_vec();
     // Apply: the obligation, from the keyed identifier piece only, at the
     // bytes `h` of the call in the post-image.
-    let set = edit_set(&out, &path);
+    let set = edit_set(&out, &path, PRE);
     let id = formats::content_id(&set.to_bytes()).unwrap();
     let mem = Mem(BTreeMap::from([(path.clone(), PRE.as_bytes().to_vec())]));
     let built = build(&set, id, &mem).expect("apply builds");
@@ -269,4 +285,47 @@ fn wp132_a_keyed_identifier_piece_that_denotes_another_entity_fails_located() {
             name: found_name.clone()
         }]
     );
+}
+
+#[test]
+fn wp132_a_right_rename_with_identifier_pieces_holds() {
+    let out = run(RIGHT);
+    let keys: Vec<Option<Digest>> = out
+        .edits
+        .iter()
+        .map(|e| match e.pieces.as_slice() {
+            [output::Piece::Identifier { text, key }] if text == b"h" => *key,
+            other => panic!("not one identifier piece `h`: {other:?}"),
+        })
+        .collect();
+    // The declaration's name, then the two references, both keyed alike.
+    assert_eq!(keys.len(), 3, "{:?}", out.edits);
+    assert_eq!(keys[0], None);
+    assert!(keys[1].is_some() && keys[1] == keys[2], "{keys:?}");
+    let path = b"/src/main.cpp".to_vec();
+    let set = edit_set(&out, &path, RIGHT);
+    let id = formats::content_id(&set.to_bytes()).unwrap();
+    let mem = Mem(BTreeMap::from([(path.clone(), RIGHT.as_bytes().to_vec())]));
+    let built = build(&set, id, &mem).expect("apply builds");
+    let post = String::from_utf8(built.blobs[0].1.clone()).unwrap();
+    assert_eq!(post, RIGHT.replace("f(", "h("));
+    let obligations: Vec<Obligation> = built
+        .overlay
+        .spellings
+        .iter()
+        .map(|ob| Obligation {
+            file: MAIN.as_bytes().to_vec(),
+            lo: u32::try_from(ob.lo).unwrap(),
+            hi: u32::try_from(ob.hi).unwrap(),
+            key: ob.key,
+        })
+        .collect();
+    assert_eq!(obligations.len(), 2, "{:?}", built.overlay.spellings);
+    assert!(obligations.iter().all(|o| &post[o.lo as usize..o.hi as usize] == "h"));
+    let rules = RuleTable::new(out.renamed.clone()).expect("a rule table");
+    assert_eq!(check(&post, &rules, &obligations), [Spelling::Holds, Spelling::Holds]);
+    // Without the rule the key is `n::f`'s and the name denotes `n::h`.
+    let none = RuleTable::new(vec![]).expect("no rules");
+    let got = check(&post, &none, &obligations);
+    assert!(got.iter().all(|s| !matches!(s, Spelling::Holds)), "{got:?}");
 }

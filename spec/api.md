@@ -1240,10 +1240,16 @@ recorded. Version 0 has two spellings.
    every `expect_renamed` the run made, so the order of `replace` and
    `expect_renamed` does not matter. There is no key when the referent's
    origin is not declared renamed, or is declared renamed to another
-   identifier, when the range is a declaration's name or no name range
-   at all, when the piece is not the whole replacement, and when the
-   references named at the range have origins that do not all have the
-   one key (two references at one name range that disagree). A
+   identifier, when the range names no reference (a declaration's name
+   only, or no name range at all), when the piece is not the whole
+   replacement, and when the references named at the range have origins
+   that do not all have the one key (two references at one name range
+   that disagree). The key is decided by the references named at the
+   range alone. A declaration's name is no reference and has no
+   obligation (`spec/verify.md` §10.7); when one range is the name of
+   references and of declarations too (a macro argument written once and
+   expanded into both), the key and its obligation are the references',
+   and the declaration there is judged by the digests like any other. A
    transform that means an entity says `spell`: `identifier` is for a
    name whose meaning the transform does not assert.
 
@@ -1386,7 +1392,8 @@ consteval void expect_renamed(info entity, std::string_view new_identifier);
    one scope are both recorded: verification is what refuses that. An
    identifier piece `identifier(n)` that is the whole replacement of the
    name range of a reference whose referent's origin is `e` takes `e`'s
-   key and is checked as a spelling (§7.2 rule 6).
+   key and is checked as a spelling (§7.2 rule 6), whatever declarations
+   are named at that range too.
 4. Both are idempotent: declaring the same thing twice is declaring it
    once.
 5. **What a declaration does.** `expect_changed` becomes an entry of
