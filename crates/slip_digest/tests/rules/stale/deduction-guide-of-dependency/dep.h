@@ -1,5 +1,5 @@
 namespace legacy {
 template <class T> struct wrap {
-  template <class U> wrap(U) {}
+  template <class U> wrap(U);
 };
 }

@@ -1087,6 +1087,25 @@ fn s2_3_declare_errors() {
         "slip: t.txt:2: order: the rule of `S` relocates `C`, or a namespace or class around it, \
          which line 1 resolved as a new parent without it: this line must come before line 1"
     );
+    // `Fallback` has no source that makes it (`slip_digest` records:
+    // no walk gives a fallback key today); it is tested over records in
+    // `tests/declare.rs`.
+}
+
+// §2.3 "Errors", WP-111 review F1: the errors and the note of "One way to
+// each key" (`spec/verify.md` §2.1), over `s2_3_declare_errors`'s files.
+#[test]
+fn s2_3_declare_one_way_to_each_key() {
+    let f = Fixture::new("declare-one-way");
+    f.both(
+        "a.h",
+        "#pragma once\nstruct S { int v; };\nint S_;\nstruct T {};\nint T;\n\
+         struct C { C operator+(C); };\nvoid k(int);\ntemplate <class X> int tt(X) { return 0; }\n\
+         extern \"C\" int cfn(int);\n",
+    );
+    f.both("u0.cpp", "#include \"a.h\"\nint f0() { return tt(1); }\n");
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
     // WP-111 review F1: two lines whose rules produce one key, the
     // message naming the earlier line; an identity rule, refused.
     assert_eq!(
@@ -1118,9 +1137,6 @@ fn s2_3_declare_errors() {
     );
     assert!(out.stdout.contains("\nchanged 1\n"), "{out:?}");
     assert!(out.stdout.lines().nth(1).is_some_and(|l| l.ends_with(" 0")), "{out:?}");
-    // `Fallback` has no source that makes it (`slip_digest` records:
-    // no walk gives a fallback key today); it is tested over records in
-    // `tests/declare.rs`.
 }
 
 // §8.8: input errors (status 3, nothing written): an unreadable text, a

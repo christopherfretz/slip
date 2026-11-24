@@ -598,6 +598,44 @@ fn with_friends(
 /// the name changes; a later line that gives one of these rules again is
 /// accepted, and one that gives another rule with its match is `Duplicate`.
 ///
+/// The `Duplicate` checks of §2.3 for `rule`, of line `n` (`friend`: a
+/// friend declaration's): `false` for a friend's rule given already, an
+/// error for one whose match another rule has or whose produced key
+/// another rule produces (`spec/verify.md` §2.1 "One way to each key");
+/// otherwise its match and key are recorded.
+fn admitted(
+    n: u64,
+    rule: &Rule,
+    friend: bool,
+    of: &str,
+    rules: &[Rule],
+    matches: &mut BTreeSet<(Parent, KeyKind, Name, Option<Digest>)>,
+    produced: &mut BTreeMap<(Parent, KeyKind, Name, Option<Digest>), u64>,
+) -> Result<bool, LineError> {
+    if !matches.insert((rule.parent, rule.kind, rule.name.clone(), rule.disc)) {
+        if friend && rules.contains(rule) {
+            return Ok(false);
+        }
+        return Err(error(
+            n,
+            ErrorKind::Duplicate,
+            format!("the rule of {of} matches what the rule of an earlier `relocate` line matches"),
+        ));
+    }
+    let to = (rule.to_parent, rule.kind, rule.to_name.clone(), rule.disc);
+    if let Some(&m) = produced.get(&to) {
+        return Err(error(
+            n,
+            ErrorKind::Duplicate,
+            format!(
+                "the rule of {of} produces the key the rule of line {m} produces: two entities of the post-image cannot both be this one of the pre-image (a namespace split in two is declared per member or per nested namespace)"
+            ),
+        ));
+    }
+    produced.insert(to, n);
+    Ok(true)
+}
+
 /// `RuleTable` has no insertion, so the table a `relocate` line's parent is
 /// mapped by is built again from the rules above it, and only when that
 /// line has a parent and a rule was added since.
@@ -678,29 +716,9 @@ pub fn resolve_with(
                         // Given already for a friend: the same rule again.
                         continue;
                     }
-                    if !matches.insert((rule.parent, rule.kind, rule.name.clone(), rule.disc)) {
-                        if i > 0 && rules.contains(&rule) {
-                            continue;
-                        }
-                        return Err(error(
-                            n,
-                            ErrorKind::Duplicate,
-                            format!(
-                                "the rule of {of} matches what the rule of an earlier `relocate` line matches"
-                            ),
-                        ));
+                    if !admitted(n, &rule, i > 0, &of, &rules, &mut matches, &mut produced)? {
+                        continue;
                     }
-                    let to = (rule.to_parent, rule.kind, rule.to_name.clone(), rule.disc);
-                    if let Some(&m) = produced.get(&to) {
-                        return Err(error(
-                            n,
-                            ErrorKind::Duplicate,
-                            format!(
-                                "the rule of {of} produces the key the rule of line {m} produces: two entities of the post-image cannot both be this one of the pre-image (a namespace split in two is declared per member or per nested namespace)"
-                            ),
-                        ));
-                    }
-                    produced.insert(to, n);
                     if i > 0 {
                         friend_rules.insert(rule.clone());
                     }
@@ -924,6 +942,23 @@ pub fn main(args: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> Exi
     commands::finish(result, out, err)
 }
 
+/// §8.8's note for a `relocate` line that writes no rule (§2.3, an entity
+/// with C language linkage moved and not renamed).
+const UNWRITTEN: &str = "the entity has C language linkage and keeps its name: the move changes no key, and the line writes no rule";
+
+/// WP-053 review F2: an `--owned` entry that covers no file a pre-image
+/// read (`--owned <post tree>`, say) makes no file owned through it: a
+/// warning per entry.
+fn warn_uncovered(files: &Ownership, read: &BTreeSet<Vec<u8>>, err: &mut dyn Write) {
+    for entry in &files.owned {
+        if !read.iter().any(|p| slip_model::transform::covers(entry, p)) {
+            let _ = write!(err, "slip: warning: declare: --owned ");
+            let _ = err.write_all(entry);
+            let _ = writeln!(err, " covers no file the selected observers' pre-images read");
+        }
+    }
+}
+
 fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::Result<u8> {
     let from = absolute(&a.from)?;
     let target = absolute(&a.out)?;
@@ -992,27 +1027,15 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
             post_ok[i] = true;
         }
     }
-    // WP-053 review F2: an `--owned` entry that covers no file a pre-image
-    // read (`--owned <post tree>`, say) makes no file owned through it.
     if let Some(files) = files.as_ref() {
-        for entry in &files.owned {
-            if !read.iter().any(|p| slip_model::transform::covers(entry, p)) {
-                let _ = write!(err, "slip: warning: declare: --owned ");
-                let _ = err.write_all(entry);
-                let _ = writeln!(err, " covers no file the selected observers' pre-images read");
-            }
-        }
+        warn_uncovered(files, &read, err);
     }
     let resolved = match resolve_with(&lines, &pre.records, &post.records, &facts) {
         Ok(r) => r,
         Err(e) => return Ok(line_error(&e, err)),
     };
     for n in &resolved.unwritten {
-        let _ = writeln!(
-            err,
-            "slip: note: {}:{n}: the entity has C language linkage and keeps its name: the move changes no key, and the line writes no rule",
-            a.from.display()
-        );
+        let _ = writeln!(err, "slip: note: {}:{n}: {UNWRITTEN}", a.from.display());
     }
 
     // The post-images under the rules the file gives, for `created` and

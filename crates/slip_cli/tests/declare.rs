@@ -619,10 +619,10 @@ fn s2_3_c_linkage() {
         to_parent: Parent::CLinkage,
         to_name: ident("c_fn"),
     };
-    let (a, b) =
+    let (named, plain) =
         (table("relocate n::c_fn(int) => n :: c_fn2"), table("relocate n::c_fn(int) => :: c_fn2"));
-    assert_eq!(a.rules(), [want.clone()]);
-    assert_eq!((a.rules(), a.id()), (b.rules(), b.id()));
+    assert_eq!(named.rules(), std::slice::from_ref(&want));
+    assert_eq!((named.rules(), named.id()), (plain.rules(), plain.id()));
     // The parent is resolved in the post-images like any other.
     let e = err("changed n::C\nrelocate n::c_fn(int) => nowhere :: c_fn2", &recs, &post);
     assert_eq!((e.line, e.kind), (2, ErrorKind::NoUnit), "{e}");
@@ -1292,35 +1292,36 @@ fn s2_3_friend_class_in_a_merged_namespace() {
                      namespace n { template <class T> struct A { friend int g(int); }; A<int> a; int k; }\n";
     let post_p = "namespace p { int g(int) { return 1; } }\n\
                   namespace n { template <class T> struct A { friend int g(int); }; A<int> a; int k; }\n";
-    let f = with_input(pre, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
-    assert_eq!(f.undefined_friends.len(), 1, "{f:?}");
+    let facts_of = with_input(pre, |i| facts(i, slip_digest::ReadOnly::NO_FILE));
+    assert_eq!(facts_of.undefined_friends.len(), 1, "{facts_of:?}");
     let empty = RuleTable::empty();
     let pre_r = records_of(pre, &empty);
-    let a = pre_r.iter().find(|r| r.name == "n::A").unwrap();
+    let class_a = pre_r.iter().find(|r| r.name == "n::A").unwrap();
     // C7: the merge above, then the rename with no new parent.
     let post_r = records_of(post_root, &empty);
-    let r = resolve_with(
+    let resolved = resolve_with(
         &read("relocate x => :: n\nrelocate n::f(int) => :: g\n").unwrap(),
         &pre_r,
         &post_r,
-        &f,
+        &facts_of,
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    let rules = r.rules.rules();
-    let friend = rules.iter().find(|x| x.to_parent == Parent::Unit(a.id)).expect("a friend rule");
+    let rules = resolved.rules.rules();
+    let friend =
+        rules.iter().find(|x| x.to_parent == Parent::Unit(class_a.id)).expect("a friend rule");
     let key_of = |name: &str| post_r.iter().find(|x| x.name == name).unwrap().key.clone().unwrap();
-    let n = r.rules.map(key_of("n"));
-    let class = r.rules.map(Key { parent: Parent::Unit(n.id()), ..key_of("n::A") });
+    let ns = resolved.rules.map(key_of("n"));
+    let class = resolved.rules.map(Key { parent: Parent::Unit(ns.id()), ..key_of("n::A") });
     assert_eq!(friend.parent, Parent::Unit(class.id()), "the class as the merge maps it");
     // C10: the merge below the line that looked the class up.
-    let e = resolve_with(
+    let order = resolve_with(
         &read("relocate n::f(int) => p :: g\nrelocate x => :: n\n").unwrap(),
         &pre_r,
         &records_of(post_p, &empty),
-        &f,
+        &facts_of,
     )
     .unwrap_err();
-    assert_eq!((e.line, e.kind), (2, ErrorKind::Order), "{e}");
+    assert_eq!((order.line, order.kind), (2, ErrorKind::Order), "{order}");
 }
 
 // `Facts::dependency` over a parse: every entity of a read-only file (here

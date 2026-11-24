@@ -629,13 +629,16 @@ pub struct RuleTable {
     /// For each rule, the match bytes of the key it produces,
     /// `(to_parent, kind, to_name, disc)`, with its index: strictly
     /// ascending by bytes (`RuleTable::produces`).
-    produced: Vec<(Vec<u8>, usize)>,
+    produced: Produced,
 }
+
+/// `RuleTable::produced`: each rule's produced key, as bytes, and its index.
+type Produced = Vec<(Vec<u8>, usize)>;
 
 /// [`RuleTable::produced`] of `rules`, ascending by bytes, then index;
 /// `Err((first, second))`, `first < second`, when two rules produce one
 /// key (the pair whose key is least).
-fn produced_index(rules: &[Rule]) -> Result<Vec<(Vec<u8>, usize)>, (usize, usize)> {
+fn produced_index(rules: &[Rule]) -> Result<Produced, (usize, usize)> {
     let mut out: Vec<(Vec<u8>, usize)> = rules
         .iter()
         .enumerate()
