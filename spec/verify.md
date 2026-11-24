@@ -974,7 +974,12 @@ Unit lists are not normally in a shard. The comparison is carried out on
 group sums first (`digest.md` §11):
 
 1. If the two `tu` digests are equal, the unit multisets are equal, flags
-   included. If, further, no group has an indeterminate unit (every
+   included except bit 1, emitted unreferenced (WP-155): no digest holds
+   that bit (`digest.md` §11), so equal sums say nothing of it. That is
+   harmless: step 3 reads the mark only on a unit of a key whose units
+   differ between the images, in a group whose sum differs, and with
+   equal `tu` digests there is no such key; a unit both images have is
+   never read for its mark. If, further, no group has an indeterminate unit (every
    `GroupSum.indeterminate` is 0), there is no finding and the observer is
    verified.
 2. Otherwise let `G` be the groups, identified by `(class, file)`, whose
@@ -1856,7 +1861,7 @@ are the same whether or not the comparison was restricted to `G`:
   file of the first group, in the order of `(class, file)`, among the
   groups of the multiset the finding is about (the declared and `tu`
   groups for `D`, the derived groups for `V`) whose units, flags
-  included, are not the same in both images, that holds a unit of the key
+  included but bit 1, are not the same in both images, that holds a unit of the key
   in the pre-image; if there is none, in the post-image. (There is one: a
   key with a difference has a unit in a group that differs; were there
   none, it would be a defect of `slip_verify`, which stops with
@@ -1864,8 +1869,8 @@ are the same whether or not the comparison was restricted to `G`:
   skipped even when it comes first. The group named need not be where the
   key itself changed: it can differ on account of another unit.
 - A group **differs** when the other image has no group of its
-  `(class, file)`, or has one whose unit list, flags included, is not the
-  same. Groups are paired across the images by `(class, file)`; so given
+  `(class, file)`, or has one whose unit list, flags included but bit 1
+  (which no group sum holds, step 1), is not the same. Groups are paired across the images by `(class, file)`; so given
   only the groups of `G` the comparison decides the same as given all
   groups, since a group outside `G` has the same units in both.
 - For `indeterminate` and `derived_indeterminate`: `pre` is the digest of

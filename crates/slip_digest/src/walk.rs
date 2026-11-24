@@ -283,6 +283,10 @@ pub(crate) struct Walk<'a> {
     /// member function names (`operator+`), built when a fold first needs
     /// it (`expr_profile::fold_left_out`).
     pub declared_operators: Option<HashSet<&'static str>>,
+    /// The declarations around a local function with the attribute
+    /// `constructor`, `destructor` or `used`, built when the mark first
+    /// needs it (`emitted::hosts`, WP-155).
+    pub emitted_hosts: Option<HashSet<DeclId>>,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -380,6 +384,7 @@ impl<'a> Walk<'a> {
             local: crate::local::LocalState::default(),
             lets: None,
             declared_operators: None,
+            emitted_hosts: None,
             name_values: None,
             by_value: 0,
             in_constant: 0,

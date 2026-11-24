@@ -1,5 +1,3 @@
 marked-a Reg<int>::r::<definition>
-# `x` is not constant-initialised as far as the AST says (Kiln evaluates
-# no initialiser of a variable that is neither constexpr nor const): its
-# own unit is marked, which the rule never reads (a declared unit).
-marked x
+# `x` (`sizeof(...)` in side A, `4` in side B) is plainly constant: not
+# marked (rule 2 of the fix round).

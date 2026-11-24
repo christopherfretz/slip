@@ -1427,7 +1427,79 @@ read as unmarked, a wrong `verified` (`verify.md` §4 step 3). The move
 voids every recorded baseline of scheme 2 (its digests stay valid, its
 marks are missing): the shard goldens of `crates/slip_model` are blessed
 again with the package; `bench/baselines` and the corpus invariants are
-the supervisor's to record again.
+the supervisor's to record again. WP-155's fix round changed which units
+are marked (below), not the format; no baseline of scheme 3 was recorded,
+so it shares the number.
+
+**The mark** (`crates/slip_digest/src/emitted.rs`). The entities read are
+the variables (`DeclKind::Var`) and functions that are not local (a
+block-scope `extern` declaration is the namespace's) and not a template's
+pattern, a partial specialisation or in a dependent context. One is
+marked when any of these holds:
+
+1. It, or its defining declaration, has the attribute `used`.
+2. Its body or initialiser declares, at any depth, a function with the
+   attribute `constructor`, `destructor` or `used`: a member function of
+   a local class (also nested, also inside a lambda's body), or a
+   lambda's call operator (Kiln accepts `[]() __attribute__((used)) {}`
+   and puts the attribute on the call operator). The declaration's
+   enclosing declarations are climbed through `ctx`; a closure type also
+   counts the variable its name is prefixed by
+   (`LambdaMangling::context`). A static local with `used` does not mark
+   its function: clang emits it only where the function is emitted.
+3. It is a function with `constructor` or `destructor`.
+4. It is a variable whose type, through arrays and references, is a class
+   whose definition is missing or whose destructor is not trivial
+   (`DefinitionBits::TRIVIAL_DTOR`), or a chain of more than 256 such
+   steps.
+5. It is a variable that is not **constant-initialised**. It is when one
+   of these holds: its evaluated state (`VarData::eval`, read in
+   definition mode over every declaration) is `Value`; no declaration has
+   an initialiser and its type is not a class, or is a class, or an array
+   of one, whose default constructor is trivial (`TRIVIAL_DEFAULT_CTOR`
+   set and `NONTRIVIAL_DEFAULT_CTOR` clear); its initialiser is the call
+   of a trivial constructor with no argument
+   (`Ast::is_trivial_default_construction`: Kiln's form of `K k;`); or
+   its type is arithmetic, enumeration, pointer or reference and its
+   initialiser is **plainly constant**.
+
+Thread-local variables follow the same rules as variables of static
+storage duration.
+
+A **plainly constant** initialiser is one of this grammar, read on Kiln's
+expression nodes; anything else is not (a call, a read of a variable's
+value, a binary or conditional operator, a temporary, a cast written in
+the source, a member access, a compound literal), nor is a tree of more
+than 64 nodes:
+
+```text
+plain   := literal | enumerator | sizeof | address
+         | ( plain )                        ParenExpr
+         | { } | { plain }                  InitListExpr, at most one element
+         | + plain | - plain                UnaryOperator Plus, Minus
+         | conversion of plain              ImplicitCastExpr: IntegralCast,
+                                            IntegralToFloating, FloatingToIntegral,
+                                            FloatingCast, IntegralToBoolean,
+                                            FloatingToBoolean, BooleanToSignedIntegral,
+                                            NullToPointer, NoOp
+literal := IntegerLiteral | FloatingLiteral | CharacterLiteral
+         | CXXBoolLiteralExpr | CXXNullPtrLiteralExpr | GNUNullExpr | StringLiteral
+enumerator := DeclRefExpr naming an EnumConstant
+sizeof  := UnaryExprOrTypeTraitExpr: sizeof, alignof, __alignof
+address := & designator                     UnaryOperator AddrOf
+         | decay of designator              ImplicitCastExpr ArrayToPointerDecay,
+                                            FunctionToPointerDecay
+         | designator                       a DeclRefExpr bound as it is (a reference)
+designator := ( designator ) | StringLiteral
+         | DeclRefExpr naming a function
+         | DeclRefExpr naming a variable (DeclKind::Var) that is not
+           thread-local, not of reference type, and of static storage
+           duration (not local, or a static local)
+```
+
+A mark too many is a finding too many; a mark too few a wrong `verified`.
+The marks too many that remain are listed in `spec/landed/verify/WP-155.md`
+§1 (a class initialised by a constexpr constructor is the known one).
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the

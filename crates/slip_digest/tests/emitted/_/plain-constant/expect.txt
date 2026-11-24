@@ -1,0 +1,4 @@
+# `sz` is a binary operator: outside the grammar, marked.
+marked sz
+# `pt2` takes the address of a thread-local: not a constant.
+marked-a pt2

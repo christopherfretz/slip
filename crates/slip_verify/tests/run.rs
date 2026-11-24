@@ -83,8 +83,19 @@ fn empty_digests() -> Digests {
 /// A verify shard of observer `obs` with status `ok` and `verdict`, with
 /// the counters its findings' kinds give when `by_kind` is `None`.
 fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
+    let by_kind = by_kind.map(|six| {
+        let mut all = [0; 8];
+        all[..6].copy_from_slice(&six);
+        all
+    });
+    ok_shard_all(obs, verdict, by_kind)
+}
+
+/// [`ok_shard`] with the eight counters by kind (WP-155 added
+/// `derived_only_pre` and `derived_only_post`, last).
+fn ok_shard_all(obs: u8, verdict: Verdict, by_kind: Option<[u64; 8]>) -> Shard {
     let by_kind = by_kind.unwrap_or_else(|| {
-        let mut c = [0u64; 6];
+        let mut c = [0u64; 8];
         for f in &verdict.findings {
             c[f.kind as usize] += 1;
         }
@@ -96,7 +107,7 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         round: ROUND,
         outcome: outcome(Status::Ok, ""),
         inputs: Some(vec![]),
-        counters: counters(by_kind),
+        counters: counters_all(by_kind),
         digests: Some(empty_digests()),
         verdict: Some(verdict),
         edits: None,
@@ -349,6 +360,52 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
     let mut s = verified(1);
     s.counters.iter_mut().find(|c| c.name == "verify.findings.changed").unwrap().value = 1;
     assert_eq!(ok(&s), State::Failed);
+}
+
+// §7.1 `says`, §7.2 (WP-155, fix round): a shard with derived-only
+// findings is read through its eight counters by kind (`counts_by_kind`):
+// counted as listed, it is a mismatch; its counters swapped, or the
+// findings counted under no kind, it is failed. The text pins each kind's
+// sentence (swapping them fails).
+#[test]
+fn s7_1_derived_only_findings() {
+    use FindingKind::{DerivedOnlyPost, DerivedOnlyPre};
+    let ok = |s: &Shard| state(Some(s), MAP_OK);
+    let pre = Finding {
+        post: None,
+        ..finding(DerivedOnlyPre, 5, "/src/reg.h", "Reg<int>::r::<definition>")
+    };
+    let post = Finding {
+        pre: None,
+        ..finding(DerivedOnlyPost, 6, "/src/tr.h", "Tr<lib::X>::r::<definition>")
+    };
+    // Three findings, two listed: one more `derived_only_pre` counted.
+    let v = mismatch_verdict(3, vec![pre.clone(), post.clone()], &[]);
+    let counted = ok_shard_all(1, v.clone(), Some([0, 0, 0, 0, 0, 0, 2, 1]));
+    assert_eq!(ok(&counted), State::Mismatch);
+    // Counted under the wrong one of the two kinds (the sum still holds):
+    // a kind lists more findings than its counter counts.
+    let swapped = ok_shard_all(1, v.clone(), Some([0, 0, 0, 0, 0, 0, 3, 0]));
+    assert_eq!(ok(&swapped), State::Failed);
+    let swapped = ok_shard_all(1, v.clone(), Some([0, 0, 0, 0, 0, 0, 0, 3]));
+    assert_eq!(ok(&swapped), State::Failed);
+    // Counted as `derived_changed` instead.
+    let elsewhere = ok_shard_all(1, v, Some([0, 0, 0, 0, 3, 0, 0, 0]));
+    assert_eq!(ok(&elsewhere), State::Failed);
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    r.add(&d(1), b"/src/a.cpp", Some(&counted), MAP_OK);
+    let j = r.to_json();
+    assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(3));
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+    let t = r.to_text();
+    const WHY: &str = "in this translation unit (the translation unit emits it unreferenced: \
+        its initialiser or destructor runs, or it is a `constructor`, `destructor` or `used` \
+        function or variable)";
+    let says_pre = format!("  says `Reg<int>::r` is no longer instantiated {WHY}\n");
+    let says_post = format!("  says `Tr<lib::X>::r` is now instantiated {WHY}\n");
+    assert!(t.contains(&says_pre), "{t}");
+    assert!(t.contains(&says_post), "{t}");
+    assert_eq!(t.matches("  says ").count(), 2, "{t}");
 }
 
 // §7 "This run's shard" (§7.3, `Report::add`): a shard of another observer

@@ -36,3 +36,17 @@ bad-9:  mismatch derived_only_pre n::S::s<int>()::<definition>
 # pre-10: the member template is `used`: its instantiation was emitted.
 good-10: none as pre
 bad-10:  mismatch derived_only_pre n::S::s<int>()::<definition>
+# pre-11 to pre-14 (WP-155 fix round, B1; the second review's
+# zz_rv155-a-local-class): the member template's body declares a function
+# clang emits with it: a local class's member function with
+# `constructor` (pre-11) or `used` (pre-12), a lambda's call operator with
+# `used` (pre-13), and a local class with `constructor` inside a lambda's
+# body (pre-14). The definition unit of n::S::s<int>() is marked.
+good-11: none as pre
+bad-11:  mismatch derived_only_pre n::S::s<int>()::<definition>
+good-12: none as pre
+bad-12:  mismatch derived_only_pre n::S::s<int>()::<definition>
+good-13: none as pre
+bad-13:  mismatch derived_only_pre n::S::s<int>()::<definition>
+good-14: none as pre
+bad-14:  mismatch derived_only_pre n::S::s<int>()::<definition>

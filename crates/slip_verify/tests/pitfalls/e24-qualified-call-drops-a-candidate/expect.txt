@@ -10,3 +10,23 @@ bad:  mismatch derived_only_pre Tr<lib::X>::r::<definition>
 # pre-2: the candidate instantiated only a constant (zz153-q3, a trait's
 # static constexpr member): nothing is emitted, the edit is correct.
 good-2: verified
+# pre-3 to pre-6 (WP-155 fix round, B2; the second review's
+# zz-rv155-h-extra): the lost candidate instantiates a Tr<lib::X>::r that
+# clang does not emit (its initialisation is constant, its destruction
+# trivial), so the requalification changes nothing that runs and is
+# verified. pre-3: `= 0` (rule 2, plainly constant); pre-4: a constexpr
+# constructor (rule 4: Slip cannot have it evaluated, so it is marked);
+# pre-5: a thread-local `= 0` (rule 3); pre-6: a class with a trivial
+# default constructor and no initialiser (rule 1).
+good-3: verified
+good-4: verified
+xfail good-4: WP-155 rule 4: Tr<lib::X>::r{1} is constant-initialised by a constexpr constructor, which Kiln does not evaluate for a non-constexpr variable and Slip cannot ask it to evaluate (shared AST and Oven): marked, a known false finding derived_only_pre until Kiln evaluates every static-storage initialiser (KR9)
+good-5: verified
+good-6: verified
+# pre-7 to pre-10: the mirrors, ::f made f: the candidate is considered
+# again and instantiates the same Tr<lib::X>::r.
+good-7: verified
+good-8: verified
+xfail good-8: WP-155 rule 4: as good-4, derived_only_post
+good-9: verified
+good-10: verified

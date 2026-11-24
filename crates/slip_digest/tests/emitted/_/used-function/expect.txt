@@ -1,4 +1,2 @@
 marked keep()
-# Not constant-initialised as far as the AST says (a declared unit).
-marked-a x
 marked-a K<int>::k()::<definition>
