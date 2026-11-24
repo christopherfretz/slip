@@ -1,0 +1,3 @@
+# WP-146 stage 1. S8: the owned definer of peek, which sees the dependency's fwd.h alone.
+made fresh::peek(const old::D &)
+fixed T old::D

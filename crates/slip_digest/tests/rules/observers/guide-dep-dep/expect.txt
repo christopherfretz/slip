@@ -1,0 +1,2 @@
+# WP-146 ruling 2, F3: a dependency's deduction guide of its own template, in old.
+fixed T old::Box

@@ -1,0 +1,2 @@
+rule function | post fresh | name-of post fresh::g(int) | disc-of post fresh::g(int) | post old | id g
+# vacuous

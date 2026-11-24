@@ -1,0 +1,2 @@
+# WP-146 stage 1. S2: the owned definer of W, in w.h.
+made fresh::W

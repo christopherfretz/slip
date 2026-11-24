@@ -1,0 +1,2 @@
+# WP-146 stage 1. S13: the observer without d.h.
+made fresh::f1()

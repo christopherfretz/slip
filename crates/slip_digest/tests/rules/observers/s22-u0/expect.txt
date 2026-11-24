@@ -1,0 +1,3 @@
+# WP-146 stage 1. S22, a limit: a friend only the dependency's class template declares; this observer instantiates D<int>.
+fixed T old::D
+fixed T old::peek(old::D<int> &)

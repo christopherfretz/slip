@@ -311,6 +311,23 @@ impl Counting {
     }
 }
 
+/// The rule that made owned entity `e`'s key (WP-146 stage 1,
+/// `own_lists.rs`): the rule its own key matched; else, for a member a
+/// namespace rule counts (its parent a namespace), the least rule that
+/// matched a level of its chain of namespaces in the owned view (the
+/// rules it would count in `kept_via` were its key kept). `None` when no
+/// rule did.
+pub(crate) fn made_by(c: &Counting, e: DeclId) -> Option<usize> {
+    let entry = c.entries.get(&e)?;
+    if let Some(Trace::Via(r)) = entry.trace {
+        return Some(r);
+    }
+    if !entry.member {
+        return None;
+    }
+    chain(c, e).and_then(|(_, via)| via.first().copied())
+}
+
 /// `Output::rule_use`: one `Use` per rule with a count that is not 0,
 /// sorted by rule; and the indices into `kept` of the keys some entity
 /// has, ascending.

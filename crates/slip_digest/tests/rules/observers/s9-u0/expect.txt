@@ -1,0 +1,7 @@
+# WP-146 stage 1. S9, an owned header both ways: entered through the read-only ro_inc.h.
+fixed M fresh::g(int)
+changed r
+removed old::g(int)
+removed old
+added fresh::g(int)
+added fresh

@@ -1,0 +1,2 @@
+# WP-146 stage 1. S19: the owned static helper, moved.
+lists empty
