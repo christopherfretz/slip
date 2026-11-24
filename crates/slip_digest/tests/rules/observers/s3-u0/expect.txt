@@ -1,0 +1,2 @@
+# WP-146 stage 1. S3, an extern variable: the dependency's observer.
+fixed T old::level

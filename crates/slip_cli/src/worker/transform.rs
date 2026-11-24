@@ -25,6 +25,9 @@ pub const NO_SCRIPT: &str = "a script transform needs a worker built with slip_s
 /// (`spec/edits.md` §8.1: the walk's output is complete before the
 /// transform is entered).
 ///
+/// `id` is the job's request id, the content id of the `TRFM` bytes read
+/// ([`read_transform`]); the section names it.
+///
 /// The transform is chosen by the request's kind: `rename` is
 /// `slip_refactor::run_counted` with keys over `input` and no rules (the
 /// pre-image's key space) and the `FileRef` of each buffer that is an
@@ -36,6 +39,7 @@ pub const NO_SCRIPT: &str = "a script transform needs a worker built with slip_s
 /// rename has no failed run).
 pub fn run_transform(
     transform: &Transform,
+    id: Digest,
     unit: &slip_kiln::Unit<'_>,
     input: &Input<'_>,
 ) -> Result<(Edits, Vec<Counter>), String> {
@@ -52,7 +56,7 @@ pub fn run_transform(
                 let at = inputs.binary_search_by(|f| f.path.as_slice().cmp(path)).ok()?;
                 Some(inputs[at].clone())
             };
-            slip_refactor::run_counted(transform, unit, &mut keys, &files)
+            slip_refactor::run_counted(transform, id, unit, &mut keys, &files)
         }
         TransformKind::Script => Err(NO_SCRIPT.to_owned()),
     }

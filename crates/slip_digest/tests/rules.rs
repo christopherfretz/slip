@@ -39,6 +39,16 @@
 //!   `RuleTable::new` itself refuses (two rules that produce one key,
 //!   `spec/verify.md` §2.1, WP-111 review F1) cannot be made without the
 //!   refusal: that it is not made is the check. Nothing else is checked.
+//! - `made <name>`, `fixed T <name>`, `fixed M <name>` (WP-146 stage 1):
+//!   the post-image's lists of ownership (`Output::made`, `Output::fixed`,
+//!   `own_lists.rs`), by the name each entry gives; `lists empty` says
+//!   both are empty. Optional: with no such line the lists are not
+//!   checked; with one, they are exactly the lines given, in the lists'
+//!   order (made, then fixed, each by its entries' order: key first), not
+//!   sorted by the runner. A made entry with no post-image key (`Made::post`
+//!   `None`) is `made <name> no-post`. Whatever `expect.txt` says, each
+//!   list must be strictly ascending. On a mismatch, and under
+//!   `SLIP_DIGEST_DUMP`, the runner prints the lists the walk gave.
 //!
 //! # `kept.txt` (WP-111)
 //!
@@ -181,16 +191,40 @@ struct Expected {
     collisions: u64,
     /// `refused <text>`.
     refused: Option<String>,
+    /// The `made` and `fixed` lines, in their order; `lists empty` is an
+    /// empty list; `None` when there is no such line.
+    lists: Option<Vec<String>>,
 }
 
 fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
     let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
     let (lines, exact, own) = common::expect_text(&text, |l| {
-        l.starts_with("use ") || l.starts_with("collisions ") || l.starts_with("refused ")
+        l.starts_with("use ")
+            || l.starts_with("collisions ")
+            || l.starts_with("refused ")
+            || l.starts_with("made ")
+            || l.starts_with("fixed ")
+            || l == "lists empty"
     })?;
     let mut uses = Vec::new();
     let (mut collisions, mut refused) = (0, None);
+    let mut lists: Option<Vec<String>> = None;
     for (n, l) in own {
+        if l == "lists empty" {
+            lists.get_or_insert_with(Vec::new);
+            continue;
+        }
+        if l.starts_with("made ") || l.starts_with("fixed ") {
+            let ok =
+                l.starts_with("made ") || l.starts_with("fixed T ") || l.starts_with("fixed M ");
+            if !ok {
+                return Err(format!(
+                    "{file}:{n}: `{l}` is not `fixed T <name>` or `fixed M <name>`"
+                ));
+            }
+            lists.get_or_insert_with(Vec::new).push(l.trim().to_owned());
+            continue;
+        }
         if let Some(c) = l.strip_prefix("collisions ") {
             collisions = c
                 .trim()
@@ -221,7 +255,7 @@ fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
             format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n> [kept_via <n>]`")
         })?);
     }
-    Ok(Expected { lines, exact, uses, collisions, refused })
+    Ok(Expected { lines, exact, uses, collisions, refused, lists })
 }
 
 /// The lines of `rules.txt` (absent: none).
@@ -393,9 +427,33 @@ fn post_side(
             if first.kept != (0..kept.len() as u64).collect::<Vec<_>>() {
                 return Err(format!("kept: {} keys, the walk saw {:?}", kept.len(), first.kept));
             }
+            if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
+                // WP-146's inertness check: every field the walk gave
+                // before its lists, in full (not the lists themselves).
+                let o = &first;
+                eprintln!("=== {} post {own:?}", common::rel(dir));
+                eprintln!("  digests {:?}", o.digests);
+                eprintln!("  counters {:?}", o.counters);
+                eprintln!("  causes {:?}", o.causes);
+                eprintln!("  names {:?}", o.names);
+                eprintln!("  rule_use {:?}", o.rule_use);
+                eprintln!("  kept {:?}", o.kept);
+                eprintln!("  name_strings {:?}", o.name_strings);
+            }
             let off = digest_under(input, &t.table, ro);
-            let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..first.clone() };
-            if !off.rule_use.is_empty() || !off.kept.is_empty() || cleared != off {
+            let cleared = Output {
+                rule_use: Vec::new(),
+                kept: Vec::new(),
+                made: Vec::new(),
+                fixed: Vec::new(),
+                ..first.clone()
+            };
+            if !off.rule_use.is_empty()
+                || !off.kept.is_empty()
+                || !off.made.is_empty()
+                || !off.fixed.is_empty()
+                || cleared != off
+            {
                 return Err("the post-image under its table: rule_use on and off differ".into());
             }
             slip_digest::records::key_agreement(input, &t.table, ro)
@@ -599,7 +657,24 @@ fn one(
             ));
         }
     }
+    let lists = list_lines(&post.digested.output);
+    let o = &post.digested.output;
+    if !o.made.windows(2).all(|w| w[0] < w[1]) || !o.fixed.windows(2).all(|w| w[0] < w[1]) {
+        problems.push("the lists are not strictly ascending".into());
+    }
+    if let Some(want) = &e.lists
+        && *want != lists
+    {
+        problems.push(format!(
+            "lists: expected\n  {}\nthe walk gave\n  {}",
+            if want.is_empty() { "lists empty".to_owned() } else { want.join("\n  ") },
+            if lists.is_empty() { "lists empty".to_owned() } else { lists.join("\n  ") }
+        ));
+    }
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
+        for l in &lists {
+            eprintln!("  lists {} {own:?}: {l}", common::rel(dir));
+        }
         eprintln!("--- {}: {} rules, {own:?}", common::rel(dir), post.table.rules.len());
         for (n, r) in &post.table.rules {
             eprintln!("  line {n}: {r:?}");
@@ -622,11 +697,238 @@ fn one(
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
 
+/// The lists of ownership of `o` as `expect.txt` writes them (`made
+/// <name>`, `made <name> no-post`, `fixed T|M <name>`), in their order.
+fn list_lines(o: &Output) -> Vec<String> {
+    let mut out: Vec<String> = o
+        .made
+        .iter()
+        .map(|m| {
+            if m.post.is_some() {
+                format!("made {}", m.name)
+            } else {
+                format!("made {} no-post", m.name)
+            }
+        })
+        .collect();
+    out.extend(o.fixed.iter().map(|f| {
+        let t = match f.as_ {
+            slip_digest::FixedAs::T => "T",
+            slip_digest::FixedAs::M => "M",
+        };
+        format!("fixed {t} {}", f.name)
+    }));
+    out
+}
+
 /// Every case of `tests/rules/`.
 #[test]
 fn rules() {
     common::run_all("rules", case);
 }
+
+/// The post-image's output of case `dir` under its own ownership (the
+/// listed files read-only if it has `readonly.txt`, else every file
+/// owned): the observer the case stands for.
+fn observer(dir: &Path) -> Output {
+    let pre = common::with_side(dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+    })
+    .unwrap()
+    .unwrap();
+    let own = match readonly_of(dir).unwrap() {
+        Some(l) => Own::Listed(l),
+        None => Own::All,
+    };
+    post_side(dir, &pre, &[], &own, false).unwrap().digested.output
+}
+
+fn observers_dir(name: &str) -> std::path::PathBuf {
+    common::manifest().join("tests/rules/observers").join(name)
+}
+
+/// WP-146 stage 1: every entry of the lists of some cases, in full and in
+/// the lists' order: its rule (made), its test (fixed), its name and its
+/// place. In `places` the fixed entry `old::f()` is at its first
+/// declaration in a read-only file (d.h, before e.h), not at its first
+/// declaration (in the owned main file); in `f1-rename-x` the two made
+/// entries have two rules.
+#[test]
+fn wp146_list_entries() {
+    let place = |f: &[u8], l: u64, c: u64| format!("{}:{l}:{c}", String::from_utf8_lossy(f));
+    let mut got = Vec::new();
+    for case in ENTRIES_CASES {
+        let o = observer(&observers_dir(case));
+        for m in &o.made {
+            got.push(format!(
+                "{case}: made {} rule {} {}",
+                m.name,
+                m.rule,
+                place(&m.file, m.line, m.column)
+            ));
+        }
+        for f in &o.fixed {
+            got.push(format!(
+                "{case}: fixed {} {:?} {}",
+                f.name,
+                f.as_,
+                place(&f.file, f.line, f.column)
+            ));
+        }
+    }
+    assert_eq!(got, ENTRIES, "\n{}", got.join("\n"));
+}
+
+const ENTRIES_CASES: &[&str] = &["places", "f1-rename-x"];
+const ENTRIES: &[&str] = &[
+    "places: made fresh::C rule 0 main.cpp:5:26",
+    "places: made fresh::inner2::Z rule 0 main.cpp:5:69",
+    "places: fixed old::f() T d.h:1:22",
+    "places: fixed old::inner::Y T d.h:2:42",
+    "f1-rename-x: made fresh::D2 rule 1 main.cpp:1:26",
+    "f1-rename-x: made fresh::k rule 0 main.cpp:1:45",
+];
+
+/// WP-146 ruling 2, F1: a made entity whose post-image key cannot be
+/// formed. `tests/own_lists/deep-no-post` (outside `tests/rules/`: the
+/// runner's key agreement refuses a key the walk formed only through its
+/// memo) nests `fresh::X` 205 namespaces deep. The walk keys each level
+/// as it reaches it, so `X`'s own key is formed; its key in the dependency
+/// view climbs every level at once, past the depth limit (200): the entry
+/// is in `made` with `post` `None`, not dropped.
+#[test]
+fn wp146_made_without_post() {
+    let dir = common::manifest().join("tests/own_lists/deep-no-post");
+    let pre = common::with_side(&dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+    })
+    .unwrap()
+    .unwrap();
+    let lines = lines_of(&dir).unwrap();
+    let made = common::with_side(&dir, Side::B, |input| {
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE).unwrap();
+        let t = table(&lines, &pre, &plain).unwrap();
+        digest_with(input, &t.table, ReadOnly::NO_FILE, true, &[]).made
+    })
+    .unwrap();
+    let got: Vec<(String, bool)> = made
+        .iter()
+        .map(|m| (m.name.rsplit("::").next().unwrap_or("").to_owned(), m.post.is_some()))
+        .collect();
+    assert_eq!(got, [("X".to_owned(), false)], "{made:?}");
+}
+
+/// One row of [`wp146_joins`]: the keys stage 3's join reads, by shape.
+enum Join {
+    /// T: the made entry (case, name)'s `key` is the fixed T entry (case,
+    /// name)'s key.
+    T(&'static str, &'static str, &'static str, &'static str),
+    /// M: the made entry's `post` is the fixed M entry's key.
+    M(&'static str, &'static str, &'static str, &'static str),
+    /// No join: no key of either case's made entries (`key` or `post`) is
+    /// the key of a fixed entry of the other.
+    No(&'static str, &'static str),
+}
+
+/// WP-146 ruling 2, F2: per shape, the keys the join of stage 3 reads
+/// (`made.key == fixed.key` for T, `made.post == fixed.key` for M), over
+/// the observers cases. A helper standing for the join, not stage 3.
+#[test]
+fn wp146_joins() {
+    use std::collections::HashMap;
+    let mut outs: HashMap<&str, Output> = HashMap::new();
+    let mut get = |c: &'static str| -> Output {
+        outs.entry(c).or_insert_with(|| observer(&observers_dir(c))).clone()
+    };
+    let mut problems = Vec::new();
+    for row in JOINS {
+        match *row {
+            Join::T(x, made, y, fixed) | Join::M(x, made, y, fixed) => {
+                let m_out = get(x);
+                let f_out = get(y);
+                let (want_as, label) = match row {
+                    Join::T(..) => (slip_digest::FixedAs::T, "T"),
+                    _ => (slip_digest::FixedAs::M, "M"),
+                };
+                let Some(m) = m_out.made.iter().find(|m| m.name == made) else {
+                    problems.push(format!("{x}: no made {made}"));
+                    continue;
+                };
+                let Some(f) = f_out.fixed.iter().find(|f| f.name == fixed && f.as_ == want_as)
+                else {
+                    problems.push(format!("{y}: no fixed {label} {fixed}"));
+                    continue;
+                };
+                let joined = match want_as {
+                    slip_digest::FixedAs::T => m.key == f.key,
+                    slip_digest::FixedAs::M => m.post == Some(f.key),
+                };
+                if !joined {
+                    problems
+                        .push(format!("{x} made {made} and {y} fixed {label} {fixed}: no join"));
+                }
+            }
+            Join::No(a, b) => {
+                let (oa, ob) = (get(a), get(b));
+                for (p, q, pn, qn) in [(&oa, &ob, a, b), (&ob, &oa, b, a)] {
+                    for m in &p.made {
+                        for f in &q.fixed {
+                            if f.key == m.key || Some(f.key) == m.post {
+                                problems.push(format!(
+                                    "{pn} made {} and {qn} fixed {:?} {}: a join",
+                                    m.name, f.as_, f.name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+}
+
+const JOINS: &[Join] = &[
+    Join::T("s1-u1", "fresh::hook(int)", "s1-u0", "old::hook(int)"),
+    Join::T("s2-u1", "fresh::W", "s2-u0", "old::W"),
+    Join::T("s3-u1", "fresh::level", "s3-u0", "old::level"),
+    Join::T("s4-u1", "fresh::conv", "s4-u0", "old::conv"),
+    Join::No("s5-u1", "s5-u0"),
+    Join::T("s6-u1", "fresh::twice(int)", "s6-u0", "old::twice(int)"),
+    Join::T("s6-u0-both", "fresh::twice(int)", "s6-u0-both", "old::twice(int)"),
+    Join::T("s7-u1", "fresh::box", "s7-u0", "old::box"),
+    Join::T("s7-u1", "fresh::box", "s7-h-u1", "old::box"),
+    Join::No("s7-h-u1", "s7-h-u1"),
+    Join::T("s8-u1", "fresh::peek(const old::D &)", "s8-u0", "old::peek(const old::D &)"),
+    Join::No("s8-u1", "s8-u1"),
+    Join::M("s9-u1", "fresh::g(int)", "s9-u0", "fresh::g(int)"),
+    Join::M("s10-u1", "fresh::g(int)", "s10-u0", "fresh::g(int)"),
+    Join::M("s10-own-key-u1", "fresh::g(int)", "s10-own-key-u0", "fresh::g(int)"),
+    Join::No("s11-u0", "s11-u1"),
+    Join::No("s11-u0", "s11-u0"),
+    Join::No("s12-u2", "s1-u0"),
+    Join::No("s12-u2", "s1-u1"),
+    Join::No("s13-u0", "s13-u1"),
+    Join::No("s13-u0", "s13-u0"),
+    Join::No("s14-u1", "s14-u0"),
+    Join::No("s15-u0", "s15-u0"),
+    Join::No("s16-u0", "s16-u0"),
+    Join::No("s17-direct-first", "s17-direct-first"),
+    Join::M("s17-direct-first", "fresh::UserData", "s17-through-first", "fresh::UserData"),
+    Join::M("s18-own-macro", "fresh::Thing", "s18-dep-macro", "fresh::Thing"),
+    Join::No("s19-u0", "s19-u1"),
+    Join::No("s20-u0", "s20-u1"),
+    Join::T("s21-u1", "fresh::id_t", "s21-u0", "old::id_t"),
+    Join::T("s22-u1", "fresh::peek(old::D<int> &)", "s22-u0", "old::peek(old::D<int> &)"),
+    Join::No("s22-u1", "s22-u1"),
+    Join::T("s23-u1", "fresh::hook(int)", "s23-u0", "old::hook(int)"),
+    Join::No("places", "places"),
+    // Ruling 2, F1: a correct edit, renamed while moved onto a name a
+    // dependency already has in the target (or moved to the root): two
+    // entities before and after, no join.
+    Join::No("f1-rename-x", "f1-rename-y"),
+    Join::No("f1-root-x", "f1-root-y"),
+];
 
 /// The reader of `rules.txt` (`common/rules.rs`): every form, and the
 /// errors of the text.

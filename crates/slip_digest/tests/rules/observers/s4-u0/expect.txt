@@ -1,0 +1,2 @@
+# WP-146 stage 1. S4, a function template: the dependency's observer.
+fixed T old::conv

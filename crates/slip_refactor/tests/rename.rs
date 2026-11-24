@@ -139,6 +139,12 @@ fn written_options() -> ParseOptions<'static> {
     o
 }
 
+/// The request's id as the worker passes it: the content id of the
+/// `TRFM` bytes, here those of `t`'s encoding (no ignorable section).
+fn request_id(t: &Transform) -> Digest {
+    slip_model::formats::content_id(&t.to_bytes()).expect("a TRFM has a content id")
+}
+
 fn transform(case: &Case, root: &str) -> Transform {
     Transform {
         kind: TransformKind::Rename,
@@ -204,7 +210,8 @@ fn run_case(case: &Case) -> Ran {
         let ownership = t.ownership.clone();
         let sites = slip_kiln::sites::Sites::new(u, &ownership);
         let (edits, counters) =
-            slip_refactor::run_counted(&t, u, keys, &|f| sites.file_ref(f)).expect("run");
+            slip_refactor::run_counted(&t, request_id(&t), u, keys, &|f| sites.file_ref(f))
+                .expect("run");
         check_counters(&case.name, &edits, &counters);
         edits.validate_against(&case.name);
         // Paths relative to the root, for the rendering.
@@ -706,7 +713,7 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
             slip_digest::map::with_input(u, &subject, |input| {
                 let mut keys = Keys::new(input);
                 let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
-                slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f))
+                slip_refactor::run(&t, request_id(&t), u, &mut keys, &|f| sites.file_ref(f))
                     .map(|e| e.subjects.len())
             })
         })
@@ -746,8 +753,12 @@ fn requests_the_rename_does_not_run() {
                 slip_digest::map::with_input(u, &subject, |input| {
                     let sites = slip_kiln::sites::Sites::new(u, &good.ownership);
                     let files = |f| sites.file_ref(f);
-                    [&good, &keyword, &ucn, &script]
-                        .map(|t| slip_refactor::run(t, u, &mut Keys::new(input), &files).err())
+                    // Each is refused before its id is read; an invalid
+                    // request has no encoding, so the id is a placeholder.
+                    [&good, &keyword, &ucn, &script].map(|t| {
+                        let id = if t == &good { request_id(t) } else { Digest([0x1d; 32]) };
+                        slip_refactor::run(t, id, u, &mut Keys::new(input), &files).err()
+                    })
                 })
             })
             .unwrap();
@@ -1006,7 +1017,8 @@ fn map_shards(
                 slip_digest::map::with_input(u, &subject, |input| {
                     let mut keys = Keys::new(input);
                     let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
-                    slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f)).expect("run")
+                    slip_refactor::run(&t, request_id(&t), u, &mut keys, &|f| sites.file_ref(f))
+                        .expect("run")
                 })
                 .expect("with_input")
             })

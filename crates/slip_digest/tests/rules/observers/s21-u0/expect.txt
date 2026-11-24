@@ -1,0 +1,2 @@
+# WP-146 stage 1. S21, an alias: the dependency's typedef.
+fixed T old::id_t

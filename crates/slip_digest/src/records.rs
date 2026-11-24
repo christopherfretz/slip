@@ -392,6 +392,8 @@ mod tests {
             rule_use: Vec::new(),
             kept: Vec::new(),
             name_strings: Vec::new(),
+            made: Vec::new(),
+            fixed: Vec::new(),
         }
     }
 
@@ -457,6 +459,8 @@ mod tests {
                 rule_use: Vec::new(),
                 kept: Vec::new(),
                 name_strings: Vec::new(),
+                made: Vec::new(),
+                fixed: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

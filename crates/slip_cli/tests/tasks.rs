@@ -10,6 +10,7 @@
 //! parses holds [`LOCK`], and every path is absolute.
 
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -277,6 +278,51 @@ impl Tree {
         (o, shard, declared)
     }
 
+    /// The observer of `main` (a file of the subject made by the test, not
+    /// in the plan) mapped without a transform and published; the
+    /// declared changes of no rule, published.
+    fn map_publish(&self, main: &str, entry: u64) -> (Observer, Digest) {
+        let o = observer_of(&self.subject, main, entry);
+        let shard = self.map(&o, None).unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{main}: {:?}", shard.outcome);
+        self.store
+            .publish_shard(&self.plan_id, Phase::Map, ROUND, &o.id, &shard.to_bytes())
+            .unwrap();
+        let declared = self.store.publish_declared(&Declared::none().to_bytes()).unwrap();
+        (o, declared)
+    }
+
+    /// The verify job of `o` through the overlay `ovly` by `verify` itself,
+    /// with the test hook `with_loading_limit(limit)` when given.
+    fn verify_limit(
+        &self,
+        o: &Observer,
+        ovly: Digest,
+        declared: Digest,
+        limit: Option<usize>,
+    ) -> Result<Shard, String> {
+        let decl =
+            Declared::from_bytes(&self.store.read_declared(&declared).unwrap().unwrap()).unwrap();
+        let mut image = Image::from_post(&self.store, &PostImage::Overlay(ovly)).unwrap();
+        if let Some(n) = limit {
+            image = image.with_loading_limit(n);
+        }
+        let params = Params {
+            pre: ROUND,
+            declared: decl,
+            declared_id: declared,
+            image,
+            limit: 64,
+            locate: 16,
+        };
+        verify(&self.store, &self.job(o, Phase::Verify, None, None), &params)
+    }
+
+    /// An overlay entry for `rel`: `pre` and `post` bytes.
+    fn entry(&self, rel: &str, pre: &[u8], post: &[u8]) -> OverlayFile {
+        OverlayFile { path: self.path(rel), pre: content(pre), post: content(post) }
+    }
+
     /// The subject's files as they are now.
     fn snapshot(&self) -> Vec<(String, Vec<u8>)> {
         FILES
@@ -424,6 +470,15 @@ fn s8_1_map_refusals() {
         tree.map(&a, Some(script_id)).unwrap_err(),
         "a script transform needs a worker built with slip_script"
     );
+    // Refused before anything is parsed (review R11): an observer whose
+    // main file is not there gets the refusal, not the parse's
+    // `diagnosed` shard, which a refusal after the parse would leave.
+    let nowhere = observer_of(&tree.subject, "nowhere.cpp", 10);
+    assert_eq!(
+        tree.map(&nowhere, Some(script_id)).unwrap_err(),
+        "a script transform needs a worker built with slip_script"
+    );
+    assert_ne!(tree.map(&nowhere, None).unwrap().outcome.status, Status::Ok);
 
     // Another request's bytes under this id.
     let other = Digest([0x77; 32]);
@@ -597,6 +652,11 @@ fn s10_4_a_spelling_that_denotes_another() {
     assert!(failed.found.is_some(), "h has a key: {failed:?}");
     assert!(failed.name.contains('h'), "{failed:?}");
     assert_eq!(counter(&a, "verify.spelling.fails"), Some(1));
+    // Every obligation seen holds or fails (review R9: `not_seen` is not
+    // `seen - holds`).
+    let held: u64 = spellings.held.iter().map(|s| s.count).sum();
+    assert_eq!(spellings.seen, held + 1, "{spellings:?}");
+    assert_eq!(counter(&a, "verify.spelling.not_seen"), Some(0));
 }
 
 // spec/verify.md §5.1 "Loading": an overlay whose edit adds an `#include`
@@ -842,17 +902,24 @@ fn s5_1_loading_an_overlay_file_by_identity() {
 fn s5_3_subject_sums_and_n1() {
     let tree = Tree::new("sums");
     let (o, _, declared) = tree.map_c();
-    let mut overlay = tree.include_overlay(&[]);
-    let at = overlay.find(&tree.path("c.cpp")).unwrap();
-    overlay.files[at].pre = content(b"int c = 1;\n");
-    let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
-    let shard = tree.verify_task(&o, ovly, declared).unwrap();
-    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
     let c_cpp = String::from_utf8(tree.path("c.cpp")).unwrap();
-    assert_eq!(
-        reason(&shard),
-        format!("pre-image: the overlay was made from another {c_cpp} than the map phase read")
-    );
+    let c_pre = std::fs::read(tree.subject.join("c.cpp")).unwrap();
+    // Another size; then the same size and other bytes (review R5: the
+    // content is compared, not only the size).
+    let mut same_size = c_pre.clone();
+    same_size[c_pre.len() - 2] ^= 0x01;
+    for pre in [b"int c = 1;\n".to_vec(), same_size] {
+        let mut overlay = tree.include_overlay(&[]);
+        let at = overlay.find(&tree.path("c.cpp")).unwrap();
+        overlay.files[at].pre = content(&pre);
+        let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
+        let shard = tree.verify_task(&o, ovly, declared).unwrap();
+        assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+        assert_eq!(
+            reason(&shard),
+            format!("pre-image: the overlay was made from another {c_cpp} than the map phase read")
+        );
+    }
 
     // `n.cpp` includes `<w.h>` searching `i/` before the subject: the map
     // parse looked for `i/w.h` and found none.
@@ -893,4 +960,325 @@ fn s5_1_a_blob_of_another_size_fails_the_job() {
     let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
     let e = tree.verify_task(&o, ovly, declared).unwrap_err();
     assert!(e.contains(&format!("has {} bytes; the overlay {ovly} gives", V_POST.len())), "{e}");
+}
+
+// WP-074 review F1, spec/verify.md §5.1 "Loading": an overlay two of whose
+// entries are one file gives it two post-images; the job fails, naming
+// both, whatever the observer reads. Hard links `m.h` and `m2.h`; `q.cpp`
+// reads `m2.h`. With `m.h` alone the observer is not verified (another name
+// of the overlay's file, F3); with both entries the job fails. Then the
+// same with two spellings of `w.h` on a volume that ignores case (skipped
+// on one that does not).
+#[test]
+fn s5_1_two_entries_of_one_file_fail_the_job() {
+    let tree = Tree::new("two-entries");
+    let dir = tree.subject.clone();
+    let m1: &[u8] = b"#define M 1\n";
+    let m2: &[u8] = b"#define M 2\n";
+    std::fs::write(dir.join("m.h"), m1).unwrap();
+    std::fs::hard_link(dir.join("m.h"), dir.join("m2.h")).unwrap();
+    std::fs::write(dir.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
+    let (q_cpp, declared) = tree.map_publish("q.cpp", 8);
+    let only = Overlay {
+        edits: Digest([0x0f; 32]),
+        files: vec![tree.entry("m.h", m1, m2)],
+        spellings: Vec::new(),
+    };
+    let only = tree.put_overlay(&only, &[m2]);
+    let shard = tree.verify_limit(&q_cpp, only, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    let both = Overlay {
+        edits: Digest([0x0f; 32]),
+        files: vec![tree.entry("m.h", m1, m2), tree.entry("m2.h", m1, m1)],
+        spellings: Vec::new(),
+    };
+    let both = tree.put_overlay(&both, &[m2, m1]);
+    let err = tree.verify_limit(&q_cpp, both, declared, None).unwrap_err();
+    let (first_name, second_name) = (dir.join("m.h"), dir.join("m2.h"));
+    assert_eq!(
+        err,
+        format!(
+            "the overlay {both} names one file twice: {} and {} are the same file",
+            first_name.display(),
+            second_name.display()
+        )
+    );
+    // An observer that reads neither: the refusal does not depend on what
+    // the observer read.
+    let err = tree.verify_limit(&tree.observer("e.cpp"), both, declared, None).unwrap_err();
+    assert!(err.contains("names one file twice"), "{err}");
+
+    let upper = dir.join("W.h");
+    let lower = std::fs::metadata(dir.join("w.h")).unwrap();
+    let same = std::fs::metadata(&upper)
+        .is_ok_and(|meta| (meta.dev(), meta.ino()) == (lower.dev(), lower.ino()));
+    if !same {
+        eprintln!("the volume tells W.h from w.h: the case half is skipped");
+        return;
+    }
+    std::fs::write(dir.join("k.cpp"), "#include \"W.h\"\nint k = W;\n").unwrap();
+    let (k_cpp, declared) = tree.map_publish("k.cpp", 9);
+    let w_h = std::fs::read(dir.join("w.h")).unwrap();
+    let w3: &[u8] = b"#define W 3\n";
+    let mut files = vec![tree.entry("W.h", &w_h, &w_h), tree.entry("w.h", &w_h, w3)];
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let both = Overlay { edits: Digest([0x0f; 32]), files, spellings: Vec::new() };
+    let both = tree.put_overlay(&both, &[&w_h, w3]);
+    let err = tree.verify_limit(&k_cpp, both, declared, None).unwrap_err();
+    assert!(err.contains("names one file twice"), "{err}");
+}
+
+// WP-074 review F3: an input that is an overlay file by identity and not by
+// path (another name of it) is not blamed on drift.
+#[test]
+fn s5_3_another_name_of_an_overlay_file() {
+    let tree = Tree::new("alias");
+    let s = tree.subject.clone();
+    let m1: &[u8] = b"#define M 1\n";
+    let m2: &[u8] = b"#define M 2\n";
+    std::fs::write(s.join("m.h"), m1).unwrap();
+    std::fs::hard_link(s.join("m.h"), s.join("m2.h")).unwrap();
+    std::fs::write(s.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
+    let (o, declared) = tree.map_publish("q.cpp", 8);
+    let only = Overlay {
+        edits: Digest([0x0f; 32]),
+        files: vec![tree.entry("m.h", m1, m2)],
+        spellings: Vec::new(),
+    };
+    let only = tree.put_overlay(&only, &[m2]);
+    let shard = tree.verify_limit(&o, only, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&shard),
+        format!(
+            "pre-image: {} is another name of the overlay's {}",
+            s.join("m2.h").display(),
+            s.join("m.h").display()
+        )
+    );
+}
+
+// WP-074 review F4: an overlay file the pre shard lists that is gone from
+// disk since the map phase is a fact about the subject, not a failure of
+// the run: it is never given to the front end. Read by the post-image, the
+// parse cannot find it (`not_parsed`, as in the tree form); not read, the
+// observer is `unverifiable` (O2's second part).
+#[test]
+fn s5_1_an_overlay_file_gone_since_the_map_phase() {
+    let tree = Tree::new("gone");
+    let (o, _, declared) = tree.map_c();
+    let w = std::fs::read(tree.subject.join("w.h")).unwrap();
+    let w2: &[u8] = b"#define W 1\n\n";
+    let read = tree.put_overlay(
+        &tree.include_overlay(&[tree.entry("w.h", &w, w2)]),
+        &[C_POST.as_bytes(), V_POST.as_bytes(), w2],
+    );
+    let c_pre = std::fs::read(tree.subject.join("c.cpp")).unwrap();
+    let c_alone: &[u8] = b"int c = 1;\n";
+    let mut files = vec![tree.entry("c.cpp", &c_pre, c_alone), tree.entry("w.h", &w, w2)];
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let not_read = Overlay { edits: Digest([0x0f; 32]), files, spellings: Vec::new() };
+    let not_read = tree.put_overlay(&not_read, &[c_alone, w2]);
+    let shard = tree.verify_limit(&o, not_read, declared, None).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_ne!(kind(&shard), VerdictKind::Unverifiable, "{}", reason(&shard));
+
+    std::fs::remove_file(tree.subject.join("w.h")).unwrap();
+    let shard = tree.verify_limit(&o, read, declared, None).unwrap();
+    assert_eq!(shard.outcome.status, Status::Diagnosed, "{:?}", shard.outcome);
+    let shard = tree.verify_limit(&o, not_read, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&shard),
+        format!(
+            "pre-image: {} is gone since the map phase (run `slip parse` again)",
+            tree.subject.join("w.h").display()
+        )
+    );
+}
+
+// WP-074 review F5, spec/model.md §5.4: a request with an ignorable section
+// a reader skips. The request id is the content id of the stored bytes,
+// and the edits name it.
+#[test]
+fn s8_1_a_request_with_an_ignorable_section() {
+    use slip_model::json::Value;
+    let tree = Tree::new("ignorable");
+    let (t, plain) = tree.rename();
+    let text = slip_model::formats::dump(&t.to_bytes()).unwrap();
+    let mut v = slip_model::json::parse(text.as_bytes()).unwrap();
+    let Value::Object(top) = &mut v else { panic!("a container is an object") };
+    let Some((_, Value::Object(sections))) = top.iter_mut().find(|(k, _)| k == "sections") else {
+        panic!("a container has sections")
+    };
+    sections.push(("#64".into(), Value::Object(vec![("hex".into(), Value::Str("00".into()))])));
+    let bytes = slip_model::formats::undump(&v).unwrap();
+    assert_ne!(bytes, t.to_bytes());
+    let id = tree.store.publish_object(Object::Transform, &bytes).unwrap();
+    assert_ne!(id, plain);
+    let shard = tree.map(&tree.observer("a.cpp"), Some(id)).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_eq!(shard.edits.as_ref().unwrap().transform, id);
+}
+
+// WP-074 review F2, spec/verify.md §5.3 N2 in the overlay form: a found
+// place (`lnk/l.h`) that leads, since the map phase, to another file of the
+// same bytes. The file the map parse read is still there and unchanged (no
+// other guard sees it); only N2 does.
+#[test]
+fn s5_3_n2_alone() {
+    let tree = Tree::new("n2");
+    let s = tree.subject.clone();
+    std::fs::create_dir_all(s.join("d1")).unwrap();
+    std::fs::create_dir_all(s.join("d2")).unwrap();
+    std::fs::write(s.join("d1/l.h"), "#define L 1\n").unwrap();
+    std::fs::write(s.join("d2/l.h"), "#define L 1\n").unwrap();
+    std::os::unix::fs::symlink("d1", s.join("lnk")).unwrap();
+    std::fs::write(s.join("l.cpp"), "#include \"lnk/l.h\"\nint l = L;\n").unwrap();
+    let (o, declared) = tree.map_publish("l.cpp", 7);
+    let ovly = tree.put_overlay(&tree.include_overlay(&[]), &[]);
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    std::fs::remove_file(s.join("lnk")).unwrap();
+    std::os::unix::fs::symlink("d2", s.join("lnk")).unwrap();
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    assert!(reason(&shard).contains("now leads to"), "{}", reason(&shard));
+}
+
+// spec/verify.md §5.3 O2's second part in the overlay form (review R6): the
+// edit drops `c.cpp`'s `#include "w.h"`; `w.h` then changes on disk. The
+// post-image does not read it; only `left_behind` sees it.
+#[test]
+fn s5_3_left_behind_in_the_overlay_form() {
+    let tree = Tree::new("left");
+    let (o, _, declared) = tree.map_c();
+    let c_pre = std::fs::read(tree.subject.join("c.cpp")).unwrap();
+    let c_post: &[u8] = b"#define W 1\nint c = W;\n";
+    let overlay = Overlay {
+        edits: Digest([0x0f; 32]),
+        files: vec![tree.entry("c.cpp", &c_pre, c_post)],
+        spellings: Vec::new(),
+    };
+    let ovly = tree.put_overlay(&overlay, &[c_post]);
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    std::fs::write(tree.subject.join("w.h"), "#define W 2\n").unwrap();
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&shard),
+        format!(
+            "pre-image: {} changed since the map phase (run `slip parse` again)",
+            tree.subject.join("w.h").display()
+        )
+    );
+}
+
+// spec/verify.md §5.3 G4 in the overlay form (review R4): a command that
+// names a response file.
+#[test]
+fn s5_3_g4_in_the_overlay_form() {
+    let tree = Tree::new("g4");
+    let s = tree.subject.clone();
+    std::fs::write(s.join("flags.rsp"), "-DQ=1\n").unwrap();
+    std::fs::write(s.join("r.cpp"), "int r = Q;\n").unwrap();
+    let mut o = observer_of(&s, "r.cpp", 11);
+    let word = format!("@{}", s.join("flags.rsp").display());
+    o.command.argv.insert(2, word.as_bytes().to_vec());
+    o.id = o.command.observer_id();
+    let shard = tree.map(&o, None).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    tree.store.publish_shard(&tree.plan_id, Phase::Map, ROUND, &o.id, &shard.to_bytes()).unwrap();
+    let declared = tree.store.publish_declared(&Declared::none().to_bytes()).unwrap();
+    let ovly = tree.put_overlay(&tree.include_overlay(&[]), &[]);
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&shard),
+        format!(
+            "post-image: the command names the response file {word}, whose words slip cannot examine"
+        )
+    );
+}
+
+// spec/verify.md §5.1 "Loading" (review R14): the first parse has an error
+// (the disk's `z.h`, which the edit newly includes) that the overlay's
+// `z.h` fixes: the loop gives it and parses again although the parse was
+// diagnosed.
+#[test]
+fn s5_1_a_diagnosed_parse_that_loading_fixes() {
+    let tree = Tree::new("diagnosed");
+    std::fs::write(tree.subject.join("z.h"), "int zz = nope;\n").unwrap();
+    let (o, _, declared) = tree.map_c();
+    let c_pre = std::fs::read(tree.subject.join("c.cpp")).unwrap();
+    let c_post: &[u8] = b"#include \"w.h\"\n#include \"z.h\"\nint c = Z;\n";
+    let z_post: &[u8] = b"#define Z 1\n";
+    let mut files =
+        vec![tree.entry("c.cpp", &c_pre, c_post), tree.entry("z.h", b"int zz = nope;\n", z_post)];
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let overlay = Overlay { edits: Digest([0x0f; 32]), files, spellings: Vec::new() };
+    let ovly = tree.put_overlay(&overlay, &[c_post, z_post]);
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+}
+
+// spec/verify.md §5.1 "Loading" (review R2): the edit embeds `y.bin`, an
+// overlay file the map parse did not read and whose disk bytes are not the
+// overlay's. The loop gives it; stopped after one parse, O1.
+#[test]
+fn s5_1_embed_of_an_overlay_file() {
+    let tree = Tree::new("embed");
+    let s = tree.subject.clone();
+    std::fs::write(s.join("x.bin"), "AB").unwrap();
+    std::fs::write(s.join("y.bin"), "ZZ").unwrap();
+    let pre: &[u8] = b"const char d[] = {\n#embed \"x.bin\"\n};\n";
+    let post: &[u8] = b"const char d[] = {\n#embed \"y.bin\"\n};\n";
+    std::fs::write(s.join("em.cpp"), pre).unwrap();
+    let (o, declared) = tree.map_publish("em.cpp", 10);
+    let mut files = vec![tree.entry("em.cpp", pre, post), tree.entry("y.bin", b"ZZ", b"AB")];
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let overlay = Overlay { edits: Digest([0x0f; 32]), files, spellings: Vec::new() };
+    let ovly = tree.put_overlay(&overlay, &[post, b"AB"]);
+    let shard = tree.verify_limit(&o, ovly, declared, None).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    let y = tree.path("y.bin");
+    let input = shard.inputs.as_ref().unwrap().iter().find(|f| f.path == y).expect("y.bin");
+    assert_eq!(input.content, content_digest(b"AB"));
+    let stopped = tree.verify_limit(&o, ovly, declared, Some(1)).unwrap();
+    assert_eq!(kind(&stopped), VerdictKind::Unverifiable);
+    assert_eq!(
+        reason(&stopped),
+        format!("post-image: {} was not read through the overlay", s.join("y.bin").display())
+    );
+}
+
+// spec/verify.md §10.4 (review R17): the obligations checked are those of
+// the overlay files the post-image read, not of those given. `u.cpp`
+// includes `a.cpp` before the edit and not after: `a.cpp` (whose call of
+// `f` is an obligation) is given and not read, so nothing is seen.
+#[test]
+fn s10_4_obligations_of_the_files_read() {
+    let tree = Tree::new("obligations-read");
+    let r = tree.map_and_reduce();
+    let built = slip_apply::build(&r.set, r.set_id, &Disk).unwrap();
+    let mut overlay = built.overlay.clone();
+    assert!(!overlay.spellings.is_empty());
+    let u_pre: &[u8] = b"#include \"a.cpp\"\nint u = x;\n";
+    let u_post: &[u8] = b"int u = 0;\n";
+    std::fs::write(tree.subject.join("u.cpp"), u_pre).unwrap();
+    let (o, _) = tree.map_publish("u.cpp", 12);
+    overlay.files.push(tree.entry("u.cpp", u_pre, u_post));
+    assert!(
+        overlay.files.windows(2).all(|w| w[0].path < w[1].path),
+        "u.cpp sorts last: no obligation's file index moves"
+    );
+    let mut blobs: Vec<&[u8]> = built.blobs.iter().map(|(_, b)| b.as_slice()).collect();
+    blobs.push(u_post);
+    let ovly = tree.put_overlay(&overlay, &blobs);
+    let shard = tree.verify_limit(&o, ovly, r.declared_id, None).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    let spellings = shard.spellings.as_ref().expect("the overlay has obligations");
+    assert_eq!(spellings.seen, 0, "{spellings:?}");
+    assert_eq!(counter(&shard, "verify.spelling.obligations"), Some(0));
 }

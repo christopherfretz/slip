@@ -1,0 +1,2 @@
+# WP-146 stage 1. S16, a limit: a name pasted by the dependency's macro.
+made fresh::legacy_init()

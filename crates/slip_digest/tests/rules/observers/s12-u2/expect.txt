@@ -1,0 +1,2 @@
+# WP-146 stage 1. S12: the third observer, which sees neither declaration.
+lists empty

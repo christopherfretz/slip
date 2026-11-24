@@ -1,0 +1,1 @@
+namespace old { struct D; }

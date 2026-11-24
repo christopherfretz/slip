@@ -1166,7 +1166,12 @@ output.
   `spec/verify.md` §5.1); then does `spec/verify.md` §5.2. A job
   without `post`, a container that is absent or invalid or has another
   id, and an image that breaks `spec/verify.md` §5.1 are each `Err` (the
-  worker answers `Failed`), naming which. The `Declared`, its
+  worker answers `Failed`), naming which. For the overlay form that
+  includes a blob that is absent, does not hash to its name or is not of
+  the overlay's size, and an overlay two of whose entries are one file
+  now (both paths named; `spec/verify.md` §5.1 "Loading"); an overlay
+  file gone from disk is not one (the observer is `not_parsed` or
+  `unverifiable`). The `Declared`, its
   `RuleTable` and an overlay are kept from one job to the next while
   the ids are the same.
 - **A job that does not fit its phase** (a map job with a `post`, a

@@ -18,6 +18,17 @@
 //! the file at the input's path now. Whether the unit read it through the
 //! overlay is never decided here from the path: the caller says, per
 //! input, how the unit read it ([`Read`], from `Unit::overlaid`).
+//!
+//! **One file, one entry.** Before anything is loaded, [`Loaded::index`]
+//! reads the identity of every entry's file (one `stat` per entry per job)
+//! and refuses an overlay two of whose entries are one file now (hard
+//! links, or two spellings of one name on a volume that ignores case): such
+//! an overlay gives the file two post-images, and which one an observer
+//! read would depend on its spelling. The refusal is a failure of the job,
+//! as a blob that does not match is: the run's input is wrong for every
+//! observer. The same `stat` says which entries have no file now: those are
+//! never given to the front end (it cannot replace a file that is not
+//! there), and the guards say why the job is not verified.
 
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
@@ -53,9 +64,14 @@ pub struct Loaded<'o> {
     given: Vec<bool>,
     /// The bytes of the blobs loaded (the test of "no others").
     bytes: u64,
-    /// The identity of each entry's file now, by identity; made once, when
-    /// an input's path is not an entry's.
+    /// The identity of each entry's file now, by identity; made by
+    /// [`Loaded::index`], or else once, when an input's path is not an
+    /// entry's.
     identities: OnceLock<HashMap<(u64, u64), usize>>,
+    /// By index in the overlay's `files`: whether a regular file is at its
+    /// path (links followed), as [`Loaded::index`] found it; all `true`
+    /// until then.
+    present: Vec<bool>,
 }
 
 /// The identity (device, inode) of the file at `path`, links followed.
@@ -73,7 +89,45 @@ impl<'o> Loaded<'o> {
             given: vec![false; overlay.files.len()],
             bytes: 0,
             identities: OnceLock::new(),
+            present: vec![true; overlay.files.len()],
         }
+    }
+
+    /// Reads the identity of every entry's file, once per job and before
+    /// anything is loaded (the module documentation): the index
+    /// [`Loaded::entry_of`] uses, and which entries have no file now.
+    ///
+    /// # Errors
+    ///
+    /// Two entries are one file now (the same device and inode): the
+    /// overlay gives it two post-images, a failure of the job naming both
+    /// paths.
+    pub fn index(&mut self) -> Result<(), String> {
+        let mut index: HashMap<(u64, u64), usize> = HashMap::new();
+        for (i, f) in self.overlay.files.iter().enumerate() {
+            let meta = std::fs::metadata(std::ffi::OsStr::from_bytes(&f.path)).ok();
+            self.present[i] = meta.as_ref().is_some_and(std::fs::Metadata::is_file);
+            let Some(m) = meta else { continue };
+            if let Some(&j) = index.get(&(m.dev(), m.ino())) {
+                return Err(format!(
+                    "the overlay {} names one file twice: {} and {} are the same file",
+                    self.id,
+                    crate::image::show_path(&self.overlay.files[j].path),
+                    crate::image::show_path(&f.path)
+                ));
+            }
+            index.insert((m.dev(), m.ino()), i);
+        }
+        // `index` runs once, first; an `entry_of` before it made the same
+        // map, without the check.
+        let _ = self.identities.set(index);
+        Ok(())
+    }
+
+    /// Whether the entry at `i` had no regular file at its path when
+    /// [`Loaded::index`] ran.
+    pub fn is_gone(&self, i: usize) -> bool {
+        !self.present[i]
     }
 
     /// The overlay.
@@ -140,7 +194,8 @@ impl<'o> Loaded<'o> {
 
     /// Loads the blobs of the overlay files among `paths` (by path: those
     /// the overlay names) that are not loaded yet; returns how many it
-    /// loaded. A path the overlay does not name is skipped.
+    /// loaded. A path the overlay does not name is skipped, and so is an
+    /// entry [`Loaded::index`] found gone.
     ///
     /// # Errors
     ///
@@ -150,17 +205,21 @@ impl<'o> Loaded<'o> {
         store: &Store,
         paths: &mut dyn Iterator<Item = &[u8]>,
     ) -> Result<usize, String> {
-        let indices: Vec<usize> = paths.filter_map(|p| self.overlay.find(p)).collect();
+        let indices: Vec<usize> =
+            paths.filter_map(|p| self.overlay.find(p)).filter(|&i| self.present[i]).collect();
         self.load_indices(store, &mut indices.into_iter())
     }
 
-    /// Every file of the overlay (the pre shard is not usable).
+    /// Every file of the overlay (the pre shard is not usable) but those
+    /// [`Loaded::index`] found gone.
     ///
     /// # Errors
     ///
     /// As [`Loaded::load_indices`].
     pub fn load_all(&mut self, store: &Store) -> Result<usize, String> {
-        self.load_indices(store, &mut (0..self.overlay.files.len()))
+        let present: Vec<usize> =
+            (0..self.overlay.files.len()).filter(|&i| self.present[i]).collect();
+        self.load_indices(store, &mut present.into_iter())
     }
 
     /// The overlay file `path` is, by path or else by identity (the module
@@ -179,6 +238,16 @@ impl<'o> Loaded<'o> {
                 .collect()
         });
         index.get(&id).copied()
+    }
+
+    /// The path of the overlay entry that `path` is another name of: the
+    /// entry `path` is by identity when the overlay does not name `path`.
+    pub fn alias_of(&self, path: &[u8]) -> Option<&'o [u8]> {
+        if self.overlay.find(path).is_some() {
+            return None;
+        }
+        let overlay: &'o Overlay = self.overlay;
+        self.entry_of(path).map(|i| overlay.files[i].path.as_slice())
     }
 
     /// The overlay files that a parse with `inputs` (each read as `read`

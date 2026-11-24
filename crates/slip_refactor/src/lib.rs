@@ -27,9 +27,14 @@ mod rename;
 use slip_kiln::Unit;
 use slip_kiln::kiln::source::FileId;
 use slip_model::edits::{Edits, Stance};
-use slip_model::{Counter, FileRef, Transform};
+use slip_model::{Counter, Digest, FileRef, Transform};
 
 /// `spec/edits.md` §9.7: the native rename over one parsed observer.
+///
+/// `id` is the request's id, the content id of the `TRFM` bytes the caller
+/// read (`spec/model.md` §5.4: of the stored bytes, which may hold
+/// ignorable sections a re-encoding of `transform` drops); the section's
+/// `transform` is `id`.
 ///
 /// `files` gives the `FileRef` of a buffer that is one of the shard's
 /// inputs (the worker passes `Sites::file_ref`'s answer). `keys` is a
@@ -52,11 +57,12 @@ use slip_model::{Counter, FileRef, Transform};
 /// As said.
 pub fn run(
     transform: &Transform,
+    id: Digest,
     unit: &Unit<'_>,
     keys: &mut slip_digest::query::Keys<'_>,
     files: &dyn Fn(FileId) -> Option<FileRef>,
 ) -> Result<Edits, String> {
-    run_counted(transform, unit, keys, files).map(|(edits, _)| edits)
+    run_counted(transform, id, unit, keys, files).map(|(edits, _)| edits)
 }
 
 /// [`run`], with the counters a map shard of a transform carries
@@ -70,11 +76,12 @@ pub fn run(
 /// As [`run`].
 pub fn run_counted(
     transform: &Transform,
+    id: Digest,
     unit: &Unit<'_>,
     keys: &mut slip_digest::query::Keys<'_>,
     files: &dyn Fn(FileId) -> Option<FileRef>,
 ) -> Result<(Edits, Vec<Counter>), String> {
-    let (edits, refs) = rename::run(transform, unit, keys, files)?;
+    let (edits, refs) = rename::run(transform, id, unit, keys, files)?;
     let counters = counters(&edits, refs);
     Ok((edits, counters))
 }
