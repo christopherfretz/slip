@@ -487,6 +487,50 @@ fn s5_1_verify_a_correct_rename() {
     assert_eq!(tree.snapshot(), before, "the verify job writes no file of the subject");
 }
 
+// spec/verify.md §9.3, §10.4: the verify job's shard is the report's when
+// the run's overlay is the one it was bound to, and `failed` with its
+// reason when the run's overlay is another (the same records under another
+// id, so that the binding is the only difference).
+#[test]
+fn s9_3_a_shard_bound_to_another_overlay() {
+    use slip_verify::run::{Header, Report, State};
+    let tree = Tree::new("other-overlay");
+    let r = tree.map_and_reduce();
+    let (ovly, overlay) = tree.publish_overlay(&r.set, r.set_id);
+    let o = tree.observer("a.cpp");
+    let shard = tree.verify_task(&o, ovly, r.declared_id).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    let report = |run_overlay: Digest| {
+        let header = Header {
+            plan: tree.plan_id,
+            round: ROUND,
+            declared: r.declared_id,
+            rules: r.declared.rules_id(),
+            image: Vec::new(),
+            limit: 64,
+            locate: 16,
+            plan_observers: 1,
+            run: b"/run".to_vec(),
+        };
+        let mut report = Report::new(header, &r.declared);
+        report.pre_round(ROUND);
+        report.overlay(run_overlay, &overlay);
+        report.add(&o.id, &o.main.path, Some(&shard), Some(Status::Ok));
+        report
+    };
+    let ours = report(ovly);
+    assert_eq!(ours.states()[State::Verified as usize], 1, "{}", ours.error_lines());
+    let other = Digest([0xee; 32]);
+    assert_ne!(other, ovly);
+    let theirs = report(other);
+    assert_eq!(theirs.states()[State::Failed as usize], 1);
+    let main = String::from_utf8(o.main.path.clone()).unwrap();
+    assert_eq!(
+        theirs.error_lines(),
+        format!("slip: failed: {main}: the shard's binding is not this run's: its overlay\n")
+    );
+}
+
 // spec/verify.md §9.2, §5.2 step 5: the same with `d.h`, one declaration of
 // `f`, left out of the overlay. `b.cpp` sees only that stale declaration:
 // `verified`, with `direct` for the rule; `a.cpp` sees it and `h.h`'s
@@ -761,6 +805,27 @@ fn s5_1_loading_an_overlay_file_by_identity() {
     let inputs = shard.inputs.as_ref().unwrap();
     let v2 = inputs.iter().find(|f| f.path == tree.path("v2.h")).expect("v2.h read");
     assert_eq!(v2.content, content_digest(V_POST.as_bytes()));
+
+    // The loop stopped after its first parse: `v2.h`, the overlay file
+    // `v.h` by identity, was read from disk. O1's unit part names it; the
+    // guard by path cannot (the overlay does not name `v2.h`, and the pre
+    // shard does not list it), so without it the verdict would be a
+    // comparison of the wrong post-image.
+    let decl =
+        Declared::from_bytes(&tree.store.read_declared(&declared).unwrap().unwrap()).unwrap();
+    let image = Image::from_post(&tree.store, &PostImage::Overlay(ovly)).unwrap();
+    let params = Params {
+        pre: ROUND,
+        declared: decl,
+        declared_id: declared,
+        image: image.with_loading_limit(1),
+        limit: 64,
+        locate: 16,
+    };
+    let stopped = verify(&tree.store, &tree.job(&o, Phase::Verify, None, None), &params).unwrap();
+    assert_eq!(kind(&stopped), VerdictKind::Unverifiable);
+    let v2 = String::from_utf8(tree.path("v2.h")).unwrap();
+    assert_eq!(reason(&stopped), format!("post-image: {v2} was not read through the overlay"));
 }
 
 // WP-074's guards of the overlay form (spec/landed/exec/WP-074.md §5): an
