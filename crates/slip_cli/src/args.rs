@@ -32,7 +32,25 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--root <dir>]... [--post <dir>]... [--store <dir>] [--only <substring>]... [--limit <n>]
        slip units --plan <id or file> [--post-image] [--root <dir>]... [--post <dir>]...
                   [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
+       slip map   (--plan <id or file> | --db [<name>=]<compile_commands.json>...)
+                  (--from <qualified name> --to <identifier> [--kind function|variable]
+                   [--dependent offer|refuse|leave]
+                   | --transform <file.cpp> [--transform-arg <option>]... [--indivisible])
+                  --owned <path>... [--readonly <path>]...
+                  [the store, selection, memory, timeout and worker options of parse]
+       slip rename --from <qualified name> --to <identifier> [--kind function|variable]
+                  [--dependent offer|refuse|leave]
+                  (--plan <id or file> | --db [<name>=]<compile_commands.json>...)
+                  --owned <path>... [--readonly <path>]...
+                  [--write | --patch <file>] [--relative-to <dir>] [--report <file>]
+                  [--allow-residue] [--allow-unparsed] [--allow-partial] [--allow-errors]
+                  [--residue-ext <list>] [--findings <n>] [--locate <n>]
+                  [the store, selection, memory, timeout and worker options of parse]
        slip reduce --plan <id or file> --round <n> [--store <dir>] [-j <n>]
+       slip check --plan <id or file> --round <n> --edits <id or file> [--declared <id or file>]
+                  [--report <file>] [--allow-unparsed] [--residue-ext <list>]
+                  [--findings <n>] [--locate <n>]
+                  [the store, selection, memory, timeout and worker options of parse]
        slip apply --result <id> (--write | --patch <file>) [--relative-to <dir>]
                   [--allow-residue] [--allow-partial] [--allow-errors] [--store <dir>]
        slip apply --recover [--store <dir>]
@@ -83,8 +101,14 @@ pub enum Invocation {
     Declare(DeclareArgs),
     /// `slip units` (§8.9).
     Units(UnitsArgs),
+    /// `slip map` (§8.11).
+    Map(MapArgs),
+    /// `slip rename` (§8.11).
+    Rename(RenameArgs),
     /// `slip reduce` (§8.12).
     Reduce(ReduceArgs),
+    /// `slip check` (§8.13).
+    Check(CheckArgs),
     /// `slip apply` (§8.14).
     Apply(ApplyArgs),
     /// The hidden `slip __worker` (§8.4).
@@ -217,6 +241,69 @@ pub struct ReduceArgs {
     pub jobs: Option<usize>,
 }
 
+/// The transform `slip map` runs (`spec/edits.md` §10.1 step 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MapTransform {
+    /// `--from`, `--to`, `--kind`: a native rename, as given (checked
+    /// against §3 by the command, before the store is opened).
+    Rename(RenameTarget),
+    /// `--transform <file>`, `--transform-arg`…, `--indivisible`: a script
+    /// (`docs/wp/WP-092.md`).
+    Script { file: PathBuf, options: Vec<OsString>, indivisible: bool },
+}
+
+/// `--from`, `--to` and `--kind` of `map` and `rename`, as given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameTarget {
+    pub from: OsString,
+    pub to: OsString,
+    /// `--kind function|variable`; `None`: any.
+    pub kind: Option<slip_model::transform::TargetKind>,
+}
+
+/// `slip map` (§8.11, `spec/edits.md` §10.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapArgs {
+    pub source: PlanSource,
+    pub transform: MapTransform,
+    /// `--owned` (at least one) and `--readonly`.
+    pub options: TransformOptions,
+    pub run: RunArgs,
+}
+
+/// `slip rename` (§8.11, `spec/edits.md` §10.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameArgs {
+    pub source: PlanSource,
+    pub target: RenameTarget,
+    /// `--write` or `--patch <file>`; `None`: nothing outside the store.
+    pub output: Option<ApplyAction>,
+    pub report: Option<PathBuf>,
+    pub findings: u64,
+    pub locate: u64,
+    /// `--owned` (at least one), `--readonly`, the `--allow-*` options,
+    /// `--relative-to`, `--residue-ext`.
+    pub options: TransformOptions,
+    pub run: RunArgs,
+}
+
+/// `slip check` (§8.13, `spec/edits.md` §10.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckArgs {
+    pub plan: OsString,
+    pub round: u64,
+    /// `--edits <id or file>`, as given.
+    pub edits: OsString,
+    /// `--declared <id or file>`, as given.
+    pub declared: Option<OsString>,
+    pub report: Option<PathBuf>,
+    pub findings: u64,
+    pub locate: u64,
+    /// `--allow-unparsed`, `--residue-ext`.
+    pub options: TransformOptions,
+    pub run: RunArgs,
+}
+
 /// What `slip apply` does (§8.14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyAction {
@@ -269,8 +356,9 @@ pub struct TransformOptions {
     pub result: Option<String>,
     /// `--dependent offer|refuse|leave` (`spec/edits.md` §10.1,
     /// `docs/wp/WP-139.md` item 4): the rename request's `dependent`;
-    /// `None`, not given (the request's default, `leave`). For `map` and `rename`, which
-    /// `docs/wp/WP-076.md` builds: no command of this version accepts it.
+    /// `None`, not given (the request's default, `leave`). `map` (with
+    /// `--from` and `--to`, not `--transform`) and `rename` accept it;
+    /// `check`, `reduce` and `apply` refuse it as an option not theirs.
     pub dependent: Option<slip_model::transform::Dependent>,
 }
 
@@ -362,7 +450,10 @@ pub fn parse(args: &[OsString]) -> Result<Invocation, UsageError> {
         Some("verify") => parse_verify(rest),
         Some("declare") => parse_declare(rest),
         Some("units") => parse_units(rest),
+        Some("map") => parse_map(rest),
+        Some("rename") => parse_rename(rest),
         Some("reduce") => parse_reduce(rest),
+        Some("check") => parse_check(rest),
         Some("apply") => parse_apply(rest),
         Some("dump") => parse_dump(rest),
         Some("resource") => parse_resource(rest),
@@ -386,6 +477,7 @@ const TRANSFORM_FLAGS: &[&str] = &[
     "--allow-unparsed",
     "--allow-partial",
     "--allow-errors",
+    "--indivisible",
 ];
 
 /// One element of the command line after the command.
@@ -849,6 +941,177 @@ fn parse_reduce(args: &[OsString]) -> Result<Invocation, UsageError> {
         round,
         store: values.one("--store").map(PathBuf::from),
         jobs: values.jobs()?,
+    }))
+}
+
+/// `--plan` or `--db`, exactly one (§8.2).
+fn plan_or_db(values: &Values, command: &str) -> Result<PlanSource, UsageError> {
+    let dbs = values.dbs()?;
+    match (values.one("--plan"), dbs.is_empty()) {
+        (Some(_), false) => usage("`--plan` and `--db` cannot both be given"),
+        (None, true) => usage(format!("`{command}` needs `--plan` or `--db`")),
+        (Some(plan), true) => Ok(PlanSource::Plan(plan.clone())),
+        (None, false) => Ok(PlanSource::Db(dbs)),
+    }
+}
+
+/// `--kind function|variable` (`spec/edits.md` §3).
+fn target_kind(values: &Values) -> Result<Option<slip_model::transform::TargetKind>, UsageError> {
+    use slip_model::transform::TargetKind;
+    match values.one("--kind").map(|v| v.to_str()) {
+        None => Ok(None),
+        Some(Some("function")) => Ok(Some(TargetKind::Function)),
+        Some(Some("variable")) => Ok(Some(TargetKind::Variable)),
+        Some(v) => usage(format!(
+            "`--kind`: `{}` is not `function` or `variable`",
+            v.unwrap_or("<not UTF-8>")
+        )),
+    }
+}
+
+/// `--from` and `--to`, both required by `command`, and `--kind`.
+fn rename_target(values: &Values, command: &str) -> Result<RenameTarget, UsageError> {
+    let from = values.one("--from").cloned();
+    let to = values.one("--to").cloned();
+    match (from, to) {
+        (Some(from), Some(to)) => Ok(RenameTarget { from, to, kind: target_kind(values)? }),
+        (None, _) => usage(format!("`{command}` needs `--from`")),
+        (Some(_), None) => usage(format!("`{command}` needs `--to`")),
+    }
+}
+
+/// `--owned`, which `map` and `rename` require (`spec/exec.md` §8).
+fn needs_owned(t: &TransformOptions, command: &str) -> Result<(), UsageError> {
+    if t.owned.is_empty() { usage(format!("`{command}` needs `--owned`")) } else { Ok(()) }
+}
+
+fn parse_map(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let own = [
+        "--plan",
+        "--db",
+        "--from",
+        "--to",
+        "--kind",
+        "--transform",
+        "--transform-arg",
+        "--indivisible",
+        "--dependent",
+        "--owned",
+        "--readonly",
+    ];
+    let values = options_only_with(
+        args,
+        &with_run_options(&own),
+        TRANSFORM_FLAGS,
+        &["--db", "--only", "--owned", "--readonly", "--transform-arg"],
+    )?;
+    let source = plan_or_db(&values, "map")?;
+    let rename = ["--from", "--to", "--kind"].into_iter().find(|o| values.one(o).is_some());
+    let script = values.one("--transform");
+    let transform = match (rename, script) {
+        (Some(_), Some(_)) => {
+            return usage("`--transform` and `--from`, `--to`, `--kind` cannot both be given");
+        }
+        (None, None) => return usage("`map` needs `--from` and `--to`, or `--transform`"),
+        (Some(_), None) => {
+            if let Some(o) =
+                ["--transform-arg", "--indivisible"].into_iter().find(|o| values.one(o).is_some())
+            {
+                return usage(format!("`{o}` needs `--transform`"));
+            }
+            MapTransform::Rename(rename_target(&values, "map")?)
+        }
+        (None, Some(_)) if values.one("--dependent").is_some() => {
+            return usage("`--dependent` needs `--from` and `--to`, not `--transform`");
+        }
+        (None, Some(file)) => MapTransform::Script {
+            file: PathBuf::from(file),
+            options: values.all("--transform-arg").cloned().collect(),
+            indivisible: values.flag("--indivisible"),
+        },
+    };
+    let options = values.transform_options()?;
+    needs_owned(&options, "map")?;
+    Ok(Invocation::Map(MapArgs { source, transform, options, run: values.run()? }))
+}
+
+fn parse_rename(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let own = [
+        "--from",
+        "--to",
+        "--kind",
+        "--dependent",
+        "--plan",
+        "--db",
+        "--owned",
+        "--readonly",
+        "--write",
+        "--patch",
+        "--relative-to",
+        "--report",
+        "--allow-residue",
+        "--allow-unparsed",
+        "--allow-partial",
+        "--allow-errors",
+        "--residue-ext",
+        "--findings",
+        "--locate",
+    ];
+    let values = options_only_with(
+        args,
+        &with_run_options(&own),
+        TRANSFORM_FLAGS,
+        &["--db", "--only", "--owned", "--readonly"],
+    )?;
+    let source = plan_or_db(&values, "rename")?;
+    let target = rename_target(&values, "rename")?;
+    let output = match (values.flag("--write"), values.one("--patch")) {
+        (true, Some(_)) => return usage("`--write` and `--patch` cannot both be given"),
+        (true, None) => Some(ApplyAction::Write),
+        (false, Some(file)) => Some(ApplyAction::Patch(PathBuf::from(file))),
+        (false, None) => None,
+    };
+    let options = values.transform_options()?;
+    needs_owned(&options, "rename")?;
+    Ok(Invocation::Rename(RenameArgs {
+        source,
+        target,
+        output,
+        report: values.one("--report").map(PathBuf::from),
+        findings: values.number("--findings", 0)?.unwrap_or(DEFAULT_FINDINGS),
+        locate: values.number("--locate", 0)?.unwrap_or(DEFAULT_LOCATE),
+        options,
+        run: values.run()?,
+    }))
+}
+
+fn parse_check(args: &[OsString]) -> Result<Invocation, UsageError> {
+    let own = [
+        "--plan",
+        "--round",
+        "--edits",
+        "--declared",
+        "--report",
+        "--allow-unparsed",
+        "--residue-ext",
+        "--findings",
+        "--locate",
+    ];
+    let values = options_only_with(args, &with_run_options(&own), TRANSFORM_FLAGS, &["--only"])?;
+    let plan = values.plan("check")?;
+    let options = values.transform_options()?;
+    let Some(round) = options.round else { return usage("`check` needs `--round`") };
+    let Some(edits) = options.edits.clone() else { return usage("`check` needs `--edits`") };
+    Ok(Invocation::Check(CheckArgs {
+        plan,
+        round,
+        edits,
+        declared: options.declared.clone(),
+        report: values.one("--report").map(PathBuf::from),
+        findings: values.number("--findings", 0)?.unwrap_or(DEFAULT_FINDINGS),
+        locate: values.number("--locate", 0)?.unwrap_or(DEFAULT_LOCATE),
+        options,
+        run: values.run()?,
     }))
 }
 

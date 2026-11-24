@@ -27,14 +27,16 @@ use slip_model::overlay::{Content, Obligation, OverlayFile};
 use slip_model::verdict::VerdictKind;
 use slip_model::{FileRef, Overlay, Status};
 use slip_verify::guards::{OverlayGuard, overlay_inputs};
-use slip_verify::run::{RunVerdict, Stale, State, combine};
+use std::collections::BTreeMap;
+
+use slip_verify::run::{Report, RunVerdict, Stale, State, combine};
 
 fn two_rules() -> Run {
     Run::new(vec![rule(KeyKind::Function, "f", "g"), rule(KeyKind::Function, "h", "i")], None)
 }
 
 /// The number of observers in state `st`.
-fn count(r: &slip_verify::run::Report, st: State) -> u64 {
+fn count(r: &Report, st: State) -> u64 {
     r.states()[State::ALL.iter().position(|&x| x == st).unwrap()]
 }
 
@@ -44,7 +46,7 @@ fn stale(rule: u64, obs: u8, direct: u64) -> Stale {
 
 /// `add` with the observer's own digest, main file `/m/<obs>.cc` and an
 /// `ok` map shard.
-fn add(r: &mut slip_verify::run::Report, s: &slip_model::Shard) {
+fn add(r: &mut Report, s: &slip_model::Shard) {
     let obs = s.observer;
     let main = format!("/m/{:02x}.cc", obs.0[0]);
     r.add(&obs, main.as_bytes(), Some(s), common::MAP_OK);
@@ -582,7 +584,7 @@ fn s9_3_stale_overrides_incomplete() {
 /// A run with rules and an overlay: two stale pairs, an unused rule, one
 /// obligation passed, one `denotes_other` in two observers, one `unseen`;
 /// observers in plan order a0, a1, a2.
-fn m2_report() -> slip_verify::run::Report {
+fn m2_report() -> Report {
     let run = m2_run();
     let (f, n) = (ix(&run, "f"), ix(&run, "n"));
     let v = run.verdict(VerdictKind::Verified);
@@ -683,7 +685,7 @@ fn s9_4_member_order() {
 // gives `overlay` only, and the text says `image overlay`.
 #[test]
 fn s9_4_members_only_when_they_apply() {
-    let names = |r: &slip_verify::run::Report| {
+    let names = |r: &Report| {
         let json::Value::Object(m) = r.to_json() else { panic!() };
         m.into_iter().map(|(k, _)| k).collect::<Vec<_>>()
     };
@@ -785,7 +787,7 @@ fn s9_5_overlay_with_tree_image_panics() {
     let run = Run::new(vec![], None);
     let mut h = run.header();
     h.image = vec![(b"/s".to_vec(), b"/p".to_vec())];
-    let mut r = slip_verify::run::Report::new(h, &run.declared);
+    let mut r = Report::new(h, &run.declared);
     r.overlay(d(OVERLAY), &overlay());
 }
 
@@ -805,7 +807,7 @@ fn s9_5_pre_round_defaults_to_zero() {
     let run = two_rules();
     let mut s = run.verified(0xa0);
     s.binding = Some(Binding { pre: 0, ..run.binding() });
-    let mut r = slip_verify::run::Report::new(run.header(), &run.declared);
+    let mut r = Report::new(run.header(), &run.declared);
     add(&mut r, &s);
     assert_eq!(count(&r, State::Verified), 1);
 }
@@ -1179,4 +1181,142 @@ fn s10_4_fold_refusal_says_why() {
         );
         assert_eq!(line, format!("slip: failed: /m/a0.cc: {message}\n"));
     }
+}
+
+/// A map shard of the run's pre round for observer `obs`: `ok`, reading
+/// `/s/x.cpp` and the overlay paths `read`.
+fn map_shard(obs: u8, read: &[&str]) -> slip_model::Shard {
+    let mut inputs = vec![file("/s/x.cpp", 1, 0x99)];
+    inputs.extend(read.iter().map(|p| file(p, 10, 0x51)));
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    slip_model::Shard {
+        observer: d(obs),
+        phase: slip_model::Phase::Map,
+        round: ROUND,
+        outcome: slip_model::Outcome {
+            status: Status::Ok,
+            errors: 0,
+            warnings: 0,
+            message: String::new(),
+        },
+        inputs: Some(inputs),
+        counters: vec![],
+        digests: None,
+        verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
+        names: None,
+        negatives: None,
+        found: None,
+    }
+}
+
+/// The identities of the files of [`overlay`] and of `/s/x.cpp`, each its
+/// own, with `extra`.
+fn ids(extra: &[(&str, (u64, u64))]) -> BTreeMap<Vec<u8>, (u64, u64)> {
+    let mut m: BTreeMap<Vec<u8>, (u64, u64)> =
+        [("/s/a.h", (1, 1)), ("/s/b.h", (1, 2)), ("/s/c.h", (1, 3)), ("/s/x.cpp", (1, 9))]
+            .iter()
+            .map(|(p, id)| (p.as_bytes().to_vec(), *id))
+            .collect();
+    m.extend(extra.iter().map(|(p, id)| (p.as_bytes().to_vec(), *id)));
+    m
+}
+
+/// `run`'s report, given `ids` when the run has an overlay.
+fn report_with(run: &Run, ids: Option<BTreeMap<Vec<u8>, (u64, u64)>>) -> Report {
+    let mut r = run.report();
+    if let (Some(_), Some(ids)) = (&run.overlay, ids) {
+        r.identities(ids);
+    }
+    r
+}
+
+// spec/edits.md §8.2, §5.5 (WP-076): `add_unchanged_at` decides
+// "unchanged" from the map shard itself and fails closed: the observer is
+// `unchanged` only in a run with an overlay and no rule, from its own `ok`
+// map shard of the pre round, with inputs none of which is an overlay file
+// by path or by the identities given, every one with an identity.
+#[test]
+fn s5_5_unchanged_is_decided_by_the_report() {
+    // No obligation: an observer that read no overlay file meets none.
+    let bare = || Overlay { spellings: Vec::new(), ..overlay() };
+    let no_rules = Run::new(vec![], Some(bare()));
+    let mut r = report_with(&no_rules, Some(ids(&[])));
+    r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &[]));
+    assert_eq!(count(&r, State::Unchanged), 1);
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(r.error_lines(), "");
+
+    let wrong_with = |run: &Run, ids: Option<BTreeMap<Vec<u8>, (u64, u64)>>, map, why: &str| {
+        let mut r = report_with(run, ids);
+        r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map);
+        assert_eq!(count(&r, State::Unchanged), 0, "{why}");
+        assert_eq!(count(&r, State::Failed), 1, "{why}");
+        assert_ne!(r.verdict(), RunVerdict::Verified, "{why}");
+        let lines = r.error_lines();
+        assert!(
+            lines.starts_with("slip: failed: /m/a.cc: the observer got no verify job"),
+            "{lines}"
+        );
+        assert!(lines.contains(why), "{why}: {lines}");
+    };
+    let wrong = |run: &Run, map, why: &str| wrong_with(run, Some(ids(&[])), map, why);
+    wrong(&no_rules, map_shard(0x10, &["/s/a.h"]), "read the overlay's /s/a.h");
+    let mut m = map_shard(0x10, &[]);
+    m.round = ROUND + 1;
+    wrong(&no_rules, m, "not its shard of phase map");
+    wrong(&no_rules, map_shard(0x11, &[]), "not its shard of phase map");
+    let mut m = map_shard(0x10, &[]);
+    m.outcome.status = Status::Diagnosed;
+    wrong(&no_rules, m, "is not ok");
+    let mut m = map_shard(0x10, &[]);
+    m.inputs = None;
+    wrong(&no_rules, m, "has no inputs");
+    let rules = Run::new(vec![rule(KeyKind::Function, "f", "g")], Some(bare()));
+    wrong(&rules, map_shard(0x10, &[]), "in a run with rules");
+    wrong(&Run::new(vec![], None), map_shard(0x10, &[]), "without an overlay");
+
+    // By identity (WP-076 fix round, B2): `/s/A.h` is `/s/a.h` under
+    // another spelling (a case-insensitive volume, a hard link).
+    wrong_with(
+        &no_rules,
+        Some(ids(&[("/s/A.h", (1, 1))])),
+        map_shard(0x10, &["/s/A.h"]),
+        "read an overlay file as /s/A.h",
+    );
+    // Omissions fail closed: no identities at all, an input without one,
+    // an overlay file without one.
+    wrong_with(&no_rules, None, map_shard(0x10, &[]), "the run gave no file identities");
+    wrong_with(
+        &no_rules,
+        Some(ids(&[])),
+        map_shard(0x10, &["/s/d.h"]),
+        "its input /s/d.h has no identity",
+    );
+    let mut partial = ids(&[]);
+    partial.remove(b"/s/c.h".as_slice());
+    wrong_with(
+        &no_rules,
+        Some(partial),
+        map_shard(0x10, &[]),
+        "the overlay's /s/c.h has no identity",
+    );
+    // Another file with an identity of its own is not an overlay file.
+    let mut r = report_with(&no_rules, Some(ids(&[("/s/d.h", (1, 4))])));
+    r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &["/s/d.h"]));
+    assert_eq!(count(&r, State::Unchanged), 1);
+}
+
+// §7.3 (WP-076 fix round, C5): a plan position is added once, by
+// `add_unchanged_at` as by `add_at`.
+#[test]
+#[should_panic(expected = "position 0 added twice")]
+fn s7_3_unchanged_at_a_position_twice() {
+    let no_rules = Run::new(vec![], Some(Overlay { spellings: Vec::new(), ..overlay() }));
+    let mut r = report_with(&no_rules, Some(ids(&[])));
+    r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &[]));
+    r.add_unchanged_at(0, &d(0x11), b"/m/b.cc", &map_shard(0x11, &[]));
 }

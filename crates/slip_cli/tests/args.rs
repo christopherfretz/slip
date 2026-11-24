@@ -750,8 +750,7 @@ fn s8_9_units_options() {
 /// `spec/edits.md` §10.1 (`docs/wp/WP-139.md` item 4): `--dependent`
 /// takes `offer`, `refuse` or `leave`, and nothing else, as the usage
 /// error says.
-/// No command of this version takes the option (`map` and `rename` are
-/// `docs/wp/WP-076.md`'s); its value is parsed as theirs will be.
+/// `map` and `rename` take it (`s10_1_dependent_on_map_and_rename`).
 #[test]
 fn s10_1_dependent_values() {
     use slip_model::transform::Dependent;
@@ -762,5 +761,82 @@ fn s10_1_dependent_values() {
     for bad in ["", "Offer", "refused", "offer "] {
         let e = args::parse_dependent(bad.as_ref()).unwrap_err();
         assert!(e.0.contains("is not `offer`, `refuse` or `leave`"), "{bad:?}: {e:?}");
+    }
+}
+
+/// `spec/edits.md` §10.1 (`docs/wp/WP-076.md`, second fix round): `map`
+/// (a rename, not `--transform`) and `rename` take `--dependent` with each
+/// of its values into `TransformOptions::dependent`; not given, `None`
+/// (the request's default, `leave`); a bad value is the usage error of
+/// `parse_dependent`; `reduce`, `check` and `apply` refuse the option as
+/// one not theirs.
+#[test]
+fn s10_1_dependent_on_map_and_rename() {
+    use slip_model::transform::Dependent;
+    let map = |extra: &[&str]| {
+        let words = [
+            &["map", "--plan", "abcd", "--from", "n::f", "--to", "g", "--owned", "src"][..],
+            extra,
+        ]
+        .concat();
+        match parse(&words) {
+            Ok(Invocation::Map(a)) => a.options.dependent,
+            other => panic!("{words:?}: {other:?}"),
+        }
+    };
+    let rename = |extra: &[&str]| {
+        let words = [
+            &["rename", "--plan", "abcd", "--from", "n::f", "--to", "g", "--owned", "src"][..],
+            extra,
+        ]
+        .concat();
+        match parse(&words) {
+            Ok(Invocation::Rename(a)) => a.options.dependent,
+            other => panic!("{words:?}: {other:?}"),
+        }
+    };
+    for (value, d) in
+        [("offer", Dependent::Offer), ("refuse", Dependent::Refuse), ("leave", Dependent::Leave)]
+    {
+        assert_eq!(map(&["--dependent", value]), Some(d), "map {value}");
+        assert_eq!(rename(&["--dependent", value]), Some(d), "rename {value}");
+    }
+    assert_eq!(map(&[]), None);
+    assert_eq!(rename(&[]), None);
+    for command in ["map", "rename"] {
+        let words = [command, "--plan", "abcd", "--from", "f", "--to", "g", "--owned", "src"];
+        for bad in ["Offer", "keep", ""] {
+            let line = usage_error(&[&words[..], &["--dependent", bad]].concat());
+            assert!(
+                line.contains("is not `offer`, `refuse` or `leave`"),
+                "{command} {bad:?}: {line}"
+            );
+        }
+        let line =
+            usage_error(&[&words[..], &["--dependent", "offer", "--dependent", "leave"]].concat());
+        assert!(line.contains("more than once"), "{command}: {line}");
+    }
+    let line = usage_error(&[
+        "map",
+        "--plan",
+        "abcd",
+        "--transform",
+        "t.cpp",
+        "--owned",
+        "src",
+        "--dependent",
+        "offer",
+    ]);
+    assert!(line.contains("`--dependent` needs `--from` and `--to`"), "{line}");
+    for words in [
+        &["check", "--plan", "abcd", "--round", "1", "--edits", "abcd"][..],
+        &["reduce", "--plan", "abcd", "--round", "1"][..],
+        &["apply", "--result", "abcd", "--write"][..],
+    ] {
+        let line = usage_error(&[words, &["--dependent", "offer"]].concat());
+        assert!(
+            line.contains("unknown option") && line.contains("--dependent"),
+            "{words:?}: {line}"
+        );
     }
 }
