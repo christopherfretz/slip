@@ -477,7 +477,12 @@ pub(crate) fn expr_maps(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let nns = tables.expr_nns.get(e).copied();
     s.opt(nns.is_some());
     if let Some(n) = nns {
+        // R1 (WP-141): an unresolved name's qualifier names the namespace
+        // to find what the lookup found; a concept-id's, the concept (A2).
+        w.ns_refs.pending = crate::ns_refs::found_of(w, e);
         w.write_written_nns(s, n);
+        // Never past this name's qualifier.
+        w.ns_refs.pending = None;
     }
     // oper_lookups: record OperLookups, whose one `in` row `by_expr` is
     // `ref*sorted?`: the declarations of the candidates (`decl`; `found`

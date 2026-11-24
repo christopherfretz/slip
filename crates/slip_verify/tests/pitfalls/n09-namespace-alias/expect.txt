@@ -1,4 +1,5 @@
 # N09: namespace L = legacy; names moved and staying entities.
+# After the rule L names one of legacy's two parts, so good declares `changed L`.
 # Caught only by a failed parse (spec/pitfalls.md §5).
 good: verified
 bad:  not_parsed

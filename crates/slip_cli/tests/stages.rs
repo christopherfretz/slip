@@ -21,8 +21,8 @@ use slip_apply::journal::{Journal, JournalEntry, staged_name};
 use slip_exec::store::{Access, Object, Store};
 use slip_model::declared::Declared;
 use slip_model::edits::{
-    Claim, Edits, Failure, FailureKind, Piece, Place, Reason, Report, Role, SCHEME, Severity,
-    SourcePlace, Stance, Subject, tiers,
+    Claim, Edits, Failure, FailureKind, Instance, Piece, Place, Reason, Report, Role, SCHEME,
+    Severity, SourcePlace, Stance, Subject, tiers,
 };
 use slip_model::editset::EditSet;
 use slip_model::formats::content_id;
@@ -173,14 +173,15 @@ struct C {
     lo: u64,
     stance: Stance,
     text: &'static str,
+    reason: Reason,
 }
 
 fn put(path: &'static str, lo: u64, text: &'static str) -> C {
-    C { path, lo, stance: Stance::Replace, text }
+    C { path, lo, stance: Stance::Replace, text, reason: Reason::None }
 }
 
 fn keep(path: &'static str, lo: u64) -> C {
-    C { path, lo, stance: Stance::Keep, text: "" }
+    C { path, lo, stance: Stance::Keep, text: "", reason: Reason::None }
 }
 
 /// One observer's map shard, by path.
@@ -188,6 +189,8 @@ fn keep(path: &'static str, lo: u64) -> C {
 struct S {
     claims: Vec<C>,
     reports: Vec<ShardReport>,
+    /// WP-139: `(path, lo, spec, display, binds the subject)`.
+    instances: Vec<(&'static str, u64, Option<Digest>, &'static str, bool)>,
     failed: bool,
     transform: Option<Digest>,
     edits: bool,
@@ -195,7 +198,14 @@ struct S {
 
 impl S {
     fn new(claims: Vec<C>) -> S {
-        S { claims, reports: Vec::new(), failed: false, transform: None, edits: true }
+        S {
+            claims,
+            reports: Vec::new(),
+            instances: Vec::new(),
+            failed: false,
+            transform: None,
+            edits: true,
+        }
     }
 }
 
@@ -265,6 +275,7 @@ impl Fx {
                 target: vec![b"f".to_vec()],
                 kind: TargetKind::Any,
                 new_name: b"g".to_vec(),
+                dependent: slip_model::transform::Dependent::Offer,
             }),
             script: None,
         }
@@ -341,6 +352,7 @@ impl Fx {
     fn shard(&self, observer: Digest, round: u64, request: Digest, s: &S) -> Shard {
         let mut names: Vec<&str> = s.claims.iter().map(|c| c.path).collect();
         names.extend(s.reports.iter().filter_map(|r| r.0.map(|p| p.0)));
+        names.extend(s.instances.iter().map(|i| i.0));
         names.sort_unstable();
         names.dedup();
         if s.failed {
@@ -369,7 +381,7 @@ impl Fx {
                     vec![]
                 },
                 subjects: vec![K],
-                reason: Reason::None,
+                reason: c.reason,
                 tiers: tiers::T0,
                 macro_site: None,
                 votes: 1,
@@ -418,6 +430,22 @@ impl Fx {
             reports: if s.failed { vec![] } else { reports },
             changed: vec![],
             renamed: vec![],
+            instances: if s.failed {
+                vec![]
+            } else {
+                let mut v: Vec<Instance> = s
+                    .instances
+                    .iter()
+                    .map(|&(n, lo, spec, display, subject)| Instance {
+                        place: Place { file: index(n), lo, hi: lo + 1 },
+                        spec,
+                        display: display.to_owned(),
+                        subjects: if subject { vec![K] } else { vec![] },
+                    })
+                    .collect();
+                v.sort();
+                v
+            },
         };
         let mut inputs: Vec<FileRef> = ["h.h", "a.cc", "b.cc"]
             .into_iter()
@@ -699,6 +727,49 @@ fn s10_5_reduce_contested_site() {
     let want =
         format!("refusal contested: {}:1:5: f (1 observer(s), first {})", h.display(), b.display());
     assert!(out.lines().contains(&want.as_str()), "want {want:?}: {out:#?}");
+}
+
+/// §10.5 (WP-139 item 3): the names edited, or refused, on the evidence of
+/// instantiations, under their heading, with each specialisation and its
+/// observers; a contested site keeps the instances both observers made. In
+/// a golden, the source directory written `<src>`.
+#[test]
+fn s10_5_reduce_instance_lines() {
+    let fx = Fx::new("instances");
+    let d = |n: u8| Digest([n; 32]);
+    let mut a = S::new(vec![put("h.h", F_H, "g"), put("a.cc", F_A, "g")]);
+    a.instances = vec![
+        ("h.h", F_H, Some(d(0x30)), "call<n::S<int>>", true),
+        ("a.cc", F_A, Some(d(0x31)), "call<n::S<long>>", true),
+        ("a.cc", F_A, None, "call<(lambda)>", true),
+    ];
+    let mut b = S::new(vec![keep("h.h", F_H), put("b.cc", F_B[0], "g")]);
+    b.instances = vec![("h.h", F_H, Some(d(0x32)), "call<n::R>", false)];
+    let (_, set_id, out) = fx.reduced(&fx.script(), &[("a.cc", a), ("b.cc", b)]);
+    out.expect(0);
+    let set = fx.edit_set(set_id);
+    assert_eq!(set.instances.len(), 4, "{:?}", set.instances);
+    let src = fx.src("h.h");
+    let src = src.parent().unwrap().display().to_string();
+    let lines: Vec<String> = out
+        .lines()
+        .into_iter()
+        .filter(|l| l.starts_with("instance"))
+        .map(|l| l.replace(&src, "<src>"))
+        .collect();
+    golden("reduce-instances.txt", &(lines.join("\n") + "\n"));
+}
+
+/// A golden of `crates/slip_cli/tests/golden/`; `SLIP_BLESS=1` rewrites it.
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden").join(name);
+    if std::env::var_os("SLIP_BLESS").is_some() {
+        fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}; run with SLIP_BLESS=1 to create", path.display()));
+    assert_eq!(actual, expected, "{name} differs from its golden; SLIP_BLESS=1 rewrites it");
 }
 
 /// §10.5: a file changed since the shards were made: the detail line

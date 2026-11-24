@@ -1,0 +1,5 @@
+# C2 (O2, central): becomes only using namespace acme;, nothing parsed uses the dependency's part.
+# Pinned as it is before WP-141's build.
+added <using_directive acme>
+removed <using_directive legacy>
+use 1 via 1 direct 0

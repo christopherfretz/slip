@@ -198,6 +198,7 @@ fn empty_set() -> EditSet {
         failures: Vec::new(),
         unparsed: Vec::new(),
         counters: Vec::new(),
+        instances: Vec::new(),
     }
 }
 

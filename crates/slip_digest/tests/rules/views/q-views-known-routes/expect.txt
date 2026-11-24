@@ -1,0 +1,7 @@
+# Mutation 2 (WP-141): acme::h(t) found the dependency's h and the owned re-export of
+# legacy::h; after the move it finds the same functions as members of the two parts of
+# acme. R1 by known routes gives Ref::views, which equals nothing (fails closed, the
+# proposal's known limit). Taking the own key there would make f equal.
+changed template <class> int f(type-parameter-0-0)
+removed acme::<shadow legacy::h(long)>
+removed acme::<using legacy::h>

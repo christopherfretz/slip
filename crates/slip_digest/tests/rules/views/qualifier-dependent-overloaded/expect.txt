@@ -2,5 +2,5 @@
 # canonical: a reference to the namespace).
 # WP-140: the qualifier writes acme's own key, the pre-image's legacy's: changed f, fails closed
 # (references keep the namespace's own key, spec/verify.md "Open questions").
-changed template <class> int f(type-parameter-0-0)
+# WP-141 build A: no finding (R1 in a stream).
 use 1 via 1 direct 0

@@ -7,3 +7,6 @@ claims:
   main.cpp:3:16+1 keep t0 votes=1 none
   main.cpp:5:45+1 refuse t0 votes=1 mixed_instances [089ac656]
 changed:
+instances:
+  main.cpp:5:45+1 8ab16c0a call<n::R>(n::R) []
+  main.cpp:5:45+1 ca6c81ba call<n::S<int>>(n::S<int>) [089ac656]

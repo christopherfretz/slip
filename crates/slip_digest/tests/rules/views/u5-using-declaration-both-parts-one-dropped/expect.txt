@@ -1,0 +1,4 @@
+# U5 (O2): U4 with using legacy::k; dropped.
+# WP-141 build A: removed shadow (column 5).
+removed <shadow legacy::k(legacy::Old)>
+use 1 via 1 direct 0

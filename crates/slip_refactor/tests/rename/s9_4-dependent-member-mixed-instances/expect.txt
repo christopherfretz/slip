@@ -11,3 +11,10 @@ claims:
   main.cpp:4:51+1 refuse t0 votes=1 mixed_instances [85f5d4ed]
   main.cpp:4:59+1 refuse t0 votes=1 mixed_instances [85f5d4ed]
 changed:
+instances:
+  main.cpp:4:43+1 1162e9f7 n::t<n::R>(n::R, n::R *) []
+  main.cpp:4:43+1 7a3aeeab n::t<n::S>(n::S, n::S *) [d53c5070]
+  main.cpp:4:51+1 1162e9f7 n::t<n::R>(n::R, n::R *) []
+  main.cpp:4:51+1 7a3aeeab n::t<n::S>(n::S, n::S *) [85f5d4ed]
+  main.cpp:4:59+1 1162e9f7 n::t<n::R>(n::R, n::R *) []
+  main.cpp:4:59+1 7a3aeeab n::t<n::S>(n::S, n::S *) [85f5d4ed]

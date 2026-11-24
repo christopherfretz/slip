@@ -8,4 +8,3 @@ claims:
   main.cpp:3:34+1 replace "g" t0 votes=1 none [9f28e21c]
   main.cpp:5:33+1 keep t0 votes=1 none
 changed:
-  1e64a270 main.cpp:3:34+1 dependent name f

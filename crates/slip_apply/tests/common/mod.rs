@@ -90,6 +90,7 @@ pub fn set(files: &[(&str, &[u8])], mut edits: Vec<Edit>) -> (EditSet, Digest, M
         failures: vec![],
         unparsed: vec![],
         counters: vec![],
+        instances: Vec::new(),
     };
     let mem = Mem(files.iter().map(|(p, b)| (p.as_bytes().to_vec(), b.to_vec())).collect());
     let id = id_of(&set);

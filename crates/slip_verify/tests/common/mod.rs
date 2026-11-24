@@ -410,6 +410,7 @@ pub fn set(f: SetFacts) -> EditSet {
         failures: vec![],
         unparsed: (0..f.unparsed).map(|i| d(0xb0 + i)).collect(),
         counters: vec![],
+        instances: Vec::new(),
     };
     let refusal = |cause, file, subject| Refusal {
         cause,

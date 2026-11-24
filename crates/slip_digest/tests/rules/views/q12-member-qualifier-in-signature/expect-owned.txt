@@ -1,0 +1,7 @@
+# Every file owned.
+added acme::Dep
+added template <class> decltype(t.acme::B::f()) f(type-parameter-0-0)
+removed acme
+removed acme::Dep
+removed template <class> decltype(t.legacy::B::f()) f(type-parameter-0-0)
+use 1 via 1 direct 0

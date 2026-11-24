@@ -1,0 +1,5 @@
+# Every file owned.
+# Second review F1: p01 with the extern "C" function in an inline child (clause c): C2's
+# answer.
+added <using_directive acme (the part the rule moves)>
+removed <using_directive legacy>

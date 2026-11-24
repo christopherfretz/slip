@@ -1,0 +1,4 @@
+# Q7 (O2): legacy::k(t), k in both parts, becomes acme::k(t).
+# Pinned as it is before WP-141's build.
+changed template <class> int f(type-parameter-0-0)
+use 1 via 1 direct 0

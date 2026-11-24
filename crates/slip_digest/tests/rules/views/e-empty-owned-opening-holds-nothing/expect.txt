@@ -1,0 +1,4 @@
+# Mutation 7, its second half (A4): an owned opening that is empty holds nothing, so the
+# untouched using namespace legacy; stays whole although the moved empty opening of acme
+# shares the key. Counting the empty opening would write a part. (oldx => newx moves
+# something, so the case is not vacuous.)

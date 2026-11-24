@@ -5,8 +5,8 @@
 //! of different shards compare. The order of [`Key`] is the order of the
 //! temporary files and of the final stream: files first (sorted by path, so
 //! that a path's rank is its index in the edit set), then claims by site,
-//! then reports, `changed` entries and failures, each in the order the
-//! edit set lists them.
+//! then reports, `changed` entries, instances and failures, each in the
+//! order the edit set lists them.
 
 use slip_model::Digest;
 use slip_model::edits::{FailureKind, MacroSite, Reason, Severity, Stance};
@@ -63,6 +63,8 @@ pub(crate) enum Key {
     Report { place: Option<Site>, severity: Severity, message: Vec<u8>, attached: bool },
     /// A `changed` entry, by its whole record.
     Changed { key: Digest, place: Site, reason: Vec<u8> },
+    /// An instance (§4.5, WP-139), by its whole record.
+    Instance { place: Site, spec: Option<Digest>, display: String, subjects: Vec<Digest> },
     /// A failure, by `(kind, message, place)` (§6).
     Failure { kind: FailureKind, message: String, place: Option<(Vec<u8>, u64, u64)> },
 }
@@ -253,6 +255,7 @@ fn stance_code(s: Stance) -> u64 {
 }
 
 /// Encodes one record.
+#[allow(clippy::too_many_lines, reason = "one arm per record kind")]
 pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
     let mut e = Encoder::new();
     match key {
@@ -302,6 +305,18 @@ pub(crate) fn encode(key: &Key, val: &Val) -> Vec<u8> {
             e.u8(3).digest(key);
             site(&mut e, place);
             e.bytes(reason);
+        }
+        Key::Instance { place, spec, display, subjects } => {
+            e.u8(6);
+            site(&mut e, place);
+            match spec {
+                None => e.u8(0),
+                Some(k) => e.u8(1).digest(k),
+            };
+            e.str(display).count(subjects.len());
+            for k in subjects {
+                e.digest(k);
+            }
         }
         Key::Failure { kind, message, place } => {
             e.u8(4).uv(*kind as u64).str(message);
@@ -396,6 +411,8 @@ pub(crate) fn reason_of(v: u64) -> Option<Reason> {
         Reason::NotPlain,
         Reason::MixedSet,
         Reason::MixedInstances,
+        Reason::Directive,
+        Reason::Instantiated,
     ]
     .get(v as usize)
     .copied()
@@ -479,6 +496,21 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
             },
         },
         5 => Key::Observer(w(d.digest())?),
+        6 => {
+            let place = dsite(&mut d)?;
+            let spec = match w(d.u8())? {
+                0 => None,
+                1 => Some(w(d.digest())?),
+                _ => return Err(bad("an option tag")),
+            };
+            let display = w(d.str())?.to_owned();
+            let n = w(d.count())?;
+            let mut subjects = Vec::with_capacity(n);
+            for _ in 0..n {
+                subjects.push(w(d.digest())?);
+            }
+            Key::Instance { place, spec, display, subjects }
+        }
         _ => return Err(bad("a record tag")),
     };
     let val = match tag {
@@ -515,7 +547,7 @@ pub(crate) fn decode(bytes: &[u8]) -> R<(Key, Val)> {
                 single,
             })
         }
-        2 | 3 | 5 => Val::Sample(dsample(&mut d)?),
+        2 | 3 | 5 | 6 => Val::Sample(dsample(&mut d)?),
         _ => {
             let sample = dsample(&mut d)?;
             let from = w(d.uv())?;

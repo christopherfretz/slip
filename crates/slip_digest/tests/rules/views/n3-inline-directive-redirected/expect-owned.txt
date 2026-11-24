@@ -1,0 +1,7 @@
+# Every file owned.
+added acme::v1
+added acme::v1::Dep
+removed acme
+removed acme::v1
+removed acme::v1::Dep
+use 1 via 1 direct 0

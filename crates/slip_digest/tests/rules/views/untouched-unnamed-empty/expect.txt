@@ -1,0 +1,6 @@
+# WP-141 ruling, clause (b): an untouched observer with an empty unnamed namespace in an owned
+# opening of the dependency's acme. The using-directive it implies is made by the compiler and
+# is no member, so acme has no owned part. The unnamed namespace's own unit is keyed under
+# acme's owned key (legacy), as any owned nested namespace is: that unit differs.
+added acme::(anonymous namespace)
+removed acme::(anonymous namespace)

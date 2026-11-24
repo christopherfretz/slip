@@ -1,0 +1,5 @@
+# U3 (O1): using legacy::g; becomes using other::g; (the same g, re-exported there).
+# WP-141 build A: r+a (column 5); the one in other is now = (row 3).
+added <using other::g>
+removed <using legacy::g>
+use 1 via 1 direct 0

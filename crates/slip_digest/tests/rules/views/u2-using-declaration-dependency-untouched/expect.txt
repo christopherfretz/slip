@@ -1,0 +1,3 @@
+# U2 (O1): an untouched using acme::Dep; (the dependency's).
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

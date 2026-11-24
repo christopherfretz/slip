@@ -1,0 +1,4 @@
+# V2 (O0) with a second header only.h whose directive is redirected alone: the empty owned
+# opening namespace legacy {} holds nothing.
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

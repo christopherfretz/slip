@@ -1,0 +1,6 @@
+# WP-141 row C3, observer O2 (both dependencies): the owned part of legacy moved to acme,
+# `using namespace legacy;` left untouched; nothing parsed uses the owned part through it.
+# Before WP-141: = (a wrong equal, the proposal's T3). WP-141 build A: r+a.
+added <using_directive legacy (the part the rule leaves)>
+removed <using_directive legacy>
+use 1 via 1 direct 0
