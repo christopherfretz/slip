@@ -2001,3 +2001,211 @@ fn s2_1_disk_another_case() {
     }
     assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
 }
+
+// ---------------------------------------------------------------------------
+// WP-147 item 1, the inventory (`spec/landed/edits/WP-147.md`, rows A1–A3):
+// what the one-spelling check of WP-075 does with another Unicode
+// normalisation, with a volume that answers lookups inconsistently, and
+// with a directory that cannot be listed.
+
+/// Row A1, on disk: the file is written `café.h` in NFC (`c3 a9`) and the
+/// overlay names it in NFD (`65 cc 81`), which this workspace's volume
+/// finds (it folds normalisation as it folds case). The listing has the
+/// NFC bytes, no listed name differs from the NFD one only in ASCII case,
+/// and `lstat` finds the path: refused, `NotCanonical`, nothing written.
+/// On a volume that does not fold, the path finds nothing: `StaleFile`.
+#[test]
+fn s2_1_disk_another_normalisation() {
+    let r = disk::root("nfd");
+    let (nfc, nfd) = ("tree/caf\u{e9}.h", "tree/cafe\u{301}.h");
+    std::fs::write(r.join(nfc), "int v;\n").unwrap();
+    let folds = std::fs::symlink_metadata(r.join(nfd)).is_ok();
+    let (o, id) = one_file(r.join(nfd).to_str().unwrap(), b"int v;\n", b"int w;\n");
+    let own = Ownership { owned: vec![disk::bytes(&r.join("tree"))], readonly: vec![] };
+    let store = disk::Store(r.join("store"));
+    let got = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
+    if folds {
+        assert!(
+            matches!(&got, Err(WriteError::Refused(Refused::NotCanonical { path, .. }))
+                if *path == disk::bytes(&r.join(nfd))),
+            "{got:?}"
+        );
+    } else {
+        eprintln!("s2_1_disk_another_normalisation: {} does not fold normalisation", r.display());
+        assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(disk::bytes(&r.join(nfd))))));
+    }
+    assert_eq!(std::fs::read(r.join(nfc)).unwrap(), b"int v;\n");
+    common::remove_tree(&r);
+}
+
+/// A tree that folds Unicode normalisation (`é` written NFC or NFD is
+/// one name) and answers a lookup of a spelling that is not its
+/// listing's "nothing" the first time and finds it after, as this
+/// workspace's host mount was seen to do for case (WP-075 decision 14).
+/// `names` lists the names as made.
+struct Inconsistent {
+    /// `(path as made, bytes)`.
+    files: Vec<(Vec<u8>, Vec<u8>)>,
+    asked: RefCell<BTreeSet<Vec<u8>>>,
+}
+
+/// `p` with the NFD `ö` (`o` and a combining diaeresis) made NFC.
+fn nfc(p: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(p).replace("o\u{308}", "\u{f6}").into_bytes()
+}
+
+impl Inconsistent {
+    fn get(&self, p: &[u8]) -> Option<&Vec<u8>> {
+        let exact = self.files.iter().any(|(f, _)| f == p);
+        if !exact && self.asked.borrow_mut().insert(p.to_vec()) {
+            return None; // the first lookup of another spelling misses
+        }
+        self.files.iter().find(|(f, _)| nfc(f) == nfc(p)).map(|(_, b)| b)
+    }
+}
+
+impl Tree for Inconsistent {
+    fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
+        Ok(self.get(p).map(|b| Stat {
+            regular: true,
+            links: 1,
+            mode: 0o644,
+            dir_writable: true,
+            uid: 0,
+            gid: 0,
+            dev: 1,
+            ino: 1,
+            size: b.len() as u64,
+            mtime: (1, 1),
+            ctime: (1, 1),
+        }))
+    }
+    fn read(&self, p: &[u8]) -> io::Result<Vec<u8>> {
+        self.get(p).cloned().ok_or_else(|| err(io::ErrorKind::NotFound, "none"))
+    }
+    fn create(&self, _: &[u8], _: u32, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn rename(&self, _: &[u8], _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn remove(&self, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn sync_dir(&self, _: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        let prefix = if d == b"/" { b"/".to_vec() } else { [d, b"/"].concat() };
+        let mut names = BTreeSet::new();
+        for (p, _) in &self.files {
+            if let Some(rest) = p.strip_prefix(prefix.as_slice()) {
+                let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
+                names.insert(rest[..end].to_vec());
+            }
+        }
+        Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
+}
+
+/// Row A2: `/w` owned, `/w/vendör` (NFC) read-only, and the overlay names
+/// `/w/vendör/x.h` with the `ö` in NFD. No listed name differs from the
+/// NFD one in ASCII case, and the one `lstat` the check makes misses, so
+/// the check passes it; `NFD` bytes are not under the `readonly` entry,
+/// so `check_owned` (what `--patch` asks) says owned. Today: `Ok(())`. A
+/// component that is not, byte for byte, a name of its directory's
+/// listing must never pass, whatever a lookup answers.
+#[test]
+#[ignore = "WP-147 item 2: a component its directory does not list is refused, whatever a lookup answers"]
+fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
+    let tree = Inconsistent {
+        files: vec![
+            ("/w/vend\u{f6}r/x.h".as_bytes().to_vec(), b"int v;\n".to_vec()),
+            (b"/w/a.cc".to_vec(), b"a".to_vec()),
+        ],
+        asked: RefCell::new(BTreeSet::new()),
+    };
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec!["/w/vend\u{f6}r".as_bytes().to_vec()],
+    };
+    let (o, _) = one_file("/w/vendo\u{308}r/x.h", b"int v;\n", b"int w;\n");
+    let got = slip_apply::check_owned(&o, &own, &tree);
+    assert!(
+        matches!(
+            got,
+            Err(WriteError::Refused(Refused::NotCanonical { .. } | Refused::StaleFile(_)))
+        ),
+        "{got:?}"
+    );
+}
+
+/// A case-sensitive tree (a name is found only as made) in which `/home`
+/// can be searched but not listed, as a shared `/home` is for a user.
+struct Unlistable(Vec<(Vec<u8>, Vec<u8>)>);
+
+impl Tree for Unlistable {
+    fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
+        let exists = self.0.iter().any(|(f, _)| {
+            f == p || (f.starts_with(p) && f.get(p.len()) == Some(&b'/'))
+        });
+        Ok(exists.then_some(Stat {
+            regular: true,
+            links: 1,
+            mode: 0o644,
+            dir_writable: true,
+            uid: 0,
+            gid: 0,
+            dev: 1,
+            ino: 2,
+            size: 1,
+            mtime: (1, 1),
+            ctime: (1, 1),
+        }))
+    }
+    fn read(&self, p: &[u8]) -> io::Result<Vec<u8>> {
+        let f = self.0.iter().find(|(f, _)| f == p);
+        f.map(|(_, b)| b.clone()).ok_or_else(|| err(io::ErrorKind::NotFound, "none"))
+    }
+    fn create(&self, _: &[u8], _: u32, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn rename(&self, _: &[u8], _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn remove(&self, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn sync_dir(&self, _: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        if d == b"/home" {
+            return Err(err(io::ErrorKind::PermissionDenied, "Permission denied"));
+        }
+        let prefix = if d == b"/" { b"/".to_vec() } else { [d, b"/"].concat() };
+        let mut names = BTreeSet::new();
+        for (p, _) in &self.0 {
+            if let Some(rest) = p.strip_prefix(prefix.as_slice()) {
+                let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
+                names.insert(rest[..end].to_vec());
+            }
+        }
+        Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
+}
+
+/// Row A3 (the package's sixth bullet): on a volume that does not fold,
+/// a tree under a directory that can be searched but not listed is
+/// checked without listing it: `alice` in another case reaches nothing,
+/// so the name needs no listing. Today: `Err(Io)` naming `/home`
+/// (status 3 from `apply`), on any volume, because the check lists every
+/// directory from `/` down.
+#[test]
+#[ignore = "WP-147 item 2: a component the volume is seen not to fold needs no listing"]
+fn s2_1_a_directory_that_cannot_be_listed() {
+    let tree = Unlistable(vec![(b"/home/alice/w/a.cc".to_vec(), b"a".to_vec())]);
+    let own = Ownership { owned: vec![b"/home/alice/w".to_vec()], readonly: vec![] };
+    let (o, _) = one_file("/home/alice/w/a.cc", b"a", b"b");
+    assert_eq!(slip_apply::check_owned(&o, &own, &tree), Ok(()));
+}
