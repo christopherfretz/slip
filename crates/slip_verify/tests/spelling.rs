@@ -322,7 +322,7 @@ fn s10_3_which_shards_are_folded() {
     let mut r = run.report();
     let mut s = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[0], &[]);
     s.spellings = Some(section(&o, &i, &[0, 1], &[]));
-    r.add(&s.observer, b"/m/a0.cc", Some(&s), common::map_of(Status::Failed));
+    r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(common::map_of(Status::Failed)));
     let u = run.unparsed(0xa1, Status::Diagnosed, "e");
     r.add(&u.observer, b"/m/a1.cc", Some(&u), common::MAP_OK);
     assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);

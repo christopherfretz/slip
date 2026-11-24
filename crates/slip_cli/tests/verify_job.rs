@@ -3868,6 +3868,9 @@ fn worker_shard(tree: &Tree, o: &Observer, post: &Post) -> Shard {
     back
 }
 
+/// A case of `s9_1_binding_in_every_shard_read_back`.
+type Case<'a> = (&'a str, &'a str, Option<&'a str>, Status, Option<VerdictKind>, u64);
+
 // §9.1 (WP-114 item 1): every shard the task writes has `binding`, with or
 // without rules, for every outcome (`ok` verified, mismatch and
 // unverifiable, `diagnosed`, `rejected`): `overlay` absent, `declared` the
@@ -3883,7 +3886,7 @@ fn s9_1_binding_in_every_shard_read_back() {
     // when there is a rule; extra flag; expected status and verdict kind;
     // pre round)
     let changed = RELOCATE_PRE.replace("return 1", "return 2");
-    let cases: [(&str, &str, Option<&str>, Status, Option<VerdictKind>, u64); 5] = [
+    let cases: [Case; 5] = [
         ("verified", RELOCATE_PRE, None, Status::Ok, Some(VerdictKind::Verified), 0),
         ("mismatch", &changed, None, Status::Ok, Some(VerdictKind::Mismatch), 0),
         ("unverifiable", RELOCATE_PRE, None, Status::Ok, Some(VerdictKind::Unverifiable), 9),

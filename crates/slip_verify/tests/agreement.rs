@@ -279,7 +279,7 @@ fn s9_3_stale_read_from_accepted_ok_shards_only() {
     add(&mut r, &u);
     let mut v = run.verified(0xa1);
     v.rule_use.as_mut().unwrap().uses = vec![used(1, 0, 1)];
-    r.add(&v.observer, b"/m/a1.cc", Some(&v), common::map_of(Status::Failed));
+    r.add(&v.observer, b"/m/a1.cc", Some(&v), Some(common::map_of(Status::Failed)));
     assert_eq!(count(&r, State::Failed), 1);
     assert_eq!(r.stale(), [stale(0, 0xa0, 1)]);
     // Rule 1 was named only by the shard that was not read.

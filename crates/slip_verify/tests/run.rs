@@ -7,6 +7,7 @@
 //! The question this file answers for the trusted base: no input makes the
 //! report say `verified` when a selected observer is not.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -202,15 +203,20 @@ fn declared(changed: &[u8], created: &[u8], removed: &[u8]) -> Declared {
 
 /// The map shard every verdict of these tests names (`verified_verdict`'s
 /// `pre`), with `status`.
-const fn map_of(status: Status) -> Option<MapShard> {
-    Some(MapShard { status, id: Digest([0x70; 32]) })
+const fn map_of(status: Status) -> MapShard {
+    MapShard { status, id: Digest([0x70; 32]) }
 }
 
 /// An `ok` map shard, the one the verdicts name.
-const MAP_OK: Option<MapShard> = map_of(Status::Ok);
+const MAP_OK: Option<MapShard> = Some(map_of(Status::Ok));
 
-const MAP_STATUSES: [Option<MapShard>; 5] =
-    [None, MAP_OK, map_of(Status::Diagnosed), map_of(Status::Rejected), map_of(Status::Failed)];
+const MAP_STATUSES: [Option<MapShard>; 5] = [
+    None,
+    MAP_OK,
+    Some(map_of(Status::Diagnosed)),
+    Some(map_of(Status::Rejected)),
+    Some(map_of(Status::Failed)),
+];
 
 fn golden(name: &str, actual: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/run").join(name);
@@ -499,12 +505,12 @@ fn s7_1_refused_by_the_state_table_says_why() {
         ),
         (
             verified(9),
-            map_of(Status::Diagnosed),
+            Some(map_of(Status::Diagnosed)),
             "the shard's verdict is verified: its map shard is diagnosed".to_owned(),
         ),
         (
             mismatch(10, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]),
-            map_of(Status::Failed),
+            Some(map_of(Status::Failed)),
             "the shard's verdict is mismatch: its map shard is failed".to_owned(),
         ),
     ];
@@ -515,7 +521,7 @@ fn s7_1_refused_by_the_state_table_says_why() {
         assert_eq!(state(Some(s), *map), State::Failed, "{why}");
         let main = format!("/{i}.cpp");
         r.add(&s.observer, main.as_bytes(), Some(s), *map);
-        want.push_str(&format!("slip: failed: {main}: {why}\n"));
+        writeln!(want, "slip: failed: {main}: {why}").unwrap();
     }
     r.add(&d(11), b"/f.cpp", Some(&unparsed_shard(11, Status::Failed, "killed")), MAP_OK);
     r.add(&d(12), b"/n.cpp", None, MAP_OK);
