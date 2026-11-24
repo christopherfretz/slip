@@ -99,6 +99,10 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §7.2 rule 1 | `code/s7.2-r1-through-a-using-declaration` |  |
 | §7.2 rule 2 | `code/s7.2-r2-fully-qualified` |  |
 | §7.2 rule 2 | `code/s7.2-r2-unnamed-enumeration` | the text of the spelling is `::n::A` as rule 2 says, but the host names the key of the enumerator `n::A`, where spec/verify.md §6.1 names the members of an unnamed enumeration under it, `n::(anonymous enum 0)::A` |
+| §7.2 rule 6 | `code/s7.2-r6-a-declaration-and-a-reference-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-a-redeclaration-and-a-reference-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-references-at-one-range` |  |
+| §7.2 rule 6 | `code/s7.2-r6-which-ranges-take-the-key` |  |
 | §7.3 rule 1 | `effects/s7.3-r1-replace-and-delete` |  |
 | §7.3 rule 2 | `effects/s7.3-r2-not-editable` |  |
 | §7.3 rule 2 | `effects/s7.3-r2-refusals` |  |
@@ -143,7 +147,7 @@ directories are in `spec/landed/api/WP-091-queries.md`.
 | §10.2 | `examples/rename/use-through-a-using-declaration` |  |
 | §10.2 | `examples/rename/variable-of-the-same-name` |  |
 
-68 directories, 1 xfail.
+72 directories, 1 xfail.
 <!-- /api-table -->
 
 `effects/s5.4-r4-an-edit-of-a-tier-1-range` is in the §5.4 table of
