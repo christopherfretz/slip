@@ -26,6 +26,20 @@ use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay, OverlayFile};
 use slip_model::transform::Ownership;
 
+/// A made-up inode for a fake tree's file or directory: its spelling's
+/// hash, so that each is its own.
+fn ino_of(p: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.hash(&mut h);
+    h.finish()
+}
+
+/// Whether `p` is `/` or a directory on the path of one of `files`.
+fn is_dir_of<'a>(p: &[u8], mut files: impl Iterator<Item = &'a [u8]>) -> bool {
+    p == b"/" || files.any(|f| f.starts_with(p) && f.get(p.len()) == Some(&b'/'))
+}
+
 // ---------------------------------------------------------------------------
 // A world in memory: the tree, the blobs and the journal, with one count
 // of operations and one fault.
@@ -237,6 +251,11 @@ impl Tree for World {
             }
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        let s = self.0.borrow();
+        let there = s.files.contains_key(p) || is_dir_of(p, s.files.keys().map(Vec::as_slice));
+        Ok(there.then(|| (7, ino_of(p))))
     }
 }
 
@@ -1428,6 +1447,12 @@ mod disk {
         fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
             DiskTree.names(d)
         }
+        fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+            DiskTree.identity(p)
+        }
+        fn consistent(&self, dev: u64) -> bool {
+            DiskTree.consistent(dev)
+        }
     }
 
     pub fn root(name: &str) -> PathBuf {
@@ -1537,6 +1562,12 @@ mod disk {
         }
         fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
             DiskTree.names(d)
+        }
+        fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+            DiskTree.identity(p)
+        }
+        fn consistent(&self, dev: u64) -> bool {
+            DiskTree.consistent(dev)
         }
     }
 
@@ -1866,6 +1897,13 @@ impl Tree for Folding {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// A file or directory is found in any case; its identity is that of
+    /// its folded spelling.
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        let folded = p.to_ascii_lowercase();
+        let there = self.0.contains_key(&folded) || is_dir_of(&folded, self.0.keys().map(Vec::as_slice));
+        Ok(there.then(|| (1, ino_of(&folded))))
+    }
 }
 
 fn one_file(path: &str, pre: &[u8], post: &[u8]) -> (Overlay, Digest) {
@@ -2011,8 +2049,9 @@ fn s2_1_disk_another_case() {
 /// Row A1, on disk: the file is written `café.h` in NFC (`c3 a9`) and the
 /// overlay names it in NFD (`65 cc 81`), which this workspace's volume
 /// finds (it folds normalisation as it folds case). The listing has the
-/// NFC bytes, no listed name differs from the NFD one only in ASCII case,
-/// and `lstat` finds the path: refused, `NotCanonical`, nothing written.
+/// NFC bytes, the NFD component is not listed, and `lstat` finds it the
+/// NFC file: refused, `NotCanonical`, naming the NFC spelling (WP-147:
+/// `slip_spelling` finds the listed name by identity), nothing written.
 /// On a volume that does not fold, the path finds nothing: `StaleFile`.
 #[test]
 fn s2_1_disk_another_normalisation() {
@@ -2026,8 +2065,9 @@ fn s2_1_disk_another_normalisation() {
     let got = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
     if folds {
         assert!(
-            matches!(&got, Err(WriteError::Refused(Refused::NotCanonical { path, .. }))
-                if *path == disk::bytes(&r.join(nfd))),
+            matches!(&got, Err(WriteError::Refused(Refused::NotCanonical { path, on_disk }))
+                if *path == disk::bytes(&r.join(nfd))
+                    && on_disk.as_deref() == Some(disk::bytes(&r.join(nfc)).as_slice())),
             "{got:?}"
         );
     } else {
@@ -2106,17 +2146,29 @@ impl Tree for Inconsistent {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// As `get`: another spelling misses the first time it is asked.
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        let exact = self.files.iter().any(|(f, _)| f == p)
+            || is_dir_of(p, self.files.iter().map(|(f, _)| f.as_slice()));
+        if !exact && self.asked.borrow_mut().insert(p.to_vec()) {
+            return Ok(None);
+        }
+        let folded: Vec<Vec<u8>> = self.files.iter().map(|(f, _)| nfc(f)).collect();
+        let n = nfc(p);
+        let there = folded.contains(&n) || is_dir_of(&n, folded.iter().map(Vec::as_slice));
+        Ok(there.then(|| (1, ino_of(&n))))
+    }
 }
 
 /// Row A2: `/w` owned, `/w/vendör` (NFC) read-only, and the overlay names
 /// `/w/vendör/x.h` with the `ö` in NFD. No listed name differs from the
 /// NFD one in ASCII case, and the one `lstat` the check makes misses, so
 /// the check passes it; `NFD` bytes are not under the `readonly` entry,
-/// so `check_owned` (what `--patch` asks) says owned. Today: `Ok(())`. A
-/// component that is not, byte for byte, a name of its directory's
-/// listing must never pass, whatever a lookup answers.
+/// so WP-075's `check_owned` (what `--patch` asks) said owned, `Ok(())`.
+/// A component that is not, byte for byte, a name of its directory's
+/// listing never passes, whatever a lookup answers: the miss is
+/// `StaleFile` (WP-147).
 #[test]
-#[ignore = "WP-147 item 2: a component its directory does not list is refused, whatever a lookup answers"]
 fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
     let tree = Inconsistent {
         files: vec![
@@ -2131,13 +2183,8 @@ fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
     };
     let (o, _) = one_file("/w/vendo\u{308}r/x.h", b"int v;\n", b"int w;\n");
     let got = slip_apply::check_owned(&o, &own, &tree);
-    assert!(
-        matches!(
-            got,
-            Err(WriteError::Refused(Refused::NotCanonical { .. } | Refused::StaleFile(_)))
-        ),
-        "{got:?}"
-    );
+    let asked = "/w/vendo\u{308}r/x.h".as_bytes().to_vec();
+    assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(asked))));
 }
 
 /// A case-sensitive tree (a name is found only as made) in which `/home`
@@ -2194,16 +2241,25 @@ impl Tree for Unlistable {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        let there = self.0.iter().any(|(f, _)| f == p)
+            || is_dir_of(p, self.0.iter().map(|(f, _)| f.as_slice()));
+        Ok(there.then(|| (1, ino_of(p))))
+    }
+    /// A case-sensitive local volume: its lookups are trusted.
+    fn consistent(&self, _: u64) -> bool {
+        true
+    }
 }
 
 /// Row A3 (the package's sixth bullet): on a volume that does not fold,
 /// a tree under a directory that can be searched but not listed is
 /// checked without listing it: `alice` in another case reaches nothing,
-/// so the name needs no listing. Today: `Err(Io)` naming `/home`
-/// (status 3 from `apply`), on any volume, because the check lists every
-/// directory from `/` down.
+/// so the name needs no listing. WP-075's check gave `Err(Io)` naming
+/// `/home` (status 3 from `apply`), on any volume, because it listed every
+/// directory from `/` down. The tree's device is trusted (`consistent`);
+/// one that is not still lists `/home` and fails, `Io`.
 #[test]
-#[ignore = "WP-147 item 2: a component the volume is seen not to fold needs no listing"]
 fn s2_1_a_directory_that_cannot_be_listed() {
     let tree = Unlistable(vec![(b"/home/alice/w/a.cc".to_vec(), b"a".to_vec())]);
     let own = Ownership { owned: vec![b"/home/alice/w".to_vec()], readonly: vec![] };

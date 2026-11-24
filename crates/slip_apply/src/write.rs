@@ -3,7 +3,7 @@
 //! every operation is tested. The sequence of operations and what an
 //! interruption at each leaves are `spec/landed/edits/WP-063.md` §5.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io;
 
 use slip_model::Digest;
@@ -11,6 +11,7 @@ use slip_model::formats;
 use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay};
 use slip_model::transform::{Ownership, is_canonical};
+use slip_spelling::{Id, Lookup, SpellingError};
 
 use crate::journal::{Journal, JournalEntry, parent};
 
@@ -78,6 +79,18 @@ pub trait Tree {
     /// or normalisation, these are the one spelling the name has
     /// (`spec/edits.md` §2.1, "One spelling").
     fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
+    /// Which file or directory `path` is, as a device and an inode,
+    /// without following a link (`lstat`); `None` when nothing is there.
+    /// Not an operation that changes anything.
+    fn identity(&self, path: &[u8]) -> io::Result<Option<(u64, u64)>>;
+    /// Whether lookups on device `dev` are answered consistently
+    /// (`slip_spelling::Lookup::consistent`), so that a directory there
+    /// may be seen not to fold without listing it. By default no device
+    /// is: every directory is listed.
+    fn consistent(&self, dev: u64) -> bool {
+        let _ = dev;
+        false
+    }
 }
 
 /// Blobs by content digest (`spec/edits.md` §10.4).
@@ -126,13 +139,13 @@ pub enum Refused {
     /// Nothing was changed and the journal is kept.
     JournalNotOwned(Vec<u8>),
     /// The path is not spelled as the file system spells it: a component
-    /// of it is not, byte for byte, a name its directory lists, yet a
-    /// listed name differs from it only in case, or the path finds a file
-    /// or directory (a volume that matches names without regard to case
-    /// or normalisation). `on_disk`: the path with
-    /// that component as its directory lists it, when a name of the
-    /// listing differs from it only in case. Checked before any ownership
-    /// decision, by `write`, `recover` and [`check_owned`].
+    /// of it is not, byte for byte, a name its directory lists, and it
+    /// finds a file or directory (a volume that matches names without
+    /// regard to case or normalisation). `on_disk`: the path spelled as
+    /// its directories list it (`slip_spelling`), when one listed name of
+    /// each directory is the file it finds. Checked before any ownership
+    /// decision, by `write`, `recover` and [`check_owned`]; a path that
+    /// finds nothing is `StaleFile` (`write`, `check_owned`).
     NotCanonical { path: Vec<u8>, on_disk: Option<Vec<u8>> },
 }
 
@@ -194,70 +207,68 @@ fn check_ownership(o: &Ownership) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// The one-spelling check (`spec/edits.md` §2.1): each directory's names
-/// listed once per call of `write`, `recover` or `check_owned`.
+/// [`Tree`] as `slip_spelling`'s [`Lookup`]: the one function that gives a
+/// path its spelling on disk (`spec/edits.md` §2.1), asked of the tree.
+struct TreeLookup<'t>(&'t dyn Tree);
+
+impl std::fmt::Debug for TreeLookup<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TreeLookup")
+    }
+}
+
+impl Lookup for TreeLookup<'_> {
+    fn lstat(&self, path: &[u8]) -> io::Result<Option<Id>> {
+        Ok(self.0.identity(path)?.map(|(dev, ino)| Id { dev, ino }))
+    }
+    fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        self.0.names(dir)
+    }
+    fn consistent(&self, dev: u64) -> bool {
+        self.0.consistent(dev)
+    }
+}
+
+/// The one-spelling check (`spec/edits.md` §2.1): a path passes when
+/// `slip_spelling` gives it as its own spelling on disk. A walk of its
+/// own per call of `write`, `recover` or `check_owned`, so that it sees
+/// the tree as it is now; each directory decided once per call.
 struct Spelling<'t> {
-    tree: &'t dyn Tree,
-    dirs: BTreeMap<Vec<u8>, Option<BTreeSet<Vec<u8>>>>,
+    walk: slip_spelling::Spelling<TreeLookup<'t>>,
+    /// `recover`: a path that finds nothing passes, since `restore`
+    /// reports it and never creates a file there.
+    missing_passes: bool,
 }
 
 impl<'t> Spelling<'t> {
     fn new(tree: &'t dyn Tree) -> Spelling<'t> {
-        Spelling { tree, dirs: BTreeMap::new() }
+        Spelling { walk: slip_spelling::Spelling::new(TreeLookup(tree)), missing_passes: false }
     }
 
-    fn names(&mut self, dir: &[u8]) -> Result<Option<&BTreeSet<Vec<u8>>>, Fail> {
-        if !self.dirs.contains_key(dir) {
-            let listed = self.tree.names(dir).map_err(io_at(dir))?;
-            self.dirs.insert(dir.to_vec(), listed.map(|n| n.into_iter().collect()));
-        }
-        Ok(self.dirs[dir].as_ref())
+    fn for_recover(tree: &'t dyn Tree) -> Spelling<'t> {
+        Spelling { missing_passes: true, ..Spelling::new(tree) }
     }
 
-    /// `Ok` when every component of `path` (a canonical absolute path),
-    /// from `/` down, is a name its directory lists, or when a component
-    /// is missing (no listed name differs from it only in case and `stat`
-    /// finds nothing: the checks that follow find it missing).
-    /// `NotCanonical` when a component is not listed but a listed name
-    /// differs from it only in case, or `stat` finds something there.
+    /// `Ok` when `path` is its own spelling on disk. `NotCanonical`
+    /// naming the spelling on disk when it is another, or naming none when
+    /// no one listed name is the file it finds; `StaleFile` when it finds
+    /// nothing (`write` only replaces files that are there, and on a
+    /// volume that answers lookups inconsistently "nothing" is the answer
+    /// that would pass a read-only file); `Io` when a directory that must
+    /// be listed cannot be, or a lookup fails.
     fn check(&mut self, path: &[u8]) -> Result<(), Fail> {
-        let mut at = 0; // `path[..at]`: the directory checked so far.
-        while at < path.len() {
-            let start = at + 1;
-            let end =
-                path[start..].iter().position(|&b| b == b'/').map_or(path.len(), |i| start + i);
-            let dir: &[u8] = if at == 0 { b"/" } else { &path[..at] };
-            let name = &path[start..end];
-            let Some(names) = self.names(dir)? else { return Ok(()) };
-            if names.contains(name) {
-                at = end;
-                continue;
+        match self.walk.on_disk(path) {
+            Ok(q) if q == path => Ok(()),
+            Ok(q) => Err(Refused::NotCanonical { path: path.to_vec(), on_disk: Some(q) }.into()),
+            Err(SpellingError::Missing { .. }) if self.missing_passes => Ok(()),
+            Err(SpellingError::Missing { .. }) => Err(Refused::StaleFile(path.to_vec()).into()),
+            Err(SpellingError::NoName { .. } | SpellingError::NotAPath(_)) => {
+                Err(Refused::NotCanonical { path: path.to_vec(), on_disk: None }.into())
             }
-            // A listed name that differs only in case is refused whether
-            // or not the path finds it: some volumes (FUSE host mounts)
-            // answer a lookup in another case one time and not the next.
-            // Otherwise (another normalisation, say) the path is refused
-            // when `stat` (`lstat`) finds something there.
-            let folded = fold(name);
-            let other = names.iter().find(|n| fold(n) == folded).cloned();
-            if other.is_none() && self.tree.stat(&path[..end]).map_err(io_at(path))?.is_none() {
-                return Ok(());
-            }
-            let on_disk = other.map(|n| {
-                let mut p = path[..start].to_vec();
-                p.extend_from_slice(&n);
-                p.extend_from_slice(&path[end..]);
-                p
-            });
-            return Err(Refused::NotCanonical { path: path.to_vec(), on_disk }.into());
+            Err(SpellingError::Unlistable { dir, error, .. }) => Err(Fail::Io(dir, error)),
+            Err(SpellingError::Io { path, error }) => Err(Fail::Io(path, error)),
         }
-        Ok(())
     }
-}
-
-/// A name with its case folded, for naming the spelling on disk only.
-fn fold(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_lowercase()
 }
 
 /// What `--write` checks of the paths alone, for every overlay file whose
@@ -714,7 +725,7 @@ pub fn recover(
         return Ok(None);
     };
     let j = Journal::from_bytes(&bytes).map_err(WriteError::Journal)?;
-    let mut spelling = Spelling::new(tree);
+    let mut spelling = Spelling::for_recover(tree);
     for f in &j.files {
         spelling.check(&f.path).map_err(|f| match f {
             Fail::Refused(r) => WriteError::Refused(r),

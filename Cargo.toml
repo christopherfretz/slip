@@ -15,6 +15,7 @@ default-members = [
     "crates/slip_reduce",
     "crates/slip_apply",
     "crates/slip_exec",
+    "crates/slip_spelling",
     "xtask",
 ]
 
@@ -38,6 +39,7 @@ slip_reduce = { path = "crates/slip_reduce" }
 slip_apply  = { path = "crates/slip_apply" }
 slip_exec   = { path = "crates/slip_exec" }
 slip_refactor = { path = "crates/slip_refactor" }
+slip_spelling = { path = "crates/slip_spelling" }
 # Kiln, at the revision the `kiln` submodule pins. ONLY `slip_kiln` may name
 # these (enforced by `cargo xtask lint`, spec/harness.md "Lints").
 kiln_driver = { path = "kiln/crates/kiln_driver" }

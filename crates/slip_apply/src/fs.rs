@@ -8,6 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use slip_spelling::Lookup;
+
 use crate::journal::parent;
 use crate::write::{Stat, Tree};
 
@@ -106,6 +108,16 @@ impl Tree for DiskTree {
             names.push(entry?.file_name().as_bytes().to_vec());
         }
         Ok(Some(names))
+    }
+
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        Ok(slip_spelling::disk().lookup().lstat(p)?.map(|id| (id.dev, id.ino)))
+    }
+
+    /// `slip_spelling::Disk`: the device's mounts are all of a type whose
+    /// lookups are trusted (`slip_spelling::CONSISTENT`).
+    fn consistent(&self, dev: u64) -> bool {
+        slip_spelling::disk().lookup().consistent(dev)
     }
 }
 
