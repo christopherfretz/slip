@@ -1,0 +1,2 @@
+# WP-134 item 1 (spec/digest.md §3.4, WP-119 item 1): an instantiation's unnamed enumeration named by its enumerator (unnamed_by of an identifier) follows its pattern's name, so a rule on its plain key that gives another name (h) is key/rule-on-instantiated-member. An unnamed enumeration, not a class: at the Kiln pin an instantiated unnamed class has no instantiated_from link (spec/landed/digest/WP-131.md, For Kiln), so it follows nothing either way.
+rule enumeration | mapped W<int> | name-of post W<int>::(anonymous enum for E) | none | pre W<int> | id h

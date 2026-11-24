@@ -1,1 +1,1 @@
-namespace legacy { template <class T> struct holder { holder(T) {} T *p; }; }
+namespace legacy { template <class T> struct holder { holder(T); T *p; }; }

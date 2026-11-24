@@ -343,8 +343,10 @@ fn made(
 
 /// A unit's place (§6.1): the location of the first declaration of its
 /// entity's chain, earliest first, that the source wrote (not implicit,
-/// not made by an instantiation); else of the first that has a location;
-/// none for the order unit or an entity no declaration of which has one.
+/// not made by an instantiation, not the declaration Kiln made of a
+/// function specialisation before it was explicitly specialised); else of
+/// the first that has a location; none for the order unit or an entity no
+/// declaration of which has one.
 fn place(w: &Walk<'_>, u: &Written) -> Loc {
     u.entity.map_or(Loc::INVALID, |e| entity_place(w, e))
 }
@@ -357,6 +359,7 @@ fn entity_place(w: &Walk<'_>, e: DeclId) -> Loc {
     let written = |d: DeclId| {
         !ast.decls.get(d).has(DeclFlags::IMPLICIT)
             && !crate::templ::made_by_instantiation(w, d)
+            && !made_before_explicit_specialisation(w, d)
             && w.has_location(d)
     };
     chain
@@ -365,6 +368,20 @@ fn entity_place(w: &Walk<'_>, e: DeclId) -> Loc {
         .find(|&d| written(d))
         .or_else(|| chain.iter().copied().find(|&d| w.has_location(d)))
         .map_or(Loc::INVALID, |d| ast.decls.get(d).loc())
+}
+
+/// Whether `d` is the declaration Kiln made of a function template
+/// specialisation (by deduction, or a member by its class's
+/// instantiation) before the source explicitly specialised it (§6.1, WP-128):
+/// the first of a function's chain whose specialisation kind is now
+/// `ExplicitSpecialization` and which a written declaration follows. It is
+/// located at the pattern; its `SpecInfo` (shared with the written
+/// declarations) no longer says it was instantiated, and a non-member's
+/// lexical context is no instantiation, so [`crate::templ::made_by_instantiation`]
+/// does not see it. Kiln's own reading of "first written": `Ast::contract_first`.
+fn made_before_explicit_specialisation(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    ast.decls.function(d).is_some() && ast.first(d) == d && ast.contract_first(d) != d
 }
 
 /// The subject path, line and column of `loc` taken to its outermost

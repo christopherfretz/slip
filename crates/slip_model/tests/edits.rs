@@ -539,6 +539,7 @@ fn map_shard(edits: Edits) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 
@@ -596,6 +597,7 @@ fn small() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        negatives: None,
     }
 }
 

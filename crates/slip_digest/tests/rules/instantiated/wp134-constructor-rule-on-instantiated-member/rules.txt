@@ -1,0 +1,2 @@
+# WP-134 item 1 (spec/digest.md §3.4, WP-119 item 1): an instantiation's constructor follows its pattern's name, so a rule on its plain key that gives another name (h) is key/rule-on-instantiated-member: W<int>::W(int) and f() are indeterminate. Were constructors not followed, the rule would simply apply. (WP-124: the constructor is declared only: one defined in a template is indeterminate, kiln/pattern-mem-initializers, until the Kiln pin moves.)
+rule function | mapped W<int> | name-of post W<int>::W(int) | disc-of post W<int>::W(int) | pre W<int> | id h

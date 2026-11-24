@@ -1,0 +1,1 @@
+changed S::friend g(S<type-parameter-0-0>)

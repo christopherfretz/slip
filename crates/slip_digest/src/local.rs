@@ -30,7 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, LetData};
 use slip_kiln::kiln::ast::lambda::{LambdaCapture, LambdaData, LambdaMangling};
 use slip_kiln::kiln::ast::stmt::StmtKind;
 use slip_kiln::kiln::ast::types::{ArgView, TypeView};
@@ -60,6 +60,10 @@ pub(crate) const LAMBDA_IN_TYPE: Cause = Cause::Unsupported("local/lambda-in-typ
 /// An entity a requires-expression's parameter scope declares: the
 /// profile package's (WP-036), not an owner's.
 pub(crate) const REQUIRES_SCOPE: Cause = Cause::Unsupported("local/requires-scope");
+/// A function name a program reads (`__func__`) met while the stream's
+/// local state is put aside ([`detached`]): the names around it are the
+/// holder's, which a type memoised across units must not read.
+pub(crate) const DETACHED_SCOPE_NAMES: Cause = Cause::Unsupported("local/detached-scope-names");
 /// A numbering asked for after [`number_all`] (never, the pair tests
 /// check).
 pub(crate) const LATE: Cause = Cause::Unaccounted("local/late-numbering");
@@ -186,6 +190,8 @@ pub(crate) struct UnitLocals {
     /// place ([`lambda_expr`]): their bodies are templated whatever the
     /// holder is (`own_spelling::templated_at`).
     pub generic: u32,
+    /// The state above is put aside ([`detached`]).
+    pub detached: bool,
 }
 
 /// The numbering mode is on: what the mode skips returns at once.
@@ -501,15 +507,33 @@ pub(crate) fn numbering<'a>(w: &'a mut Walk<'_>, owner: DeclId) -> &'a Numbering
 }
 
 /// Numbers, before any unit is written and outside every walk, each owner
-/// a unit's walk can ask a number of: the owner of every local type, and
-/// the call operator of every closure (whose init-capture variables a
-/// specialisation's body names by `Ref::outer`). Then seals the memo: a
+/// a unit's walk can ask a number of: the owner of every local type; the
+/// call operator of every closure (whose init-capture variables a
+/// specialisation's body names by `Ref::outer`); and the owners whose
+/// variables a specialisation names because Kiln shares a node of its
+/// pattern with it (an expanded expansion statement's variable, a
+/// lifetime-extended temporary's `extending`). Then seals the memo: a
 /// numbering is never started inside a unit's walk, so the stack holds
 /// one walk's budget at most (`lib.rs` "What bounds the stack"). A
 /// translation unit without local types numbers nothing.
 pub(crate) fn number_all(w: &mut Walk<'_>) {
     let ast = w.ast;
     for d in ast.decls.ids() {
+        // The owner of the variable a lifetime-extended temporary extends,
+        // when it is in a template: Kiln shares a non-dependent temporary
+        // of a pattern's body with its instantiations (a range-`for` over
+        // a prvalue), so a specialisation's resolved unit `definition`
+        // names the pattern's variable by `Ref::outer` (`LetData`
+        // `extending`, `decl_func::let_data`).
+        if ast.decls.get(d).kind() == DeclKind::LifetimeExtendedTemporary
+            && let Some(&LetData { extending, mangling_index: _, value: _ }) =
+                ast.decls.lifetime_extended(d)
+            && w.is_local(extending)
+            && let Ok(o) = owner_of(w, ast.first(extending))
+            && in_template(w, o)
+        {
+            let _ = numbering(w, o);
+        }
         if ast.first(d) != d || !is_local_type(w, d) {
             continue;
         }
@@ -544,6 +568,34 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
         }
     }
     w.local.sealed = true;
+}
+
+/// `o`, or a declaration on its semantic context chain, is a template, a
+/// template's pattern or a partial specialisation: code whose
+/// non-dependent nodes Kiln shares with the instantiations
+/// ([`number_all`]). A chain that does not end within the bound counts as
+/// one: numbering an owner no unit asks of costs a walk, never a number.
+fn in_template(w: &Walk<'_>, o: DeclId) -> bool {
+    let ast = w.ast;
+    let templates = [
+        DeclKind::ClassTemplate,
+        DeclKind::FunctionTemplate,
+        DeclKind::VarTemplate,
+        DeclKind::ClassTemplatePartialSpecialization,
+        DeclKind::VarTemplatePartialSpecialization,
+    ];
+    let mut c = Some(o);
+    for _ in 0..CHAIN_LIMIT {
+        let Some(x) = c else { return false };
+        if templates.contains(&ast.decls.get(x).kind())
+            || ast.described_template(x).is_some()
+            || ast.partial_spec_info(x).is_some()
+        {
+            return true;
+        }
+        c = ast.decls.get(x).ctx();
+    }
+    true
 }
 
 /// Numbers `owner`: walks its stream in numbering mode.
@@ -943,6 +995,23 @@ fn is_named_local(w: &Walk<'_>, t: DeclId) -> bool {
     !is_closure(w, t) && !w.ast.decls.get(t).name().is_empty()
 }
 
+/// Runs `f` with the stream's local state put aside (WP-123): the
+/// holder, the content entity, the local types it declared, the scopes
+/// written in place and the generic lambdas around. What `f` writes then
+/// reads nothing of the unit it is written for: a rule-11 check takes the
+/// answer of a stream with no holder (`own_spelling::templated_at`), and
+/// a function name a program reads, which would print the names around
+/// the holder, is [`DETACHED_SCOPE_NAMES`]. A reference to a local object
+/// of the unit still takes the unit's ordinal and raises `local_uses`
+/// (`expr_dep::profile_local`): the unit's ordinals are not this state.
+pub(crate) fn detached<R>(w: &mut Walk<'_>, f: impl FnOnce(&mut Walk<'_>) -> R) -> R {
+    let saved = std::mem::take(&mut w.unit.local);
+    w.unit.local.detached = true;
+    let r = f(w);
+    w.unit.local = saved;
+    r
+}
+
 /// The names of the named local types around the code being written,
 /// outermost first: those around the unit's entity (a unit under a local
 /// type, such as a generic call operator's specialisation), then those
@@ -951,6 +1020,10 @@ fn is_named_local(w: &Walk<'_>, t: DeclId) -> bool {
 /// `source_location::function_name`) prints of them, and no rule maps,
 /// since a local entity has no key (digest §4.3 "Names a program reads").
 pub(crate) fn write_scope_names(w: &mut Walk<'_>, s: &mut Stream) {
+    if w.unit.local.detached {
+        s.count(0).indeterminate(DETACHED_SCOPE_NAMES);
+        return;
+    }
     let ast = w.ast;
     let mut around = Vec::new();
     let mut c = w.unit.local.holder.and_then(|h| ast.decls.get(h).ctx());
@@ -1399,7 +1472,8 @@ pub(crate) fn lambda_data(w: &mut Walk<'_>, s: &mut Stream, l: LambdaId) {
 mod tests {
     use std::fmt::Write as _;
 
-    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_kiln::kiln::ast::QualType;
+    use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget};
 
     use crate::decl_func::tests::{named, of_kind, with_walk};
     use crate::keys::KeyRes;
@@ -2035,6 +2109,113 @@ mod tests {
         );
         assert_eq!(normal, forward);
         assert_eq!(normal, backward);
+    }
+
+    // digest-kinds §4.6 `ArgView` `Expr` (WP-123), digest §4.2: a type
+    // holding an expression argument Kiln never converted (a befriended
+    // specialisation in a class template) is met in the class's unit and
+    // in the friend's; the units' keys and digests are the same in unit
+    // order and in reverse, and the type's digest is the same whichever
+    // stream holder asks first (the walk puts the unit's local state
+    // aside). The explicit argument of a dependent name and the
+    // range-`for` temporary a specialisation shares with its pattern
+    // (`number_all`) are in the same source.
+    #[test]
+    fn a_written_argument_does_not_read_the_unit_that_met_it_first() {
+        let src = "namespace n { constexpr int k = 0; }\n\
+                   template <class T, int I> struct It;\n\
+                   template <class T> struct M { friend struct It<T, n::k>; };\n\
+                   template <int I, class T> int get(T);\n\
+                   template <class T> int f(T t) { return get<n::k>(t); }\n\
+                   struct R { int *b, *e; int *begin() const { return b; } int *end() const { return e; } };\n\
+                   R make();\n\
+                   template <class T> int g(T) { int s = 0; for (int x : make()) s += x; return s; }\n\
+                   template int g<int>(int);\n\
+                   int h() { return 0; }\n";
+        let (normal, backward) = std::thread::scope(|sc| {
+            std::thread::Builder::new()
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(sc, || {
+                    let files = [("main.cpp", src)];
+                    let snippet = slip_kiln::snippet::Snippet {
+                        files: &files,
+                        main: "main.cpp",
+                        include: &[""],
+                        std: "c++20",
+                    };
+                    slip_kiln::snippet::parse(&snippet, |p| {
+                        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                        let path = |_| Vec::new();
+                        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                        let rules = RuleTable::empty();
+                        let options = Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            detail: Detail::None,
+                            names: false,
+                            rule_use: false,
+                        };
+                        let normal =
+                            crate::walk::run_with(&input, &options, |_, u, _| keys_and_digests(u));
+                        let mut w = Walk::new(&input, &rules);
+                        let backward = walk_by_hand(&mut w, |_| {}, true);
+                        // The friend's type, asked first from M's stream
+                        // and first from h's, in fresh walks.
+                        let digest_from = |holder: &str, kind: DeclKind| {
+                            let mut w = Walk::new(&input, &rules);
+                            let ty = befriended_type(&w);
+                            let h = named(&w, holder, kind)[0];
+                            w.unit.local.holder = Some(h);
+                            let t = w.type_digest(ty, false);
+                            assert_eq!(t.cause, None, "the friend's type is written");
+                            t.digest
+                        };
+                        assert_eq!(
+                            digest_from("M", DeclKind::ClassTemplate),
+                            digest_from("h", DeclKind::Function)
+                        );
+                        (normal, backward)
+                    })
+                    .expect("parses")
+                })
+                .expect("a thread")
+                .join()
+                .expect("the walk")
+        });
+        assert!(normal.iter().all(|(_, _, c)| c.is_none()), "{normal:?}");
+        assert_eq!(normal, backward);
+    }
+
+    // digest-kinds §4.6 `ArgView` `Expr` (WP-123): inside `detached` the
+    // stream reads nothing of its unit: a rule-11 check answers as a
+    // stream with no holder, and a function name a program reads is cut;
+    // the unit's state is back after.
+    #[test]
+    fn a_detached_stream_reads_no_holder() {
+        with_walk("int h() { return 0; }\n", |w| {
+            let h = named(w, "h", DeclKind::Function)[0];
+            w.unit.local.holder = Some(h);
+            assert!(!crate::own_spelling::templated_at(w, None));
+            let (templated, cause) = super::detached(w, |w| {
+                let mut s = Stream::new();
+                super::write_scope_names(w, &mut s);
+                (crate::own_spelling::templated_at(w, None), s.cause())
+            });
+            assert!(templated);
+            assert_eq!(cause, Some(super::DETACHED_SCOPE_NAMES));
+            assert_eq!(w.unit.local.holder, Some(h));
+            assert!(!w.unit.local.detached);
+        });
+    }
+
+    /// The type the first `friend` befriends.
+    fn befriended_type(w: &Walk<'_>) -> QualType {
+        let ast = w.ast;
+        let f = of_kind(w, DeclKind::Friend)[0];
+        match ast.decls.friend_target(f) {
+            FriendTarget::Type { ty, owned_tag: _ } => ty,
+            FriendTarget::Decl(d) => panic!("a declaration: {}", describe(w, d)),
+        }
     }
 
     /// The specialisations of the call operator of the closure of the

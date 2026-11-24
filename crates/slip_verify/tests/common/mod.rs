@@ -224,6 +224,7 @@ impl Run {
             binding: if status == Status::Failed { None } else { Some(self.binding()) },
             rule_use: None,
             spellings: None,
+            negatives: None,
         }
     }
 

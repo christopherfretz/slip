@@ -1,0 +1,2 @@
+indeterminate S::S<T>()
+indeterminate S::S<T>(int)

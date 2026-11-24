@@ -1,0 +1,3 @@
+# WP-134 item 1 (spec/digest.md §3.4, WP-103): a rule on the pattern's operator (operator== in the post-image, eq before: no declared change renames an operator, so the rule is written field by field) reaches the instantiation's operator, which follows its pattern's mapped name: equal. A rule on the pattern's constructor (a relocate with `=`, the one declared change a constructor has) is accepted beside it and changes no key of the instantiation's constructor.
+rule function | mapped W | name-of post W::operator==(const W<type-parameter-0-0> &) const | disc-of post W::operator==(const W<type-parameter-0-0> &) const | pre W | name-of pre W::eq(const W<type-parameter-0-0> &) const
+relocate [function] W::W<T>(type-parameter-0-0) => W :: =

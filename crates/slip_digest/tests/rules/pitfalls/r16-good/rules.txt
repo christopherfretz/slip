@@ -1,2 +1,2 @@
-# spec/landed/pitfalls/WP-109.md row R16, its good image against its pre-image (crates/slip_verify/tests/pitfalls/r16-deduction-guide, declared.txt): the deduction guide and Box<long> follow the renamed template.
+# spec/landed/pitfalls/WP-109.md row R16, its good image against its pre-image (crates/slip_verify/tests/pitfalls/r16-deduction-guide, declared.txt): the deduction guide and Box<long> follow the renamed template. WP-124: the constructor is declared only here (the pitfall fixture defines it): one defined in a template is indeterminate (kiln/pattern-mem-initializers) until Kiln WP-3026.
 relocate Box => :: Crate

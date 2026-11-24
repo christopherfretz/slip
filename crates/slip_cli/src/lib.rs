@@ -14,6 +14,7 @@ pub mod commands;
 pub mod declare;
 pub mod image;
 pub mod locate;
+pub mod negatives;
 pub mod units;
 pub mod verify_cmd;
 pub mod verify_job;
