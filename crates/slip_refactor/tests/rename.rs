@@ -1978,3 +1978,45 @@ fn wp127_named_set_two_observers() {
         }
     }
 }
+
+/// F1's family with `C : B2, B1` (the first base gives `A::f()`, the
+/// second `B1::f()`) and `B1` declaring `f()` only, hidden by `D::f()`:
+/// member first Kiln makes no shadow at all, so what `using C::f;` names
+/// is empty and cannot be told. From `n::D::f` it is refused in both
+/// orders (`unsupported` member first: the follower's `of` is `D::f()`
+/// alone, renamed; `mixed_follower` using first, the hidden shadow of the
+/// kept `B1::f()`). From `n::A::f` nothing of the rename is near it: it is
+/// kept, and the rename verifies in both orders.
+#[test]
+fn wp127_unknown_named_set_nothing_shadowed() {
+    let text = |d: &str| {
+        format!(
+            "namespace n {{\nstruct A {{ void f(); }};\nstruct B1 : virtual A {{ void f(); }};\nstruct B2 : virtual A {{}};\nstruct C : B2, B1 {{}};\nstruct D : C {{ {d} }};\n}}\nvoid h(n::D& d) {{ d.f(); }}\n"
+        )
+    };
+    let mf = text("void f(); using C::f;");
+    let uf = text("using C::f; void f();");
+    for (tag, src, want) in [("mf", &mf, "SubjectUnsupported"), ("uf", &uf, "MixedFollower")] {
+        let files: [(&str, &[u8]); 1] = [("main.cpp", src.as_bytes())];
+        let n = format!("wp127-unknown-empty-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "D", "f"], "g", &right);
+        assert_eq!(causes(&r), [want], "{n}: {r:?}");
+        let n = format!("wp127-unknown-empty-{tag}-a");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "A", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+    }
+}
+
+/// A declaration without a shadow that no member of the class could hide
+/// (`named_set`'s "introduced" arm): `using B2::f;` names `A::f()`, which
+/// `using B1::f;` introduced before it, and `B2::f(int)`. It is in the
+/// using-declaration's `of`, so renaming `B2::f(int)` and not `A::f()` is
+/// `mixed_follower` (conservative: `A::f()` stays introduced by `using
+/// B1::f;`, so `using B2::g;` would also be right).
+#[test]
+fn wp127_second_using_declarator_introduced_arm() {
+    let text = "namespace n {\nstruct A { void f(); };\nstruct B1 : virtual A {};\nstruct B2 : virtual A { void f(int); using A::f; };\nstruct D : B1, B2 { using B1::f; using B2::f; };\n}\nvoid h(n::D& d) { d.f(); d.f(1); }\n";
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end("wp127-second-using", &files, &["main.cpp"], &["n", "B2", "f"], "g", &right);
+    assert_eq!(causes(&r), ["MixedFollower"], "{r:?}");
+}
