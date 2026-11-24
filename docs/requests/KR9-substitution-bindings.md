@@ -627,6 +627,38 @@ Questions:
 
 Where the answer to 1 or 2 is no: the operand kept (implementation).
 
+**Kiln's answer (2026-11-24, checked at Kiln `3d56da28a`, later than
+the pin; Slip's own probes at the pin are in the design review of the
+proposal's revision).** After instantiation a substituted operand is
+kept only in the written (sugared) type; the canonical type never has
+it, and a specialisation's own argument list holds values only.
+
+| Case | Kept? |
+|---|---|
+| `decltype(e)` | yes, in the sugared type |
+| an array bound substituted from a dependent one | **no**, value only (every substituted bound) |
+| an array bound written in the template and not dependent | yes: the template's own node, shared |
+| a dependent expression template argument | yes, unconverted, in the sugared type |
+| a template-id that is not dependent (`S<N + 1>`) | yes: a type that does not depend on the parameters is not rebuilt |
+| an alias's result | **partial**: cached per argument list; a later `X<1 + 1>` reuses the nodes of the first `X<2>` |
+| `noexcept(e)` | partial: kept once instantiated; none while deferred; the canonical type drops it |
+| a bit-field's width; an enumerator; `alignas`/`aligned(N)` | yes |
+| `explicit(bool)` of a member of an instantiated class | yes (a function template specialisation: §5.4 item 2) |
+| a requires-clause of an instantiated declaration | **no**: the template's unsubstituted expression, no value |
+| a default argument | partial: kept after first use |
+| a static data member's initialiser | partial: kept; inline or constexpr ones only after use |
+
+Slip's reply the same day: the substituted array bound is wanted
+(implementation, with the roots work); the requires-clause is not
+(the `Satisfaction` root is where it is read); the lazily instantiated
+ones are not to be forced (a unit exists exactly when the substitution
+was made). **A follow-up question**: in ordinary code, `X<f(a)> v1;
+X<g(b)> v2;` with equal values: does `v2`'s written type show `g(b)`?
+Slip needs each use's written argument list to be that use's own; the
+same is asked for a class template-id, `decltype`, an array bound, a
+variable template-id and a concept-id. Where a shape is first-use-only,
+per-use written sugar is the ask.
+
 ### 5.9 "Emitted whether or not referenced"
 
 Slip's WP-155 reports a derived unit that is emitted whether or not it
