@@ -30,7 +30,7 @@ use slip_model::FileRef;
 use slip_model::keys::Rule;
 
 use crate::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use crate::wire::{self, Errc};
 
@@ -420,6 +420,10 @@ impl Subject for KilnSubject<'_> {
 
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         self.decl(e.0).and_then(|d| self.qualified_decl(d))
+    }
+
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        self.decl(e.0).and_then(|d| self.unqualified_decl(d))
     }
 
     fn references_at(&self, r: Range) -> Vec<Reference> {
