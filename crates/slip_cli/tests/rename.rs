@@ -1725,7 +1725,7 @@ fn dependent_tree(name: &str) -> Tree {
 
 /// The value of the last `state` line (the result's; the set's comes first).
 fn last_state(out: &Out) -> Option<&str> {
-    out.stdout.lines().filter_map(|l| l.strip_prefix("state ")).last()
+    out.stdout.lines().filter_map(|l| l.strip_prefix("state ")).next_back()
 }
 
 fn rename_dependent(t: &Tree, extra: &[&str]) -> Out {
