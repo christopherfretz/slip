@@ -1,0 +1,7 @@
+transform <id>
+edit 0 t.cpp:2:9-2:11 tiers 0 = spell("template <class> type-parameter-0-0 tf(type-parameter-0-0)" "tf")
+report - note "tf at its name: returned"
+report - note "tf<int> at its extent: unsupported"
+report - note "tf<int> at its name: unsupported"
+report - note "tf<int> at the name of tf(2L): unsupported"
+report - note "the message: replace: tf<int>(int) is made from tf (\xc2\xa75.5), and a name written for it is checked against that origin, never against it, so its spelling could not hold (\xc2\xa77.2 rule 5): spell the origin tf instead (found today by `lookup` in its parent, \xc2\xa76.1 rule 8)"

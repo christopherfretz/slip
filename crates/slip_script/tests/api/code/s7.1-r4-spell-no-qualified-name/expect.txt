@@ -1,0 +1,6 @@
+transform <id>
+report - note "in an unnamed class: returned"
+report - note "member of a class template: returned"
+report - note "member of a specialisation: returned"
+report - note "only friend declarations: returned"
+report - note "specialisation: returned"

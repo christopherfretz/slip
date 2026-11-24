@@ -1,0 +1,13 @@
+subjects:
+  0c0ea3d4 seed - rule=yes n::D::f()
+  8e046f8d follower - rule=yes n::D<int>::f() of=0c0ea3d4
+  cf8681d0 follower - rule=yes n::D<int>::f of=0c0ea3d4,1c6a9d44,2a721b6b,d00cd781
+links:
+claims:
+  main.cpp:2:39+1 keep t0 votes=1 none
+  main.cpp:2:49+1 keep t0 votes=1 none
+  main.cpp:3:46+1 replace "g" t0 votes=1 none [0c0ea3d4]
+  main.cpp:3:66+1 unresolved t0 votes=1 none
+  main.cpp:5:26+1 replace spell(0c0ea3d4, "g") t0 votes=1 none [0c0ea3d4]
+  main.cpp:5:33+1 keep t0 votes=1 none
+changed:

@@ -86,4 +86,32 @@ pub struct Shard {
     /// and unique; only for phase `Map` and with `inputs`. Absent: the
     /// parse that wrote the shard did not record them.
     pub negatives: Option<Vec<Vec<u8>>>,
+    /// Section 31: where the map parse's found lookups led, and which of
+    /// its inputs were one file (`spec/model.md` §8.8, work package
+    /// WP-135); only for phase `Map` and with `inputs`. Absent: the parse
+    /// that wrote the shard did not record them.
+    pub found: Option<Found>,
+}
+
+/// The `found` section (`spec/model.md` §8.8): each place where the map
+/// parse found a file, with the input it reached, and the classes of
+/// `inputs` that were one file at the map phase.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Strictly ascending by path.
+    pub places: Vec<FoundPlace>,
+    /// Each class of two or more inputs that were one file (one device and
+    /// file number) at the map phase, as indices into `inputs`, strictly
+    /// ascending; the classes ascending by their first index. An input in
+    /// no class was a file of its own.
+    pub classes: Vec<Vec<u64>>,
+}
+
+/// One place of [`Found::places`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundPlace {
+    /// The place as written (`spec/model.md` §8.6, "The path of a place").
+    pub path: Vec<u8>,
+    /// The input the file found there is, an index into `inputs`.
+    pub input: u64,
 }

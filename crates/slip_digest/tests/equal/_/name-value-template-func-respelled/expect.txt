@@ -1,0 +1,1 @@
+# WP-125 item 3: equal; the names digest of h<int> is equal too.
