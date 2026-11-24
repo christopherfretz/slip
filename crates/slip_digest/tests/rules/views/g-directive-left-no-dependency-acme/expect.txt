@@ -1,0 +1,6 @@
+# Addendum 3, the finding's example: owned `acme` keyed `legacy`, no dependency `acme`, a
+# dependency `legacy`, `using namespace legacy;` left. `legacy` is not one view key whose
+# E(k) is it alone, so R2 applies: C2's answer, r+a, the directive naming the part (note in
+# Output::namespace_parts).
+added <using_directive legacy (the part the rule leaves)>
+removed <using_directive legacy>

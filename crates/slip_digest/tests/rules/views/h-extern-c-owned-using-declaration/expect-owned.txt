@@ -1,0 +1,8 @@
+# Every file owned.
+# Second review R13: an owned extern "C" function in a two-view namespace, named through a
+# using-declaration's qualifier; R1's route reaches the enclosing namespace through the
+# linkage specification: equal when Listed (every file owned: acme::Dep re-keyed, the Q6
+# answer).
+added acme::Dep
+removed acme
+removed acme::Dep

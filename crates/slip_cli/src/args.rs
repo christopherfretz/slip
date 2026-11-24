@@ -267,14 +267,15 @@ pub struct TransformOptions {
     pub declared: Option<OsString>,
     /// `--result <id>`: 4 to 64 hexadecimal digits, lower-cased.
     pub result: Option<String>,
-    /// `--dependent offer|refuse` (`spec/edits.md` §10.1, `docs/wp/WP-139.md`
-    /// item 4): the rename request's `dependent`; `None`, not given (the
-    /// request's default, `offer`). For `map` and `rename`, which
+    /// `--dependent offer|refuse|leave` (`spec/edits.md` §10.1,
+    /// `docs/wp/WP-139.md` item 4): the rename request's `dependent`;
+    /// `None`, not given (the request's default, `leave`). For `map` and `rename`, which
     /// `docs/wp/WP-076.md` builds: no command of this version accepts it.
     pub dependent: Option<slip_model::transform::Dependent>,
 }
 
-/// The value of `--dependent` (`spec/edits.md` §10.1): `offer` or `refuse`.
+/// The value of `--dependent` (`spec/edits.md` §10.1): `offer`, `refuse` or
+/// `leave`.
 ///
 /// # Errors
 ///
@@ -283,7 +284,7 @@ pub fn parse_dependent(value: &OsStr) -> Result<slip_model::transform::Dependent
     match value.to_str().and_then(slip_model::transform::Dependent::from_name) {
         Some(d) => Ok(d),
         None => usage(format!(
-            "`--dependent`: `{}` is not `offer` or `refuse`",
+            "`--dependent`: `{}` is not `offer`, `refuse` or `leave`",
             value.to_string_lossy()
         )),
     }

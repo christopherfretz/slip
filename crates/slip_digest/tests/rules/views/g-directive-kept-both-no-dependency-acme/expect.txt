@@ -1,0 +1,1 @@
+# Addendum 3: the edit keeps both directives in the same namespace and file: equal.

@@ -1,0 +1,4 @@
+# WP-141 ruling, clause (c): legacy holds only an unnamed namespace with a variable, moved into
+# the acme a dependency opens. The owned part of acme has content (through the unnamed
+# namespace), so the unit under legacy's key is written: equal. (WP-140's predicate gives the
+# same here.)

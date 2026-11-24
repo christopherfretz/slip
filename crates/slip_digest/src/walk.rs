@@ -208,6 +208,8 @@ pub(crate) struct Walk<'a> {
     pub read_only: crate::ReadOnly<'a>,
     /// Ownership of entities and namespace views (`owned.rs`).
     pub owned_state: crate::owned::OwnedState,
+    /// References to namespaces under rules (`ns_refs.rs`, WP-141).
+    pub ns_refs: crate::ns_refs::NsRefState,
     /// Type digests by the raw canonical `QualType`.
     pub type_memo: HashMap<u32, TypeRef>,
     /// Digests of function types written without their exception
@@ -353,6 +355,7 @@ impl<'a> Walk<'a> {
             rules,
             read_only: crate::ReadOnly::EVERY_FILE,
             owned_state: crate::owned::OwnedState::default(),
+            ns_refs: crate::ns_refs::NsRefState::default(),
             type_memo: HashMap::new(),
             type_memo_no_exc: HashMap::new(),
             aligned_sugar: HashMap::new(),
@@ -679,17 +682,29 @@ pub(crate) fn run_kept<R>(
     let collisions = crate::units::mark_collisions(&mut written)
         + crate::keys::mark_mapped_collisions(&w, input, &mut written);
     let collisions = collisions + crate::units::mark_part_collisions(&mut written);
+    let namespace_parts = crate::ns_refs::notes(&mut w, &written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
-    let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
+    let mut counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
+    crate::ns_refs::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);
     // Last: the lists form keys of their own (`own_lists.rs`, inert).
     let (made, fixed) = crate::own_lists::lists(&mut w, counting.as_ref());
     let (rule_use, kept) = crate::rule_use::finish(counting);
-    let output =
-        Output { digests, counters, causes, names, rule_use, kept, name_strings, made, fixed };
+    let output = Output {
+        digests,
+        counters,
+        causes,
+        names,
+        rule_use,
+        kept,
+        name_strings,
+        namespace_parts,
+        made,
+        fixed,
+    };
     f(&mut w, &written, output)
 }
 

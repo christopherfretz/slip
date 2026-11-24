@@ -1,0 +1,3 @@
+# C9 for an alias (O2): an untouched namespace L = legacy; in a read-only file.
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

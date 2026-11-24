@@ -1,0 +1,5 @@
+# V3 (o2): C2 in a header use.h.
+# Pinned as it is before WP-141's build.
+added <using_directive acme>
+removed <using_directive legacy>
+use 1 via 1 direct 0

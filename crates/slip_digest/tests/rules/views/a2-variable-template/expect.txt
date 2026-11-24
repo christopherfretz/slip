@@ -1,0 +1,3 @@
+# A2 (O1): legacy::v<int> becomes acme::v<int> (a variable template).
+# WP-141 build A: = (the written qualifier of a variable template specialisation
+# is not written: a2-variable-template-qualifier-not-written).

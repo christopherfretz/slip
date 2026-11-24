@@ -94,6 +94,8 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                             None => format!("{name} (the {part} part)"),
                         };
                     }
+                    // The part a using-directive names (WP-141).
+                    crate::ns_refs::part_name(w, u, &mut name);
                     if let Some(r) = u.resolved {
                         name.push_str("::<");
                         name.push_str(r.property.word());

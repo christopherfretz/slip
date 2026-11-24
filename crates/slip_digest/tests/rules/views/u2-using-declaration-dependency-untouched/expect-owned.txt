@@ -1,0 +1,9 @@
+# Every file owned.
+added <shadow acme::Dep>
+added <using acme::Dep>
+added acme::Dep
+removed <shadow acme::Dep>
+removed <using acme::Dep>
+removed acme
+removed acme::Dep
+use 1 via 1 direct 0

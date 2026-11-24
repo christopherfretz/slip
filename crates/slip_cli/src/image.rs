@@ -17,13 +17,15 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use slip_digest::Input;
 use slip_digest::map::with_input;
-use slip_exec::store::Store;
+use slip_exec::store::{Object, Store};
 use slip_exec::worker::PostImage;
-use slip_kiln::{Lookups, ParseOptions, parse_observer_with};
-use slip_model::{Command, Observer, Phase, Shard, Status};
+use slip_kiln::{Lookups, ParseOptions, Unit, parse_observer_with};
+use slip_model::formats::content_id;
+use slip_model::{Command, Digest, Observer, Overlay, Phase, Shard, Status};
 
 use crate::args::ImageArgs;
 
@@ -53,12 +55,40 @@ pub struct RootMap {
     pub post: Vec<u8>,
 }
 
-/// A post-image (§5.1), of the tree form: root maps sorted by `subject`,
-/// none of whose roots equals or lies under another. No root map is the
-/// identity. The overlay form is added by `docs/wp/WP-074.md`.
+/// A post-image (§5.1). Of the tree form: root maps sorted by `subject`,
+/// none of whose roots equals or lies under another; no root map is the
+/// identity. Of the overlay form (`docs/wp/WP-074.md`): no root map, and
+/// the overlay ([`Image::overlay`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Image {
     maps: Vec<RootMap>,
+    overlay: Option<OverlayImage>,
+}
+
+/// The overlay of an image of the overlay form, with its content id; equal
+/// and hashed by the id (the content id of the `OVLY` it was read from).
+#[derive(Clone, Debug)]
+struct OverlayImage {
+    id: Digest,
+    overlay: Arc<Overlay>,
+    /// A test's hook: the parses the loading loop may make (§5.1
+    /// "Loading"), `None` for as many as it needs. Not part of the image's
+    /// identity.
+    parses: Option<usize>,
+}
+
+impl PartialEq for OverlayImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for OverlayImage {}
+
+impl std::hash::Hash for OverlayImage {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 /// Why root maps are not an image (§5.1). Each names the root it is about.
@@ -170,7 +200,45 @@ fn real_dir(given: &Path) -> Result<Vec<u8>, String> {
 impl Image {
     /// The identity: the post-image is the subject as it is on disk.
     pub fn identity() -> Image {
-        Image { maps: Vec::new() }
+        Image { maps: Vec::new(), overlay: None }
+    }
+
+    /// The image of the overlay form (§5.1, `docs/wp/WP-074.md`): the
+    /// subject with the content of the files `overlay` names replaced,
+    /// `id` being the content id of its `OVLY`. The post command is the
+    /// observer's, and the subject path of a real path is the path.
+    pub fn overlay(id: Digest, overlay: Arc<Overlay>) -> Image {
+        Image { maps: Vec::new(), overlay: Some(OverlayImage { id, overlay, parses: None }) }
+    }
+
+    /// The content id of the image's `OVLY`, for an image of the overlay
+    /// form; `None` for a tree (the `overlay` of the shard's `binding`,
+    /// `spec/verify.md` §9.1).
+    pub fn overlay_id(&self) -> Option<Digest> {
+        self.overlay.as_ref().map(|o| o.id)
+    }
+
+    /// The overlay and its content id, for an image of the overlay form.
+    pub fn overlay_of(&self) -> Option<(Digest, &Overlay)> {
+        self.overlay.as_ref().map(|o| (o.id, &*o.overlay))
+    }
+
+    /// A test's hook (`docs/wp/WP-074.md` "Tests"): the loading loop of an
+    /// overlay image stops after `parses` parses, whatever it would load
+    /// next, so that the last parse can read an overlay file from disk
+    /// (guard O1). No effect on a tree.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_loading_limit(mut self, parses: usize) -> Image {
+        if let Some(o) = &mut self.overlay {
+            o.parses = Some(parses);
+        }
+        self
+    }
+
+    /// The test hook's limit, `None` without one.
+    pub(crate) fn loading_limit(&self) -> Option<usize> {
+        self.overlay.as_ref().and_then(|o| o.parses)
     }
 
     /// The checks of §5.1 that need no file system, then the maps sorted
@@ -204,7 +272,7 @@ impl Image {
         }
         let mut maps = maps;
         maps.sort();
-        Ok(Image { maps })
+        Ok(Image { maps, overlay: None })
     }
 
     /// The image of `--root`/`--post` (`spec/exec.md` §8.7): each
@@ -230,12 +298,15 @@ impl Image {
     /// The image of a job (`spec/exec.md` §8.4). A tree's roots must each
     /// be the real path of a directory (the coordinator made them so;
     /// one that is not, now, is refused: guard G1 compares real paths
-    /// with them), then [`Image::new`]. The overlay form is `Err` until
-    /// `docs/wp/WP-074.md`.
-    pub fn from_post(_store: &Store, post: &PostImage) -> Result<Image, String> {
+    /// with them), then [`Image::new`]. An overlay is read from the store
+    /// (`overlays/<id>.ovly`), decoded with every rule of `OVLY` and
+    /// checked to have the content id `id` (`docs/wp/WP-074.md`): one that
+    /// is not there or does not validate is a failure of the run, never a
+    /// shard.
+    pub fn from_post(store: &Store, post: &PostImage) -> Result<Image, String> {
         let maps = match post {
             PostImage::Tree(maps) => maps,
-            PostImage::Overlay(_) => return Err("the overlay image needs WP-074".to_owned()),
+            PostImage::Overlay(id) => return read_overlay(store, id),
         };
         let maps: Vec<RootMap> = maps
             .iter()
@@ -259,6 +330,9 @@ impl Image {
 
     /// What the coordinator puts in a job (`spec/exec.md` §5.2).
     pub fn to_post(&self) -> PostImage {
+        if let Some(o) = &self.overlay {
+            return PostImage::Overlay(o.id);
+        }
         PostImage::Tree(self.maps.iter().map(|m| (m.subject.clone(), m.post.clone())).collect())
     }
 
@@ -267,9 +341,9 @@ impl Image {
         &self.maps
     }
 
-    /// No root map.
+    /// No root map and no overlay.
     pub fn is_identity(&self) -> bool {
-        self.maps.is_empty()
+        self.maps.is_empty() && self.overlay.is_none()
     }
 
     /// The post command of §5.1: [`Image::post_command`]'s command.
@@ -495,6 +569,47 @@ impl Image {
         lookups: bool,
         f: impl FnOnce(&Input<'_>) -> R + Send,
     ) -> Result<Parsed<R>, String> {
+        if side == Side::Post && self.overlay.is_some() {
+            // The post-image of the overlay form is the subject with the
+            // overlay's bytes: parsed only through `parse_unit` with the
+            // blobs given (`crate::worker::post::Loaded`), never from disk.
+            return Err("the post-image of an overlay is parsed with its blobs".to_owned());
+        }
+        let mut options = ParseOptions::default();
+        options.lookups = lookups;
+        let (shard, walked) =
+            self.parse_unit(observer, side, phase, round, options, |unit, subject| {
+                (unit.errors() == 0)
+                    .then(|| (with_input(unit, subject, f), unit.lookups().cloned()))
+            })?;
+        let value = match walked.flatten() {
+            Some((Ok(value), looked)) => Some((value, looked)),
+            Some((Err(e), _)) => return Err(e),
+            None => None,
+        };
+        let value = value.filter(|_| shard.outcome.status == Status::Ok);
+        Ok((shard, value))
+    }
+
+    /// One parse of an observer's image with `options`, `f` called on the
+    /// finished unit (with errors or without) with the subject path of a
+    /// real path for `side` (as [`Image::parse`]). The shard is the parse
+    /// task's, and `f`'s result is returned whatever its status; `None`
+    /// when no parse happened. The verify job of an overlay image parses
+    /// its post-image here, with the overlay's blobs in `options`.
+    ///
+    /// # Errors
+    ///
+    /// `slip_kiln::parse_observer_with`'s.
+    pub(crate) fn parse_unit<R: Send>(
+        &self,
+        observer: &Observer,
+        side: Side,
+        phase: Phase,
+        round: u64,
+        options: ParseOptions<'_>,
+        f: impl FnOnce(&Unit<'_>, &dyn Fn(&[u8]) -> Vec<u8>) -> R + Send,
+    ) -> Result<(Shard, Option<R>), String> {
         let post;
         let parsed = match side {
             Side::Pre => observer,
@@ -507,18 +622,23 @@ impl Image {
             Side::Pre => real.to_vec(),
             Side::Post => self.to_subject(real),
         };
-        let mut options = ParseOptions::default();
-        options.lookups = lookups;
-        let (shard, walked) = parse_observer_with(parsed, phase, round, options, |unit| {
-            (unit.errors() == 0).then(|| (with_input(unit, &subject, f), unit.lookups().cloned()))
-        })?;
-        let value = match walked.flatten() {
-            Some((Ok(value), looked)) => Some((value, looked)),
-            Some((Err(e), _)) => return Err(e),
-            None => None,
-        };
-        let value = value.filter(|_| shard.outcome.status == Status::Ok);
-        Ok((shard, value))
+        parse_observer_with(parsed, phase, round, options, |unit| f(unit, &subject))
+    }
+}
+
+/// [`Image::from_post`] of `PostImage::Overlay(id)`.
+fn read_overlay(store: &Store, id: &Digest) -> Result<Image, String> {
+    let path = store.object_path(Object::Overlay, id);
+    let bytes = store
+        .read_object(Object::Overlay, id)
+        .map_err(|e| format!("cannot read the overlay {id}: {e}"))?
+        .ok_or_else(|| format!("the overlay {id} is not in the store ({})", path.display()))?;
+    let overlay = Overlay::from_bytes(&bytes)
+        .map_err(|e| format!("{} is not a valid OVLY file: {e}", path.display()))?;
+    match content_id(&bytes) {
+        Ok(actual) if actual == *id => Ok(Image::overlay(*id, Arc::new(overlay))),
+        Ok(actual) => Err(format!("{} has the content id {actual}, not {id}", path.display())),
+        Err(e) => Err(format!("{} is not a valid OVLY file: {e}", path.display())),
     }
 }
 

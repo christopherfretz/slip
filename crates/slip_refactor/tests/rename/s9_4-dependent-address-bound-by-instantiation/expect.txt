@@ -7,6 +7,5 @@ claims:
   main.cpp:3:42+1 replace "g" t0 votes=1 none [089ac656]
   main.cpp:5:56+1 replace "g" t0 votes=1 none [089ac656]
 changed:
-  332bb685 main.cpp:5:56+1 dependent name f
 instances:
   main.cpp:5:56+1 ca6c81ba call<n::S<int>>(n::S<int>) [089ac656]

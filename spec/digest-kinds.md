@@ -374,6 +374,17 @@ A `DeclId` written as `ref` is first resolved to its entity: through a
 `UsingShadow` to its target, through an alias to what it names where the
 row says so, and from any redeclaration to the entity's key.
 
+A `ref` to a namespace is `Ref::unit` of its key, but at the sites of
+digest §3.4 "A reference to a namespace" (WP-141): the scope of a
+using-declaration in its key, the namespace qualifier of an unresolved
+name (`UnresolvedLookupExpr`, in a stream and in a profile) and of a
+qualified concept-id (`ConceptSpecializationExpr`) can be
+`Ref::views` (6: the count, then the view keys ascending); the target of
+a using-directive at namespace scope and of a namespace alias can be
+`Ref::part` (7: the key, then the view as a `bool`, `true` owned). Both
+need a namespace rule and a namespace of the image with two view keys;
+neither is ever written for a pre-image.
+
 ### 2.3 Redeclarations
 
 A unit is an entity, not a declaration (digest §2.1). Its stream is
@@ -7279,4 +7290,26 @@ of a reported difference.
   and makes none in the other (`kiln_sema/src/using.rs:945`,
   `ColdDeclData` `hidden_shadow`). The programs mean the same
   ([namespace.udecl]/14); the difference is false, and accepted.
+- **Names bound in a substitution whose expression is not kept**
+  (digest §2.3, WP-153). A substitution whose expression is not kept is
+  seen by its outcome (the argument's value or type, the alias's type,
+  whether a constraint is satisfied, which partial specialisation or
+  candidate was chosen), never by what its names bound: a default
+  template argument at a use that takes it, an alias template's pattern
+  at `A<X>`, a satisfaction check, a partial specialisation's match, a
+  signature substituted during deduction, a `noexcept` or `explicit`
+  operand, the type of a non-type template parameter, and an operand
+  that only a type or a value holds in an instantiated declaration.
+  After a transform, a name inside one can bind another entity (the
+  argument-dependent lookup inside a trait finds another `swap` and
+  the trait still says yes) with every digest equal. No call evaluated
+  at run time is in such an expression. What the binding instantiated
+  can change the program: a variable whose initialiser or destructor
+  runs, a function with `constructor`, `destructor` or `used`. So can
+  a candidate that is no longer considered, with no name bound to
+  another entity; only WP-155 closes that (digest §2.3). Nothing
+  counts these substitutions:
+  the AST holds no fact to count. The design and the request to Kiln
+  are `spec/landed/digest/WP-153.md` and
+  `docs/requests/KR9-substitution-bindings.md`.
 - **Modules** (§10.7) have rows and no experience behind them.

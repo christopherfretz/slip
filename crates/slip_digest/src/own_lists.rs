@@ -127,8 +127,6 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
     // back after: nothing of `Output` reads it, but the caller of
     // `run_with` may read the walk.
     let bytes = w.bytes;
-    let member_views = w.owned_state.member_views.clone();
-    let nested_views = w.owned_state.nested_views.clone();
     let mut entities: Vec<(DeclId, Digest, KeyKind)> = w
         .keys
         .iter()
@@ -187,8 +185,6 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
         }
     }
     w.bytes = bytes;
-    w.owned_state.member_views = member_views;
-    w.owned_state.nested_views = nested_views;
     made.sort();
     fixed.sort();
     (made, fixed)

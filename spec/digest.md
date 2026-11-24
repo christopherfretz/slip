@@ -248,6 +248,97 @@ only one parse has is not by itself a difference (`verify.md` says when it
 is reported): the reference that demanded it is in some unit, and that
 unit's digest differs.
 
+**A limit: names bound in a substitution whose expression is not kept**
+(WP-153; found by WP-139, `spec/landed/edits/WP-139.md` finding 3). A
+substitution whose expression is not kept is seen by its outcome, never
+by what its names bound:
+
+```cpp
+struct Base { static int s(); };
+namespace n { struct S : Base { static int s(); }; }
+template <class T, int = sizeof(T::s())> int call() { return 0; }
+int u() { return call<n::S>(); }
+```
+
+Rename `n::S::s`. `T::s` at `call<n::S>` now finds `Base::s`. Every
+digest is equal: the default argument's value is in the
+specialisation's key, and the substituted expression is nowhere. The
+shapes, and the outcome that is compared today:
+
+| Shape | Outcome that is compared |
+|---|---|
+| a default template argument at a use that takes it | the argument, in the specialisation's key |
+| an alias template's pattern at `A<X>` | the type the alias names |
+| a requires-clause, a type-constraint or a concept-id at a satisfaction check | the stored result; the candidate chosen |
+| a partial specialisation matched (`void_t<decltype(swap(…))>`), also one that matched and was not chosen | the pattern the specialisation was made from |
+| a signature substituted during deduction (`-> decltype(T::s())`, a parameter type), also of a candidate that lost | the specialisation's type |
+| a `noexcept` or `explicit` operand substituted at instantiation | the stored value |
+| the type of a non-type template parameter, substituted with the arguments before it | the converted argument |
+| a requires-expression, or an operand that only a type or a value holds (`int a[sizeof(T::s())]`), in an instantiated declaration | the value; the type |
+
+In each of these an operator, a constructor or a conversion function
+that the substitution selected is as unseen as a name is.
+
+No call evaluated at run time is written in such an expression: it is
+an unevaluated operand, or it is evaluated during translation. So no
+call of the substituted expression changes at run time while the
+outcome is equal. Two things are not proven.
+
+The first is the statement Slip makes, "every name resolves as it
+did": in a namespace migration, the argument-dependent lookup inside a
+trait can find another `swap` and the trait still say yes.
+
+The second is behaviour that follows from what was instantiated. A
+name that binds a function with a deduced return type instantiates its
+body. That can instantiate a definition that is emitted whether or not
+it is referenced: a variable of static or thread storage duration whose
+initialiser or destructor runs, or a function with the attribute
+`constructor`, `destructor` or `used`. Such a demand is written in no
+unit, so the argument of the paragraph above does not hold for it: the
+derived units it made are on one side only and no unit both sides have
+differs, and `spec/verify.md` §4 step 3 reports nothing. It holds
+whether the substitution succeeded or failed after the name bound.
+
+The same behaviour changes with no name bound to another entity, when
+a candidate is no longer considered:
+
+```cpp
+extern "C" int puts(const char *);
+inline int note() { puts("registered"); return 0; }
+template <class T> struct Tr { static int r; };
+template <class T> int Tr<T>::r = note();
+namespace lib {
+struct X {};
+template <class T> auto probe() { return (void)&Tr<T>::r, 1; }
+template <class T, int = sizeof(probe<T>())> void f(T, char);
+}
+void f(lib::X, long) {}
+void use() { f(lib::X(), 0); }
+int main() { use(); }
+```
+
+Write the call `::f(lib::X(), 0)`: the callee is the same function,
+argument-dependent lookup no longer supplies `lib::f`, its default
+template argument is not substituted, `Tr<lib::X>::r` is not
+instantiated, and the program no longer prints. No record of what
+names bound can see this. Only WP-155 closes it: a derived unit that
+is emitted whether or not it is referenced, and that one image only
+has, is a finding. WP-155 is a package of its own and comes first.
+`spec/landed/digest/WP-153.md` §1 has the programs and what closes
+each.
+
+The limit of names is the same, outside any template, for a name in
+an operand that is not dependent and that only a type or a value holds
+(`decltype(n::S::s()) v;`): by §1 rule 2 the operand is spelling.
+
+Nothing is counted for this limit. The AST holds no fact that says a
+satisfaction check or an alias template-id was substituted, and what
+it does hold (that a specialisation took a default argument or was
+made from a partial specialisation) is true of every specialisation of
+a standard container (`spec/landed/digest/WP-153.md` §12). The design
+that removes the limit is `spec/landed/digest/WP-153.md`; what it needs
+of Kiln is `docs/requests/KR9-substitution-bindings.md`.
+
 ## 3. Keys
 
 A **key** identifies an entity independently of the parse, of source
@@ -478,14 +569,24 @@ the key of its own ownership.
 **A namespace's unit in each view** (WP-140). A namespace is owned iff
 none of its openings lies in a read-only file (`verify.md` §2.1); its
 own unit is keyed in that view. It has a unit in the **other** view too
-when it **holds something** there: an entity that is not a namespace
-keyed with it as its namespace parent in that view (a function, a class,
-a variable, and the content-keyed using-directive, alias,
-using-declaration or `static_assert` written in an opening), or a nested
-namespace keyed under it in that view that itself holds something there,
-at any depth. The **owned view** applies the rules along the chain; the
-**dependency view** applies none. An opening alone gives no view: an
-empty owned opening, one that holds only empty nested namespaces, or one
+when that view exists. **A view of a namespace exists iff a member of
+that ownership exists in it**, where a member is (a) an entity whose
+semantic parent is the namespace, declared by the source or made by the
+compiler (`std::__va_list`, the implicit `std::align_val_t`); an entity
+with C language linkage, which is keyed under `c_linkage`, is a member
+of every namespace one of its declarations is in, through linkage
+specifications, as lookup finds it there (WP-141 second review F1), (b) a
+written content-keyed declaration (using-directive, namespace alias,
+using-declaration, `static_assert`), or (c) a nested namespace, named,
+inline or unnamed, one of whose views of that ownership exists. A
+read-only opening holds in the dependency view even when it is empty
+(Addendum A4: what a dependency opens, lookup finds); an empty owned
+opening is nothing (what a transform leaves behind); a declaration the
+compiler makes that is no entity (the using-directive an unnamed namespace implies) is nothing.
+The predicate is decided from the declarations of the image, never from
+what the walk keyed (`Walk::ns_holds`, one function for this unit and
+for `E(k)` below; WP-141). The **owned view** applies the rules along the chain; the
+**dependency view** applies none. So an empty owned opening, one that holds only empty nested namespaces, or one
 that holds only an explicit specialisation (keyed under its template, not
 under the namespace) holds nothing (WP-140 review F3, the definition of
 `docs/wp/WP-141.md` Addendum A4; fixtures `tests/rules/views/untouched-*`).
@@ -514,10 +615,79 @@ under the empty table) has a unit in a view. The view key's cause and a
 view key that cannot be formed are guards: a namespace key's cause and
 errors are made of its names' and its parents', the same namespaces' in
 either view, so the view key's are the own key's, which the own unit
-already has (`units::view_units`). A **reference** to a namespace (an
-alias's target, a using-directive, a qualifier, a using-declaration's
-key) writes the namespace's own key, in any view (`verify.md` "Open
-questions" lists every such place).
+already has (`units::view_units`). A **reference** to a namespace is
+written as the next paragraph says (WP-141).
+
+**A reference to a namespace** (WP-141, build A). A namespace is
+referred to by a view key. With one view key there is nothing to
+choose, and the reference is `Ref::unit` of the own key, as anywhere.
+
+*Named to find members*: the scope of a using-declaration in its key,
+the qualifier of a name left unresolved when the qualifier is a
+namespace, in a stream or in a profile, and the qualifier of a qualified
+concept-id. Take the declarations the lookup found (the
+using-declaration's shadows, each as the entity it stands for; the
+unresolved name's set; the concept). Each gives the key of the part of
+the named namespace that holds it, by its **route**, in this order:
+
+1. a member of the named namespace or of its inline namespace set: its
+   own view (the view of its ownership);
+2. else, reached through using-directives written in the named
+   namespace or its inline set, followed transitively as
+   [namespace.qual] follows them: the view of each such directive (the
+   ownership of the file it is written in), both keys if both;
+3. else the route is not known (it came through a using-declaration,
+   whose shadow Kiln does not keep in a found set): every view key, and
+   the counter `digest.ref.namespace_route_unknown` counts it. The
+   shadow is never guessed by searching the namespace.
+
+The keys are sorted and duplicates removed. One key is written as
+`Ref::unit`. Two or more, or nothing found (then every view key, and
+`digest.ref.namespace_no_referent` counts it), are written as
+`Ref::views`: the count and the keys. The route is asked only when the
+named namespace has two view keys.
+
+*Named whole*: the namespace a using-directive at namespace scope
+nominates, and the target of a namespace alias. In a read-only file
+(by the path of the file the declaration is written in) it is written
+with its key in the dependency view (its one view key if it has no
+dependency part), never `Ref::part`. In an owned file it has a
+**reading** for each of its view keys `k`. A namespace **holds
+something under `k`** if a view of it whose key is `k` exists, by the
+definition of the paragraph above (the same predicate). `E(k)` is the set of namespaces
+of the image that hold something under `k`. The reference is **whole
+for `k`** if every namespace of `E(k)` is named: by this alias; or, for
+a using-directive, by the using-directives of the same enclosing
+namespace **entity** in the same file, taken together (never by those of
+another namespace that has the same mapped key). The reading for `k` is
+`Ref::unit(k)` if the reference is whole for `k`, else `Ref::part(k,
+view)`, `view` the ownership of the named namespace's own unit. The
+unit is written with the reading of the namespace's own key. A
+directive or an alias at block scope is written as before. *(The other
+readings, the alternates of `verify.md` §4 step 1a, are WP-143's and
+not built: a unit has no alternate, and §11 has no `tu_alt`.)*
+
+The guard: R1 asks the route only when the named namespace has two view
+keys; R2 writes a reference plain iff the named namespace has one view
+key `k` and `E(k)` is that namespace alone (Addendum 3). Under the empty
+table or a table that maps no namespace of the chain, no namespace has
+two view keys and no key is held by two namespace entities, so every
+reference is `Ref::unit` of the own key, written exactly as before
+WP-141: no digest moves. One exception fails closed: `E(k)` carries a
+cause for the whole image when any namespace's view key cannot be formed
+(a depth or a cycle, which no source reaches today), and then every R2
+reference carries it where the empty table gives none (second review F4). The table of namespaces (`E(k)`, the inline sets, the
+directives written in each) is made in one pass over the image before
+the walk reads it, so nothing depends on the order units are written in.
+`Ref::views` and `Ref::part` are never written for a pre-image.
+
+Each owned using-directive and alias whose reading for a view key is
+not whole is reported, informational only (`Output::namespace_parts`):
+the unit, the key, whether it is the written reading, and the
+namespaces of `E(k)` it misses with the file of each one's first
+opening. The display name of a using-directive whose written reading is
+`Ref::part` says which part it names (`verify.md` §2.1; the words are
+provisional).
 
 Every site that writes a key (a unit's
 own, a reference from another unit's stream, a parent, a
@@ -579,6 +749,8 @@ Ref := none = 0
      | template_param = 3, depth: uv, index: uv
      | param = 4, level: uv, index: uv            a function parameter named inside a signature
      | outer = 5, owner: KeyId, index: uv         a local variable, parameter or binding of another unit (§4.3)
+     | views = 6, count: uv, ids: KeyId*          a namespace named to find members under several view keys (§3.4), ascending
+     | part = 7, id: KeyId, view: bool            a namespace named whole, not whole for its own key (§3.4)
 ```
 
 A reference names the entity, never the declaration it was found through:

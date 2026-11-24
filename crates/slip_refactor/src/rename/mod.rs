@@ -40,7 +40,7 @@ use slip_kiln::sites::Sites;
 use slip_kiln::written::{self, DeclName};
 use slip_model::edits::{Changed, Edits, SCHEME};
 use slip_model::transform::{Rename, TransformKind};
-use slip_model::{FileRef, Transform};
+use slip_model::{Digest, FileRef, Transform};
 
 pub(crate) use claims::{Claims, Written};
 pub(crate) use subjects::Subjects;
@@ -80,6 +80,7 @@ pub(crate) struct Named {
 /// references looked at.
 pub(crate) fn run(
     transform: &Transform,
+    id: Digest,
     unit: &Unit<'_>,
     keys: &mut Keys<'_>,
     files: &dyn Fn(FileId) -> Option<FileRef>,
@@ -94,8 +95,6 @@ pub(crate) fn run(
     // the request's validity: a request that breaks them never reaches
     // `Keys::rename_rule`.
     transform.validate().map_err(|e| format!("the request is not valid: {e}"))?;
-    let id = slip_model::formats::content_id(&transform.to_bytes())
-        .map_err(|e| format!("the request has no content id: {e}"))?;
     if !written::recorded(unit) {
         return Err("the unit was parsed without ParseOptions::written".to_owned());
     }
@@ -135,9 +134,8 @@ pub(crate) fn run(
     refs::claim(&mut ctx, &hits);
     dependent::claim_all(&mut ctx);
 
-    let Ctx { subjects, claims, mut changed, .. } = ctx;
-    let (files, claims, claimed_changed, instances) = claims.finish(files, main)?;
-    changed.extend(claimed_changed);
+    let Ctx { subjects, claims, changed, .. } = ctx;
+    let (files, claims, instances) = claims.finish(files, main)?;
     let (subjects, links) = subjects.finish(unit.ast());
     let mut edits = Edits {
         scheme: SCHEME,

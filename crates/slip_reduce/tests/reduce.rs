@@ -637,9 +637,12 @@ fn instances_joined_and_kept_at_edits_and_site_refusals() {
             .instance((A, 10, 11), s, "call<S<int>>", &[d(1)]),
     ]);
     let set = &r.edits;
-    // The refusal of the site at 10 refuses the set; the edit at 0 is
-    // kept in it, as a refused set keeps its edits (§6).
+    // The site at 10 is refused, and only the site: the set is accepted
+    // (the request is not `indivisible`, §3), the edit at 0 stands, and the
+    // instances at both places are kept. A refused set has no edits
+    // (§6.1), so there only the instances at site refusals would remain.
     assert_eq!(causes(set), vec![Cause::SiteRefused], "{:?}", set.refusals);
+    assert_eq!(set.state, SetState::Accepted);
     let got: Vec<_> = set
         .instances
         .iter()

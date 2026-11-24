@@ -20,8 +20,10 @@
 //!   <file>:<line>:<column>+<length> <spec key, 8 digits, or -> <spec display> [<subjects>]
 //! ```
 //!
-//! A `dependent: refuse` line of `test.txt` sets the request's `dependent`
-//! (`docs/wp/WP-139.md` item 4; the default is `offer`).
+//! A `dependent: offer|refuse|leave` line of `test.txt` sets the request's
+//! `dependent` (`docs/wp/WP-139.md` item 4); the default is the request's,
+//! `leave` (WP-139's second review). The directories decided by row 2 of
+//! §9.4 say `offer`.
 //!
 //! a piece being `"text"` or `spell(<key, 8 digits>, "text")`. A unit with
 //! errors renders as `diagnosed` (the worker does not run a transform on
@@ -88,7 +90,8 @@ fn read_case(dir: &Path) -> Case {
         .unwrap_or_else(|e| panic!("{name}: test.txt: {e}"));
     let (mut target, mut kind, mut new_name, mut args, mut spec) =
         (None, None, None, Vec::new(), 0);
-    let mut dependent = Dependent::Offer;
+    // The request's default (`leave`) unless the case names one.
+    let mut dependent = Dependent::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (k, v) = line.split_once(':').unwrap_or_else(|| panic!("{name}: bad line {line:?}"));
         let v = v.trim();
@@ -109,6 +112,7 @@ fn read_case(dir: &Path) -> Case {
                 dependent = match v {
                     "offer" => Dependent::Offer,
                     "refuse" => Dependent::Refuse,
+                    "leave" => Dependent::Leave,
                     _ => panic!("{name}: dependent {v:?}"),
                 };
             }
@@ -152,6 +156,12 @@ fn written_options() -> ParseOptions<'static> {
     o.written = true;
     o.pp_record = true;
     o
+}
+
+/// The request's id as the worker passes it: the content id of the
+/// `TRFM` bytes, here those of `t`'s encoding (no ignorable section).
+fn request_id(t: &Transform) -> Digest {
+    slip_model::formats::content_id(&t.to_bytes()).expect("a TRFM has a content id")
 }
 
 fn transform(case: &Case, root: &str) -> Transform {
@@ -220,7 +230,8 @@ fn run_case(case: &Case) -> Ran {
         let ownership = t.ownership.clone();
         let sites = slip_kiln::sites::Sites::new(u, &ownership);
         let (edits, counters) =
-            slip_refactor::run_counted(&t, u, keys, &|f| sites.file_ref(f)).expect("run");
+            slip_refactor::run_counted(&t, request_id(&t), u, keys, &|f| sites.file_ref(f))
+                .expect("run");
         check_counters(&case.name, &edits, &counters);
         edits.validate_against(&case.name);
         // Paths relative to the root, for the rendering.
@@ -641,7 +652,6 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::MixedInstances => "mixed_instances",
         Reason::Directive => "directive",
         Reason::Instantiated => "instantiated",
-        Reason::NoHolder => "no_holder",
     }
 }
 
@@ -740,7 +750,7 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
             slip_digest::map::with_input(u, &subject, |input| {
                 let mut keys = Keys::new(input);
                 let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
-                slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f))
+                slip_refactor::run(&t, request_id(&t), u, &mut keys, &|f| sites.file_ref(f))
                     .map(|e| e.subjects.len())
             })
         })
@@ -781,8 +791,12 @@ fn requests_the_rename_does_not_run() {
                 slip_digest::map::with_input(u, &subject, |input| {
                     let sites = slip_kiln::sites::Sites::new(u, &good.ownership);
                     let files = |f| sites.file_ref(f);
-                    [&good, &keyword, &ucn, &script]
-                        .map(|t| slip_refactor::run(t, u, &mut Keys::new(input), &files).err())
+                    // Each is refused before its id is read; an invalid
+                    // request has no encoding, so the id is a placeholder.
+                    [&good, &keyword, &ucn, &script].map(|t| {
+                        let id = if t == &good { request_id(t) } else { Digest([0x1d; 32]) };
+                        slip_refactor::run(t, id, u, &mut Keys::new(input), &files).err()
+                    })
                 })
             })
             .unwrap();
@@ -1042,7 +1056,8 @@ fn map_shards(
                 slip_digest::map::with_input(u, &subject, |input| {
                     let mut keys = Keys::new(input);
                     let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
-                    slip_refactor::run(&t, u, &mut keys, &|f| sites.file_ref(f)).expect("run")
+                    slip_refactor::run(&t, request_id(&t), u, &mut keys, &|f| sites.file_ref(f))
+                        .expect("run")
                 })
                 .expect("with_input")
             })
@@ -1198,6 +1213,8 @@ struct EndToEnd {
     unresolved: usize,
     instances: Vec<String>,
     /// The keys of the units the set exempts (its `changed` in force).
+    /// No row of §9.4 exempts a unit since WP-139's second review: always
+    /// 0, asserted where a dependent name is edited.
     exempt: usize,
 }
 
@@ -1226,8 +1243,9 @@ fn end_to_end(
 /// [`end_to_end`] with the request's `dependent` and the observers'
 /// language standard `std` (`c++23` for an explicit object parameter,
 /// item 7). The units the set
-/// exempts (`changed` in force, §6.2: a dependent name's holder, §9.4) are
-/// left out of the comparison, as verification leaves them out.
+/// exempts (`changed` in force, §6.2) are left out of the comparison, as
+/// verification leaves them out; a rename exempts none (§9.4, "No holder
+/// is exempt").
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1840,11 +1858,26 @@ const WP139_FORMS: [Form; 6] = [
     ),
 ];
 
-/// Item 1, row by row, for every form: every instantiation binds a
-/// subject, `replace` (accepted, the pattern's name edited, its holder
-/// exempt, and it verifies); none does and one binds `n::R`'s, `keep`
-/// (accepted, nothing edited there, and it verifies); both, `refuse(
-/// mixed_instances)`. Every accepted rename is verified.
+/// Accepted and not verified, loudly, because a dependent name was edited
+/// (`dependent: offer`): no refusal, no unit exempt, and every difference a
+/// `changed` unit (the holder of the edited name, or an instantiation of
+/// it). WP-139's second review: no unit is withdrawn from the comparison
+/// for a token, so the holder differs until dependent names are compared
+/// mapped (`docs/wp/WP-154.md`). The tests that assert it are the pairs
+/// WP-154 turns around (each has an ignored `*_wp154` twin, or a comment
+/// "WP-154" where it asserts this).
+fn holder_differs(r: &EndToEnd) -> bool {
+    r.refusals.is_empty()
+        && r.exempt == 0
+        && !r.differences.is_empty()
+        && r.differences.iter().all(|d| d.contains(": changed "))
+}
+
+/// Item 1, row by row, for every form, under `dependent: offer`: every
+/// instantiation binds a subject, `replace` (accepted, the pattern's name
+/// edited, and not verified: its holder differs, WP-154); none does and
+/// one binds `n::R`'s, `keep` (accepted, nothing edited there, and it
+/// verifies); both, `refuse(mixed_instances)`.
 #[test]
 fn wp139_dependent_name_per_form_and_row() {
     for (name, member, pattern, use_s) in WP139_FORMS {
@@ -1862,10 +1895,10 @@ fn wp139_dependent_name_per_form_and_row() {
         };
         let (n, r) = run("subjects", use_s);
         let kept = r.kept;
-        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        // WP-154: verified once the holder is compared mapped.
+        assert!(holder_differs(&r), "{n}: {r:?}");
         // The declaration of the member and the pattern's name.
         assert_eq!(r.edits.len(), 2, "{n}: {r:?}");
-        assert_eq!(r.exempt, 1, "{n}: the holder is exempt: {r:?}");
         assert!(
             !r.instances.is_empty() && r.instances.iter().all(|i| i.starts_with("edited ")),
             "{n}: {r:?}"
@@ -1886,14 +1919,16 @@ fn wp139_dependent_name_per_form_and_row() {
 
 /// An unqualified dependent call found by argument-dependent lookup at
 /// instantiation (`h(t)`, no `h` visible at the definition): row 2 reads
-/// the table's row (`how` is `adl`), the call is edited, and it verifies.
+/// the table's row (`how` is `adl`), the call is edited, and the holder
+/// `call` differs (WP-154).
 #[test]
 fn wp139_dependent_call_found_by_adl() {
     let text = "namespace m { struct A {}; int h(A) { return 1; } }\ntemplate <class T> int call(T t) { return h(t); }\nint u() { return call(m::A()); }\n";
     let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
     let r = end_to_end("wp139-adl", &files, &["main.cpp"], &["m", "h"], "k", &right);
-    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
-    assert_eq!((r.edits.len(), r.exempt), (2, 1), "{r:?}");
+    assert!(holder_differs(&r), "{r:?}");
+    assert_eq!(r.edits.len(), 2, "{r:?}");
+    assert!(r.differences.iter().all(|d| d.contains("call")), "{r:?}");
 }
 
 /// The files of the two-observer cases: the pattern in a header, one
@@ -1935,12 +1970,12 @@ fn wp139_two_observers_that_instantiate_differently_are_contested() {
         );
     }
     // The observer that instantiates with a subject and the one that does
-    // not instantiate: `replace` and `unresolved`, accepted, and verified
-    // in both (the second makes no instantiation that could differ).
+    // not instantiate: `replace` and `unresolved`, accepted, and not
+    // verified: the holder differs in both observers (WP-154).
     for mains in [["s.cpp", "none.cpp"], ["none.cpp", "s.cpp"]] {
         let n = format!("wp139-live-{}", mains[0].trim_end_matches(".cpp"));
         let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
-        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        assert!(holder_differs(&r), "{n}: {r:?}");
         assert_eq!(r.instances.len(), 1, "{n}: {r:?}");
         assert!(r.instances[0].ends_with(" x1"), "{n}: {r:?}");
     }
@@ -1959,7 +1994,8 @@ fn wp139_instances_are_counted_over_observers() {
     for mains in [["s.cpp", "s2.cpp"], ["s2.cpp", "s.cpp"]] {
         let n = format!("wp139-count-{}", mains[0].trim_end_matches(".cpp"));
         let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
-        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        // WP-154: verified once the holder is compared mapped.
+        assert!(holder_differs(&r), "{n}: {r:?}");
         assert_eq!(r.instances.len(), 1, "{n}: {r:?}");
         assert!(r.instances[0].starts_with("edited t.h:"), "{n}: {r:?}");
         assert!(r.instances[0].ends_with(" [n::S::f()] x2"), "{n}: {r:?}");
@@ -2011,8 +2047,8 @@ fn wp139_dependent_refuse_is_the_refusing_form() {
 /// The wrong edit beside the right one: the pattern's name edited, the
 /// instantiation's member left as it was (`n::S::f` declared under its
 /// old name in the post-image) does not compile, so the run is not
-/// verified. What the exemption of the holder leaves checked
-/// (`spec/edits.md` §9.4): every instantiation.
+/// verified: the instantiation is compared as every unit is
+/// (`spec/edits.md` §9.4).
 #[test]
 fn wp139_an_instantiation_left_behind_is_not_verified() {
     let text = format!(
@@ -2487,10 +2523,11 @@ const WP139_SHAPES: [Shape; 12] = [
 ];
 
 /// Item 6: each shape that WP-127's join by token location missed, and
-/// those beside it, now read from Kiln's table: accepted, verified, and the
-/// pattern's name edited (or kept, for a type named like the old name).
+/// those beside it, now read from Kiln's table (`dependent: offer`):
+/// accepted, and the pattern's name edited, the holder then differing
+/// (WP-154); or kept, for a type named like the old name, and verified.
 #[test]
-fn wp139_shapes_the_join_missed_verify() {
+fn wp139_shapes_the_join_missed() {
     let mut wrong = Vec::new();
     for (name, target, pattern, edited) in WP139_SHAPES {
         let text = format!("{WP139_MORE}{pattern}");
@@ -2498,11 +2535,12 @@ fn wp139_shapes_the_join_missed_verify() {
         let n = format!("wp139-shape-{name}");
         let r = end_to_end(&n, &files, &["main.cpp"], target, "h", &right);
         let at_pattern = r.instances.iter().any(|i| i.starts_with("edited "));
-        if !(r.refusals.is_empty()
-            && r.differences.is_empty()
-            && r.unresolved == 0
-            && at_pattern == edited)
-        {
+        let outcome = if edited {
+            holder_differs(&r)
+        } else {
+            r.refusals.is_empty() && r.differences.is_empty()
+        };
+        if !(outcome && r.unresolved == 0 && at_pattern == edited) {
             wrong.push(format!("{n}: {r:?}"));
         }
     }
@@ -2612,14 +2650,14 @@ fn wp139_new_name_captured_in_an_instantiation_is_not_verified() {
 }
 
 /// A dependent name whose enclosing declaration the front end records as
-/// the translation unit (an alias template's pattern, a requires-clause):
-/// every instantiation binds it to the subject, but there is no holder to
-/// exempt (§9.4, "The holder"), so the edit could not verify. The site is
-/// refused, `no_holder`, naming the subject and the specialisation seen
-/// (the ruling on WP-139's finding 2). When the front end records the
-/// enclosing declaration, the refusal goes with no change to the rename.
+/// the translation unit (an alias template's pattern, a requires-clause),
+/// under `dependent: offer`: every instantiation binds it to the subject,
+/// the name is edited, and the run is not verified. The first ruling
+/// refused it (`no_holder`) because no holder could be exempt; since the
+/// second review no holder is (§9.4, "No holder is exempt"), so the
+/// reason is dropped and the shape is one more that WP-154 turns around.
 #[test]
-fn wp139_no_holder_is_refused() {
+fn wp139_name_with_no_holder_is_not_verified() {
     for (name, pattern) in [
         (
             "alias-template",
@@ -2634,25 +2672,26 @@ fn wp139_no_holder_is_refused() {
         let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
         let n = format!("wp139-no-holder-{name}");
         let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
-        assert_eq!(r.refusals, ["SiteRefused no_holder n::S::s()"], "{n}: {r:?}");
-        assert!(r.instances.iter().all(|i| i.starts_with("refused main.cpp:")), "{n}: {r:?}");
+        assert!(r.refusals.is_empty() && r.exempt == 0, "{n}: {r:?}");
+        assert!(!r.differences.is_empty(), "{n}: verified: {r:?}");
         assert!(!r.instances.is_empty(), "{n}: {r:?}");
+        assert!(r.instances.iter().all(|i| i.starts_with("edited main.cpp:")), "{n}: {r:?}");
     }
 }
 
-/// `docs/wp/WP-139.md` "Tests": every accepted rename is verified. Each
-/// directory in which row 2 of §9.4 now edits a dependent name (a
-/// `dependent name` entry in `changed`), a function's rename without
-/// arguments, run end to end: accepted, and verified.
+/// `docs/wp/WP-139.md` "Tests", re-pointed by the second review: each
+/// directory decided by row 2 of §9.4 (`dependent: offer`), a function's
+/// rename without arguments, run end to end. Accepted with a dependent
+/// name edited: not verified, the holder differing (WP-154); accepted
+/// with none edited: verified.
 #[test]
-fn wp139_directories_edited_on_instances_verify() {
-    let mut checked = Vec::new();
+fn wp139_directories_decided_by_row_2() {
+    let (mut edited, mut verified) = (Vec::new(), Vec::new());
     for case in cases() {
-        let expect = std::fs::read_to_string(case.dir.join("expect.txt")).unwrap_or_default();
         if is_pending(&case)
             || case.kind != TargetKind::Function
             || !case.args.is_empty()
-            || !expect.lines().any(|l| l.contains(" dependent name "))
+            || case.dependent != Dependent::Offer
         {
             continue;
         }
@@ -2672,16 +2711,25 @@ fn wp139_directories_edited_on_instances_verify() {
             "c++20",
             &right,
         );
-        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
-        checked.push(case.name);
+        if !r.refusals.is_empty() {
+            continue;
+        }
+        if r.instances.iter().any(|i| i.starts_with("edited ")) {
+            assert!(holder_differs(&r), "{n}: {r:?}");
+            edited.push(case.name);
+        } else {
+            assert!(r.differences.is_empty(), "{n}: {r:?}");
+            verified.push(case.name);
+        }
     }
-    assert!(checked.len() >= 5, "{checked:?}");
+    assert!(edited.len() >= 2 && !verified.is_empty(), "{edited:?} {verified:?}");
 }
 
 /// FINDING (`spec/landed/edits/WP-139.md`, "Findings" 4): a dependent
 /// name inside its holder's key: a trailing return type, a parameter type,
-/// a trailing requires-clause (`digest-kinds.md` §3.3, §3.4). The holder
-/// exists and is exempt, but the edit changes the holder's own key: the
+/// a trailing requires-clause (`digest-kinds.md` §3.3, §3.4). The edit
+/// changes the holder's own key (no holder is exempt since the second
+/// review, and no mapped comparison of the holder could cover it): the
 /// post-image has a template the pre-image did not, and the
 /// specialisation's key moves with it. Accepted and not verified (loud).
 /// Not refused: telling a name in the key from one in the body before the
@@ -2709,10 +2757,221 @@ fn wp139_finding_name_in_the_holders_key_is_not_verified() {
         let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
         let n = format!("wp139-in-key-{name}");
         let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
-        assert!(r.refusals.is_empty() && r.exempt == 1, "{n}: {r:?}");
+        assert!(r.refusals.is_empty() && r.exempt == 0, "{n}: {r:?}");
         assert!(
             r.differences.iter().any(|d| d.starts_with("main.cpp: added template <class>")),
             "{n}: verified: {r:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// WP-139's second review (`spec/landed/edits/WP-139.md`, "Second
+// review"): the shapes that hid a rebinding behind the holder's
+// exemption, now loud. Each is accepted under `dependent: offer` and not
+// verified, the holder a `changed` unit, for the new name that rebinds
+// another name of the holder (`h`) and for one that does not (`k`). These
+// are the pairs `docs/wp/WP-154.md` must turn around: its ignored twin
+// (`*_wp154`) asserts the run differs for `h` and verifies for `k`.
+
+/// The run of one reviewer shape, `main.cpp` only, under `offer`.
+fn rv139(name: &str, text: &str, target: &[&str], new: &str) -> EndToEnd {
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    end_to_end(&format!("{name}-{new}"), &files, &["main.cpp"], target, new, &right)
+}
+
+/// B1: a generic lambda in a non-template member function holds the
+/// dependent name `t.f`; `h(0)` beside it binds `::h` and, renamed to
+/// `h`, would bind `S::h`.
+const RV139_LAMBDA_MEMBER: &str = "int h(int) { return 10; }\nnamespace n {\nstruct S { static int f(int) { return 1; } };\nstruct U : S { int u() { auto l = [](auto t) { return t.f(1); }; return l(S()) + h(0); } };\n}\nint w() { return n::U().u(); }\n";
+
+/// B1, the namespace form: `n::f(A)` and `n::f(int)` renamed; `h(0)` in
+/// `n::u` would move from `::h(int)` to `n::h(int)`.
+const RV139_LAMBDA_NAMESPACE: &str = "int h(int) { return 10; }\nnamespace n {\nstruct A {};\nint f(A) { return 1; }\nint f(int) { return 2; }\nint u() { auto l = [](auto t) { return f(t); }; return l(A()) + h(0); }\n}\nint w() { return n::u(); }\n";
+
+/// B2: `h(0)` in an `if constexpr` branch no instantiation keeps.
+const RV139_DISCARDED: &str = "int h(int) { return 10; }\nnamespace n {\nstruct S {\n  static int f(int) { return 1; }\n  template <class T> static int call(T) { if constexpr (sizeof(T) > 100) return h(0); else return T::f(1); }\n};\n}\nint w() { return n::S::call(n::S()); }\n";
+
+/// B2: `h(0)` in a default argument no call uses.
+const RV139_DEFAULT_ARGUMENT: &str = "int h(int) { return 10; }\nnamespace n {\nstruct S {\n  static int f(int) { return 1; }\n  template <class T> static int call(T, int k = h(0)) { return T::f(1) + k; }\n};\n}\nint w() { return n::S::call(n::S(), 3); }\n";
+
+/// B2: another observer's preprocessing of the holder: `b.cpp` defines
+/// `B_SIDE`, whose `h(0)` only it sees, and instantiates nothing.
+fn rv139_other_observer() -> [(&'static str, Vec<u8>); 3] {
+    let header = "int h(int) { return 10; }\nnamespace n {\nstruct S {\n  static int f(int) { return 1; }\n  template <class T> static int call(T) {\n#ifdef B_SIDE\n    return h(0) + T::f(1);\n#else\n    return T::f(1);\n#endif\n  }\n};\n}\n";
+    [
+        ("t.h", header.as_bytes().to_vec()),
+        ("a.cpp", b"#include \"t.h\"\nint a() { return n::S::call(n::S()); }\n".to_vec()),
+        ("b.cpp", b"#define B_SIDE\n#include \"t.h\"\nint b() { return 0; }\n".to_vec()),
+    ]
+}
+
+/// The single-file shapes: name, text, target, the holder's display.
+const RV139_SHAPES: [(&str, &str, &[&str], &str); 4] = [
+    ("rv139-lambda-member", RV139_LAMBDA_MEMBER, &["n", "S", "f"], "n::U::u()"),
+    ("rv139-lambda-namespace", RV139_LAMBDA_NAMESPACE, &["n", "f"], "n::u()"),
+    ("rv139-discarded", RV139_DISCARDED, &["n", "S", "f"], "call"),
+    ("rv139-default-argument", RV139_DEFAULT_ARGUMENT, &["n", "S", "f"], "call"),
+];
+
+/// B1 and B2, the single-file shapes: not verified, the holder `changed`,
+/// for the rebinding new name and for the one that rebinds nothing.
+#[test]
+fn wp139_second_review_shapes_are_not_verified() {
+    for (name, text, target, holder) in RV139_SHAPES {
+        for new in ["h", "k"] {
+            let r = rv139(name, text, target, new);
+            assert!(holder_differs(&r), "{name} {new}: {r:?}");
+            assert!(
+                r.differences
+                    .iter()
+                    .any(|d| d.starts_with("main.cpp: changed ") && d.contains(holder)),
+                "{name} {new}: {r:?}"
+            );
+            assert!(r.instances.iter().any(|i| i.starts_with("edited ")), "{name} {new}: {r:?}");
+        }
+    }
+}
+
+/// WP-154's twin of [`wp139_second_review_shapes_are_not_verified`]: once
+/// the holder is compared mapped, the rebinding still differs and the
+/// rename that rebinds nothing verifies.
+#[test]
+#[ignore = "WP-154: dependent names compared mapped; until then the holder differs for `k` too"]
+fn wp139_second_review_shapes_are_not_verified_wp154() {
+    for (name, text, target, holder) in RV139_SHAPES {
+        let r = rv139(name, text, target, "h");
+        assert!(r.differences.iter().any(|d| d.contains(holder)), "{name} h: {r:?}");
+        let r = rv139(name, text, target, "k");
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{name} k: {r:?}");
+    }
+}
+
+/// B1's control: the lambda takes `S`, so `t.f` is not dependent and is
+/// edited as any name is. Renamed to `h`, `h(0)` rebinds and `n::U::u()`
+/// differs, as it should; renamed to `k`, the run verifies. The shape
+/// WP-154 must make of the generic lambda.
+#[test]
+fn wp139_second_review_control() {
+    let text = RV139_LAMBDA_MEMBER.replace("[](auto t)", "[](S t)");
+    let r = rv139("rv139-control", &text, &["n", "S", "f"], "h");
+    assert!(r.refusals.is_empty() && r.instances.is_empty(), "{r:?}");
+    assert!(r.differences.iter().any(|d| d.contains("n::U::u()")), "{r:?}");
+    let r = rv139("rv139-control", &text, &["n", "S", "f"], "k");
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+}
+
+/// B2, the other observer, in both orders: `a.cpp` instantiates and the
+/// name (in the `#else` branch) is edited, so `a.cpp`'s `call` differs;
+/// `b.cpp` instantiates nothing, so its `T::f` (in the `B_SIDE` branch)
+/// is `unresolved`. Not verified, for `h` and for `k`; for `h`, `b.cpp`'s
+/// `call` differs too (its `h(0)` binds `S::h`), which no exemption may
+/// hide.
+#[test]
+fn wp139_second_review_other_observer_is_not_verified() {
+    let files = rv139_other_observer();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    for mains in [["a.cpp", "b.cpp"], ["b.cpp", "a.cpp"]] {
+        for new in ["h", "k"] {
+            let n = format!("rv139-other-{}-{new}", mains[0].trim_end_matches(".cpp"));
+            let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], new, &right);
+            assert!(holder_differs(&r), "{n}: {r:?}");
+            assert!(r.differences.iter().any(|d| d.starts_with("a.cpp: changed ")), "{n}: {r:?}");
+            let b = r.differences.iter().any(|d| d.starts_with("b.cpp: changed "));
+            assert_eq!(b, new == "h", "{n}: {r:?}");
+        }
+    }
+}
+
+/// WP-154's twin of [`wp139_second_review_other_observer_is_not_verified`]:
+/// `b.cpp` differs for `h`; `k` verifies.
+#[test]
+#[ignore = "WP-154: dependent names compared mapped; until then the holder differs for `k` too"]
+fn wp139_second_review_other_observer_is_not_verified_wp154() {
+    let files = rv139_other_observer();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    for mains in [["a.cpp", "b.cpp"], ["b.cpp", "a.cpp"]] {
+        let n = format!("rv139-other-{}-h", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "h", &right);
+        assert!(r.differences.iter().any(|d| d.starts_with("b.cpp: ")), "{n}: {r:?}");
+        let n = format!("rv139-other-{}-k", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "k", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+    }
+}
+
+/// The default, `dependent: leave` (the second review): row 2 is not
+/// read, the dependent name is `unresolved` (residue `dependent`), no
+/// instance is recorded, and only the member's declaration is edited.
+/// With `n::S<int>`, whose base declares an `f`, the post-image's `t.f()`
+/// binds `Base::f`: the instantiation differs, so the run is not
+/// verified (loud), as before this package.
+#[test]
+fn wp139_default_leaves_a_dependent_name_unresolved() {
+    assert_eq!(Dependent::default(), Dependent::Leave);
+    let text = format!(
+        "{WP139_CLASSES}template <class T> int call(T t) {{ return t.f(); }}\nint u() {{ return call(n::S<int>()); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end_with(
+        "wp139-leave",
+        &files,
+        &["main.cpp"],
+        &["n", "S", "f"],
+        "h",
+        Dependent::default(),
+        "c++20",
+        &right,
+    );
+    assert!(r.refusals.is_empty() && r.exempt == 0, "{r:?}");
+    assert_eq!((r.edits.len(), r.unresolved), (1, 1), "{r:?}");
+    assert!(r.instances.is_empty(), "{r:?}");
+    assert!(r.differences.iter().any(|d| d.contains("call")), "{r:?}");
+}
+
+/// The second review's S2 (R2): a row with no entity is no evidence
+/// (§9.4). Kiln records one where an instantiation fails
+/// (`kiln/spec/ast.md` §18.9.3: "a member the class does not declare"),
+/// which makes the unit ill-formed; the worker does not run a rename on
+/// such a unit, so the rename is run here directly. `call<n::S<int>>`
+/// binds `t.f()` to the subject and `call<n::Z>` fails (`Z` has no `f`):
+/// the name is `replace`, not `refuse(mixed_instances)`. The mutation "a
+/// row with no entity counted as a non-subject row" refuses it.
+#[test]
+fn wp139_row_with_no_entity_is_no_evidence() {
+    let text = format!(
+        "{WP139_CLASSES}namespace n {{ struct Z {{}}; }}\ntemplate <class T> int call(T t) {{ return t.f(); }}\nint u() {{ return call(n::S<int>()) + call(n::Z()); }}\n"
+    );
+    let at = u64::try_from(text.find("t.f()").unwrap() + 2).unwrap();
+    let files = [("main.cpp", text.as_bytes())];
+    let tree =
+        Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), "wp139-no-entity", &files).unwrap();
+    let root = tree.root().to_str().unwrap().to_owned();
+    let obs = tree.observer("main.cpp", "c++20", &[]);
+    let case = Case {
+        name: "wp139-no-entity".into(),
+        dir: PathBuf::new(),
+        target: vec![b"n".to_vec(), b"S".to_vec(), b"f".to_vec()],
+        kind: TargetKind::Function,
+        new_name: b"h".to_vec(),
+        args: Vec::new(),
+        dependent: Dependent::Offer,
+        files: Vec::new(),
+    };
+    let t = transform(&case, &root);
+    let (_, r) = tree
+        .parse(&obs, &written_options(), |u| {
+            assert!(u.errors() > 0, "`call<n::Z>` is ill-formed");
+            let subject = |p: &[u8]| p.to_vec();
+            slip_digest::map::with_input(u, &subject, |input| {
+                let mut keys = Keys::new(input);
+                let sites = slip_kiln::sites::Sites::new(u, &t.ownership);
+                slip_refactor::run(&t, request_id(&t), u, &mut keys, &|f| sites.file_ref(f))
+                    .map(|e| e.claims.iter().map(|c| (c.lo, c.stance)).collect::<Vec<_>>())
+            })
+        })
+        .unwrap();
+    let claims = r.expect("parsed").expect("with_input").expect("run");
+    let here: Vec<_> = claims.iter().filter(|(lo, _)| *lo == at).map(|(_, s)| *s).collect();
+    assert_eq!(here, [Stance::Replace], "{claims:?}");
 }

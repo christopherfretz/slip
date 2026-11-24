@@ -84,16 +84,22 @@ pub enum TargetKind {
 
 /// What a rename does with a dependent name that an instantiation the
 /// observer made binds to a subject (`spec/edits.md` §3, §9.4; added by
-/// `docs/wp/WP-139.md`, item 4).
+/// `docs/wp/WP-139.md`, item 4; `leave` and the default by its second
+/// review).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Dependent {
     /// The name is edited when every instantiation of the observer binds
-    /// it to a subject (§9.4 row 2): the default.
-    #[default]
+    /// it to a subject (§9.4 row 2). The run cannot verify such an edit
+    /// until dependent names are compared mapped (its holder differs).
     Offer = 0,
     /// The name is refused (`refuse(instantiated)`), for a run whose
     /// observers are known not to be the program (a library's own tests).
     Refuse = 1,
+    /// Row 2 is not read: every dependent name is `unresolved` (residue
+    /// `dependent`, §8.4), as before WP-139. The default until dependent
+    /// names are compared mapped.
+    #[default]
+    Leave = 2,
 }
 
 /// A native rename (`spec/edits.md` §3, §9).

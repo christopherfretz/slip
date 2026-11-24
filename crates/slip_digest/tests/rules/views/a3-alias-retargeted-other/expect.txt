@@ -1,0 +1,4 @@
+# A3 (O1): namespace L = legacy; retargeted to other.
+# Pinned as it is before WP-141's build.
+changed L
+use 1 via 1 direct 0

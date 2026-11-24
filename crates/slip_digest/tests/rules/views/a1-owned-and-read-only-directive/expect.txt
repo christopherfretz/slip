@@ -1,0 +1,4 @@
+# A1 (O1): known limit: forward reached through an owned and a read-only directive, both in acme.
+# Pinned as it is before WP-141's build.
+changed template <class> type-parameter-0-0 g(type-parameter-0-0)
+use 1 via 1 direct 0

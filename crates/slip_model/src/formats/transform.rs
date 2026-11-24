@@ -41,14 +41,17 @@ impl Enumeration for TargetKind {
 }
 
 impl Enumeration for Dependent {
-    const TABLE: &'static [(Self, u64, &'static str)] =
-        &[(Dependent::Offer, 0, "offer"), (Dependent::Refuse, 1, "refuse")];
+    const TABLE: &'static [(Self, u64, &'static str)] = &[
+        (Dependent::Offer, 0, "offer"),
+        (Dependent::Refuse, 1, "refuse"),
+        (Dependent::Leave, 2, "leave"),
+    ];
     const UNLISTED: &'static str = "unlisted Dependent value";
-    const EXPECTED: &'static str = "expected one of \"offer\", \"refuse\"";
+    const EXPECTED: &'static str = "expected one of \"offer\", \"refuse\", \"leave\"";
 }
 
 impl Dependent {
-    /// The name of `spec/edits.md` §3 (`offer`, `refuse`), as the command
+    /// The name of `spec/edits.md` §3 (`offer`, `refuse`, `leave`), as the command
     /// line spells it.
     pub fn name(self) -> &'static str {
         Enumeration::name(self)

@@ -1,0 +1,5 @@
+# Every file owned.
+# Second review R15 (the reviewer's zz-rev-k15): a directive for legacy in the same scope and file does not make the
+# alias L whole (only directives do that): changed L.
+added <using_directive legacy (the part the rule moves)>
+changed L

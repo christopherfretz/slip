@@ -1,0 +1,2 @@
+# Second review R9: a block-scope directive in the C2 shape (dependency legacy, owned g moved):
+# written as before (row B1), equal; every lookup it affects is in a parsed body.
