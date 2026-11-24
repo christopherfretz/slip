@@ -2,10 +2,9 @@
 // an initializer_list's backing array
 namespace std {
 template <class E> class initializer_list {
-  const E *b; decltype(sizeof 0) n;
-  constexpr initializer_list(const E *b, decltype(sizeof 0) n) : b(b), n(n) {}
+  const E *b = nullptr; decltype(sizeof 0) n = 0;
 public:
-  constexpr initializer_list() : b(nullptr), n(0) {}
+  constexpr initializer_list() = default;
   constexpr const E *begin() const { return b; }
 };
 }
