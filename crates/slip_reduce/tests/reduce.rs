@@ -648,10 +648,12 @@ fn rule_conflict_both_ways() {
     assert_eq!(causes(&set), vec![Cause::RuleConflict], "a subject's rule against a renamed rule");
 }
 
-/// §6.2: namespaces may merge: two namespace rules of one target do not
-/// conflict.
+/// §6.2, `spec/verify.md` §2.1 "One way to each key": two namespace rules
+/// of one target (post `n` and post `o`, both called `m`: the pre-image's
+/// `m` split in two) conflict, as two rules of any other kind do. The set
+/// keeps neither rule.
 #[test]
-fn namespaces_may_merge() {
+fn two_namespace_rules_of_one_target_refuse() {
     let set = ok(
         &script(),
         vec![
@@ -660,8 +662,33 @@ fn namespaces_may_merge() {
         ],
         "namespaces",
     );
-    assert_eq!(set.state, SetState::Accepted);
-    assert_eq!(set.rules.len(), 2);
+    assert_eq!(set.state, SetState::Refused);
+    assert_eq!(causes(&set), vec![Cause::RuleConflict]);
+    assert_eq!(set.rules, vec![]);
+    assert!(declared(&set, &script().ownership).unwrap().is_none());
+}
+
+/// §6.2: its accepted neighbour: one namespace rule, given by one shard
+/// and not by the other, or by both, is one rule of an accepted set.
+#[test]
+fn one_namespace_rule_is_accepted() {
+    for (name, other) in [
+        ("another shard without it", ShardB::new(1)),
+        ("another shard with it", ShardB::new(1).renamed(namespace_rule("n", "m"))),
+    ] {
+        let set = ok(
+            &script(),
+            vec![
+                ShardB::new(0).renamed(namespace_rule("n", "m")).claim(the_edit(A, 0, 1, "x")),
+                other,
+            ],
+            "namespace",
+        );
+        assert_eq!(set.state, SetState::Accepted, "{name}");
+        assert_eq!(set.rules, vec![namespace_rule("n", "m")], "{name}");
+        let declared = declared(&set, &script().ownership).unwrap().unwrap();
+        assert_eq!(declared.rules().rules(), &[namespace_rule("n", "m")], "{name}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +905,18 @@ fn input_replace_not_owned() {
     // A keep there is fine.
     let s = ShardB::new(1).claim(keep("/s/ro/x.h", 0, 1)).build();
     assert!(run(&script(), &Store::new(vec![plain(0), s]), "input-owned-keep").is_ok());
+}
+
+/// §5.1: an identity rule (`spec/verify.md` §2.1, "One way to each key"),
+/// in a shard's `renamed` or as a subject's `rule`, is an `Input` error
+/// naming the shard: no rule table may hold it, and no observer gives one
+/// (`expect_renamed` refuses a rename to the entity's own name).
+#[test]
+fn input_identity_rule() {
+    let s = ShardB::new(1).renamed(function_rule("f", "f")).build();
+    expect_input(vec![plain(0), s], &script(), 1, "renamed[0] is a rule no table may hold");
+    let s = ShardB::new(1).seed(d(1)).rule(d(1), namespace_rule("n", "n")).build();
+    expect_input(vec![plain(0), s], &script(), 1, "subjects[0].rule is a rule no table may hold");
 }
 
 /// §5.2 rule 1: two subjects of one id with different rules; the later

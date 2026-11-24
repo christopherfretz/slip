@@ -1,0 +1,3 @@
+# WP-111 review F3: tu-local-left with the helper in an unnamed namespace inside legacy: left
+# behind, direct (the unnamed namespace is a level like any other). The same stated limit.
+relocate legacy => :: acme

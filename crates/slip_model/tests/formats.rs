@@ -137,7 +137,9 @@ fn sample_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -160,7 +162,9 @@ fn failed_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -234,7 +238,7 @@ fn patch(bytes: &[u8], at: usize, from: u8, to: u8) -> Vec<u8> {
 }
 
 fn sealed(kind: [u8; 4], sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
-    let mut w = Writer::new(kind, 1);
+    let mut w = Writer::new(kind, if kind == *b"SHRD" { Shard::VERSION } else { 1 });
     for (id, p) in sections {
         w.section(*id, p);
     }
@@ -464,13 +468,15 @@ fn small_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 
 fn small_shard_bytes() -> Vec<u8> {
     hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",                                             // header
         &rep("33", 32),                                      // observer
         "01 00",                                             // map, round 0
@@ -479,7 +485,7 @@ fn small_shard_bytes() -> Vec<u8> {
         &rep("22", 32),                                      //   content]
         "04 0d  01  09 70 70 2e 74 6f 6b 65 6e 73  ac 02",   // counters: [pp.tokens = 300]
         "00",                                                // end
-        "6f3a5f463fe6e2b8ba0d60e3a1be66d46c457b303cac5cb9df5e1d476d7be290",
+        "bccfdc697c82b2cdd20e62a4d7e7a200e21c39d2b18f342103f547de2b8f5529",
     ])
 }
 
@@ -1115,7 +1121,7 @@ fn required_sections() {
 
 // spec/model.md §5 rule 2, §8: an unknown critical section, including the
 // reserved shard sections 16, 18 and 20, is UnknownSection (19 and 21 are
-// WP-015's, 17, 24, 25 and 26 WP-060's, `tests/sections.rs`).
+// WP-015's, 17, 24, 25 and 26 WP-060's, 27 WP-112's, 28 WP-117's, `tests/sections.rs`).
 #[test]
 fn unknown_critical_sections() {
     let mut sections = raw_plan_sections(&small_plan());
@@ -1175,9 +1181,27 @@ fn kind_and_version() {
     assert_eq!(kind_of_error(content_id(&reseal(other))), ErrorKind::BadMagic);
     assert_eq!(kind_of_error(dump(b"not a file")), ErrorKind::BadMagic);
     assert_eq!(kind_of_error(dump(&[])), ErrorKind::Truncated);
-    let v2 = patch(&shard, 12, 1, 2);
-    assert_eq!(kind_of_error(Shard::from_bytes(&v2)), ErrorKind::UnsupportedVersion);
-    assert_eq!(kind_of_error(dump(&v2)), ErrorKind::UnsupportedVersion);
+    let v3 = patch(&shard, 12, 2, 3);
+    assert_eq!(kind_of_error(Shard::from_bytes(&v3)), ErrorKind::UnsupportedVersion);
+    assert_eq!(kind_of_error(dump(&v3)), ErrorKind::UnsupportedVersion);
+    // §8 (WP-112): a version-1 shard predates the `names` section; it is
+    // refused, in bytes and in JSON, not read as one without names.
+    let v1 = patch(&shard, 12, 2, 1);
+    let e = Shard::from_bytes(&v1).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::UnsupportedVersion, 12));
+    assert!(e.what.contains("predates the names section"), "{e}");
+    assert_eq!(kind_of_error(dump(&v1)), ErrorKind::UnsupportedVersion);
+    let mut j = Shard::from_bytes(&shard).unwrap().to_json();
+    if let Value::Object(members) = &mut j {
+        for (k, v) in members.iter_mut() {
+            if k == "version" {
+                *v = Value::Int(1);
+            }
+        }
+    }
+    let e = Shard::from_json(&j).unwrap_err();
+    assert_eq!(e.path, "version");
+    assert!(e.message.contains("predates the names section"), "{}", e.message);
     let mut corrupt = shard.clone();
     corrupt[20] ^= 1;
     assert_eq!(kind_of_error(content_id(&corrupt)), ErrorKind::Corrupt);
@@ -1369,7 +1393,7 @@ fn json_kind_and_version() {
     let v = sample_shard().to_json();
     assert_eq!(Plan::from_json(&v).unwrap_err().path, "kind");
     assert_eq!(RunRecord::from_json(&v).unwrap_err().path, "kind");
-    for version in [0, 2] {
+    for version in [0, 1, 3] {
         let mut v = sample_shard().to_json();
         set(&mut v, &["version"], Value::Int(version));
         let e = Shard::from_json(&v).unwrap_err();

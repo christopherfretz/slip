@@ -1,0 +1,5 @@
+# WP-112: the names digests of these units differ (digest §9).
+names-changed legacy::S::m()
+names-changed legacy::S<int>::m()
+names-changed legacy::S<long>::n
+names-changed legacy::name<long>()

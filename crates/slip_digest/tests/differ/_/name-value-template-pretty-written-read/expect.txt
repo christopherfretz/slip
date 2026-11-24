@@ -1,0 +1,4 @@
+exact derived
+derived-changed h<int>(int, int)::<definition>
+# WP-112: the names digest of this unit differs (digest §9).
+names-changed h<int>(int, int)

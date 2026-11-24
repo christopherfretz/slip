@@ -6,6 +6,7 @@
 use crate::agreement::{Binding, RuleUse};
 use crate::digests::Digests;
 use crate::edits::Edits;
+use crate::names::Names;
 use crate::spellings::Spellings;
 use crate::verdict::Verdict;
 use crate::{Digest, FileRef};
@@ -70,15 +71,47 @@ pub struct Shard {
     /// Section 24: what a verify shard was made with (`spec/verify.md`
     /// §9.1); only for phase `Verify` and a status other than `Failed`.
     pub binding: Option<Binding>,
-    /// Section 25: how the walk used each rule (`spec/verify.md` §9.1);
+    /// Section 29 (25 is retired, WP-111): how the walk used each rule (`spec/verify.md` §9.1);
     /// only for phase `Verify` and status `Ok`.
     pub rule_use: Option<RuleUse>,
     /// Section 26: the spelled-entity checks (`spec/verify.md` §10.4); only
     /// for phase `Verify` and status `Ok`.
     pub spellings: Option<Spellings>,
+    /// Section 27: the names digests (`spec/model.md` §8.7), and in a
+    /// verify shard the notes (`spec/verify.md` §4.4); present exactly
+    /// when `digests` is.
+    pub names: Option<Names>,
     /// Section 28: the negative inputs (`spec/model.md` §8.6), each place
     /// the map parse looked for a file and found none, as a path, sorted
     /// and unique; only for phase `Map` and with `inputs`. Absent: the
     /// parse that wrote the shard did not record them.
     pub negatives: Option<Vec<Vec<u8>>>,
+    /// Section 31: where the map parse's found lookups led, and which of
+    /// its inputs were one file (`spec/model.md` §8.8, work package
+    /// WP-135); only for phase `Map` and with `inputs`. Absent: the parse
+    /// that wrote the shard did not record them.
+    pub found: Option<Found>,
+}
+
+/// The `found` section (`spec/model.md` §8.8): each place where the map
+/// parse found a file, with the input it reached, and the classes of
+/// `inputs` that were one file at the map phase.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Strictly ascending by path.
+    pub places: Vec<FoundPlace>,
+    /// Each class of two or more inputs that were one file (one device and
+    /// file number) at the map phase, as indices into `inputs`, strictly
+    /// ascending; the classes ascending by their first index. An input in
+    /// no class was a file of its own.
+    pub classes: Vec<Vec<u64>>,
+}
+
+/// One place of [`Found::places`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundPlace {
+    /// The place as written (`spec/model.md` §8.6, "The path of a place").
+    pub path: Vec<u8>,
+    /// The input the file found there is, an index into `inputs`.
+    pub input: u64,
 }

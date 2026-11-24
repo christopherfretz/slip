@@ -89,6 +89,8 @@ pub enum P {
     L(Vec<u8>),
     C(Vec<u8>, u64, u64),
     S(Digest, Vec<u8>),
+    /// An identifier piece (WP-132).
+    I(Vec<u8>, Option<Digest>),
 }
 
 pub fn lit(b: &str) -> P {
@@ -429,6 +431,7 @@ impl ShardB {
                             Piece::Copy(Place { file: index(path), lo: *lo, hi: *hi })
                         }
                         P::S(key, text) => Piece::Spelled { key: *key, text: text.clone() },
+                        P::I(text, key) => Piece::Identifier { text: text.clone(), key: *key },
                     })
                     .collect();
                 let claim = Claim {
@@ -550,7 +553,9 @@ impl ShardB {
             binding: None,
             rule_use: None,
             spellings: None,
+            names: None,
             negatives: None,
+            found: None,
         }
     }
 }

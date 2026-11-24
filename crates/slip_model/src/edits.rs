@@ -88,7 +88,7 @@ pub enum Stance {
     Unresolved = 3,
 }
 
-/// A part of a replacement (§4.2, `spec/api.md` §7.1). Tags 0, 1, 2.
+/// A part of a replacement (§4.2, `spec/api.md` §7.1). Tags 0, 1, 2, 3.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Piece {
     /// Its bytes; not empty.
@@ -98,6 +98,11 @@ pub enum Piece {
     /// `text`, written as a name meant to denote the entity `key`; `text`
     /// not empty.
     Spelled { key: KeyId, text: Vec<u8> },
+    /// `text`, one plain identifier (`spec/api.md` §6.1 rule 1), written
+    /// as a name; with `key`, at a reference to an entity declared renamed
+    /// to `text`, meant to denote that entity (`spec/api.md` §7.2). Added
+    /// by WP-132.
+    Identifier { text: Vec<u8>, key: Option<KeyId> },
 }
 
 /// Why a claim refuses (§2.3, §4.2); `None` unless the stance is `Refuse`.
@@ -272,6 +277,7 @@ impl Piece {
             Piece::Literal(_) => 0,
             Piece::Copy(_) => 1,
             Piece::Spelled { .. } => 2,
+            Piece::Identifier { .. } => 3,
         }
     }
 
@@ -282,6 +288,9 @@ impl Piece {
             (Piece::Copy(a), Piece::Copy(b)) => a.cmp(b),
             (Piece::Spelled { key: ka, text: ta }, Piece::Spelled { key: kb, text: tb }) => {
                 ka.as_bytes().cmp(kb.as_bytes()).then_with(|| ta.cmp(tb))
+            }
+            (Piece::Identifier { text: ta, key: ka }, Piece::Identifier { text: tb, key: kb }) => {
+                ta.cmp(tb).then_with(|| ka.map(|k| *k.as_bytes()).cmp(&kb.map(|k| *k.as_bytes())))
             }
             _ => self.tag().cmp(&other.tag()),
         }

@@ -37,7 +37,9 @@ fn map_shard(edits: Edits) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -411,7 +413,7 @@ fn payloads(bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
 }
 
 fn build(kind: [u8; 4], sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
-    let mut w = Writer::new(kind, 1);
+    let mut w = Writer::new(kind, if kind == *b"SHRD" { Shard::VERSION } else { 1 });
     for (id, p) in sections {
         w.section(*id, p);
     }

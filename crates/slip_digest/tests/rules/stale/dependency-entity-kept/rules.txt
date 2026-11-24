@@ -1,0 +1,4 @@
+# WP-111 review, mutant D4: the key of a dependency entity (legacy::d(int), declared by read-only
+# dep.h) in `kept` is seen (Output::kept): the run does not report it as a kept key no observer
+# has. With every file owned, d is an owned member left behind and kept: not direct.
+relocate legacy => :: acme

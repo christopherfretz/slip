@@ -1,0 +1,2 @@
+legacy::<using acme::f>
+legacy::<shadow acme::f(int)>

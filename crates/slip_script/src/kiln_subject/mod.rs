@@ -30,7 +30,7 @@ use slip_model::FileRef;
 use slip_model::keys::Rule;
 
 use crate::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use crate::wire::{self, Errc};
 
@@ -272,6 +272,12 @@ impl Subject for KilnSubject<'_> {
         self.lookup_entities(components).into_iter().map(|d| Entity(d.index())).collect()
     }
 
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        let d = self.decl(scope.0)?;
+        let found = self.lookup_in_scope(d, identifier)?;
+        Some(found.into_iter().map(|d| Entity(d.index())).collect())
+    }
+
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         match v {
             Value::Entity(Entity(n)) | Value::Declaration(Declaration(n)) => {
@@ -416,8 +422,24 @@ impl Subject for KilnSubject<'_> {
         self.decl(e.0).and_then(|d| self.qualified_decl(d))
     }
 
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        self.decl(e.0).and_then(|d| self.unqualified_decl(d))
+    }
+
     fn references_at(&self, r: Range) -> Vec<Reference> {
         self.references_with_extent(r)
+    }
+
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        self.references_with_name(r)
+    }
+
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        self.declarations_with_name(r)
+            .into_iter()
+            .filter(|&n| self.decl(n).is_some_and(|d| self.is_declaration(d)))
+            .map(Declaration)
+            .collect()
     }
 
     fn found_directly(&self, r: Reference) -> bool {

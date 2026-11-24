@@ -89,6 +89,14 @@ brief (`code/`, `effects/`, `examples/`, `tests/isolation.rs`,
 | §6.1 rule 5 | `lookup/r5-not-found` |  |
 | §6.1 rule 6 | `lookup/r6-overload-set` |  |
 | §6.1 rule 7 | `lookup/r7-nothing-matches` |  |
+| §6.1 rule 8 | `lookup/r8-in-a-class` |  |
+| §6.1 rule 8 | `lookup/r8-in-a-namespace` |  |
+| §6.1 rule 8 | `lookup/r8-in-a-specialisation` |  |
+| §6.1 rule 8 | `lookup/r8-in-an-enumeration` |  |
+| §6.1 rule 8 | `lookup/r8-in-an-unnamed-namespace` |  |
+| §6.1 rule 8 | `lookup/r8-not-an-identifier` |  |
+| §6.1 rule 8 | `lookup/r8-the-idiom-in-an-instantiation` |  |
+| §6.1 rule 8 | `lookup/r8-wrong-sort` |  |
 | §6.2 rule 1 | `structure/s6.2-r1-null` |  |
 | §6.2 rule 2 | `structure/s6.2-r2-one-sort` |  |
 | §6.2 rule 3 | `structure/s6.2-r3-kinds` |  |
@@ -127,7 +135,7 @@ brief (`code/`, `effects/`, `examples/`, `tests/isolation.rs`,
 | §6.7 rule 7 | `calls/r7-uses-that-are-not-calls` |  |
 | §6.7 rule 8 | `calls/r8-every-call-is-returned-or-counted` | the host does not put api.calls_without_reference in the run output (spec/landed/api/WP-086.md decision 7 makes it a method of the subject); spec/api.md §6.7 rule 8 names the counter, and §7.6 rule 6 does not list it |
 
-75 directories, 2 xfail.
+83 directories, 2 xfail.
 <!-- /api-table -->
 
 ## Rules with no directory

@@ -983,7 +983,14 @@ fn local_type(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if named {
         w.unit.local.scopes.push(t);
     }
+    // Its members' bodies (a closure's call operator, a local class's
+    // member functions) are evaluation contexts of their own, also where
+    // the type is written inside a constant expression (digest §9
+    // "Defaults at a use"): a use of a default in them is not an operand
+    // of the immediate invocation around the lambda-expression.
+    let in_constant = std::mem::replace(&mut w.in_constant, 0);
     w.decl_stream(s, from, t);
+    w.in_constant = in_constant;
     if named {
         w.unit.local.scopes.pop();
     }

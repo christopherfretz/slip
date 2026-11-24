@@ -1,0 +1,2 @@
+# WP-111 item 5: a compatibility using-declaration added in the old namespace (its using and its shadow), listed in kept (and in created, which the run exempts): not stale.
+relocate legacy => :: acme

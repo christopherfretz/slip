@@ -88,6 +88,9 @@ impl Declared {
                 DeclaredError::Rules(RuleError::Duplicate { first: index - 1, second: index })
             }
             SortError::Unsorted => DeclaredError::NotAscending { list: "rules", index },
+            SortError::SameProduced { first } => {
+                DeclaredError::Rules(RuleError::SameProduced { first, second: index })
+            }
         })?;
         for (list, keys) in [("changed", &changed), ("created", &created), ("removed", &removed)] {
             if let Some(index) = first_not_ascending(keys) {

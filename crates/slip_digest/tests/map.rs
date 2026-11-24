@@ -128,6 +128,7 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
         shard.counters.extend(counters(&output));
         shard.counters.sort_by(|a, b| a.name.cmp(&b.name));
         shard.digests = Some(output.digests);
+        shard.names = Some(slip_model::names::Names::default());
     }
     Ok(shard)
 }
@@ -315,6 +316,8 @@ fn s8_5_cause_counters() {
         ],
         names: Vec::new(),
         rule_use: Vec::new(),
+        kept: Vec::new(),
+        name_strings: Vec::new(),
     };
     let got: Vec<(String, u64)> =
         counters(&output).into_iter().map(|c| (c.name, c.value)).collect();
@@ -683,7 +686,10 @@ fn s9_5_map_unit_passes_rule_use_through() {
     .unwrap();
     let (on, off) = walked.unwrap();
     let (on, off) = (on.unwrap().unwrap(), off.unwrap().unwrap());
-    assert_eq!(on.rule_use, [slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }]);
+    assert_eq!(
+        on.rule_use,
+        [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]
+    );
     assert!(off.rule_use.is_empty());
-    assert_eq!(Output { rule_use: Vec::new(), ..on }, off);
+    assert_eq!(Output { rule_use: Vec::new(), kept: Vec::new(), ..on }, off);
 }

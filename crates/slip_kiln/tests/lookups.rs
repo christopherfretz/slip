@@ -655,3 +655,101 @@ fn missed_absolute_name() {
     assert_eq!(status, Status::Ok);
     assert!(missed(&l, "/", &gone), "{l:?}");
 }
+
+// `Lookups::found`, the places where a lookup found its file (work package
+// WP-135, `spec/model.md` §8.8): one test per form, as for `missed`.
+
+fn found(l: &Lookups, dir: &str, name: &str) -> bool {
+    l.found.iter().any(|(d, n)| d == dir && n == name)
+}
+
+// F-a. Beside the includer, and on the list (`"..."` and `<...>`): the
+// directory it was found in, not the ones tried before it.
+#[test]
+fn found_include_beside_the_includer_and_on_the_list() {
+    let d = Dir::new("found-include");
+    d.write("a.cpp", "#include \"h.h\"\n#include \"q.h\"\n#include <k.h>\n");
+    d.write("h.h", "\n");
+    d.write("inc2/q.h", "\n");
+    d.write("inc2/k.h", "\n");
+    let (inc1, inc2) = (d.at("inc1"), d.at("inc2"));
+    std::fs::create_dir_all(&inc1).unwrap();
+    let flags = [format!("-I{inc1}"), format!("-I{inc2}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let root = d.root.to_str().unwrap();
+    assert!(found(&l, root, "h.h") && found(&l, &inc2, "q.h") && found(&l, &inc2, "k.h"));
+    assert!(!found(&l, &inc1, "q.h") && !found(&l, root, "q.h"), "{l:?}");
+    assert_eq!(l.found.iter().filter(|(_, n)| n == "h.h").count(), 1, "{l:?}");
+}
+
+// F-b. `__has_include` answering true, and `#include_next`: where each
+// found its file.
+#[test]
+fn found_has_include_and_include_next() {
+    let d = Dir::new("found-next");
+    d.write("a.cpp", "#if __has_include(<m.h>)\n#endif\n#include <h.h>\n");
+    d.write("one/h.h", "#include_next <h.h>\n");
+    d.write("three/h.h", "\n");
+    d.write("three/m.h", "\n");
+    let (one, two, three) = (d.at("one"), d.at("two"), d.at("three"));
+    std::fs::create_dir_all(&two).unwrap();
+    let flags = [format!("-I{one}"), format!("-I{two}"), format!("-I{three}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(found(&l, &three, "m.h") && found(&l, &one, "h.h") && found(&l, &three, "h.h"));
+    assert!(!found(&l, &two, "h.h") && !found(&l, &one, "m.h"), "{l:?}");
+}
+
+// F-c. `#embed` and `__has_embed`: the path read, from `.`.
+#[test]
+fn found_embed_the_path_read() {
+    let d = Dir::new("found-embed");
+    d.write(
+        "a.cpp",
+        "#if __has_embed(<f.bin>)\n#endif\nconst char k[] = {\n#embed \"g.bin\"\n};\n",
+    );
+    d.write("d2/g.bin", "x");
+    d.write("d2/f.bin", "y");
+    let (d1, d2) = (d.at("d1"), d.at("d2"));
+    std::fs::create_dir_all(&d1).unwrap();
+    let flags = [format!("--embed-dir={d1}"), format!("--embed-dir={d2}")];
+    let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let (status, l) = d.lookups("build", &flags);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    let at = |p: &(String, String)| Path::new(&d.root.join("build")).join(&p.0).join(&p.1);
+    for name in ["g.bin", "f.bin"] {
+        let want = d.root.join("d2").join(name);
+        assert!(l.found.iter().any(|p| at(p) == want), "{name}: {l:?}");
+        assert!(!l.found.iter().any(|p| at(p) == d.root.join("d1").join(name)), "{l:?}");
+    }
+}
+
+// F-d. `-include`: from the predefines buffer, found on the list.
+#[test]
+fn found_dash_include() {
+    let d = Dir::new("found-dash-include");
+    d.write("a.cpp", "int x;\n");
+    d.write("inc/pre.h", "\n");
+    let inc = d.at("inc");
+    let flag = format!("-I{inc}");
+    let (status, l) = d.lookups("build", &[&flag, "-include", "pre.h"]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(found(&l, &inc, "pre.h") && !found(&l, ".", "pre.h"), "{l:?}");
+}
+
+// F-e. An absolute name: Kiln's log does not record it yet (Kiln
+// WP-2620); `Lookups::read` holds the file's first spelling, which is the
+// absolute name here, so the place is covered through `read`.
+#[test]
+fn found_absolute_name_through_read() {
+    let d = Dir::new("found-absolute");
+    d.write("h.h", "\n");
+    let h = d.at("h.h");
+    d.write("a.cpp", &format!("#include \"{h}\"\n"));
+    let (status, l) = d.lookups("", &[]);
+    assert_eq!(status, Status::Ok, "{l:?}");
+    assert!(l.read.contains(&h), "{l:?}");
+}

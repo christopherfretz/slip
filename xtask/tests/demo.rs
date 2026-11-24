@@ -732,7 +732,9 @@ fn shard(observer: Digest, phase: Phase, round: u64, c: Vec<Counter>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 

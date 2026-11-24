@@ -13,8 +13,7 @@
 //!   to the observers the verify phase selected) is read as no report:
 //!   `incomplete`. So is a report of an accepted set that was not made
 //!   over the set's own overlay (a tree report compared nothing the set
-//!   changed, §8.1), and one with an unchecked namespace rule
-//!   (`Report::unchecked`, until WP-111).
+//!   changed, §8.1).
 //! - [`permits`] reads its answer from the result again, and checks that
 //!   the edit set it is given is the result's (by content id): a result
 //!   whose fields contradict its state, or a set that is not its own,
@@ -142,11 +141,6 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
     if unparsed(set) != 0 && !facts.allow_unparsed {
         return State::Incomplete;
     }
-    // Until WP-111: a namespace rule an observer used, whose agreement
-    // between observers was not checked, permits no write (§8.5).
-    if !report.unchecked().is_empty() {
-        return State::Incomplete;
-    }
     // Row 4.
     let residue = facts.residue.iter().any(|r| r.category != Category::Mention);
     if residue || !set.refusals.is_empty() || failed_runs(set) != 0 || error_reports(set) != 0 {
@@ -165,8 +159,7 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
 ///    that describes this run (another plan or round, not over an overlay
 ///    of this set, or states that do not add up to `selected −
 ///    unparsed`); or `unparsed` is not 0 and the run was not given
-///    `--allow-unparsed`; or (until WP-111) the report has an unchecked
-///    namespace rule.
+///    `--allow-unparsed`.
 /// 4. `VerifiedWithResidue`: the residue has an entry that is not a
 ///    mention; or the set has a refusal; or `failed_runs` or
 ///    `error_reports` is not 0.
@@ -187,9 +180,6 @@ pub struct Concluded {
     /// The stale pairs, sorted by `(rule, observer)`.
     pub agreement: Vec<Stale>,
     pub unused: Vec<u64>,
-    /// `Report::unchecked`: the namespace rules an observer used (until
-    /// WP-111).
-    pub unchecked: Vec<u64>,
     pub spellings: Spellings,
 }
 
@@ -239,8 +229,8 @@ fn unseen(i: u64) -> FailedSpelling {
     }
 }
 
-/// The `state`, `verdict`, `tally`, `agreement`, `unused`, `unchecked` and
-/// `spellings` of a result: copied from the report and decided by
+/// The `state`, `verdict`, `tally`, `agreement`, `unused` and `spellings`
+/// of a result: copied from the report and decided by
 /// [`state`].
 /// `overlay` is the run's overlay (`None` for a refused set, or when apply
 /// made none).
@@ -262,7 +252,6 @@ pub fn conclude(facts: &Facts<'_>, overlay: Option<&Overlay>) -> Concluded {
             tally,
             agreement: agreement(r),
             unused: r.unused(),
-            unchecked: r.unchecked(),
             spellings: spellings(r),
         };
     }
@@ -274,15 +263,7 @@ pub fn conclude(facts: &Facts<'_>, overlay: Option<&Overlay>) -> Concluded {
         }
         _ => Spellings::default(),
     };
-    Concluded {
-        state,
-        verdict: None,
-        tally,
-        agreement: Vec::new(),
-        unused: Vec::new(),
-        unchecked: Vec::new(),
-        spellings,
-    }
+    Concluded { state, verdict: None, tally, agreement: Vec::new(), unused: Vec::new(), spellings }
 }
 
 /// What the person running the command permits beyond `verified`
@@ -309,7 +290,7 @@ pub struct Allow {
 /// the result and the set validate; the set is accepted and is the
 /// result's (`result.edits` is its content id, and the result's plan,
 /// round and transform are the set's); the verdict is `verified`, with no
-/// stale pair, no failed obligation and no unchecked rule; no observer is in a state
+/// stale pair and no failed obligation; no observer is in a state
 /// other than `verified` or `unchanged`, and one is; `unparsed` is 0
 /// unless the run was given `--allow-unparsed`; the tally's `unparsed`,
 /// `failed_runs` and `error_reports` are the set's; and a `Verified`
@@ -335,7 +316,6 @@ pub fn permits(result: &TransformResult, set: &EditSet, allow: Allow) -> bool {
     let verified = result.verdict == Some(RunVerdict::Verified)
         && result.agreement.is_empty()
         && result.spellings.failed.is_empty()
-        && result.unchecked.is_empty()
         && t.mismatch == 0
         && t.not_parsed == 0
         && t.unverifiable == 0

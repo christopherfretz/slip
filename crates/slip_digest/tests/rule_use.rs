@@ -11,10 +11,14 @@
 //!
 //! A line that is blank or starts with `#` is none. Otherwise:
 //!
-//! - `use <n> via <v> direct <d>`: the rule of line `<n>` of `rules.txt`
-//!   has `via(r) = v` and `direct(r) = d` in the post-image's
-//!   `Output::rule_use`. A rule with no line has no `Use` (both counts
-//!   0); so has one whose line says `via 0 direct 0`.
+//! - `use <n> via <v> direct <d> [kept_via <k>]`: the rule of line `<n>`
+//!   of `rules.txt` has `via(r) = v`, `direct(r) = d` and `kept_via(r) =
+//!   k` (0 when the word is absent) in the post-image's
+//!   `Output::rule_use` (`spec/verify.md` §9.2 for a namespace rule). A
+//!   rule with no line has no `Use` (all counts 0); so has one whose line
+//!   says `via 0 direct 0`. Every file is owned and `Declared.kept` is
+//!   empty here: `tests/rules.rs` has the cases with ownership and
+//!   `kept`.
 //! - `collisions <n>`: the post-image's counter `digest.collisions` is
 //!   `n`. Without the line it must be 0.
 //! - `indeterminate <name>`: the post-image under the table has a unit of
@@ -30,7 +34,7 @@
 //! # What every case also checks
 //!
 //! - `Output::rule_use` is strictly ascending by rule, holds no `Use`
-//!   with both counts 0 and no rule past the table (`spec/verify.md`
+//!   with all counts 0 and no rule past the table (`spec/verify.md`
 //!   §9.1 "Invariants").
 //! - The post-image with `rule_use` off is the same `Output` with an
 //!   empty `rule_use`: nothing else moves (§9.5).
@@ -74,8 +78,8 @@ fn walk(input: &Input<'_>, rules: &RuleTable, rule_use: bool) -> Output {
 /// What a case's `expect.txt` says.
 #[derive(Default)]
 struct Expected {
-    /// `(line, via, direct)`.
-    uses: Vec<(usize, u64, u64)>,
+    /// `(line, via, direct, kept_via)`.
+    uses: Vec<(usize, u64, u64, u64)>,
     collisions: u64,
     refused: bool,
     /// `indeterminate <name>`, sorted.
@@ -99,11 +103,16 @@ fn expected(dir: &Path) -> Result<Expected, String> {
         let bad =
             || format!("expect.txt:{}: `{line}` is not a line of tests/rule_use.rs", number + 1);
         match words.as_slice() {
-            ["use", rule, "via", via, "direct", direct] => {
+            ["use", rule, "via", via, "direct", direct, rest @ ..] => {
                 let rule = rule.parse().map_err(|_| bad())?;
                 let via = via.parse().map_err(|_| bad())?;
                 let direct = direct.parse().map_err(|_| bad())?;
-                out.uses.push((rule, via, direct));
+                let kept_via = match rest {
+                    [] => 0,
+                    ["kept_via", k] => k.parse().map_err(|_| bad())?,
+                    _ => return Err(bad()),
+                };
+                out.uses.push((rule, via, direct, kept_via));
             }
             ["collisions", count] => out.collisions = count.parse().map_err(|_| bad())?,
             ["refused"] => out.refused = true,
@@ -119,8 +128,8 @@ fn invariants(uses: &[Use], n: usize) -> Result<(), String> {
     if !uses.windows(2).all(|w| w[0].rule < w[1].rule) {
         return Err(format!("rule_use is not strictly ascending by rule: {uses:?}"));
     }
-    if let Some(u) = uses.iter().find(|u| u.via == 0 && u.direct == 0) {
-        return Err(format!("a Use with both counts 0: {u:?}"));
+    if let Some(u) = uses.iter().find(|u| u.via == 0 && u.direct == 0 && u.kept_via == 0) {
+        return Err(format!("a Use with all counts 0: {u:?}"));
     }
     if let Some(u) = uses.iter().find(|u| u.rule >= n as u64) {
         return Err(format!("a Use of a rule past the table of {n}: {u:?}"));
@@ -134,7 +143,7 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
     if !off.rule_use.is_empty() {
         return Err(format!("rule_use off, yet counted: {:?}", off.rule_use));
     }
-    let cleared = Output { rule_use: Vec::new(), ..on.clone() };
+    let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..on.clone() };
     if cleared != *off {
         return Err("the output with rule_use on differs from the one with it off".into());
     }
@@ -197,7 +206,7 @@ fn case(dir: &Path) -> Result<(), String> {
         same_but_rule_use(&on, &walk(input, &decoded, false))?;
         invariants(&on.rule_use, t.table.rules().len())?;
         let mut want: Vec<Use> = Vec::new();
-        for &(n, via, direct) in &e.uses {
+        for &(n, via, direct, kept_via) in &e.uses {
             let Some((_, rule)) = t.rules.iter().find(|(l, _)| *l == n) else {
                 return Err(format!("`use {n}`: no rule on line {n} of rules.txt"));
             };
@@ -207,8 +216,8 @@ fn case(dir: &Path) -> Result<(), String> {
                 .iter()
                 .position(|r| r == rule)
                 .ok_or_else(|| format!("`use {n}`: the rule is not in the table"))?;
-            if via != 0 || direct != 0 {
-                want.push(Use { rule: index as u64, via, direct });
+            if via != 0 || direct != 0 || kept_via != 0 {
+                want.push(Use { rule: index as u64, via, direct, kept_via });
             }
         }
         want.sort();
@@ -220,7 +229,15 @@ fn case(dir: &Path) -> Result<(), String> {
             };
             let show = |u: &[Use]| -> Vec<String> {
                 u.iter()
-                    .map(|x| format!("use {} via {} direct {}", line(x.rule), x.via, x.direct))
+                    .map(|x| {
+                        format!(
+                            "use {} via {} direct {} kept_via {}",
+                            line(x.rule),
+                            x.via,
+                            x.direct,
+                            x.kept_via
+                        )
+                    })
                     .collect()
             };
             problems.push(format!("expected {:?}\ncounted  {:?}", show(&want), show(&on.rule_use)));
@@ -258,7 +275,7 @@ fn rule_use() {
 
 /// A table of one rule on a function no pair test declares: not empty,
 /// so the walk counts (every key is looked up in `map_traced` and
-/// `producers`), and it matches nothing.
+/// `produces`), and it matches nothing.
 fn unmatched_table() -> RuleTable {
     let name = |s: &str| Name::Identifier(s.as_bytes().to_vec());
     RuleTable::new(vec![Rule {

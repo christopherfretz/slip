@@ -27,7 +27,9 @@ fn map_shard(negatives: Option<Vec<Vec<u8>>>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives,
+        found: None,
     }
 }
 
@@ -42,7 +44,7 @@ fn sealed_with(s: &Shard, payload: &[u8]) -> Vec<u8> {
         .uv(s.outcome.errors)
         .uv(s.outcome.warnings)
         .str(&s.outcome.message);
-    let mut w = Writer::new(*b"SHRD", 1);
+    let mut w = Writer::new(*b"SHRD", Shard::VERSION);
     w.section(1, &header.into_bytes());
     w.section(2, &outcome.into_bytes());
     if let Some(inputs) = &s.inputs {

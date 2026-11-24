@@ -1,0 +1,3 @@
+exact derived
+changed legacy::f()
+derived-changed legacy::h<int>(int)::<definition>

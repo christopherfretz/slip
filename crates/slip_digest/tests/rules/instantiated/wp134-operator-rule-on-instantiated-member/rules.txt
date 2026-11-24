@@ -1,0 +1,2 @@
+# WP-134 item 1 (spec/digest.md §3.4, WP-119 item 1): an instantiation's operator follows its pattern's name (operator== is the pattern's by construction), so a rule on its plain key that gives another name (h) is key/rule-on-instantiated-member: W<int>::operator== and what refers to it are indeterminate. Were operators not followed, the rule would simply apply.
+rule function | mapped W<int> | name-of post W<int>::operator==(const W<int> &) const | disc-of post W<int>::operator==(const W<int> &) const | pre W<int> | id h

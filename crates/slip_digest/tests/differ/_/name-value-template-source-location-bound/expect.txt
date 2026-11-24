@@ -1,0 +1,9 @@
+exact derived
+derived-changed h<int>(int, int)::<definition>
+# The pattern too (digest §9 "Defaults at a use", the by-value bullet):
+# Kiln records the values of current()'s default at its use in the
+# pattern, the pattern's own name ("unsigned long h(T,
+# decltype(ns::S::value))", no `[T = ...]`), and the use is in a type,
+# written by value, so the pattern's unit holds that name's bytes. clang
+# evaluates nothing in the pattern (spec/landed/digest/WP-125.md item 3).
+changed template <class> unsigned long h(type-parameter-0-0, int)

@@ -499,12 +499,43 @@ fn rule_table_duplicate_refused() {
         Err(RuleError::Duplicate { first: 0, second: 2 })
     );
     assert_eq!(
-        RuleTable::new(vec![other, unrelated, f_rule()]),
+        RuleTable::new(vec![other, unrelated.clone(), f_rule()]),
         Err(RuleError::Duplicate { first: 0, second: 2 })
     );
     assert_eq!(
         RuleTable::new(vec![f_rule(), f_rule()]),
         Err(RuleError::Duplicate { first: 0, second: 1 })
+    );
+    // WP-111 review, F1: two rules that produce one key, whatever they
+    // match and in whatever order they are given; checked after the
+    // duplicate match.
+    let split = Rule { name: id("h"), ..f_rule() };
+    let apart = Rule { name: id("z"), to_name: id("y"), ..f_rule() };
+    assert_eq!(
+        RuleTable::new(vec![f_rule(), apart, split.clone()]),
+        Err(RuleError::SameProduced { first: 0, second: 2 })
+    );
+    assert_eq!(
+        RuleTable::new(vec![split.clone(), f_rule()]),
+        Err(RuleError::SameProduced { first: 0, second: 1 })
+    );
+    assert_eq!(
+        RuleTable::new(vec![f_rule(), split.clone(), f_rule()]),
+        Err(RuleError::Duplicate { first: 0, second: 2 })
+    );
+    // Through the door of a reader: the later rule of the pair, in order.
+    let mut sorted = vec![f_rule(), split.clone()];
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    assert!(matches!(
+        slip_model::declared::Declared::new(sorted, vec![], vec![], vec![]),
+        Err(slip_model::declared::DeclaredError::Rules(RuleError::SameProduced {
+            first: 0,
+            second: 1
+        }))
+    ));
+    assert_eq!(
+        RuleError::SameProduced { first: 0, second: 2 }.to_string(),
+        "rules 0 and 2 produce the same (parent, kind, name, disc)"
     );
     // Names no reader accepts.
     assert_eq!(
@@ -679,13 +710,12 @@ fn map_traced_agrees_with_map() {
 }
 
 // verify §9.1: `produces` names the rule whose (to_parent, kind, to_name,
-// disc) is the key; `producers` every one, ascending.
+// disc) is the key, the only one (§2.1, WP-111 review F1).
 #[test]
-fn produces_and_producers() {
+fn produces() {
     let t = RuleTable::new(table_rules()).unwrap();
     for (i, r) in t.rules().iter().enumerate() {
         let produced = key(r.kind, r.to_parent, r.to_name.clone(), r.disc);
-        let all: Vec<usize> = t.producers(&produced).collect();
         let want: Vec<usize> = t
             .rules()
             .iter()
@@ -696,9 +726,8 @@ fn produces_and_producers() {
             })
             .map(|(j, _)| j)
             .collect();
-        assert_eq!(all, want);
-        assert!(all.contains(&i));
-        assert_eq!(t.produces(&produced), want.first().copied());
+        assert_eq!(want, [i]);
+        assert_eq!(t.produces(&produced), Some(i));
     }
     // The matched key is not a produced key unless a rule produces it.
     assert_eq!(t.produces(&f_key()), None);
@@ -714,16 +743,20 @@ fn produces_and_producers() {
         assert_eq!(one.produces(&other), None, "{other:?}");
     }
     assert_eq!(RuleTable::empty().produces(&g), None);
-    // Two namespaces merged onto a third: both rules produce its key.
-    let ns = |n: &str| key(KeyKind::Namespace, Parent::Root, id(n), None);
-    let merge = RuleTable::new(vec![
-        rule(Parent::Root, KeyKind::Namespace, id("b"), None, (Parent::Root, id("legacy"))),
-        rule(Parent::Root, KeyKind::Namespace, id("a"), None, (Parent::Root, id("legacy"))),
-    ])
-    .unwrap();
-    assert_eq!(merge.producers(&ns("legacy")).collect::<Vec<_>>(), [0, 1]);
-    assert_eq!(merge.produces(&ns("legacy")), Some(0));
-    assert_eq!(merge.producers(&ns("a")).count(), 0);
+    // A namespace split in two (post `a` and `b` were both pre `legacy`)
+    // is no table: two rules would produce `legacy`.
+    let ns = |n: &str| Rule {
+        parent: Parent::Root,
+        kind: KeyKind::Namespace,
+        name: id(n),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: id("legacy"),
+    };
+    assert_eq!(
+        RuleTable::new(vec![ns("b"), ns("a")]),
+        Err(RuleError::SameProduced { first: 0, second: 1 })
+    );
 }
 
 /// Every rule set of the rule tests above, in the order given.
@@ -745,27 +778,22 @@ fn rule_sets() -> Vec<Vec<Rule>> {
         },
         vec![
             rule(Parent::Root, KeyKind::Namespace, id("b"), None, (Parent::Root, id("legacy"))),
-            rule(Parent::Root, KeyKind::Namespace, id("a"), None, (Parent::Root, id("legacy"))),
+            rule(Parent::Root, KeyKind::Namespace, id("a"), None, (Parent::Root, id("a2"))),
         ],
     ]
 }
 
-/// The rules of `t` whose `(to_parent, kind, to_name, disc)` is `k`'s, by a
-/// scan: what `producers` must give.
-fn producers_by_scan(t: &RuleTable, k: &Key) -> Vec<usize> {
-    t.rules()
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| {
-            (r.to_parent, r.kind, &r.to_name, r.disc) == (k.parent, k.kind, &k.name, k.disc)
-        })
-        .map(|(i, _)| i)
-        .collect()
+/// The rule of `t` whose `(to_parent, kind, to_name, disc)` is `k`'s, by a
+/// scan: what `produces` must give.
+fn produces_by_scan(t: &RuleTable, k: &Key) -> Option<usize> {
+    t.rules().iter().position(|r| {
+        (r.to_parent, r.kind, &r.to_name, r.disc) == (k.parent, k.kind, &k.name, k.disc)
+    })
 }
 
 // verify §9.1, §9.5: a run's table is built from a declared change
 // (`Declared::new`) or read from a container (binary or JSON), never by
-// `RuleTable::new`. Each gives the same `producers` for every key the rules
+// `RuleTable::new`. Each gives the same `produces` for every key the rules
 // produce, and the same `map_traced` for every key they match and produce,
 // as `RuleTable::new` and as a scan of the rules (WP-069 review, F1).
 #[test]
@@ -792,11 +820,11 @@ fn declared_and_read_tables_index_as_new() {
         }
         subjects.push(f_key());
         for k in &subjects {
-            let want = producers_by_scan(&new, k);
-            assert_eq!(new.producers(k).collect::<Vec<_>>(), want, "new {k:?}");
+            let want = produces_by_scan(&new, k);
+            assert_eq!(new.produces(k), want, "new {k:?}");
             for (how, t) in tables {
                 assert_eq!(t.rules(), new.rules(), "{how}");
-                assert_eq!(t.producers(k).collect::<Vec<_>>(), want, "{how} {k:?}");
+                assert_eq!(t.produces(k), want, "{how} {k:?}");
                 assert_eq!(t.map_traced(k.clone()), new.map_traced(k.clone()), "{how} {k:?}");
             }
         }

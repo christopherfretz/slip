@@ -101,7 +101,7 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
                  \"tally\": {{\"selected\": 1, \"unparsed\": 1, \"failed_runs\": 0, \
                  \"error_reports\": 0, \"verified\": 0, \"unchanged\": 0, \"mismatch\": 0, \
                  \"not_parsed\": 0, \"unverifiable\": 0, \"never_parsed\": 0, \"failed\": 0}}, \
-                 \"agreement\": [], \"unused\": [], \"unchecked\": [], \
+                 \"agreement\": [], \"unused\": [], \
                  \"spellings\": {{\"obligations\": 0, \"passed\": 0, \"failed\": []}}, \
                  \"residue\": [], \"exempt\": []}}",
                 h(1),
@@ -111,7 +111,10 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
         ),
         _ => panic!("no object of this kind"),
     };
-    let text = format!("{{\"kind\": \"{k}\", \"version\": 1, \"sections\": {{{section}}}}}");
+    // RSLT is at version 2 (WP-111), every other kind at 1.
+    let version = if kind == *b"RSLT" { 2 } else { 1 };
+    let text =
+        format!("{{\"kind\": \"{k}\", \"version\": {version}, \"sections\": {{{section}}}}}");
     undump(&json::parse(text.as_bytes()).unwrap()).unwrap()
 }
 

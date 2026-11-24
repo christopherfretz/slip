@@ -1,0 +1,2 @@
+changed legacy::f()
+changed legacy::g()

@@ -40,6 +40,8 @@ mod declared;
 mod digests;
 mod edits;
 mod editset;
+mod found;
+mod names;
 mod negatives;
 mod overlay;
 mod plan;
@@ -361,13 +363,13 @@ macro_rules! format_impl {
 }
 
 format_impl!(Plan, plan, b"PLAN", 1);
-format_impl!(Shard, shard, b"SHRD", 1);
+format_impl!(Shard, shard, b"SHRD", 2);
 format_impl!(RunRecord, run, b"RUNR", 1);
 format_impl!(Declared, declared, b"DECL", 2);
 format_impl!(Transform, transform, b"TRFM", 1);
 format_impl!(EditSet, editset, b"EDTS", 1);
 format_impl!(Overlay, overlay, b"OVLY", 1);
-format_impl!(TransformResult, result, b"RSLT", 1);
+format_impl!(TransformResult, result, b"RSLT", 2);
 format_impl!(TransformRun, transform_run, b"RUNT", 1);
 
 /// The kinds [`dump`], [`undump`] and [`content_id`] know.

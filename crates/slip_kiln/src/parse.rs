@@ -489,7 +489,9 @@ fn new_shard(
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
+        found: None,
     }
 }
 

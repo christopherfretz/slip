@@ -1176,6 +1176,20 @@ impl Resolver<'_> {
         }
     }
 
+    /// The post tree's counterpart of the real path `real` of a file whose
+    /// directory is under a subject root (by identity, as
+    /// [`Resolver::under_subject`] decides it): `p/x` for `s/x`. `None`
+    /// for a file of no subject root's region.
+    pub fn post_counterpart(&mut self, real: &[u8]) -> Option<Vec<u8>> {
+        let dir = file_dir(real);
+        let Region::Subject { map, depth } = self.region(&dir) else {
+            return None;
+        };
+        let mut target = self.counterpart(&dir, map, depth);
+        target.push(bytes_path(real).file_name()?);
+        Some(path_bytes(&target))
+    }
+
     /// The real path of a file read is under a post root, by identity
     /// (bytes for a root whose identity cannot be read).
     pub fn under_post(&mut self, real: &[u8]) -> bool {

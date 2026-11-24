@@ -56,6 +56,41 @@ fn identity_spelled_with_another_key() {
     assert_eq!(edits(&set), vec![e(A, 900, 901)]);
 }
 
+/// §5.3 (WP-132): an identifier piece is compared by its text and its
+/// key: with the same key it is one edit, carried to the set as it is;
+/// with another key, or without one, or against the same text spelled, it
+/// is another.
+#[test]
+fn identity_of_an_identifier_piece() {
+    let ident = |key: Option<u8>| P::I(b"g".to_vec(), key.map(d));
+    let set = ok(
+        &script(),
+        vec![
+            ShardB::new(0).claim(replace(A, 0, 1, vec![ident(Some(1))])),
+            ShardB::new(1).claim(replace(A, 0, 1, vec![ident(Some(1))])).claim(bystander()),
+        ],
+        "identifier-same",
+    );
+    let at = set.edits.iter().find(|e| e.lo == 0).expect("the edit");
+    assert_eq!(at.pieces, [Piece::Identifier { text: b"g".to_vec(), key: Some(d(1)) }]);
+    assert_eq!(at.observers, 2);
+    for (name, other) in [
+        ("identifier-key", ident(Some(2))),
+        ("identifier-none", ident(None)),
+        ("identifier-spelled", spelled(d(1), "g")),
+    ] {
+        let set = ok(
+            &script(),
+            vec![
+                ShardB::new(0).claim(replace(A, 0, 1, vec![ident(Some(1))])),
+                ShardB::new(1).claim(replace(A, 0, 1, vec![other])).claim(bystander()),
+            ],
+            name,
+        );
+        refusal_at(&set, Cause::Divergent, A, 0, 1);
+    }
+}
+
 /// §5.3: a copy is compared by its file's path, not its index in a shard.
 #[test]
 fn identity_of_a_copy_is_by_path() {

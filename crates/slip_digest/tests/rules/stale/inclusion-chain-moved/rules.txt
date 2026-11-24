@@ -1,0 +1,4 @@
+# WP-111 review F2 (the reviewer's zz-inclchain-a): the other observer of inclusion-chain-left,
+# where f is owned code and moved with legacy: via, not stale. With inclusion-chain-left the run
+# is stale (that observer's direct), as it must be: dep's binary still refers to legacy::f.
+relocate legacy => :: acme

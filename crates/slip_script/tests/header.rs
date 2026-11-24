@@ -88,7 +88,13 @@ fn s8_2_api_level_is_slip_lib_meta() {
         })
     };
     assert_eq!(value("__slip_lib_meta"), Some(format!("{API_LEVEL}L")));
-    for name in ["__slip_lib_meta_calls", "__slip_lib_meta_code", "__slip_lib_meta_edits"] {
+    for name in [
+        "__slip_lib_meta_calls",
+        "__slip_lib_meta_code",
+        "__slip_lib_meta_edits",
+        "__slip_lib_meta_scope_lookup",
+        "__slip_lib_meta_identifier",
+    ] {
         assert_eq!(value(name), Some("202611L".to_owned()), "{name}");
     }
 }

@@ -69,7 +69,10 @@ reader reports `Malformed` at the offset named, a JSON reader at the path
 
 1. The rules are strictly ascending and admissible (WP-022: an invalid
    name, `two rules with one (parent, kind, name, disc)`,
-   `rules are not strictly ascending`; at the later rule).
+   `rules are not strictly ascending`; at the later rule), and no two
+   produce one key (WP-111 review F1: `two rules produce one (parent,
+   kind, name, disc)`, at the later rule of the pair whose produced key
+   is least, after the order of every rule is checked).
 2. `changed`, `created`, `removed`, in that order:
    `<list> is not strictly ascending`, at the later key.
 3. `kept is not strictly ascending`, at the later key.
@@ -120,9 +123,28 @@ needs no map.
 
 - A rule is applied to an entity at most once; rules do not chain. Renaming
   `f` to `g` and `g` to `f` in one run is two rules.
+- **One way to each key** (WP-111 review F1). No two rules of a table
+  produce one key, `(to_parent, kind, to_name, disc)`, and no rule
+  produces the key it matches (`parent == to_parent`, `name == to_name`:
+  it changes nothing). Two producers of `K` say that two entities of the
+  post-image are both the pre-image's `K` (one entity renamed twice, a
+  namespace split in two by two namespace rules); with them an entity
+  that reaches `K` through one rule is `via` of that rule and is counted
+  in no count of the other, so two observers that disagree about it are
+  both silent (§9.2). An identity rule beside a rule that produces its
+  key is the same case. So `RuleTable::new` refuses a table with two
+  producers of one key (`RuleError::SameProduced`, naming both), and so
+  does the reader of every container that holds a table (row 1 above),
+  in the trusted base, since a table also comes from a transform's
+  `expect_renamed` and not only from `slip declare`; `Rule::refusal`
+  refuses an identity rule (`RULE_IDENTITY`). A table has at most one
+  rule that produces a key (`RuleTable::produces`). A namespace split in
+  two is declared per member or per nested namespace (§2.3).
 - **Namespaces merge.** A rule of kind `namespace` may give its entity the
   key that another namespace of the post-image has: `acme` mapped to
   `legacy` while `legacy` still exists for the entities that stay in it.
+  That is one rule beside a namespace that no rule maps, never two rules
+  of one target, which "One way to each key" refuses.
   The two are then one unit (`digest.md` §3.4); if their digests differ
   there are two units with one key, and the comparison reports it (§4).
   For every other kind, two entities with one mapped key are a collision
@@ -171,7 +193,8 @@ needs no map.
   has a row (`namespace { }` to `namespace foo { }`), which changes no
   symbol (`spec/landed/digest/WP-113.md`, item 6).
 
-The three are refused in one place, `Rule::refusal`
+These, and the identity rule of "One way to each key" above, are
+refused in one place, `Rule::refusal`
 (`crates/slip_model/src/keys.rs`), and every table records the first rule
 it refuses when it is made (`RuleTable::refused`), whichever way: by
 `RuleTable::new` or by the reader of the declared container. The
@@ -261,7 +284,14 @@ came from, and nothing about the rest:
   although the dependency's binary still defines the entity in `legacy`
   (pitfall row N34).
 - A dependency that itself opens `acme`, before and after, has the same
-  keys in both images, and the owned members of `acme` are still mapped.
+  keys in both images, and the owned members of `acme` are still mapped:
+  their keys agree. The namespace's own unit is not: the post-image's
+  `acme` is keyed as the dependency's namespace, so the pre-image's unit
+  `legacy` has no partner, the run reports `removed legacy`, and the rule
+  is used by no level (`via 0`). A correct move into a namespace that a
+  dependency opens therefore does not verify today: a stated limit,
+  `docs/wp/WP-140.md` ("Open questions"; fixtures
+  `stale/dependency-opens-target-moved` and `-kept-moved`).
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -544,11 +574,51 @@ id, replaces its parent by `m(k.parent)`, applies the rules of the
 `unit` of the id of the result. A discriminator on the way is not mapped:
 a new parent whose own discriminator mentions a relocated entity gets a
 rule that does not match, which verification then reports as differences.
-So a line whose new parent another line relocates comes after that line.
+So a line whose new parent another line relocates comes after that line,
+and `slip declare` refuses the other order (`Order`, below).
+
+**Order.** Each level of the chain `m(P')` looks up in the rules above
+(the `Key` of the level, its parent already mapped) is a **probe** of the
+line. A `relocate` line one of whose rules matches a probe of a line
+above it, `(parent, kind, name, disc)` equal, is the error `Order`,
+reported at that later line and naming the earlier: the earlier line's
+parent was resolved without the later rule. With this check every file
+`slip declare` accepts gives one rule table, and so one `rules_id`,
+whatever the order of its lines: a rule that matches no probe of a line
+above it changes no level of that line's chain, so the line's `m(P')` is
+the one the whole table gives; the other lines' rules do not depend on
+order; and `Duplicate` is a property of the set of rules. (Tested by
+permuting the lines of each case into every order: each is either
+refused with `Order` or gives the one table, `crates/slip_cli/tests/
+declare.rs`.)
+
+**A function a class template befriends without defining it.** A friend
+declaration of a function (or function template) in a class template's
+pattern that does not define it is its own entity, keyed in that class,
+and is not followed to the function's rule (`spec/landed/digest/
+WP-103.md`, fix round 3, finding 2). For a `relocate` line whose entity
+is such a function and whose `<name>` changes the name, `slip declare`
+also writes, for each such friend declaration of the pre-images (same
+kind and name, in a class whose nearest enclosing namespace is the
+function's parent, named `<class>::friend ` followed by the function's
+name as its record gives it, qualified (`n::A::friend n::f(int)`, the
+display name of a friend function below; before WP-111's review the
+unqualified name was matched, and a function of a namespace got no such
+rule)),
+
+```
+Rule { parent: m(F.parent), kind, name: N', disc: F.disc,  to_parent: F.parent, to_name: F.name }
+```
+
+with `F` the friend declaration's `Key`. The friend stays in its class,
+so a line with `=` writes none. A line that gives one of these rules
+again (`relocate A::friend f(int) => A :: g`) is accepted, in either
+order; one that gives another rule with its match is `Duplicate`.
 
 **An entity with C language linkage.** Its key's parent is `c_linkage`
 whatever namespace declares it (`digest.md` §3), so moving it between
-namespaces changes no key and needs no line. Renaming it does: for an
+namespaces changes no key: it needs no line; a line given is accepted and
+writes none. Renaming it does: for an
 `<entity>` whose `Key` has the parent `c_linkage`, the line's `<parent>`
 is resolved and checked like any other (it says where the declaration
 is, and a name that resolves to nothing is an error), and the rule is
@@ -561,13 +631,42 @@ So `relocate legacy::c_fn(int) => legacy :: c_fn2` and `=> :: c_fn2`
 give one rule. The row that needs it is the rename of a C function to a
 builtin's name (`docs/wp/WP-109.md`, sketch 11): the front end then
 treats the calls as the builtin's, which the callers' units show. What
-C sources and the linker see of such a rename is §8's.
+C sources and the linker see of such a rename is §8's. Such a line's
+parent looks nothing up in the rules above (its rule does not depend on
+it), so it has no probe (**Order**). A line that moves the function
+without renaming it (`relocate legacy::c_fn(int) => acme :: c_fn`, or
+`=`) is the one that needs none: its parent is still resolved and
+checked, and it writes no rule (the rule would be an identity rule,
+which §2.1 refuses, and beside a rename of the function it would hide
+the rename, WP-111 review F1). `slip declare` says so on standard error,
+one note per such line (`spec/exec.md` §8.8); `Resolved.unwritten`
+lists their line numbers.
+
+Both answers to a line that changes no key are meant, and they differ
+for a reason. For an entity with C language linkage the line is a true
+statement about the source (the declaration moved) that needs no rule,
+because its key does not hold the namespace: a note, no rule. For any
+other entity a `relocate` whose target is its own source declares
+nothing (`relocate n::C => n :: =`): it is the error `Refused` (an
+identity rule).
+
+**A namespace split in two.** A namespace rule says that the owned
+members of the namespace moved together. A namespace whose members went
+partly to `acme` and partly to `acme2` is not declared by two namespace
+rules (`relocate legacy => :: acme` and `relocate legacy => :: acme2`
+produce one key, which no table holds, §2.1: `Duplicate`); it is
+declared per member (`relocate legacy::a => acme :: =`) or per nested
+namespace. The per-member declaration verifies, and a member moved to the
+other half than its line says is a finding (`crates/slip_cli/tests/
+declare.rs`, `loop_namespace_split_per_member`;
+`crates/slip_digest/tests/rules/stale/split-per-member`,
+`split-per-member-wrong-half`).
 
 **Errors**, each naming the line number. One error is reported: the
 first `Syntax` error in file order if the text has one; else the first
 error in file order among the `relocate`, `changed` and `removed` lines;
-else the first among the `created` lines, which are resolved last because
-they need the rules the file gives:
+else the first among the `created` and `kept` lines, which are resolved
+last because they need the rules the file gives:
 
 | Error | When |
 |---|---|
@@ -576,8 +675,10 @@ they need the rules the file gives:
 | `Ambiguous` | units of that name have more than one `KeyId`; the message lists their kinds |
 | `Fallback` | the unit has a fallback key: there is no `Key` to make a rule from, and no stable key to exempt |
 | `NotRenamable` | `relocate` with an identifier for an entity whose `Name` is not an identifier |
-| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two lines of one exemption list give one key. Reported at the later line |
-| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
+| `Duplicate` | two `relocate` lines give rules with one `(parent, kind, name, disc)` (one entity relocated twice to one place, or two entities of one kind and discriminator relocated to one place; two overloads to one name have two discriminators and are not); two `relocate` lines give rules that produce one key (one entity relocated to two places, a namespace split by two namespace rules: §2.1, "One way to each key"), the message naming the earlier line; two lines of one exemption list give one key. Reported at the later line |
+| `DependencyEntity` | `relocate` whose entity is not a namespace and is a dependency entity (§2.1, rule 1) in some selected observer's pre-image under the run's files: no rule renames it. A namespace is not refused: its rule applies in the owned view (§2.1, rule 2) |
+| `Order` | `relocate` one of whose rules matches a probe of a line above it (**Order** above); the message names that line |
+| `Refused` | `relocate` whose rule §2.1 refuses (`Rule::refusal`): of kind `specialisation` or `partial_specialisation` (rename the template), or `resolved` or `default_argument` (a part follows its owner), or an identity rule (`relocate n::C => n :: =`: the entity relocated to where it is; but for C language linkage, above, where such a line writes no rule). A namespace rule across the unnamed namespace, the third form §2.1 refuses, is never made by a line: the unnamed namespace's name is not an identifier (`NotRenamable`), and no identifier names it. The walk keys nothing under a table that holds such a rule, however it was made; this error is where its reason is given |
 
 A file with no line gives `Declared::none()`.
 
@@ -588,9 +689,12 @@ subject paths. A `relocate` line needs them: a text with one and no
 `--owned` is a usage error, with no default (knowing less never accepts
 more, and "the roots" by default would make a dependency's entity
 renamable by accident). The `created` lines are resolved in records
-walked with these files. Until `docs/wp/WP-111.md` lands, a `relocate`
-line whose entity is a dependency entity is accepted, and its rule
-matches nothing.
+walked with these files, and so are the `kept` lines. Whether an entity
+is a dependency entity is decided on the pre-images, each file by the
+subject path of its real path, as the verify job decides it on the
+post-image; an entity that is one in any selected observer is one. An
+`--owned` entry that covers no file a selected pre-image read is a
+warning (`spec/exec.md` §8.8).
 
 **Interface.** The records come from the walk (`slip_digest::records`,
 which is trusted base only in that it must not disturb the walk); the
@@ -613,18 +717,27 @@ pub struct Record {
 /// `read_only` is the run's read-only files, as `Options::read_only`
 /// (`digest.md` §11); not read when `rules` is empty.
 pub fn records(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Result<Vec<Record>, String>;
+/// By unit KeyId under the empty table: the units of dependency entities
+/// under `read_only`, and of friend declarations in a templated class that
+/// do not define their function. `merge` is the union of each set.
+pub struct Facts { pub dependency: BTreeSet<Digest>, pub undefined_friends: BTreeSet<Digest> }
+pub fn facts(input: &Input<'_>, read_only: ReadOnly<'_>) -> Facts;
 
 // slip_cli::declare
 pub struct Entity { pub kind: Option<KeyKind>, pub text: String }
 pub enum Line { Relocate { entity: Entity, parent: Option<Entity>, name: Option<String> },   // None: the global namespace; `=`
-                Changed(Entity), Created(Entity), Removed(Entity) }
-pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused }
+                Changed(Entity), Created(Entity), Removed(Entity), Kept(Entity) }
+pub enum ErrorKind { Syntax, NoUnit, Ambiguous, Fallback, NotRenamable, Duplicate, Refused,
+                     DependencyEntity, Order }
 pub struct LineError { pub line: u64, pub kind: ErrorKind, pub detail: String }
 pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError>;            // line numbers from 1
 pub struct Needs { pub post: bool, pub post_mapped: bool }                 // which post-image parses the table asks for
 pub fn needs(lines: &[(u64, Line)]) -> Needs;
 pub struct Resolved { pub rules: RuleTable, pub changed: Vec<Digest>, pub removed: Vec<Digest> }
-pub fn resolve(lines: &[(u64, Line)], pre: &[Record], post: &[Record]) -> Result<Resolved, LineError>;
+pub fn resolve(lines: &[(u64, Line)], pre: &[Record], post: &[Record]) -> Result<Resolved, LineError>;   // no facts
+/// `facts`: the pre-images' (`slip_digest::records::facts`, merged), for
+/// `DependencyEntity` and the rules of undefined friends.
+pub fn resolve_with(lines: &[(u64, Line)], pre: &[Record], post: &[Record], facts: &Facts) -> Result<Resolved, LineError>;
 /// `post_mapped`: the post-images' records under `resolved.rules`.
 pub fn finish(lines: &[(u64, Line)], resolved: Resolved, post_mapped: &[Record]) -> Result<Declared, LineError>;
 ```
@@ -883,7 +996,7 @@ pub enum AtSums { Equal, Differing(Vec<(GroupClass, Vec<u8>)>) }
 pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums;                    // §4.1
 
 pub struct Comparison { pub findings: Vec<Finding>, pub only_pre: u64, pub only_post: u64,
-                        pub used: Vec<Digest> }
+                        pub used: Vec<Digest>, pub notes: Vec<Digest> }   // notes: §4.4
 pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, post: bool }
     MissingUnits, UnitsNotAscending, BadFlags, CountMismatch, IndeterminateMismatch,
     DigestMismatch, DuplicateGroup,
@@ -891,6 +1004,7 @@ pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, 
 pub fn compare_groups(pre: &[&Group], post: &[&Group], exemptions: &Exemptions)
     -> Result<Comparison, CompareError>;                                   // §4, §4.2
 
+pub fn names_changed(pre: &[NamesEntry], post: &[NamesEntry]) -> Vec<Digest>;      // §4.4
 pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: usize) -> Verdict;
 pub fn verified(pre_shard: Digest, rules: Digest) -> Verdict;
 pub fn unverifiable(reason: &str, pre_shard: Digest, rules: Digest) -> Verdict;
@@ -906,6 +1020,31 @@ which are sorted by digest.
 The verify job (§5) uses them as: `comparable`; then `at_sums`; `Equal` is
 `verified(…)`; `Differing(G)` is `verdict(compare_groups(groups of G from
 each image, …), …)`. Every finding therefore has a key.
+
+### 4.4 Notes: name-derived strings that changed
+
+A unit's names digest (`digest.md` §9 "The names digest") is of the bytes
+of the name-derived strings it passes on, which its digest holds only
+symbolically. The map shard and the verify shard carry one per key
+(`model.md` §8.7, section `names`). For every key with an entry in both
+the pre shard and the post-image whose names digests differ, the
+comparison has a **note** `names_changed`: `names_changed(pre, post)`, a
+merge of the two lists by key, in key order. A key with an entry on one
+side only gives no note: the key was added or removed, or its unit's
+digest differs (a string cannot appear in a unit whose digest is equal),
+and the findings say so.
+
+Notes are not findings. They do not enter `total`, `findings`, `used`,
+the counters of §7.2 or the verdict's kind: `verdict` ignores
+`Comparison.notes`, and no exemption applies to one. The verify job
+computes them from the whole lists before step 3 (so a verdict made at
+the sums has them too), sets `Comparison.notes` where it compares, and
+writes them to the post shard's `names` section, with the post-image's
+file and name of the key, only when the verdict is `verified` or
+`mismatch` (an `unverifiable` shard has none). A pre shard with `digests`
+and without `names` is refused by the shard's decoder (`model.md` §8.7
+row 1): a shard of another build is not "no note". Under the run's
+`--strict-names` (§7.1) each note is a finding of kind `names_changed`.
 
 ## 5. The verify job
 
@@ -1095,11 +1234,68 @@ option Slip does not list) is not resolved at all.
 establishes, for the parse of step 1, is: *the post-image parse neither
 read a file nor looked for one in any directory under a subject root (and
 not under a post root), "under" decided by identity; and every file
-outside every root that both images read is the same bytes in both.* The
-parse then saw exactly what a parse of the subject with the edit applied,
-run with the observer's own command, would see: under the post roots the
-post tree, which is that subject's tree; elsewhere the files the pre-image
-saw. And, by G6, the subject path of every file the post parse read
+outside every root that both images read is the same bytes in both.*
+
+**The claim.** A tree-form verdict compares the subject *as the map phase
+read it* with the post tree *as it is at verification*, both against
+everything outside the subject as it is at verification. The subject as
+the map phase read it is the files the map shard's `inputs` name under
+the subject roots, with the recorded sizes and digests, and nothing at
+the places under those roots where the map parse looked and found
+nothing. This is §1's `A`, "the subject as planned". The post parse saw
+exactly what a parse of the subject with the edit applied, run with the
+observer's own command, would see at verification: under the post roots
+the post tree, which is that subject's tree, and elsewhere the file
+system as it is. The pre side is the map shard. O2, N1 and N2 establish
+that it is what a map parse of that subject would give against today's
+outside: every file outside the subject that it read is unchanged, none
+has appeared outside where it found none, every place where it found a
+file leads to that file, and its inputs are one file exactly where they
+were.
+
+Every lookup a map parse would make is one of the map parse's: the same
+command and the same files up to the first difference, which the guards
+exclude. Each is a recorded place, found or missed, walked again:
+- a quote name beside its includer (the includer's directory as the
+  front end entered it, which is its first spelling and itself a place);
+- `#include_next` and `__has_include`, in every form;
+- `#embed` and `__has_embed`;
+- a forced include;
+- the main file (a file read).
+
+The absolute names of "What remains outside" are the exception.
+
+A lookup the post parse makes that the map parse did not is the edit's
+effect, and the comparison judges it. For example, the edit spells a
+file first through a link retargeted since, and a header beside it is
+found where the link now leads: `verified` when it is equivalent
+(`n2_first_spelling_moved_by_the_edit`).
+
+**Whether the subject on disk is still the subject the map phase read
+is not part of the verdict.** A subject edited in place after the map
+phase, or given a header at a place where the map parse found none,
+verifies against a post tree made from the subject as it was
+(`n2_subject_edited_in_place_after_the_map_phase`,
+`n2_subject_header_created_after_the_map_phase`). That question is
+checked elsewhere:
+- by R2, when step 4 parses the pre-image at a finding;
+- by the identity image, which parses the subject on disk (both trees
+  above are refused there);
+- by `slip apply --write`, for the files it replaces, before it writes
+  (`spec/edits.md` §7.3 step 1, `stale_file`);
+- by the overlay form, which reads the subject on disk as its pre-image
+  and so must check the sums of the subject's inputs and the subject's
+  negatives on every run (`docs/wp/WP-074.md` decides it).
+
+N2 (ii)'s comparison of identities at the recorded paths of subject
+inputs is stricter than the claim needs: a subject changed in content is
+not refused, but one changed in identity is
+(`n2_two_subject_inputs_made_one_file`). It is kept because a post tree
+is commonly made of hard links to the subject, so an identity change in
+the subject is usually one in the post tree too, and the check costs
+nothing.
+
+And, by G6,And, by G6, the subject path of every file the post parse read
 under a post root is a real path of the subject, or a created path under
 real directories of it: the links the parse followed under a post root
 are the subject's, by name and target, and none of the subject path's
@@ -1133,13 +1329,15 @@ one guard of §5.3:
 | G5 | every spelling of a file the post parse makes is mapped to its spelling in the real post-image: every pair's post prefix is under a post root, the map pairs are consistent, no prefix map of the command's own overlaps them, no `#line` name is mapped | `verify_job.rs` `f6_two_routes_to_one_file`, `f6s_two_routes_through_a_link`, `f6r_two_routes_no_edit`, `g5_command_prefix_map`, `g5_line_name`, `z1_word_leaves_the_subject`, `z2_word_leaves_the_subject_absolute_include`, `z_control_word_stays_in_the_subject`, `z_word_leaves_into_another_root`, `a3_post_directory_becomes_a_link`, `a3_link_deeper_in_the_word`; `image.rs` `s5_1_post_command_resolves`, `g5_command_prefix_maps`, `g5_word_leaves_the_subject`, `g5_missing_prefix_under_a_post_root` |
 | O2 | every file outside every root that both images read has the pre shard's size and digest; and every file the map parse read, under no subject root, that the post parse did not read is still a regular file at its own real path, of that size and digest (an image other than the identity) | `verify_job.rs` `o2_outside_drift_at_the_sums`, `o2_found_outside_header_deleted*`, `o2_has_include_true_then_deleted*`, `o2_unread_*`, `o2_merged_inputs_pair`, `o2_input_merged_by_symbolic_link` |
 | N1 | no file has appeared, outside every subject root, at a place where the map parse looked for one and found none (its negative inputs, `model.md` §8.6; an image other than the identity) | `verify_job.rs` `f4b_*`, `n1_*`; `crates/slip_kiln/tests/lookups.rs` `missed_*` for the places |
+| N2 | every place where the map parse found a file leads, now, to the file it led to, and the inputs that were one file at the map phase are one file now, no more and no fewer (`model.md` §8.8; an image other than the identity) | `verify_job.rs` `o2_link_to_a_found_header_retargeted`, `o2_inputs_merged_by_hard_link`, `n2_*`; `crates/slip_kiln/tests/lookups.rs` `found_*` for the places |
 | G2, R2, G3 | the pre-image parsed at step 4 is the map phase's, and the post-image did not change during the job | `verify_job.rs` `g2_*`, `r2_*`, `g3_*` |
 
 The rewrite is what makes a verdict possible, not what makes it safe: a
 word it misses or spells wrongly leads the parse into the subject, and G1
 or L1 refuses; a path that leads somewhere else outside every root (a
 miss of the rewrite) names files that are the same in both images (O2),
-and finds no file where the map parse found none (N1).
+and finds no file where the map parse found none (N1), and every
+spelling the map parse found a file by reaches that file still (N2).
 So `-DROOT="/s"` is safe not because G1 refuses something but because a
 string becomes a file name only by naming a directory or a file to the
 front end, which a lookup or a read then shows (L1, G1).
@@ -1177,45 +1375,39 @@ miss a file the two images spell differently. The command itself is the
 plan's (§8, "The command").
 
 Two holes are known and pinned by tests that wait (`#[ignore = "needs:
-…"]`, `crates/slip_cli/tests/verify_job.rs`):
+…"]`, `crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
+recording a lookup of an absolute name (Kiln WP-2620; Kiln has been asked
+to):
 
 - **An absolute name looked for and not found** (F7 of the re-check):
   `#if __has_include("<s>/new.h")` with an edit that adds `new.h`. Kiln's
-  log does not record it (Kiln `spec/pp.md`, "Lookup log"); Kiln has been
-  asked to. `slip_kiln::Lookups` already lists an absolute name where it
+  log does not record it (Kiln `spec/pp.md`, "Lookup log").
+  `slip_kiln::Lookups` already lists an absolute name where it
   is, whatever the form, so L1 refuses it with no new code once the log
   holds it. Test: `f7_absolute_has_include`; the absolute name is then
   also a negative input (`crates/slip_kiln/tests/lookups.rs`
   `missed_absolute_name`, waiting too).
-
-- **A path that resolves elsewhere while every recorded file still
-  exists unchanged**: a symbolic link outside every root, through which
-  the map parse found a file, retargeted after the map phase to a
-  directory with another file of that name. The place was found, so it
-  is no negative input; the file the map parse read is still there,
-  unchanged, so O2's second part passes; and O2's first part compares
-  only files both parses read, by real path, which the post parse's new
-  file is not. Closing it needs the map shard to keep where each found
-  lookup led (the place as written and the real path it reached),
-  checked as N1 checks the negatives (work package WP-135). Test:
-  `o2_link_to_a_found_header_retargeted`.
-
-- **Two recorded inputs made one file by a hard link**: `ext/a.h`
-  replaced after the map phase by a hard link of `ext/b.h`, of the same
-  bytes (with `#pragma once`, the second include is then skipped). Each
-  path is still its own real path, a regular file of the size and digest
-  recorded, so O2 passes; and two inputs that are one file at the map
-  phase are legitimate (a deduplicated store), so "no two inputs are one
-  file now" would refuse good trees. Closing it needs the map shard to
-  record which inputs were one file (WP-135). Test:
-  `o2_limit_inputs_merged_by_hard_link_wp135`, which records today's
-  answer, `verified`.
+- **An absolute name found, through a link retargeted since, when the
+  front end first read its file through another spelling**: `#include
+  <cfg.h>` found in `ext-a`, then `#include "/b/lnk/cfg.h"` with `lnk ->
+  ext-a`, retargeted after the map phase to a directory with another
+  `cfg.h`. The second lookup is in no log, and `Lookups::read` holds the
+  file's first spelling only, so the place `/b/lnk/cfg.h` is not in the
+  shard's `found` (`model.md` §8.8) and N2 does not see it move. An
+  absolute name that is its file's first spelling is a place of `found`
+  and is checked. `Lookups::found` lists an absolute name once the log
+  holds it, so N2 refuses it with no new code. Test:
+  `n2_absolute_name_first_read_through_another_spelling`.
 
   But for these two, every way for the map parse's files to be no longer
   the ones a lookup reaches is refused: a file deleted, changed, made a
   link to another (its real path is no longer its own), or shadowed by
   one that appeared, in a directory that was absent or a duplicate of a
-  listed one (O2, N1).
+  listed one (O2, N1); a place where a lookup found its file that now
+  leads to another (a link retargeted, outside the roots or under one),
+  and two inputs made one file, or one file made two, by hard links (N2,
+  work package WP-135: `o2_link_to_a_found_header_retargeted`,
+  `o2_inputs_merged_by_hard_link`).
 
 F4b of the re-check (a file outside both roots that appears after the map
 phase and shadows one the map parse read, with an edit that compensates)
@@ -1286,7 +1478,7 @@ post-image's bytes being a blob in the store.
    use of §9.1 when `Declared.rules` is not empty, and the checks of
    §10.2 when the overlay has obligations.
 2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
-   and, with an image other than the identity, O2 then N1 (tree form), or
+   and, with an image other than the identity, O2, N1 then N2 (tree form), or
    guards O1, O2 then N1 (overlay form); `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
    L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
@@ -1330,6 +1522,7 @@ only withdraws: guard G3.
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
+| N2 | step 2, tree form other than the identity, after N1: the pre shard has a `found` section (`model.md` §8.8), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice, for each two inputs of the pre shard: each at its recorded path, and each taken where the post parse would read it (an input under a subject root, as O2 (ii) judges it on the path as recorded, at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -1380,12 +1573,75 @@ cut as §6 says.
   identity image it is not checked, as O2. A pre shard without the
   section (written before work package WP-117, or by another writer) is
   refused: `slip parse` writes it again.
+- **N2** is N1's counterpart for what the map parse found: N1 sees a
+  search that now ends earlier, N2 a place where a lookup found its file
+  that now leads to another (a link retargeted since: the place is
+  walked as written, so a link anywhere on the way is seen), and inputs
+  merged into one file, or one file split in two, by hard links. O2
+  cannot see either: the file read is still there, unchanged, at its own
+  real path. It does not judge whether a file exists or what it holds
+  (O2 does, for what is outside the subject; the post tree, for what is
+  under it): a file deleted since walks to its own path, which is the
+  input's, and passes. It compares two routes and two identities, never
+  device numbers across hosts: the section records the partition, and
+  both sides of each comparison are read now. **Under a subject root**
+  it is checked all the same, unlike N1: the place `s/lnk/h.h`, `lnk` a
+  link in the subject to a directory outside, leads where `lnk` leads,
+  which the post tree's copy of the link may lead to as well (G6 sees
+  the same link in both trees and passes); and the place as written
+  says nothing of where it leads (`s/../lnk/h.h` is outside). A place
+  that led to a subject file and still does passes, whatever the edit
+  did to the file, since the walk is the same. (ii) compares the
+  recorded partition twice, every pair each time, and each comparison
+  answers its own question.
+
+  **At the recorded paths** the question is whether the map shard is
+  still what a map parse would give: of the outside as it is now, and of
+  the subject's files as they are now. The front end's buffers and
+  `#pragma once` follow identity, which no content check sees. An
+  outside `y.h` made a hard link of a subject `x.h` passes every content
+  check, yet a map parse now enters only one of them
+  (`n2_outside_input_made_one_file_with_a_subject_input`). For two
+  subject inputs this is stricter than the claim needs (§5.1, "The
+  claim"; `n2_two_subject_inputs_made_one_file`).
+
+  **Where the post parse reads them** (a subject input at its post
+  tree's counterpart, an outside input at its recorded path) the
+  question is whether the partition the post parse sees is the recorded
+  one. The post tree as verified must be the post tree as delivered, and
+  a delivery that copies bytes (`cp` or `rsync` without `-H`, an applier
+  that writes contents) makes two files of one again. So the post tree's
+  `b.h` made a hard link of its `a.h`, with an edit that compensates, is
+  refused (`n2_two_subject_inputs_made_one_file_in_the_post_tree`), as
+  is an outside file made a hard link of the post tree's counterpart
+  (`n2_outside_input_made_one_file_with_the_post_counterpart`). The
+  converse is refused too: an outside file and a subject file that were
+  one at the map phase, with a post tree that is a copy, is the case
+  where an edit of the subject's file in place would change the outside
+  one, which the post tree does not show
+  (`n2_one_class_subject_and_outside_post_copy`). This refuses nothing
+  legitimate: a post tree of hard links to the subject keeps the
+  subject's partition, and never merges two distinct subject files.
+
+  Two inputs that were one file at the map phase and still are
+  (stores that deduplicate) pass. With the identity image it is not
+  checked, as O2; nor with the overlay form today, which is not
+  implemented: since the overlay form reads the subject on disk as
+  its pre-image, it must also check the sums of the subject's inputs and
+  the subject's negatives on every run (§5.1, "The claim";
+  `docs/wp/WP-074.md` decides it). A pre shard without the section (written before work
+  package WP-135, or by another writer) is refused: `slip parse` writes
+  it again.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map
-  phase saw. A subject edited in place after the map phase (the identity
-  image used to compare "the tree now" with "the tree as planned") can
-  therefore be `verified` at the sums, and is `unverifiable`, never
-  `mismatch`, when it is not: there is no pre-image left to compare units
-  with.
+  phase saw. The verdict is about the subject as the map phase read it
+  (§5.1, "The claim"), and these two are the only guards that read the
+  subject on disk, at step 4 only. So a subject edited in place after the
+  map phase is not refused at the sums. In tree form it verifies when the
+  post tree is equivalent to the subject as the map phase read it. With
+  the identity image ("the tree now" against "the tree as planned") it
+  verifies when the edit in place is equivalent. When it is not, it is
+  `unverifiable`, never `mismatch`, because there is no pre-image left to
+  compare units with.
 - **G3**: if the post-image is not the same at the second parse, the job
   cannot say which image its verdict is about.
 
@@ -1490,7 +1746,12 @@ bytes, and `rank` from the kind:
   writer.
 - No two findings are equal in all three, so the first `limit` are
   determined.
-- The report's groups (§7.1) use the same rank.
+- The report's groups (§7.1) use the same rank. `names_changed` is not a
+  `FindingKind` and is never in a verdict: a note (§4.4) is in the
+  shard's `names` section, with the key, the file and the name a finding
+  of that key would have (the post-image's first unit of the key, named
+  as §6.1 names it). Only the report makes a note a finding, under
+  `--strict-names` (§7.1), ranked after every kind of this table.
 
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
@@ -1712,7 +1973,11 @@ whose chain begins with the declaration Kiln instantiated from the
 template in `pick.h` has its place in `pick_int.h`. When no declaration
 of the chain is written (a derived unit, an implicit member), the place
 is that of the first declaration of the chain that has a location, which
-for an instantiation is where its pattern is (the row for step 4 above).
+for an implicit instantiation is where its pattern is (the row for step 4
+above), and for a class template's explicit instantiation that is the
+first to name the specialisation is the directive, where the front end
+makes the declaration (`crates/slip_digest/tests/trace.rs`,
+`s6_1_place_of_an_explicit_instantiation`).
 This is not the finding's `file` (§6): that is the unit's group, the file
 of the entity's first declaration including one Kiln made
 (`digest.md` §11), and the two differ for such a specialisation
@@ -1826,6 +2091,7 @@ only when it applies.
   "not_verified": [ { "observer": <id>, "main": <path>, "state": <state>, "message": <str>,
                       "findings": <n>, "indeterminate": <n>, "listed": <n> }, … ],
   "exemptions": [ { "list": "changed" | "created" | "removed", "key": <id>, "observers": <n> }, … ],
+  "names_changed": { "total": <n>, "listed": [ <NameNote>, … ] },     only with a note
   "run": <path of the run record>
 }
 
@@ -1833,6 +2099,9 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
                   "observers": <n>, "first": <main file of the first of them in plan order>,
                   "file": <path>, "pre": <id or null>, "post": <id or null>,
                   "where": <Where of spec/model.md §10, or null> }
+
+NameNote     := { "key": <id>, "name": <str>, "file": <path>, "observers": <n>,
+                  "first": <main file of the first of them in plan order> }
 ```
 
 - Ids are 64 hexadecimal digits; paths and names are rendered as
@@ -1861,6 +2130,20 @@ FindingGroup := { "kind": <FindingKind by name>, "key": <id>, "name": <str>,
   `used` does not say which list a key was used from, so a key in two
   lists has the same number in both entries ("Open questions"). An entry
   with 0 observers is an exemption no observer needed.
+- `names_changed` (WP-112, §4.4): present only when an observer's
+  shard has a note. `total` is the number of distinct keys noted by the
+  `verified` and `mismatch` shards of the run (a key noted by ten
+  observers is one); `listed` the first 100 by `(name, key)`, each with
+  the name and file of the first observer in plan order that noted it
+  and the number of observers that did. A run with no note has no member
+  and no line: its report is M1's.
+- `--strict-names` (WP-112): each note of a `verified` or `mismatch`
+  shard is a finding of kind `names_changed`, which no exemption
+  prevents. The observer is `mismatch` (so the run is `not_verified`),
+  its `findings` and `listed` in `not_verified` count the notes, and
+  each noted key is a group of kind `names_changed` after every other
+  kind (its `pre`, `post` and `where` are `null`). Without the option
+  nothing a note says reaches a state, a count or the verdict.
 
 The text, on standard output:
 
@@ -1873,11 +2156,15 @@ selected <n> of <observers of the plan>
 observer <state> <n>                             one line per state in the order of the table, zeros included
 mismatch indeterminate_only <n>
 finding <kind> <key, first 16 digits> observers <n> <name>          at most 100 groups, in report order
+                                                 (under --strict-names, `finding names_changed …`
+                                                 and its `first` line, after the other groups)
   first <main file>
   pre  <file>:<line>:<column> <node> <what>      the two `where` lines only if it has one;
   post <file>:<line>:<column> <node> <what>      a site with an empty file prints `-`
 findings <total> total, <listed> listed, <groups> group(s)
 exemption <list> <key, first 16 digits> observers <n>
+note: name-derived string changed: <name> @ <file>   per noted key, at most 100, in report order
+note: <n> more (see the report)                  when more than 100
 wall <seconds, three decimals>
 peak_rss <bytes> <main file>                     as `parse` prints it (spec/exec.md §8.2)
 run <path of the run record>
@@ -2014,10 +2301,10 @@ observer `failed`, with an empty message.
   N1 (§5.3) knows the places the map parse looked for a file and found
   none only from Kiln's lookup log and the command's own search
   directories: an absolute name, a toolchain directory Kiln's driver
-  dropped and a module probe are not checked; nor is a path that
-  resolves elsewhere while every file the map parse read is still there
-  unchanged (a link outside the roots through which a file was found,
-  retargeted since: §5.1, "What remains outside").
+  dropped and a module probe are not checked. Guard N2 knows the places
+  the map parse found a file from the same log and from the files'
+  first spellings: an absolute name found for a file first read through
+  another spelling is not checked (§5.1, "What remains outside").
 - **Sums are believed.** A group's `count`, `indeterminate` and `digest`
   are checked against its unit list only where there is one. A shard
   whose sums were not computed from its units (a defect of the walk, or a
@@ -2042,6 +2329,18 @@ observer `failed`, with an empty message.
   redefine_extname`, whose identifier the front end resolves to the
   declaration it then gives the attribute (R23); and the values of
   `__func__` and `__PRETTY_FUNCTION__` (R12, N18, R21).
+- **Name-derived strings passed on** (WP-112, §4.4). Where a unit only
+  passes on `__func__`, `__PRETTY_FUNCTION__` or a
+  `std::source_location`'s `function_name()`, its digest holds which
+  string of which entity, not the bytes (`digest.md` §9). A change of the
+  bytes (the declared rename; and anything else that changes what Kiln
+  prints: a parameter type requalified, an alias respelled, a template
+  parameter renamed) does not change the verdict; it is a note in the
+  report, a finding only under `--strict-names`. A note does not say
+  whether the rules account for the change (§4.4; "Open questions").
+  The `line()` and `column()` of a passed-on `source_location` are
+  neither verified nor noted: any edit above them moves them. Strings
+  read at compile time are verified by value.
 - **Other languages and build files.** A name held in a file that is not
   a C++ translation unit of the run: a renamed `extern "C"` function
   called from `.c` files the run does not parse, a linker or version
@@ -2116,13 +2415,16 @@ key following its pattern gives (`digest.md` §3.4, WP-119) is in
 class, and in no rule's `direct` (a rule was applied to its key); it is
 not counted for the pattern member's rule. An entity with no key is
 counted for no rule; an entity whose key is formed but carries a cause is
-counted. Where two rules produce one key, an entity with that key that no
-rule matched counts in `direct` of each.
+counted. At most one rule produces a key (§2.1, "One way to each key"),
+so an entity no rule matched is in the `direct` of one rule at most. For
+a rule of kind `namespace`
+`direct` is §9.2's, and a third count, `kept_via`, is added there.
 
 ```
 RuleUse := rules: digest            rules_id
-           uses:  list<Use>         sorted by `rule`; only rules with `via` or `direct` not 0
-Use     := rule: uv, via: uv, direct: uv
+           uses:  list<Use>         sorted by `rule`; only rules with a count not 0
+           kept:  list<uv>          WP-111: indices into Declared.kept of the keys some entity has, ascending
+Use     := rule: uv, via: uv, direct: uv, kept_via: uv
 
 Binding := overlay:  opt<digest>    content id of the OVLY container, for an image of the overlay form; absent for a tree
            declared: digest         content id of the DECL container the job was given
@@ -2130,8 +2432,8 @@ Binding := overlay:  opt<digest>    content id of the OVLY container, for an ima
 ```
 
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
-`binding`** and **25, `rule_use`**. (Ids 22 and 23 are not assigned; 26
-is `spellings`, §10.4.)
+`binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
+is `spellings`, §10.4; 25 is retired, below.)
 
 - `binding` is present in every shard a verify job writes, whatever the
   parse's outcome, and is taken from `Job.post`. (Until the exception of
@@ -2141,7 +2443,15 @@ is `spellings`, §10.4.)
   `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
   not empty, and absent otherwise. Invariants: `uses` strictly ascending
-  by `rule`; no `Use` with both counts 0.
+  by `rule`; no `Use` with its three counts 0; `kept` strictly ascending.
+  (`kept` and `kept_via` are WP-111's, and with them the payload took a
+  new id: id 25, the payload before them, is retired. No writer writes
+  it, and a shard with a section 25 is `UnknownSection`, as one with a
+  reserved id is. What the format checks of a shard's age is its
+  version (`SHRD` 1) and its section ids, critical ones refused when
+  unknown: a shard written before WP-111 is refused by its section 25,
+  not read with a payload it does not have. `spec/landed/verify/
+  WP-111.md` §5.)
 
 With the binding a verify shard says which declared changes, which
 overlay and which pre shards it was made with; M1's shards did not
@@ -2149,24 +2459,14 @@ overlay and which pre shards it was made with; M1's shards did not
 
 ### 9.2 Stale observers and unused rules
 
-**Stale.** An observer is **stale** for a rule `r` whose kind is not
-`namespace` if its `direct(r)` is not 0. (For a namespace, an entity that
-keeps the key a rule maps another onto is the merge of §2.1.) A stale
-observer is one finding of the run, `stale`, with the rule and the
-observer.
+**Stale.** An observer is **stale** for a rule `r` if its `direct(r)` or
+its `kept_via(r)` is not 0, whatever the rule's kind (`kept_via` is only
+ever counted for a namespace rule; one not 0 for another kind is stale
+too: fail closed). For a namespace rule both counts are the ones below.
+A stale observer is one finding of the run, `stale`, with the rule, the
+observer and both counts.
 
-**Unchecked namespace rules (temporary, until WP-111).** Until the counts
-below are implemented a namespace rule has no stale check. So that the
-hole cannot pass for agreement, a run in which an observer used a rule of
-kind `namespace` (a `Use` of it with `via` or `direct` not 0, in a shard
-whose `rule_use` is read, §9.3) records the rule as **unchecked**: the
-report lists it (§9.4) and conclude permits no write for the run
-(`spec/edits.md` §8.5: state `incomplete` unless a worse one applies).
-The report's verdict is not changed by it. WP-111 removes this paragraph
-and the `unchecked` member, line and field with it.
-
-**Stale for a namespace rule** (WP-111; until it is on main a namespace
-rule has no stale check, which is the hole this closes). The namespace
+**Stale for a namespace rule** (WP-111). The namespace
 itself merges, but its members do not: if one observer sees an owned
 entity in `acme` and another still sees it in `legacy` (a second
 declaration in a header that was not edited), each verifies, since under
@@ -2174,9 +2474,13 @@ the rule both have the key `(legacy, …)`, and the program does not link.
 For a rule `r` of kind `namespace` a walk counts instead:
 
 - `direct(r)`: the owned entities, not namespaces, that are members of a
-  namespace whose own, unmapped key is the key `r` produces, or of a
-  namespace inside it, and whose key is not in `Declared.kept`. These
-  still live where `r` says the owned members left.
+  namespace that no rule matched and whose own key is the key `r`
+  produces, or of a namespace inside it, and whose key is not in
+  `Declared.kept`. These still live where `r` says the owned members
+  left. (With no two producers of a key and no identity rule, §2.1, a
+  namespace whose key `r` produces and that no rule matched is the one
+  namespace left with the old key: "its own, unmapped key is `T(r)`" and
+  "a level no rule matched" are one condition.)
 - `kept_via(r)`: the entities whose namespace chain was mapped by `r`
   and whose key is in `Declared.kept`. These moved, and were declared to
   stay.
@@ -2186,7 +2490,40 @@ owned entities that are members of the old namespace **on purpose**: one
 that stays (an overload that argument-dependent lookup must find through
 a dependency's type), and one the edit adds there (a compatibility
 declaration, which is also `created`). Dependency entities are not
-counted and are not listed: no rule reaches them (§2.1).
+counted and are not listed: no rule reaches them (§2.1), but for those
+of the next paragraph.
+
+**A dependency entity by the per-inclusion rule alone** (WP-111 review
+F2). An owned header (`own2.h`, under an owned root, not edited) that an
+observer includes only through a read-only file (`dep.h`) makes its
+entities dependency entities in that observer (§2.1, the include-chain
+rule), and so no rule reaches them there; another observer that includes
+it directly, or defines the entity in owned code, may move it. Counted
+as a dependency entity it would count for nothing, and a run in which
+one observer moved `legacy::f` and the dependency's binary still refers
+to it would verify. So for a namespace rule's counts, an entity that is
+a dependency entity **only by the per-inclusion rule**, every
+declaration of it in a file the run's files say is owned (its expansion
+location in a file, a name token spelled in a file in one too), none in
+a file read-only by its own path and none of the kinds that are in no
+file, is counted as an owned member is: `direct(r)` unless its key is in
+`kept`. It cannot be `via` (its key is not mapped). Not kept, the
+observer that left it is stale; kept, an observer that moved it is stale
+by `kept_via`: both are right, since the dependency's binary holds the
+name and it cannot move. An entity the dependency itself declares in
+`legacy` (one declaration in a file read-only by its own path, or whose
+name a read-only file's macro spells) stays uncounted
+(`crates/slip_digest/tests/rules/stale/inclusion-chain-left`,
+`-left-kept`, `-moved`, `-moved-kept`, `-readonly-declaration`,
+`-readonly-expansion`, `-spelled-in-dependency`). Its
+namespace is keyed in its own view, the dependency view, as its key is;
+the chain of levels is climbed as for an owned member. *The cost*,
+beside "The cost of the include-chain rule" (§2.1): an observer whose
+owned code is behind a generated read-only includer (a precompiled
+header, a unity-build main file) counts every owned member it reaches
+through it that was left in the old namespace, so a correct migration
+that leaves members in `legacy` on purpose lists them in `kept` for that
+observer as for any other.
 
 Why this is the condition: two observers disagree about an entity with
 key `K` when one has it in the old namespace and the other reaches `K`
@@ -2199,6 +2536,55 @@ observer needed (§2.2).
 `Use` gets the field `kept_via: uv` (0 for a rule that is not of kind
 `namespace`); a `Use` is present when any of its three counts is not 0.
 
+**What "inside" and "member" mean** (WP-111's decisions,
+`spec/landed/verify/WP-111.md`):
+
+- *Lexically, at every depth*: an entity is counted for each namespace of
+  the chain of namespaces around it (its parent, keyed from its own view,
+  §2.1 rule 2, and that namespace's parents), up to the global namespace.
+  A level whose own key no rule matched and that `r` produces adds `r` to
+  the entity's `direct` set; a level a rule `r` matched adds `r` to its
+  `via` set. A kept entity counts `kept_via` for its `via` set; any other
+  counts `direct` for its `direct` set. Each rule at most once per entity
+  and count.
+- *An inline namespace and the unnamed namespace* are namespaces of the
+  chain like any other: a member of `legacy::v1` or of `legacy::(anonymous)`
+  is inside `legacy`.
+- *A nested namespace that a second rule maps elsewhere*: a member left in
+  it is inside both: `direct` for the rule that produces the nested
+  namespace's key and for the outer rule. Fail closed: the outer rule
+  still counts it. The cost: an edit that leaves an owned entity in
+  `legacy::detail` while `legacy` moves, which is not wrong if it is
+  meant, must list it in `kept`.
+- *A namespace reached through two rules*: one rule per level (a nested
+  namespace mapped by its own rule inside one mapped by another); each
+  rule gets the count, once. Two rules that produce one key are no table
+  (§2.1).
+- *Who is a member*: an entity keyed directly under a namespace, not a
+  namespace, and owned (a dependency entity is keyed in the dependency
+  view, and no rule reaches it), or a dependency entity by the
+  per-inclusion rule alone (above). A class member follows its class; a
+  specialisation and a member of one are keyed under their template, and
+  a friend under its class, so neither is counted; a deduction guide is
+  not counted **only when its template is a dependency entity** (pitfall
+  N29 `good-5`: an owned guide beside a dependency's template, which
+  [temp.deduct.guide] keeps in the template's scope, which the run cannot
+  move); a guide of an owned template is counted like any owned member,
+  left behind `direct` (`tests/rules/stale/deduction-guide-of-dependency`,
+  `guide-of-owned-template-left`, `guide-of-owned-template-moved`). That
+  a guide left in another scope than its template's does not parse is
+  not relied on: Kiln accepts one at this pin, where clang 19 rejects it
+  (`spec/landed/verify/WP-111.md`, For Kiln). An entity with C
+  language linkage has the parent `c_linkage` and is not counted. A
+  namespace's own key is not counted in `direct` (the merge of §2.1);
+  a namespace a rule matched counts in `via`, as before.
+- *`Declared.kept`* is compared with the entity's mapped key, the key it
+  has under the rules, as the walk gives it. The walk records which
+  indices of `kept` some entity had (`RuleUse.kept`); a kept key that no
+  read shard of the run has is listed in the report as an exemption of
+  list `kept` with 0 observers (§7.1, after `removed`), and changes no
+  verdict.
+
 **Why this is the condition.** The claim of §1, for a rule, is that the
 entity it names has the new name. Two observers disagree about an entity
 when one reaches its key through the rule and the other has it without.
@@ -2208,7 +2594,20 @@ has it at all. In an observer that has the entity both ways the two
 collide and both are indeterminate (§2.1), so that case was already a
 finding; the count catches the observer that has only the old one.
 
-**Unused rules.** A rule with `via` and `direct` 0 in every observer names
+**A stated limit: TU-local entities of one name** (WP-111 review F3).
+Two translation units may each have their own entity of one name and
+key in `legacy` with internal linkage (`static int helper()`, or one in
+an unnamed namespace inside `legacy`). If the edit moves one and leaves
+the other, the program is correct (no symbol is shared), yet one observer
+is stale whether or not the key is kept: not kept, the one that left it
+counts `direct`; kept, the one that moved it counts `kept_via`. The run
+fails closed: such an edit cannot be declared at this version (a rule
+for the moved one alone, of any kind, produces the key the other still
+has, which counts in that rule's `direct`; with no rule the moved one is
+a difference). Pinned by `tests/rules/stale/tu-local-left`,
+`tu-local-moved-kept` and `unnamed-member-left`; "Open questions".
+
+**Unused rules.** A rule with every count 0 in every observer names
 an entity no observer has. It is reported with the run, like an exemption
 no observer needed (§2.2), and changes no verdict.
 
@@ -2222,7 +2621,8 @@ one, the same `pre`); and if it is `ok` and the run's rules are not
 empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
 that fails either is not this run's: the observer is `failed` (§7), as
 for any shard another run left. So is an `ok` shard with a `rule_use`
-under no rule or naming a rule past the table, and one whose `spellings`
+under no rule or naming a rule past the table or a `kept` index past
+`Declared.kept`, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
 none, or refused by the fold (§10.4). A run with a tree image and no
 rule is M1's: its shards need no `binding`, and one that has a binding
@@ -2263,16 +2663,13 @@ the M1 document. Members added, each present only when it applies:
 ```
 "overlay": <id of the OVLY container>                      for an image of the overlay form; "image" is then []
 "agreement": { "rules": <n>,                               when Declared.rules is not empty
-               "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n> }, … ],
-               "unused": [ <index>, … ],
-               "unchecked": [ <index>, … ] }                 until WP-111 (§9.2)
+               "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n>, "kept_via": <n> }, … ],
+               "unused": [ <index>, … ] }
 "spellings": …                                             §10.5
 ```
 
 `stale` is sorted by `(rule, the observer's position in the plan)` and
-holds every stale pair; `unused` and `unchecked` are ascending.
-`unchecked` lists the namespace rules an observer used (§9.2; temporary,
-removed by WP-111). `"overlay"` follows
+holds every stale pair; `unused` is ascending. `"overlay"` follows
 `"image"`; `"agreement"` and then `"spellings"` follow `"exemptions"`
 and precede `"run"`. An `unseen` entry of `spellings` has `observers`
 0, `first` and `found` null and an empty `name`
@@ -2283,9 +2680,8 @@ Lines added to the text, after the `exemption` lines and before `wall`:
 ```
 image overlay <overlay id>                       in place of the `image` lines of §7.1, for the overlay form
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
-stale rule <index> direct <n> <main file>        at most 100, then `stale: <n> more (see the report)`
+stale rule <index> direct <n> kept_via <n> <main file>    at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
-not checked: agreement between observers for namespace rule <index>     until WP-111 (§9.2)
 ```
 
 Nothing is added to the lines on standard error: those list observers by
@@ -2297,6 +2693,8 @@ The walk's half, in `slip_digest` (trusted base):
 
 ```rust
 // Options gains `rule_use: bool`; Output gains `rule_use: Vec<slip_model::Use>`  (empty when off or when there is no rule)
+// WP-111: Output gains `kept: Vec<u64>` (RuleUse.kept); `Declared.kept` is given by
+pub fn digest_kept(input: &Input<'_>, options: &Options<'_>, kept: &[Digest]) -> Output;   // `digest` is `digest_kept` with none
 ```
 
 `RuleTable::map` must then say whether a rule was applied; how
@@ -2314,7 +2712,7 @@ that matches nothing: the rule is unused and the entity's unit is
 The run's half, in `slip_verify::run` (trusted base), added to §7.3:
 
 ```rust
-pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64 }
+pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64, pub kept_via: u64 }
 
 /// §9.3: the verdict of the states, with the two conditions over all observers.
 pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;
@@ -2327,8 +2725,8 @@ impl Report {
     pub fn pre_round(&mut self, pre: u64);
     pub fn stale(&self) -> &[Stale];                       // sorted by (rule, plan position)
     pub fn unused(&self) -> Vec<u64>;
-    /// §9.2, until WP-111: the namespace rules an observer used, ascending.
-    pub fn unchecked(&self) -> Vec<u64>;
+    /// §9.2: the keys of `Declared.kept` no read shard of the run has, in its order.
+    pub fn unseen_kept(&self) -> Vec<Digest>;
     pub fn spellings(&self) -> &[spelling::Outcome];       // §10.6; one per obligation of the overlay
 }
 ```
@@ -2365,7 +2763,9 @@ Obligation := file: uv        index into the overlay's `files`
 ```
 
 The bytes `[lo, hi)` of the post-image file are the text of one spelled
-piece of one accepted edit, and `key` is the `KeyId` the piece carries.
+piece, or of one identifier piece with a key (`api.md` §7.2 rule 6;
+WP-132), of one accepted edit, and `key` is the `KeyId` the piece
+carries. The two are one obligation: nothing below tells them apart.
 Apply derives the range when it composes the post-image
 (`spec/edits.md` §7.1). The obligations of a run are the `spellings`
 list of its overlay, sorted by `(file, lo, hi, key)` with no two equal;
@@ -2751,18 +3151,22 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   §2.1. Not urgent: such a rename is reported today, never silent
   (`spec/landed/pitfalls/WP-109.md`).
 
-- **Name-derived values that changed** (`digest.md` §9). A relocation
-  changes what `__func__`, `__PRETTY_FUNCTION__`,
-  `std::source_location` and `typeid(T).name()` yield for the entities
-  it renames, and the verdict does not count it. A program that
-  observes such a string (a parsed log, a registry keyed by a type's
-  name, a persisted identifier) should be told. Proposed: an
-  informational section of the report listing each unit that holds such
-  a builtin and whose name, or a name in whose scope it is, a rule
-  changes; no verdict depends on it. The walk would count them per unit
-  (a counter beside `rule_use`, §9.1). Open: whether a run may ask for
-  them to be findings (`--strict-names`), and whether
-  `typeid(T).name()`, whose value is the implementation's, is listed.
+- **Name-derived values that changed** (`digest.md` §9, §4.4). WP-112
+  answers the first part: a unit's names digest is compared and each
+  change is a note, listed by the report and a finding under
+  `--strict-names`. What remains open: (1) a note does not tell a change
+  the declared rules account for (`legacy::f` printed as `acme::f`) from
+  another (a parameter type requalified, an alias respelled), so a
+  relocation notes every function of the moved namespace that holds an
+  `assert`. A second names digest, computed with the strings' names
+  mapped back by the rules, equal exactly when the rules account for the
+  whole change, would separate them; its cost is a parse of Kiln's
+  printed signatures or a second print with the rules applied
+  (`spec/landed/verify/WP-112.md`, item 6). (2) `typeid(T).name()` is not
+  a constant in Kiln and is neither verified by value nor noted. (3) A
+  note is per key: the strings of a template's instantiations are noted
+  per instantiation, and a pattern no translation unit instantiates has
+  no string to note.
 - **Agreement costs a job per observer** (§9, §5): with rules, no
   observer is unchanged. `spec/edits.md` ("Open questions") proposes a
   filter of key ids in the map shard so that an observer that cannot have
@@ -2773,6 +3177,20 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   phased migration is most of the namespace. Whether a phase is better
   declared with one rule per moved entity, or `kept` given as a set of
   files, is to be decided with the namespace migration (M4).
+- **TU-local entities of one name in two units** (§9.2, "A stated
+  limit"). One left in the old namespace and one moved is correct, and
+  one observer is stale either way. A `kept` key that holds for one
+  translation unit only (a `kept` given per file, as above, or an entity
+  of internal linkage told apart by its unit) would let it be declared
+  with a namespace rule; until then it fails closed.
+- **A move into a namespace that a dependency opens** (§2.1, "So `acme`
+  mapped to `legacy`"; `docs/wp/WP-140.md`). Relocating `legacy` into
+  `acme` when a read-only header also opens `acme` maps every owned
+  member, but the post-image's `acme` is keyed as the dependency's
+  namespace, so the unit `legacy` has no partner: `removed legacy`, and
+  the rule's `via` is 0. The move is correct and does not verify; it
+  fails closed. The fixtures `rules/stale/dependency-opens-target-moved`
+  and `dependency-opens-target-kept-moved` hold today's answer.
 - **Ownership differs between observers** (§2.1). An entity the
   dependency declares only in a header some observers do not include is
   owned in those and a dependency entity in the others. Each comparison

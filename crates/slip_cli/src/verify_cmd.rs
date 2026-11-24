@@ -117,6 +117,10 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
         run: args::os_bytes(summary.run_path.as_os_str()).into_owned(),
     };
     let mut report = Report::new(header, &declared);
+    if a.strict_names {
+        // `--strict-names` (`spec/verify.md` §7.1): before the first `add`.
+        report.strict_names();
+    }
     let positions: HashMap<Digest, u64> =
         plan.observers.iter().enumerate().map(|(i, o)| (o.id, i as u64)).collect();
     let last = last_shards(&summary.run);
@@ -339,7 +343,9 @@ mod tests {
             binding: None,
             rule_use: None,
             spellings: None,
+            names: None,
             negatives: None,
+            found: None,
         }
         .to_bytes()
     }

@@ -1,0 +1,2 @@
+# WP-111 item 5, observer 1 of 2 (with owned-or-dependency-owned): legacy::f(int) declared by the dependency (read-only) only: a dependency entity, not counted; the rule matches only the owned h here (via 1). Neither count shows the disagreement over f: docs/wp/WP-116.md.
+relocate legacy => :: acme
