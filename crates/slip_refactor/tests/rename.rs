@@ -2961,5 +2961,5 @@ fn wp139_row_with_no_entity_is_no_evidence() {
         .unwrap();
     let claims = r.expect("parsed").expect("with_input").expect("run");
     let here: Vec<_> = claims.iter().filter(|(lo, _)| *lo == at).map(|(_, s)| *s).collect();
-    assert_eq!(here, [slip_model::edits::Stance::Replace], "{claims:?}");
+    assert_eq!(here, [Stance::Replace], "{claims:?}");
 }
