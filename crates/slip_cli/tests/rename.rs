@@ -1319,3 +1319,75 @@ fn s8_5_an_interrupted_map_is_not_unparsed() {
     let results = t.path("store").join("results");
     assert!(!results.exists() || std::fs::read_dir(&results).unwrap().next().is_none());
 }
+
+// ----- a given --declared (WP-076 fix round, should-fix 3; A5) --------------
+
+// §10.2, WP-076 decision 7: the edit set derives the keys it exempts
+// (an in-force `changed` entry: added by hand, the native rename makes
+// none). Derived, the result exempts exactly them. Given, a declaration
+// may exempt those (and give `kept` the set cannot say), but not a key
+// the set does not derive, in any of its lists: an input error naming it.
+#[test]
+fn s10_2_a_given_declaration_exempts_only_what_the_set_derives() {
+    use slip_model::edits::Place;
+    use slip_model::editset::Exempt;
+    let t = Tree::three_files("declared-given");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let mut set = edit_set(&t, "store", &out.id("edits"));
+    let e = &set.edits[0];
+    let key = Digest::from_hex(&"ab".repeat(32)).unwrap();
+    let other = Digest::from_hex(&"cd".repeat(32)).unwrap();
+    set.changed.push(Exempt {
+        key,
+        place: Place { file: e.file, lo: e.lo, hi: e.hi },
+        reason: b"by hand".to_vec(),
+        in_force: true,
+        observers: 1,
+        first: vec![e.first[0]],
+    });
+    // Derived: the result exempts the set's key.
+    let out = check_with(&t, &plan, &set, "x.edts");
+    assert!(out.code().is_some(), "{out:?}");
+    assert!(out.has_line("declared "), "{out:?}");
+    let id = out.id("result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    assert_eq!(TransformResult::from_bytes(&bytes).unwrap().exempt, [key]);
+    let derived = t.path("store").join("declared").join(format!("{}.decl", out.id("declared")));
+    let derived = Declared::from_bytes(&std::fs::read(derived).unwrap()).unwrap();
+    let with = |name: &str, d: &Declared| {
+        std::fs::write(t.path(name), d.to_bytes()).unwrap();
+        t.slip(&[
+            "check", "--plan", &plan, "--round", "1", "--edits", "x.edts", "--declared", name,
+            "--store", "store",
+        ])
+    };
+    let rules = derived.rules().rules().to_vec();
+    let files = derived.files().cloned();
+    let decl = |c: Vec<Digest>, cr: Vec<Digest>, r: Vec<Digest>| {
+        Declared::new(rules.clone(), c, cr, r).unwrap().with_files(files.clone())
+    };
+    // Given: the set's own key, and a `kept` the set cannot say.
+    let same = decl(vec![key], vec![], vec![]).with_kept(vec![other]).unwrap();
+    let out = with("same.decl", &same);
+    assert!(out.has_line("result "), "{out:?}");
+    // Narrower: nothing exempt.
+    let out = with("none.decl", &Declared::none());
+    assert!(out.has_line("result "), "{out:?}");
+    // Wider, in each list.
+    for (name, d) in [
+        ("changed", decl(vec![key, other], vec![], vec![])),
+        ("created", decl(vec![], vec![other], vec![])),
+        ("removed", decl(vec![], vec![], vec![other])),
+    ] {
+        let out = with(&format!("{name}.decl"), &d);
+        assert_eq!(out.code(), Some(3), "{name}: {out:?}");
+        assert!(
+            out.stderr.contains(&format!(
+                "--declared: `{name}` exempts key {other}, which the edit set does not derive"
+            )),
+            "{name}: {out:?}"
+        );
+        assert!(!out.has_line("result "), "{name}: {out:?}");
+    }
+}

@@ -533,6 +533,36 @@ fn load_edits(store: &Store, x: &OsString) -> Result<(Digest, EditSet), CommandE
     )
 }
 
+/// WP-076 fix round, should-fix 3: every key a given `--declared` exempts
+/// from comparison (its `changed`, `created` and `removed`) must be one
+/// the set derives (`slip_reduce::declared`) in the same list: a given
+/// declaration may narrow what the set exempts, never widen it. Its
+/// rules, its `kept` and its `files` are not checked: the agreement check
+/// and the ownership are what a caller may give that the set cannot say.
+pub fn given_within(
+    given: &Declared,
+    set: &EditSet,
+    transform: &Transform,
+) -> Result<(), CommandError> {
+    let derived = slip_reduce::declared(set, &transform.ownership)
+        .map_err(|e| CommandError::Input(format!("the edit set's declared changes: {e}")))?
+        .unwrap_or_else(Declared::none);
+    let lists: [(&str, &[Digest], &[Digest]); 3] = [
+        ("changed", given.changed(), derived.changed()),
+        ("created", given.created(), derived.created()),
+        ("removed", given.removed(), derived.removed()),
+    ];
+    for (name, given, derived) in lists {
+        if let Some(key) = given.iter().find(|k| derived.binary_search(k).is_err()) {
+            return Err(CommandError::Input(format!(
+                "--declared: `{name}` exempts key {key}, which the edit set does not derive \
+                 (a given declaration may exempt only what the set's own does)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn load_declared(store: &Store, x: &OsString) -> Result<(Digest, Declared), CommandError> {
     let decode = |bytes: &[u8]| -> Result<Declared, String> {
         let d = Declared::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -602,7 +632,11 @@ pub(crate) fn main(
         )));
     }
     let declared = match (&a.declared, set.state) {
-        (Some(x), SetState::Accepted) => Some(load_declared(&store, x).map_err(failure)?),
+        (Some(x), SetState::Accepted) => {
+            let given = load_declared(&store, x).map_err(failure)?;
+            given_within(&given.1, &set, &transform).map_err(failure)?;
+            Some(given)
+        }
         (_, SetState::Accepted) => derived_declared(&store, &set, &transform).map_err(failure)?,
         (_, SetState::Refused) => None,
     };
