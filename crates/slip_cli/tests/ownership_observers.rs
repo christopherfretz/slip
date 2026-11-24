@@ -22,6 +22,7 @@
 //! A parse changes the process's current directory: every test that
 //! parses holds [`LOCK`], and every path is absolute.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -278,17 +279,18 @@ fn run(shape: Shape<'_>) -> Ran {
         let verdict = v.verdict.as_ref().expect("a verdict");
         let mut line = format!("{main}: {:?}", verdict.kind);
         if !verdict.reason.is_empty() {
-            line.push_str(&format!(" ({})", verdict.reason));
+            let _ = write!(line, " ({})", verdict.reason);
         }
         for f in &verdict.findings {
-            line.push_str(&format!(" [{:?} {}]", f.kind, f.name));
+            let _ = write!(line, " [{:?} {}]", f.kind, f.name);
         }
         if let Some(u) = &v.rule_use {
             for x in &u.uses {
-                line.push_str(&format!(
+                let _ = write!(
+                    line,
                     " use {} via {} direct {} kept_via {}",
                     x.rule, x.via, x.direct, x.kept_via
-                ));
+                );
             }
         }
         summary.push_str(line.trim_end());
@@ -297,11 +299,12 @@ fn run(shape: Shape<'_>) -> Ran {
         report.add(&o.id, &o.main.path, Some(&v), Some(map.outcome.status));
     }
     let verdict = report.verdict();
-    summary.push_str(&format!(
-        "run: {verdict:?} stale {} unused {}\n",
+    let _ = writeln!(
+        summary,
+        "run: {verdict:?} stale {} unused {}",
         report.stale().len(),
         report.unused().len()
-    ));
+    );
     Ran { summary, verdict }
 }
 
