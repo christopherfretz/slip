@@ -141,20 +141,17 @@ fn by_identity(
     for path in files {
         let id = fs::metadata(std::ffi::OsStr::from_bytes(&path)).ok().map(|m| (m.dev(), m.ino()));
         let was_read = read(&path);
-        match id.and_then(|id| groups.get(&id).copied()) {
-            Some(k) => {
-                // Files come in byte order: the least path is already there.
-                out[k].1 |= was_read;
-                if rank(&path) < rank(&out[k].0) {
-                    out[k].0 = path;
-                }
+        if let Some(k) = id.and_then(|id| groups.get(&id).copied()) {
+            // Files come in byte order: the least path is already there.
+            out[k].1 |= was_read;
+            if rank(&path) < rank(&out[k].0) {
+                out[k].0 = path;
             }
-            None => {
-                if let Some(id) = id {
-                    groups.insert(id, out.len());
-                }
-                out.push((path, was_read));
+        } else {
+            if let Some(id) = id {
+                groups.insert(id, out.len());
             }
+            out.push((path, was_read));
         }
     }
     out.sort();
