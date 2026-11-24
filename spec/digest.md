@@ -248,6 +248,63 @@ only one parse has is not by itself a difference (`verify.md` says when it
 is reported): the reference that demanded it is in some unit, and that
 unit's digest differs.
 
+**A limit: names bound in a substitution whose expression is not kept**
+(WP-153; found by WP-139, `spec/landed/edits/WP-139.md` finding 3). A
+substitution whose expression is not kept is seen by its outcome, never
+by what its names bound:
+
+```cpp
+struct Base { static int s(); };
+namespace n { struct S : Base { static int s(); }; }
+template <class T, int = sizeof(T::s())> int call() { return 0; }
+int u() { return call<n::S>(); }
+```
+
+Rename `n::S::s`. `T::s` at `call<n::S>` now finds `Base::s`. Every
+digest is equal: the default argument's value is in the
+specialisation's key, and the substituted expression is nowhere. The
+shapes, and the outcome that is compared today:
+
+| Shape | Outcome that is compared |
+|---|---|
+| a default template argument at a use that takes it | the argument, in the specialisation's key |
+| an alias template's pattern at `A<X>` | the type the alias names |
+| a requires-clause, a type-constraint or a concept-id at a satisfaction check | the stored result; the candidate chosen |
+| a partial specialisation matched (`void_t<decltype(swap(…))>`), also one that matched and was not chosen | the pattern the specialisation was made from |
+| a signature substituted during deduction (`-> decltype(T::s())`, a parameter type), also of a candidate that lost | the specialisation's type |
+| a `noexcept` or `explicit` operand substituted at instantiation | the stored value |
+| the type of a non-type template parameter, substituted with the arguments before it | the converted argument |
+| a requires-expression, or an operand that only a type or a value holds (`int a[sizeof(T::s())]`), in an instantiated declaration | the value; the type |
+
+In each of these an operator, a constructor or a conversion function
+that the substitution selected is as unseen as a name is.
+
+No evaluated call of the substituted expression changes while the
+outcome is equal: the expression is not evaluated. Two things are not
+proven. The first is the statement Slip makes, "every name resolves as
+it did": in a namespace migration, the argument-dependent lookup inside
+a trait can find another `swap` and the trait still say yes. The second
+is behaviour that follows from what was instantiated: a name that binds
+a function with a deduced return type instantiates its body, and that
+can instantiate a variable whose initialiser runs. Such a demand is
+written in no unit, so the argument of the paragraph above does not
+hold for it: the derived units it made are on one side only and no
+unit both sides have differs. It holds whether the substitution
+succeeded or failed after the name bound.
+`spec/landed/digest/WP-153.md` §1 has the programs.
+
+The same is true, outside any template, of a name in an operand that
+is not dependent and that only a type or a value holds
+(`decltype(n::S::s()) v;`): by §1 rule 2 the operand is spelling.
+
+Nothing is counted for this limit. The AST holds no fact that says a
+satisfaction check or an alias template-id was substituted, and what
+it does hold (that a specialisation took a default argument or was
+made from a partial specialisation) is true of every specialisation of
+a standard container (`spec/landed/digest/WP-153.md` §12). The design
+that removes the limit is `spec/landed/digest/WP-153.md`; what it needs
+of Kiln is `docs/requests/KR9-substitution-bindings.md`.
+
 ## 3. Keys
 
 A **key** identifies an entity independently of the parse, of source
