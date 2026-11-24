@@ -218,8 +218,8 @@ type Entries = Vec<Result<Entry, crate::database::Defect>>;
 fn read_database(source: &Source) -> Result<(FileRef, Entries), PlanError> {
     let fail = |detail: String| PlanError::Database { path: source.path.clone(), detail };
     let bytes = std::fs::read(&source.path).map_err(|e| fail(format!("cannot be read: {e}")))?;
-    let real = std::fs::canonicalize(&source.path)
-        .map_err(|e| fail(format!("its real path cannot be resolved: {e}")))?;
+    let real = slip_spelling::real_path(&source.path)
+        .map_err(|e| fail(format!("its real path cannot be resolved: {}", e.detail())))?;
     let entries = read_json(&bytes).map_err(|e| fail(e.detail))?;
     let database = FileRef {
         path: path_bytes(&real),

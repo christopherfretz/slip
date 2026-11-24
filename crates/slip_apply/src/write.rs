@@ -3,7 +3,7 @@
 //! every operation is tested. The sequence of operations and what an
 //! interruption at each leaves are `spec/landed/edits/WP-063.md` §5.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io;
 
 use slip_model::Digest;
@@ -11,6 +11,7 @@ use slip_model::formats;
 use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay};
 use slip_model::transform::{Ownership, is_canonical};
+use slip_spelling::{Id, Lookup, SpellingError};
 
 use crate::journal::{Journal, JournalEntry, parent};
 
@@ -78,6 +79,18 @@ pub trait Tree {
     /// or normalisation, these are the one spelling the name has
     /// (`spec/edits.md` §2.1, "One spelling").
     fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
+    /// Which file or directory `path` is, as a device and an inode,
+    /// without following a link (`lstat`); `None` when nothing is there.
+    /// Not an operation that changes anything.
+    fn identity(&self, path: &[u8]) -> io::Result<Option<(u64, u64)>>;
+    /// Whether lookups in the directory `dir`, on device `dev`, are
+    /// answered consistently (`slip_spelling::Lookup::consistent`), so
+    /// that it may be seen not to fold without listing it. By default no
+    /// directory is: every one is listed.
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        let _ = (dir, dev);
+        false
+    }
 }
 
 /// Blobs by content digest (`spec/edits.md` §10.4).
@@ -126,13 +139,13 @@ pub enum Refused {
     /// Nothing was changed and the journal is kept.
     JournalNotOwned(Vec<u8>),
     /// The path is not spelled as the file system spells it: a component
-    /// of it is not, byte for byte, a name its directory lists, yet a
-    /// listed name differs from it only in case, or the path finds a file
-    /// or directory (a volume that matches names without regard to case
-    /// or normalisation). `on_disk`: the path with
-    /// that component as its directory lists it, when a name of the
-    /// listing differs from it only in case. Checked before any ownership
-    /// decision, by `write`, `recover` and [`check_owned`].
+    /// of it is not, byte for byte, a name its directory lists, and it
+    /// finds a file or directory (a volume that matches names without
+    /// regard to case or normalisation). `on_disk`: the path spelled as
+    /// its directories list it (`slip_spelling`), when one listed name of
+    /// each directory is the file it finds. Checked before any ownership
+    /// decision, by `write`, `recover` and [`check_owned`]; a path that
+    /// finds nothing is `StaleFile` (`write`, `check_owned`).
     NotCanonical { path: Vec<u8>, on_disk: Option<Vec<u8>> },
 }
 
@@ -150,7 +163,10 @@ pub enum WriteError {
     /// The journal is malformed, or (`write`) a journal is already there.
     Journal(String),
     /// The overlay is malformed or is not the overlay its id names, or the
-    /// ownership is malformed.
+    /// ownership is malformed, or an entry of it is not its own spelling on
+    /// disk or does not exist (`spec/edits.md` §2.1: checked by `write`,
+    /// `recover` and [`check_owned`] before anything is checked against
+    /// it; the message names the entry and its spelling on disk).
     Invalid(String),
 }
 
@@ -194,78 +210,109 @@ fn check_ownership(o: &Ownership) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// The one-spelling check (`spec/edits.md` §2.1): each directory's names
-/// listed once per call of `write`, `recover` or `check_owned`.
+/// [`Tree`] as `slip_spelling`'s [`Lookup`]: the one function that gives a
+/// path its spelling on disk (`spec/edits.md` §2.1), asked of the tree.
+struct TreeLookup<'t>(&'t dyn Tree);
+
+impl std::fmt::Debug for TreeLookup<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TreeLookup")
+    }
+}
+
+impl Lookup for TreeLookup<'_> {
+    fn lstat(&self, path: &[u8]) -> io::Result<Option<Id>> {
+        Ok(self.0.identity(path)?.map(|(dev, ino)| Id { dev, ino }))
+    }
+    fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        self.0.names(dir)
+    }
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        self.0.consistent(dir, dev)
+    }
+}
+
+/// The one-spelling check (`spec/edits.md` §2.1): a path passes when
+/// `slip_spelling` gives it as its own spelling on disk. A walk of its
+/// own per call of `write`, `recover` or `check_owned`, so that it sees
+/// the tree as it is now; each directory decided once per call.
 struct Spelling<'t> {
-    tree: &'t dyn Tree,
-    dirs: BTreeMap<Vec<u8>, Option<BTreeSet<Vec<u8>>>>,
+    walk: slip_spelling::Spelling<TreeLookup<'t>>,
 }
 
 impl<'t> Spelling<'t> {
     fn new(tree: &'t dyn Tree) -> Spelling<'t> {
-        Spelling { tree, dirs: BTreeMap::new() }
+        Spelling { walk: slip_spelling::Spelling::new(TreeLookup(tree)) }
     }
 
-    fn names(&mut self, dir: &[u8]) -> Result<Option<&BTreeSet<Vec<u8>>>, Fail> {
-        if !self.dirs.contains_key(dir) {
-            let listed = self.tree.names(dir).map_err(io_at(dir))?;
-            self.dirs.insert(dir.to_vec(), listed.map(|n| n.into_iter().collect()));
-        }
-        Ok(self.dirs[dir].as_ref())
-    }
-
-    /// `Ok` when every component of `path` (a canonical absolute path),
-    /// from `/` down, is a name its directory lists, or when a component
-    /// is missing (no listed name differs from it only in case and `stat`
-    /// finds nothing: the checks that follow find it missing).
-    /// `NotCanonical` when a component is not listed but a listed name
-    /// differs from it only in case, or `stat` finds something there.
-    fn check(&mut self, path: &[u8]) -> Result<(), Fail> {
-        let mut at = 0; // `path[..at]`: the directory checked so far.
-        while at < path.len() {
-            let start = at + 1;
-            let end =
-                path[start..].iter().position(|&b| b == b'/').map_or(path.len(), |i| start + i);
-            let dir: &[u8] = if at == 0 { b"/" } else { &path[..at] };
-            let name = &path[start..end];
-            let Some(names) = self.names(dir)? else { return Ok(()) };
-            if names.contains(name) {
-                at = end;
-                continue;
+    /// Every entry of `o`, owned and read-only, exists and is its own
+    /// spelling on disk (`spec/edits.md` §2.1): an entry in another case
+    /// than the tree's covers nothing of the paths, which are spelled on
+    /// disk, so a read-only one would not protect its files. Otherwise
+    /// `Invalid`, naming the entry and its spelling on disk (status 3);
+    /// `Io` when a directory that must be listed cannot be, or a lookup
+    /// fails. Before anything is checked against the ownership.
+    fn entries(&mut self, o: &Ownership, journal_left: bool) -> Result<(), WriteError> {
+        for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly")] {
+            for e in list {
+                let bad = |what: String| {
+                    Err(WriteError::Invalid(format!(
+                        "ownership: the {name} entry {:?} {what}",
+                        String::from_utf8_lossy(e)
+                    )))
+                };
+                match self.walk.on_disk(e) {
+                    Ok(q) if q == *e => {}
+                    Ok(q) => {
+                        return bad(format!(
+                            "is not spelled as on disk ({:?})",
+                            String::from_utf8_lossy(&q)
+                        ));
+                    }
+                    Err(SpellingError::Missing { .. }) => return bad("does not exist".to_string()),
+                    Err(err @ (SpellingError::NoName { .. } | SpellingError::NotAPath(_))) => {
+                        return bad(format!("is not spelled as on disk: {}", err.detail()));
+                    }
+                    Err(SpellingError::Unlistable { dir, error, .. }) => {
+                        return Err(io_error(&dir, &error, journal_left));
+                    }
+                    Err(SpellingError::Io { path, error }) => {
+                        return Err(io_error(&path, &error, journal_left));
+                    }
+                }
             }
-            // A listed name that differs only in case is refused whether
-            // or not the path finds it: some volumes (FUSE host mounts)
-            // answer a lookup in another case one time and not the next.
-            // Otherwise (another normalisation, say) the path is refused
-            // when `stat` (`lstat`) finds something there.
-            let folded = fold(name);
-            let other = names.iter().find(|n| fold(n) == folded).cloned();
-            if other.is_none() && self.tree.stat(&path[..end]).map_err(io_at(path))?.is_none() {
-                return Ok(());
-            }
-            let on_disk = other.map(|n| {
-                let mut p = path[..start].to_vec();
-                p.extend_from_slice(&n);
-                p.extend_from_slice(&path[end..]);
-                p
-            });
-            return Err(Refused::NotCanonical { path: path.to_vec(), on_disk }.into());
         }
         Ok(())
     }
-}
 
-/// A name with its case folded, for naming the spelling on disk only.
-fn fold(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).to_lowercase()
+    /// `Ok` when `path` is its own spelling on disk. `NotCanonical`
+    /// naming the spelling on disk when it is another, or naming none when
+    /// no one listed name is the file it finds; `StaleFile` when it finds
+    /// nothing (`write` only replaces files that are there, and on a
+    /// volume that answers lookups inconsistently "nothing" is the answer
+    /// that would pass a read-only file); `Io` when a directory that must
+    /// be listed cannot be, or a lookup fails.
+    fn check(&mut self, path: &[u8]) -> Result<(), Fail> {
+        match self.walk.on_disk(path) {
+            Ok(q) if q == path => Ok(()),
+            Ok(q) => Err(Refused::NotCanonical { path: path.to_vec(), on_disk: Some(q) }.into()),
+            Err(SpellingError::Missing { .. }) => Err(Refused::StaleFile(path.to_vec()).into()),
+            Err(SpellingError::NoName { .. } | SpellingError::NotAPath(_)) => {
+                Err(Refused::NotCanonical { path: path.to_vec(), on_disk: None }.into())
+            }
+            Err(SpellingError::Unlistable { dir, error, .. }) => Err(Fail::Io(dir, error)),
+            Err(SpellingError::Io { path, error }) => Err(Fail::Io(path, error)),
+        }
+    }
 }
 
 /// What `--write` checks of the paths alone, for every overlay file whose
 /// `post` differs from its `pre`, in path order, before it touches
-/// anything (`spec/edits.md` §7.3 step 1, §7.2): the ownership is valid,
-/// each path has the one spelling of §2.1 (`NotCanonical`), and is owned
-/// (`NotOwned`). `--patch` asks it too, so that a patch never carries
-/// what `--write` refuses.
+/// anything (`spec/edits.md` §7.3 step 1, §7.2): the ownership is valid
+/// and each of its entries exists and is its own spelling on disk
+/// (`Invalid`), each path has the one spelling of §2.1 (`NotCanonical`),
+/// and is owned (`NotOwned`). `--patch` asks it too, so that a patch
+/// never carries what `--write` refuses.
 pub fn check_owned(
     overlay: &Overlay,
     ownership: &Ownership,
@@ -273,6 +320,7 @@ pub fn check_owned(
 ) -> Result<(), WriteError> {
     check_ownership(ownership)?;
     let mut spelling = Spelling::new(tree);
+    spelling.entries(ownership, false)?;
     for f in overlay.files.iter().filter(|f| f.pre != f.post) {
         spelled_and_owned(&f.path, ownership, &mut spelling).map_err(|f| match f {
             Fail::Refused(r) => WriteError::Refused(r),
@@ -458,6 +506,8 @@ pub fn write(
             "the overlay id is not the content id of the overlay".to_string(),
         ));
     }
+    let mut spelling = Spelling::new(tree);
+    spelling.entries(ownership, false)?;
     let j = Journal::of_write(overlay, overlay_id);
     if j.files.is_empty() {
         return Ok(0);
@@ -473,7 +523,6 @@ pub fn write(
     };
 
     // 1. Check: first every path's spelling and ownership, then the files.
-    let mut spelling = Spelling::new(tree);
     for f in &j.files {
         spelled_and_owned(&f.path, ownership, &mut spelling).map_err(fail)?;
     }
@@ -600,7 +649,7 @@ fn rolled_back(
     blobs: &dyn Blobs,
     journal: &dyn JournalStore,
 ) -> WriteError {
-    match restore(j, tree, blobs, journal) {
+    match restore(j, &BTreeSet::new(), tree, blobs, journal) {
         Ok(r) if r.reported.is_empty() => io_error(path, e, false),
         Ok(r) => WriteError::Io {
             path: path.to_vec(),
@@ -631,9 +680,11 @@ fn rolled_back(
 /// the read) and the staged file renamed over it. A file that changed
 /// since that `stat` is reported and kept, with the staged file (the
 /// pre-image) left beside it. Then the directories are synced and the
-/// journal removed if nothing was reported.
+/// journal removed if nothing was reported. A path of `missing` (one the
+/// spelling walk found nothing at) is reported without a lookup of it.
 fn restore(
     j: &Journal,
+    missing: &BTreeSet<&[u8]>,
     tree: &dyn Tree,
     blobs: &dyn Blobs,
     journal: &dyn JournalStore,
@@ -648,6 +699,10 @@ fn restore(
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err((f.staged.clone(), e)),
             _ => Ok(()),
         };
+        if missing.contains(f.path.as_slice()) {
+            out.reported.push(f.path.clone());
+            continue;
+        }
         let st = match tree.stat(&f.path).map_err(at(&f.path))? {
             Some(st) if st.regular => st,
             _ => {
@@ -701,8 +756,11 @@ fn at_dir(d: &[u8]) -> impl FnOnce(io::Error) -> (Vec<u8>, io::Error) + '_ {
 /// journal. `ownership` is the one the write was given: a journal naming a
 /// path it does not own is refused (`JournalNotOwned`) before anything is
 /// touched, and kept; so is a journal naming a path not spelled as the
-/// file system spells it (`NotCanonical`, checked first). Idempotent, and
-/// safe to interrupt.
+/// file system spells it (`NotCanonical`, checked first), and an ownership
+/// with an entry not spelled on disk or missing (`Invalid`, before
+/// anything). A path that finds nothing is reported, never handed to the
+/// restoring: nothing is created there. Idempotent, and safe to
+/// interrupt.
 pub fn recover(
     ownership: &Ownership,
     tree: &dyn Tree,
@@ -715,14 +773,20 @@ pub fn recover(
     };
     let j = Journal::from_bytes(&bytes).map_err(WriteError::Journal)?;
     let mut spelling = Spelling::new(tree);
+    spelling.entries(ownership, true)?;
+    let mut missing = BTreeSet::new();
     for f in &j.files {
-        spelling.check(&f.path).map_err(|f| match f {
-            Fail::Refused(r) => WriteError::Refused(r),
-            Fail::Io(p, e) => io_error(&p, &e, true),
-        })?;
+        match spelling.check(&f.path) {
+            Ok(()) => {}
+            Err(Fail::Refused(Refused::StaleFile(p))) if p == f.path => {
+                missing.insert(f.path.as_slice());
+            }
+            Err(Fail::Refused(r)) => return Err(WriteError::Refused(r)),
+            Err(Fail::Io(p, e)) => return Err(io_error(&p, &e, true)),
+        }
     }
     if let Some(f) = j.files.iter().find(|f| !ownership.is_owned(&f.path)) {
         return Err(WriteError::Refused(Refused::JournalNotOwned(f.path.clone())));
     }
-    restore(&j, tree, blobs, journal).map(Some).map_err(|(p, e)| io_error(&p, &e, true))
+    restore(&j, &missing, tree, blobs, journal).map(Some).map_err(|(p, e)| io_error(&p, &e, true))
 }

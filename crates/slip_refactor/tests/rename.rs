@@ -2975,3 +2975,132 @@ fn wp139_row_with_no_entity_is_no_evidence() {
     let here: Vec<_> = claims.iter().filter(|(lo, _)| *lo == at).map(|(_, s)| *s).collect();
     assert_eq!(here, [Stance::Replace], "{claims:?}");
 }
+
+// ---------------------------------------------------------------------
+// WP-147 item 1 (`spec/landed/edits/WP-147.md`, rows R1 and R2): the
+// package's end-to-end case through the map phase's rename and reduce,
+// on this workspace's volume, which finds a name in any case and keeps
+// the spelling it was asked with. Apply's half is
+// `crates/slip_cli/tests/stages.rs`
+// `s2_1_another_case_of_a_readonly_directory_refused` (it refuses,
+// `not_canonical`).
+
+/// Whether the volume of the trees finds a name in another case; says so
+/// when it does not.
+fn volume_folds(test: &str) -> bool {
+    let p = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("one-spelling-probe-{}-{test}", std::process::id()));
+    std::fs::write(&p, "x").unwrap();
+    let upper = p.with_file_name(p.file_name().unwrap().to_string_lossy().to_uppercase());
+    let folds = upper.exists();
+    std::fs::remove_file(&p).unwrap();
+    if !folds {
+        eprintln!("{test}: skipped: the volume of the trees is case-sensitive");
+    }
+    folds
+}
+
+/// `n::f` renamed to `h` under a request owning the tree with `dep/`
+/// read-only; `f` is declared in `dep/x.h`, which `a.cpp` includes as
+/// `include`.
+fn rename_of_a_dependency(name: &str, include: &str) -> (String, slip_reduce::Reduced) {
+    let main = format!("#include \"{include}\"\nvoid g() {{ n::f(); }}\n");
+    let files: [(&str, &[u8]); 2] =
+        [("dep/x.h", b"namespace n { void f(); }\n"), ("a.cpp", main.as_bytes())];
+    let root = std::cell::RefCell::new(String::new());
+    let t = |r: &str| {
+        r.clone_into(&mut root.borrow_mut());
+        Transform {
+            kind: TransformKind::Rename,
+            ownership: Ownership {
+                owned: vec![r.as_bytes().to_vec()],
+                readonly: vec![format!("{r}/dep").into_bytes()],
+            },
+            indivisible: true,
+            rename: Some(Rename {
+                target: vec![b"n".to_vec(), b"f".to_vec()],
+                kind: TargetKind::Function,
+                new_name: b"h".to_vec(),
+                dependent: Dependent::default(),
+            }),
+            script: None,
+        }
+    };
+    let (t, shards) = map_shards(name, &files, &["a.cpp"], "c++20", &t);
+    let r = reduced(name, &t, shards);
+    (root.into_inner(), r)
+}
+
+/// The edit set's files under `<root>/dep`, in any case (on this volume,
+/// files the request makes read-only).
+fn read_only_edited(root: &str, r: &slip_reduce::Reduced) -> Vec<String> {
+    let dep = format!("{root}/dep/");
+    let set = &r.edits;
+    set.edits
+        .iter()
+        .map(|e| String::from_utf8_lossy(&set.files[e.file as usize].path).into_owned())
+        .filter(|p| p.len() > dep.len() && p[..dep.len()].eq_ignore_ascii_case(&dep))
+        .collect()
+}
+
+/// `spec/edits.md` §2.1, §9.5 (the control): `f` is declared in a file the
+/// request makes read-only, and no edit of the edit set is in one.
+#[test]
+fn s2_1_rename_of_a_dependency_by_its_spelling() {
+    if !volume_folds("by-spelling") {
+        return;
+    }
+    let (root, r) = rename_of_a_dependency("one-spelling-dep", "dep/x.h");
+    assert_eq!(read_only_edited(&root, &r), Vec::<String>::new(), "{:?}", r.edits.refusals);
+}
+
+/// `spec/edits.md` §2.1 (row R1): the same with `#include "Dep/x.h"`. Before WP-147
+/// the rename claims `f` in `<root>/Dep/x.h` as owned (its real path is
+/// not under `<root>/dep`), reduce accepts the edit set, and it edits the
+/// dependency's header; only apply refuses it (`not_canonical`).
+#[test]
+fn s2_1_rename_of_a_dependency_through_another_case() {
+    if !volume_folds("another-case") {
+        return;
+    }
+    let (root, r) = rename_of_a_dependency("one-spelling-dep-case", "Dep/x.h");
+    assert_eq!(read_only_edited(&root, &r), Vec::<String>::new(), "{:?}", r.edits.state);
+}
+
+/// `spec/edits.md` §5.1 (row R2): one owned header reached by two
+/// observers under two spellings is one file of the edit set. Before WP-147 it was
+/// two (`<root>/h.h` and `<root>/H.h`, the same edits in each): reduce
+/// compares bytes, so the two are never checked against each other, the
+/// overlay holds one file twice (Kiln refuses such an overlay: two
+/// entries of one file), and apply refuses the second spelling.
+#[test]
+fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
+    if !volume_folds("two-spellings") {
+        return;
+    }
+    let files: [(&str, &[u8]); 3] = [
+        ("h.h", b"namespace n { void f(); }\n"),
+        ("a.cpp", b"#include \"h.h\"\nvoid ga() { n::f(); }\n"),
+        ("b.cpp", b"#include \"H.h\"\nvoid gb() { n::f(); }\n"),
+    ];
+    let t = |r: &str| Transform {
+        kind: TransformKind::Rename,
+        ownership: Ownership { owned: vec![r.as_bytes().to_vec()], readonly: Vec::new() },
+        indivisible: true,
+        rename: Some(Rename {
+            target: vec![b"n".to_vec(), b"f".to_vec()],
+            kind: TargetKind::Function,
+            new_name: b"h".to_vec(),
+            dependent: Dependent::default(),
+        }),
+        script: None,
+    };
+    let name = "one-spelling-two";
+    let (t, shards) = map_shards(name, &files, &["a.cpp", "b.cpp"], "c++20", &t);
+    let r = reduced(name, &t, shards);
+    let files: Vec<String> =
+        r.edits.files.iter().map(|f| String::from_utf8_lossy(&f.path).into_owned()).collect();
+    let headers: Vec<&String> =
+        files.iter().filter(|p| p.to_ascii_lowercase().ends_with("/h.h")).collect();
+    assert_eq!(headers.len(), 1, "one name for the header: {files:?}");
+}

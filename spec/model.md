@@ -437,9 +437,12 @@ A `path` is a `bytes` holding an absolute file-system path, not necessarily
 UTF-8.
 
 A **real path** is a path with every symbolic link resolved, as the operating
-system reports it (`realpath`). Slip identifies a file by its real path: two
-spellings that reach the same file are the same file, and an edit is always
-addressed to a real path.
+system reports it (`realpath`), and spelled as its directories list it
+(`read_dir`; `edits.md` §2.1, "One spelling"): on a volume that finds a
+name in any case or normalisation, `realpath` keeps the spelling asked,
+and Slip gives it the listed one. Slip identifies a file by its real path:
+two spellings that reach the same file are the same file, and an edit is
+always addressed to a real path.
 
 ```
 FileRef := path:    path      real path
@@ -928,7 +931,7 @@ the front end read:
 `Virtual` buffers (the predefines, the command line's macros, token-paste
 results) are not inputs. Each name (`file_name`, the path as first loaded,
 or the consulted path) is resolved against `Command.directory` and to its
-real path (failing that is `Err`). The list is sorted by path bytes and
+real path, spelled on disk (failing that is `Err`). The list is sorted by path bytes and
 made unique; two entries with one real path and different sizes or digests
 are `Err` (`<path> changed during the parse: two buffers of it differ`).
 
@@ -942,6 +945,10 @@ headers included), this is the same list
 
 - `inputs.bytes`: the sum of the inputs' sizes;
 - `inputs.files`: their number;
+- `inputs.respelled`: the inputs whose name, resolved, reached the file
+  under another spelling than its own on disk (`edits.md` §2.1, "One
+  spelling"; an `#include` in another case); present only when not 0, so
+  that a shard on a volume that does not fold is what it was without it;
 - `pp.tokens`: the tokens the preprocessor delivered to the parser, the end
   of file not counted (`FrontEnd.tokens`). After a fatal error, Kiln's
   count: the tokens before it and the one returned with it.
