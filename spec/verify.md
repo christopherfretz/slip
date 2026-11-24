@@ -3154,7 +3154,7 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   unit, so the cost grows with the references, not the namespaces. A
   key that names which pre-image namespace an owned reference meant
   (the post-image cannot say, above) or a rule form that states it for
-  a set of files is open.
+  a set of files is open: `docs/wp/WP-141.md`.
 - **Ownership differs between observers** (§2.1). An entity the
   dependency declares only in a header some observers do not include is
   owned in those and a dependency entity in the others. Each comparison
