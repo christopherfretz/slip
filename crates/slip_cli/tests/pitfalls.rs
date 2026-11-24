@@ -1887,7 +1887,7 @@ fn xfail_covers_a_declare_refusal_only_when_it_quotes_it() {
     let m = "int f() { return 1; }\n";
     let env = Env { cc: None, require_all: false };
     for (name, reason, want) in [
-        ("z01-quoted", "WP-111: `kept`", Outcome::Xfail),
+        ("z01-quoted", "WP-111: `frobnicate`", Outcome::Xfail),
         ("z02-unrelated", "WP-111: something else", Outcome::Error),
     ] {
         let expect = format!("good: verified\nxfail good: {reason}\n");
@@ -1897,7 +1897,7 @@ fn xfail_covers_a_declare_refusal_only_when_it_quotes_it() {
             &[
                 ("pre/main.cpp", m),
                 ("good/main.cpp", m),
-                ("declared.txt", "kept f()\n"),
+                ("declared.txt", "frobnicate f()\n"),
                 ("expect.txt", &expect),
             ],
         );

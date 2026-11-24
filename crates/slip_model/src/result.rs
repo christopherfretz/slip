@@ -64,7 +64,8 @@ pub enum RunVerdict {
     Incomplete = 2,
 }
 
-/// An observer that still declares a rule's entity under its old name
+/// An observer that still declares a rule's entity under its old name, or
+/// (a namespace rule) reaches a kept key through the rule
 /// (`spec/verify.md` §9.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Stale {
@@ -72,6 +73,8 @@ pub struct Stale {
     pub rule: u64,
     pub observer: Digest,
     pub direct: u64,
+    /// 0 for a rule not of kind `namespace` (WP-111).
+    pub kept_via: u64,
 }
 
 /// Why a spelling obligation failed (§8.5).
@@ -141,11 +144,6 @@ pub struct TransformResult {
     pub agreement: Vec<Stale>,
     /// Strictly ascending.
     pub unused: Vec<u64>,
-    /// The namespace rules an observer used, whose agreement between
-    /// observers was not checked (`spec/verify.md` §9.2, until WP-111);
-    /// strictly ascending. Not empty: the state is neither `verified` nor
-    /// `verified_with_residue`.
-    pub unchecked: Vec<u64>,
     pub spellings: Spellings,
     /// Strictly ascending by `(file, lo)`.
     pub residue: Vec<Residue>,

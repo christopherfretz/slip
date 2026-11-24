@@ -1,3 +1,5 @@
-# Item 4: a rule whose target is its own source maps f to f, once: equal, and it counts f via the rule.
+# Item 4: a rule whose target is its own source maps f to f. Before WP-111's review (F1) this was
+# equal and counted f via the rule; an identity rule changes nothing and is now refused
+# (Rule::refusal, RULE_IDENTITY; spec/verify.md §2.1 "One way to each key").
 # vacuous
 rule function | root | id f | disc-of pre f() | root | id f

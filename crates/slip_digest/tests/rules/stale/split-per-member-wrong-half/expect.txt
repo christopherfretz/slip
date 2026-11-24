@@ -1,0 +1,10 @@
+# The halves swapped: a is in acme2 and b in acme, which no rule matches. A finding: the
+# members are not the pre-image's.
+changed u()
+changed <order>
+removed legacy::a
+removed legacy::b
+added acme
+added acme2
+added acme::b
+added acme2::a

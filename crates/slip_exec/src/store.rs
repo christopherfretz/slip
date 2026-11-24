@@ -45,7 +45,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use slip_model::container::{Reader, TRAILER_LEN};
 use slip_model::declared::Declared;
 use slip_model::hash::content_digest;
-use slip_model::{Digest, Phase, Plan, RunRecord, Shard, formats};
+use slip_model::{
+    Digest, EditSet, Overlay, Phase, Plan, RunRecord, Shard, Transform, TransformResult, formats,
+};
 
 /// The text of `VERSION`.
 pub const VERSION_TEXT: &str = "1\n";
@@ -699,12 +701,13 @@ impl Store {
 
     /// Publishes a file of `object`'s kind under its content id, which is
     /// returned. `Invalid` (nothing written) if `bytes` is not a container
-    /// of that kind (`spec/model.md` §5: magic, kind, version 1, trailer,
+    /// of that kind (`spec/model.md` §5: magic, kind, the kind's version
+    /// as [`Object::version`] gives it, trailer,
     /// section framing) or not a valid file of it, decoded and checked in
     /// full by `slip_model::formats::content_id`. The file is left
     /// untouched when it already holds that content.
     pub fn publish_object(&self, object: Object, bytes: &[u8]) -> Result<Digest> {
-        let id = container_id(bytes, object.kind())?;
+        let id = container_id(bytes, object.kind(), object.version())?;
         formats::content_id(bytes).map_err(|e| {
             let name = String::from_utf8_lossy(&object.kind()).into_owned();
             StoreError::Invalid(format!("not a valid {name} file: {e}"))
@@ -1008,21 +1011,29 @@ impl Object {
             Object::Result => *b"RSLT",
         }
     }
-}
 
-/// The version of every container of a transform's run (`spec/edits.md`
-/// §3, §6, §7.1, §8.5, §10.6).
-const OBJECT_VERSION: u32 = 1;
+    /// The highest container version of the kind this Slip reads: the
+    /// model's own (`spec/edits.md` §3, §6, §7.1, §8.5, §10.6; RSLT is at
+    /// version 2 since WP-111, whose decoder refuses version 1).
+    pub fn version(self) -> u32 {
+        match self {
+            Object::Transform => Transform::VERSION,
+            Object::EditSet => EditSet::VERSION,
+            Object::Overlay => Overlay::VERSION,
+            Object::Result => TransformResult::VERSION,
+        }
+    }
+}
 
 /// The first component of a transform run record's name.
 const TRANSFORM: &str = "transform";
 
-/// The content id of a container of `kind`, version 1, checked as
+/// The content id of a container of `kind` at most at `version`, checked as
 /// `spec/model.md` §5 rule 5 checks the frame (the sections are not
 /// decoded); `Invalid` otherwise.
-fn container_id(bytes: &[u8], kind: [u8; 4]) -> Result<Digest> {
+fn container_id(bytes: &[u8], kind: [u8; 4], version: u32) -> Result<Digest> {
     let name = String::from_utf8_lossy(&kind).into_owned();
-    Reader::open(bytes, kind, OBJECT_VERSION)
+    Reader::open(bytes, kind, version)
         .map(|r| r.content_id())
         .map_err(|e| StoreError::Invalid(format!("not a valid {name} container: {e}")))
 }

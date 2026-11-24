@@ -209,10 +209,16 @@ impl Raw {
     }
 
     fn file(self, kind: [u8; 4]) -> Vec<u8> {
-        let mut w = Writer::new(kind, 1);
+        let mut w = Writer::new(kind, version_of(kind));
         w.section(1, self.e.as_bytes());
         w.finish()
     }
+}
+
+/// The version this crate writes of a kind of this file: `RSLT` is at 2
+/// (WP-111), the others at 1.
+fn version_of(kind: [u8; 4]) -> u32 {
+    if kind == *b"RSLT" { 2 } else { 1 }
 }
 
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
@@ -262,6 +268,13 @@ fn raw_set(x: &EditSet) -> Raw {
                 }
                 Piece::Spelled { key, text } => {
                     r.e.uv(2).digest(key).bytes(text);
+                }
+                Piece::Identifier { text, key } => {
+                    r.e.uv(3).bytes(text);
+                    match key {
+                        None => r.e.u8(0),
+                        Some(k) => r.e.u8(1).digest(k),
+                    };
                 }
             }
         }
@@ -434,16 +447,11 @@ fn raw_result(x: &TransformResult) -> Raw {
     r.e.count(x.agreement.len());
     for (i, a) in x.agreement.iter().enumerate() {
         r.mark(format!("{S}.agreement[{i}]"));
-        r.e.uv(a.rule).digest(&a.observer).uv(a.direct);
+        r.e.uv(a.rule).digest(&a.observer).uv(a.direct).uv(a.kept_via);
     }
     r.e.count(x.unused.len());
     for (i, &u) in x.unused.iter().enumerate() {
         r.mark(format!("{S}.unused[{i}]"));
-        r.e.uv(u);
-    }
-    r.e.count(x.unchecked.len());
-    for (i, &u) in x.unchecked.iter().enumerate() {
-        r.mark(format!("{S}.unchecked[{i}]"));
         r.e.uv(u);
     }
     r.mark(format!("{S}.spellings.obligations"));
@@ -833,8 +841,8 @@ fn overlay() -> Overlay {
     }
 }
 
-/// A result with every record: a verdict, the tally, stale rules, unused
-/// and unchecked rules, failed spellings of both kinds, residue of every
+/// A result with every record: a verdict, the tally, stale rules (by
+/// `direct` and by `kept_via`), unused rules, failed spellings of both kinds, residue of every
 /// category.
 fn result() -> TransformResult {
     TransformResult {
@@ -863,11 +871,10 @@ fn result() -> TransformResult {
             failed: 2,
         },
         agreement: vec![
-            Stale { rule: 0, observer: d(0xa1), direct: 2 },
-            Stale { rule: 1, observer: d(0xa0), direct: 1 },
+            Stale { rule: 0, observer: d(0xa1), direct: 2, kept_via: 0 },
+            Stale { rule: 1, observer: d(0xa0), direct: 0, kept_via: 3 },
         ],
         unused: vec![1, 4],
-        unchecked: vec![0, 3],
         spellings: Spellings {
             obligations: 5,
             passed: 3,
@@ -945,7 +952,6 @@ fn refused_result() -> TransformResult {
         },
         agreement: Vec::new(),
         unused: Vec::new(),
-        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         ..result()
@@ -961,7 +967,6 @@ fn result_in(s: State) -> TransformResult {
         State::Verified | State::VerifiedWithResidue => {
             x.verdict = Some(RunVerdict::Verified);
             x.agreement.clear();
-            x.unchecked.clear();
             x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
             x.allow_unparsed = true;
             if s == State::Verified {
@@ -1012,7 +1017,7 @@ fn run() -> TransformRun {
 
 const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  01 00 00 00"; // magic, EDTS, version 1
 const HEADER_OVLY: &str = "53 4c 49 50 1a 0a 00 00  4f 56 4c 59  01 00 00 00"; // magic, OVLY, version 1
-const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  01 00 00 00"; // magic, RSLT, version 1
+const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  02 00 00 00"; // magic, RSLT, version 2
 const HEADER_RUNT: &str = "53 4c 49 50 1a 0a 00 00  52 55 4e 54  01 00 00 00"; // magic, RUNT, version 1
 const TRAILER: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -1121,7 +1126,6 @@ fn small_result() -> TransformResult {
         tally: Tally { selected: 2, unparsed: 1, ..Tally::default() },
         agreement: Vec::new(),
         unused: Vec::new(),
-        unchecked: Vec::new(),
         spellings: Spellings::default(),
         residue: Vec::new(),
         exempt: Vec::new(),
@@ -1131,7 +1135,7 @@ fn small_result() -> TransformResult {
 fn small_result_bytes() -> Vec<u8> {
     reseal(hex(&[
         HEADER_RSLT,
-        "01 7b",                            // section result, 123 bytes
+        "01 7a",                            // section result, 122 bytes
         "01",                               //   scheme 1                          @18
         &rep("11", 32),                     //   plan
         "00",                               //   round 0
@@ -1142,7 +1146,7 @@ fn small_result_bytes() -> Vec<u8> {
         "00 00",                            //   partial false, allow_unparsed false
         "00",                               //   no verdict                        @121
         "02 01 00 00 00 00 00 00 00 00 00", // tally: selected 2, unparsed 1, the rest 0
-        "00 00 00",                         //   agreement [], unused [], unchecked []
+        "00 00",                            //   agreement [], unused []
         "00 00 00",                         //   spellings: 0 obligations, 0 passed, failed []
         "00 00",                            //   residue [], exempt []
         "00",                               // end
@@ -1205,7 +1209,7 @@ fn bytes_exact() {
     assert_eq!(Overlay::from_bytes(&ov).unwrap(), small_overlay());
 
     let res = small_result_bytes();
-    assert_eq!(res.len(), 16 + 2 + 123 + 1 + 32);
+    assert_eq!(res.len(), 16 + 2 + 122 + 1 + 32);
     assert_eq!(small_result().to_bytes(), res);
     assert_eq!(raw_file(&small_result()), res);
     assert_eq!(TransformResult::from_bytes(&res).unwrap(), small_result());
@@ -1313,6 +1317,31 @@ fn goldens() {
     one("transform-run.json", &run());
 }
 
+// spec/edits.md §8.5 (WP-111): `RSLT` is at version 2, and version 1 is
+// refused, from bytes (`UnsupportedVersion` at the version field) and from
+// JSON (at `version`); version 3 is newer than supported.
+#[test]
+fn result_version_1_is_refused() {
+    let bytes = small_result_bytes();
+    assert_eq!(&bytes[12..16], &[2, 0, 0, 0]);
+    TransformResult::from_bytes(&bytes).unwrap();
+    let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
+    for v in [1u32, 3] {
+        let mut w = Writer::new(*b"RSLT", v);
+        w.section(1, payload);
+        let old = w.finish();
+        assert_eq!(
+            error(TransformResult::from_bytes(&old)),
+            (ErrorKind::UnsupportedVersion, 12),
+            "{v}"
+        );
+    }
+    let mut j = small_result().to_json();
+    set(&mut j, &["version"], Value::Int(1));
+    let e = TransformResult::from_json(&j).unwrap_err();
+    assert_eq!(e.path, "version", "{e}");
+}
+
 // spec/model.md §5.4: dump, undump and content_id know the four kinds; an
 // unknown ignorable section survives dump → undump.
 #[test]
@@ -1325,7 +1354,10 @@ fn dump_undump_content_id() {
         assert_eq!(content_id(&bytes).unwrap().as_bytes(), &bytes[bytes.len() - 32..]);
         // The same payload with an ignorable section 64 after it.
         let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
-        let mut w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let mut w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         w.section(1, payload);
         w.section(64, b"\x01\x02");
         let with = w.finish();
@@ -1334,14 +1366,20 @@ fn dump_undump_content_id() {
         assert_eq!(undump(&parse(&text)).unwrap(), with);
         assert_eq!(content_id(&with).unwrap().as_bytes(), &with[with.len() - 32..]);
         // An unknown critical section is refused by all three.
-        let mut w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let mut w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         w.section(1, payload);
         w.section(2, b"\x01");
         let bad = w.finish();
         assert_eq!(error(content_id(&bad)).0, ErrorKind::UnknownSection);
         assert_eq!(error(dump(&bad)).0, ErrorKind::UnknownSection);
         // No section at all: Malformed at the end byte.
-        let w = Writer::new(bytes[8..12].try_into().unwrap(), 1);
+        let w = Writer::new(
+            bytes[8..12].try_into().unwrap(),
+            version_of(bytes[8..12].try_into().unwrap()),
+        );
         let empty = w.finish();
         assert_eq!(error(content_id(&empty)), (ErrorKind::Malformed, 16));
     }
@@ -1420,7 +1458,7 @@ fn unlisted_values() {
         let start = payload_at(&bytes, 1);
         let mut payload = bytes[start..bytes.len() - 33].to_vec();
         payload.push(0);
-        let mut w = Writer::new(kind, 1);
+        let mut w = Writer::new(kind, version_of(kind));
         w.section(1, &payload);
         let long = w.finish();
         assert_eq!(
@@ -1557,7 +1595,6 @@ fn json_members() {
             "tally",
             "agreement",
             "unused",
-            "unchecked",
             "spellings",
             "residue",
             "exempt"
@@ -1566,7 +1603,7 @@ fn json_members() {
     assert_eq!(keys(r.get("tally").unwrap()), TALLY);
     assert_eq!(
         keys(&r.get("agreement").unwrap().as_array().unwrap()[0]),
-        ["rule", "observer", "direct"]
+        ["rule", "observer", "direct", "kept_via"]
     );
     let sp = r.get("spellings").unwrap();
     assert_eq!(keys(sp), ["obligations", "passed", "failed"]);
@@ -1863,6 +1900,25 @@ fn set_pieces() {
         |x| x.edits[1].pieces[0] = Piece::Literal(Vec::new()),
         "sections.set.edits[1].pieces[0]",
     );
+    // WP-132: an identifier piece's bytes are one plain identifier.
+    for text in [&b""[..], b"class", b"n::g"] {
+        let what = broken(
+            |x| x.edits[1].pieces[0] = Piece::Identifier { text: text.to_vec(), key: None },
+            "sections.set.edits[1].pieces[0]",
+        );
+        assert_eq!(what, "an identifier piece's text is not one plain identifier");
+    }
+}
+
+// §6.1, `spec/edits.md` §4.2 (WP-132): an edit set with identifier pieces,
+// with and without a key, round trips.
+#[test]
+fn identifier_pieces_round_trip() {
+    for key in [None, Some(d(0x10))] {
+        let mut x = sample();
+        x.edits[1].pieces = vec![Piece::Identifier { text: b"g".to_vec(), key }];
+        round_trip(&x);
+    }
 }
 
 // §6.1 row 9: an edit's subjects and notes strictly ascending, its tiers
@@ -2727,21 +2783,21 @@ fn result_invariants() {
     let what = broken_result(|x| x.agreement.swap(0, 1), "sections.result.agreement[1]");
     assert_eq!(what, "agreement is not strictly ascending by (rule, observer)");
     broken_result(
-        |x| x.agreement[1] = Stale { direct: 9, ..x.agreement[0] },
+        |x| x.agreement[1] = Stale { kept_via: 9, ..x.agreement[0] },
         "sections.result.agreement[1]",
     );
-    // Row 15: a stale pair has `direct` not 0 (verify.md §9.2).
+    // Row 15: a stale pair has `direct` or `kept_via` not 0 (verify.md
+    // §9.2, WP-111).
     let what = broken_result(
-        |x| x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0 },
+        |x| x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 0, kept_via: 0 },
         "sections.result.agreement[1]",
     );
-    assert_eq!(what, "a stale pair has direct 0");
-    let mut x = result();
-    x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct: 1 };
-    x.validate().unwrap();
-    let what = broken_result(|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]");
-    assert_eq!(what, "unchecked is not strictly ascending");
-    broken_result(|x| x.unchecked = vec![3, 3], "sections.result.unchecked[1]");
+    assert_eq!(what, "a stale pair has direct and kept_via both 0");
+    for (direct, kept_via) in [(1, 0), (0, 1), (2, 5)] {
+        let mut x = result();
+        x.agreement[1] = Stale { rule: 0, observer: d(0xa2), direct, kept_via };
+        x.validate().unwrap();
+    }
     let what = broken_result(|x| x.unused = vec![4, 1], "sections.result.unused[1]");
     assert_eq!(what, "unused is not strictly ascending");
     broken_result(|x| x.unused = vec![1, 1], "sections.result.unused[1]");
@@ -2967,7 +3023,6 @@ fn result_tally_adds_up() {
     let mut x = result();
     x.verdict = None;
     x.state = State::Incomplete;
-    x.unchecked.clear();
     x.tally = Tally { selected: 12, unparsed: 1, failed_runs: 2, ..Tally::default() };
     x.validate().unwrap();
     // A run over no observer: 0 of 0.
@@ -2993,11 +3048,9 @@ fn result_state_against_verdict() {
             match v {
                 None => {
                     x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
-                    x.unchecked.clear();
                 }
                 Some(Verified) => {
                     x.agreement.clear();
-                    x.unchecked.clear();
                     x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
                     x.allow_unparsed = true;
                 }
@@ -3019,7 +3072,6 @@ fn result_state_against_verdict() {
     // Row 16: a verified verdict has no stale pair, no failed spelling.
     let mut x = result_in(State::Incomplete);
     x.verdict = Some(Verified);
-    x.unchecked.clear();
     x.spellings = Spellings { obligations: 5, passed: 5, failed: Vec::new() };
     let what = rejected(&x, "sections.result.agreement[0]");
     assert_eq!(what, "a verified verdict has a stale pair");
@@ -3027,27 +3079,17 @@ fn result_state_against_verdict() {
     x.spellings = result().spellings;
     let what = rejected(&x, "sections.result.spellings.failed[0]");
     assert_eq!(what, "a verified verdict has a failed spelling");
-    // Without a verdict, no rule is unchecked.
-    let mut x = result_in(State::Incomplete);
-    x.verdict = None;
-    x.tally = Tally { selected: 12, unparsed: 1, ..Tally::default() };
-    let what = rejected(&x, "sections.result.unchecked[0]");
-    assert_eq!(what, "a result without a verdict has an unchecked rule");
-    // Row 17: an unchecked rule, or unparsed observers without
-    // --allow-unparsed, bar both verified states and give incomplete.
+    // Row 17: unparsed observers without --allow-unparsed bar both
+    // verified states and give incomplete. (An unchecked namespace rule
+    // barred them too until WP-111 removed `unchecked`.)
     for s in [State::Verified, State::VerifiedWithResidue, State::Incomplete] {
-        let mut by_rule = result_in(State::Verified);
-        by_rule.state = s;
-        by_rule.unchecked = vec![2];
-        let mut by_unparsed = result_in(State::Verified);
-        by_unparsed.state = s;
-        by_unparsed.allow_unparsed = false;
-        for x in [by_rule, by_unparsed] {
-            if s == State::Incomplete {
-                x.validate().unwrap();
-            } else {
-                assert_eq!(rejected(&x, at), STATE, "{s:?}");
-            }
+        let mut x = result_in(State::Verified);
+        x.state = s;
+        x.allow_unparsed = false;
+        if s == State::Incomplete {
+            x.validate().unwrap();
+        } else {
+            assert_eq!(rejected(&x, at), STATE, "{s:?}");
         }
         // With nothing barring: incomplete contradicts a verified verdict.
         let mut x = result_in(State::Verified);
@@ -3101,7 +3143,6 @@ fn result_order_of_checks() {
         (|x| x.scheme = 2, "sections.result.scheme"),
         (|x| x.agreement.swap(0, 1), "sections.result.agreement[1]"),
         (|x| x.unused = vec![4, 1], "sections.result.unused[1]"),
-        (|x| x.unchecked = vec![3, 0], "sections.result.unchecked[1]"),
         (|x| x.exempt.swap(0, 1), "sections.result.exempt[1]"),
         (|x| x.spellings.failed.swap(0, 1), "sections.result.spellings.failed[1]"),
         (|x| x.spellings.passed = 2, "sections.result.spellings.obligations"),

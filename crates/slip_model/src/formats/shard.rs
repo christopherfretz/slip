@@ -132,15 +132,15 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::Agreement(l), what));
     }
-    if let Some(r) = &s.rule_use
-        && let Some((l, what)) = agreement::rule_use_violation(r, phase, status)
-    {
-        return Some((Loc::Agreement(l), what));
-    }
     if let Some(x) = &s.spellings
         && let Some((l, what)) = spellings::violation(x, phase, status)
     {
         return Some((Loc::Spellings(l), what));
+    }
+    if let Some(r) = &s.rule_use
+        && let Some((l, what)) = agreement::rule_use_violation(r, phase, status)
+    {
+        return Some((Loc::Agreement(l), what));
     }
     if let Some(n) = &s.negatives
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
@@ -220,14 +220,6 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(binding) = &binding {
         sections.push((BINDING, binding));
     }
-    let rule_use = s.rule_use.as_ref().map(|r| {
-        let mut e = Encoder::new();
-        agreement::encode_rule_use(&mut e, r);
-        e.into_bytes()
-    });
-    if let Some(rule_use) = &rule_use {
-        sections.push((RULE_USE, rule_use));
-    }
     let spellings = s.spellings.as_ref().map(|x| {
         let mut e = Encoder::new();
         spellings::encode(&mut e, x);
@@ -243,6 +235,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     });
     if let Some(negatives) = &negatives {
         sections.push((NEGATIVES, negatives));
+    }
+    let rule_use = s.rule_use.as_ref().map(|r| {
+        let mut e = Encoder::new();
+        agreement::encode_rule_use(&mut e, r);
+        e.into_bytes()
+    });
+    if let Some(rule_use) = &rule_use {
+        sections.push((RULE_USE, rule_use));
     }
     let found = s.found.as_ref().map(|x| {
         let mut e = Encoder::new();
@@ -263,8 +263,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, RULE_USE,
-            SPELLINGS, NEGATIVES, FOUND,
+            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS,
+            NEGATIVES, RULE_USE, FOUND,
         ],
     )?;
     let end = opened.end;
@@ -277,9 +277,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         digests,
         verdict,
         binding,
-        rule_use,
         spellings,
         negatives,
+        rule_use,
         found,
     ] = opened.sections;
 
@@ -348,14 +348,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), at)
         }
     };
-    let (rule_use, rule_use_at) = match rule_use {
-        None => (None, None),
-        Some(mut d) => {
-            let (v, at) = agreement::decode_rule_use(&mut d)?;
-            d.finish()?;
-            (Some(v), Some(at))
-        }
-    };
     let (spellings, spellings_at) = match spellings {
         None => (None, None),
         Some(mut d) => {
@@ -368,6 +360,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         None => (None, None),
         Some(mut d) => {
             let (v, at) = negatives::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
+    let (rule_use, rule_use_at) = match rule_use {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = agreement::decode_rule_use(&mut d)?;
             d.finish()?;
             (Some(v), Some(at))
         }
@@ -445,9 +445,9 @@ const NAMES: [SectionName; 12] = [
     SectionName { id: DIGESTS, name: "digests", required: false },
     SectionName { id: VERDICT, name: "verdict", required: false },
     SectionName { id: BINDING, name: "binding", required: false },
-    SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: SPELLINGS, name: "spellings", required: false },
     SectionName { id: NEGATIVES, name: "negatives", required: false },
+    SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: FOUND, name: "found", required: false },
 ];
 
@@ -492,14 +492,14 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(b) = &s.binding {
         sections.push(("binding", agreement::render_binding(b)));
     }
-    if let Some(r) = &s.rule_use {
-        sections.push(("rule_use", agreement::render_rule_use(r)));
-    }
     if let Some(x) = &s.spellings {
         sections.push(("spellings", spellings::render(x)));
     }
     if let Some(x) = &s.negatives {
         sections.push(("negatives", negatives::render(x)));
+    }
+    if let Some(r) = &s.rule_use {
+        sections.push(("rule_use", agreement::render_rule_use(r)));
     }
     if let Some(x) = &s.found {
         sections.push(("found", found::render(x)));
@@ -519,9 +519,9 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         digests,
         verdict,
         binding,
-        rule_use,
         spellings,
         negatives,
+        rule_use,
         found,
     ] = s.known
     else {

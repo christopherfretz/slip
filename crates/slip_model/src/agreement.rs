@@ -14,9 +14,16 @@ pub struct Use {
     pub rule: u64,
     /// Entities the rule gave their key.
     pub via: u64,
-    /// Entities whose mapped key is the key the rule produces, and whose
-    /// own key no rule was applied to.
+    /// For a rule not of kind `namespace`: entities whose mapped key is the
+    /// key the rule produces, and whose own key no rule was applied to.
+    /// For a namespace rule: owned entities, not namespaces, inside the
+    /// unmapped namespace the rule produces, whose key is not kept
+    /// (`spec/verify.md` §9.2).
     pub direct: u64,
+    /// For a namespace rule: entities whose namespace chain the rule
+    /// mapped and whose key is in `Declared.kept`; 0 for any other rule
+    /// (`spec/verify.md` §9.2, WP-111).
+    pub kept_via: u64,
 }
 
 /// Section 25, `rule_use` (`spec/verify.md` §9.1).
@@ -24,9 +31,12 @@ pub struct Use {
 pub struct RuleUse {
     /// The `rules_id` of the table the walk had.
     pub rules: Digest,
-    /// Sorted by `rule`, no two equal; only rules with `via` or `direct`
-    /// not 0.
+    /// Sorted by `rule`, no two equal; only rules with a count not 0.
     pub uses: Vec<Use>,
+    /// The keys of `Declared.kept` some entity of the walk has, as indices
+    /// into that list, strictly ascending (`spec/verify.md` §9.2: a kept
+    /// key no observer has is reported).
+    pub kept: Vec<u64>,
 }
 
 /// Section 24, `binding` (`spec/verify.md` §9.1): what a verify shard was

@@ -1,0 +1,4 @@
+# WP-111 review F3: the other observer of tu-local-left, its own helper moved to acme and its
+# key kept (as tu-local-left's observer would need): kept_via, stale. Not kept, tu-local-left
+# is stale. A stated limit (spec/verify.md §9.2).
+relocate legacy => :: acme

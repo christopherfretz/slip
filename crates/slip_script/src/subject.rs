@@ -141,6 +141,17 @@ pub trait Subject {
     fn file_len(&self, f: File) -> Option<u32>;
     fn kind_bits(&self, v: Value) -> u64;
     fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity>;
+    /// §6.1, `lookup(scope, identifier)`: the entities declared with
+    /// `identifier` as members of `scope` (the members of the scopes it
+    /// contains transparently included, §6.1 rule 3), found as `lookup`
+    /// finds the last component of a qualified name that reached `scope`
+    /// (rules 3 to 7), in unit order of their first declarations; for a
+    /// typedef name for linkage purposes, the members of the class it
+    /// names (rule 4). `None`: `scope` is not a namespace, a class, a
+    /// class template, a specialisation of one or an enumeration, which
+    /// the host refuses with `wrong_kind`. `identifier` is one plain
+    /// identifier (the host checked it).
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>>;
     /// §6.3 rule 1. `None` only for an expression, which the host never
     /// asks about: `None` for any other sort is a host failure. An empty
     /// identifier is `Some(vec![])`.
@@ -203,6 +214,14 @@ pub trait Subject {
     /// be live, listed once, and have `extent` `Some(r)`, and a name range
     /// that is not empty and lies in `r`; anything else is a host failure.
     fn references_at(&self, r: Range) -> Vec<Reference>;
+    /// §7.2 rule 1 at a name range (`spec/landed/api/WP-132.md`): the
+    /// references whose name range is exactly `r`. Each must be live,
+    /// listed once and have `name_range` `Some(r)`; anything else is a
+    /// host failure.
+    fn references_named_at(&self, r: Range) -> Vec<Reference>;
+    /// §7.2 rule 1 at a declaration's name: the declarations whose name
+    /// range is exactly `r`, under the same contract.
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration>;
     /// §7.2 rule 1, third condition.
     fn found_directly(&self, r: Reference) -> bool;
     /// The key of `e` as an entity (for a spelled piece); None: it has none, and `spell` refuses.

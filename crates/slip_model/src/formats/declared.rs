@@ -9,7 +9,7 @@ use crate::declared::{Declared, first_not_ascending};
 use crate::json::Value;
 use crate::keys::{
     DUPLICATE_RULE, KEY_KINDS, KeyKind, NAME_FORMS, Name, OPERATOR_ZERO, Parent, Rule, RuleTable,
-    SortError, TOO_DEEP, UNNAMED_BY_MAX, UNSORTED_RULES,
+    SAME_PRODUCED_RULE, SortError, TOO_DEEP, UNNAMED_BY_MAX, UNSORTED_RULES,
 };
 use crate::transform::{Ownership, is_canonical};
 use crate::wire::{Decoder, Encoder};
@@ -50,6 +50,7 @@ fn sort_what(e: SortError) -> &'static str {
         SortError::Invalid(what) => what,
         SortError::Duplicate => DUPLICATE_RULE,
         SortError::Unsorted => UNSORTED_RULES,
+        SortError::SameProduced { .. } => SAME_PRODUCED_RULE,
     }
 }
 

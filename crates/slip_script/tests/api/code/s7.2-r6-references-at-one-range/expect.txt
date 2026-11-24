@@ -1,0 +1,6 @@
+transform <id>
+edit 0 t.cpp:5:24-5:25 tiers 1 = identifier("g")
+edit 1 t.cpp:5:24-5:25 tiers 1 = identifier("h")
+edit 2 t.cpp:6:25-6:26 tiers 1 = identifier("a::f(int)" "g")
+renamed function "a" "g" disc cb62fd8c624024a58df53a3d40209e222718a3038556e7b05e4e50c3346379e3 -> "a" "f"
+renamed function "b" "h" disc cb62fd8c624024a58df53a3d40209e222718a3038556e7b05e4e50c3346379e3 -> "b" "f"

@@ -1,0 +1,2 @@
+# WP-111 item 1: "inside" includes an inline namespace: legacy::v1::b, owned and left behind, counts direct for the rule on legacy (stale); acme counts via.
+relocate legacy => :: acme

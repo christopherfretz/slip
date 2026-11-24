@@ -17,6 +17,7 @@ pub const OP_PARENT_OF: u32 = 20;
 pub const OP_PARAMETERS_OF: u32 = 21;
 pub const OP_DECLARATIONS_OF: u32 = 22;
 pub const OP_ENTITY_OF: u32 = 23;
+pub const OP_LOOKUP_IN: u32 = 24;
 
 pub const OP_REFERENCES_TO: u32 = 32;
 pub const OP_REFERENT_OF: u32 = 33;
@@ -34,6 +35,7 @@ pub const OP_CODE_TEXT: u32 = 64;
 pub const OP_CODE_SPELL: u32 = 65;
 pub const OP_CODE_COPY: u32 = 66;
 pub const OP_CODE_CAT: u32 = 67;
+pub const OP_CODE_IDENTIFIER: u32 = 68;
 
 pub const OP_REPLACE: u32 = 80;
 pub const OP_NEW_GROUP: u32 = 81;
@@ -259,6 +261,7 @@ pub const OPERATIONS: &[Operation] = &[
     row(OP_PARAMETERS_OF, "parameters_of", 1, false, B),
     row(OP_DECLARATIONS_OF, "declarations_of", 1, false, B),
     row(OP_ENTITY_OF, "entity_of", 1, false, V),
+    row(OP_LOOKUP_IN, "lookup_in", 1, true, B),
     row(OP_REFERENCES_TO, "references_to", 1, false, B),
     row(OP_REFERENT_OF, "referent_of", 1, false, V),
     row(OP_NAME_RANGE_OF, "name_range_of", 1, false, B),
@@ -280,6 +283,7 @@ pub const OPERATIONS: &[Operation] = &[
         convention: V,
         effect: true,
     },
+    row(OP_CODE_IDENTIFIER, "code_identifier", 0, true, V),
     row(OP_REPLACE, "replace", 4, true, V),
     row(OP_NEW_GROUP, "new_group", 0, false, V),
     row(OP_REPORT, "report", 4, true, V),

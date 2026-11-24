@@ -45,6 +45,26 @@ fn s7_1_text_of_a_range_with_edits_inside() {
     assert_eq!(b.overlay.spellings, vec![ob(0, 2, 7, 1), ob(0, 14, 19, 1)]);
 }
 
+// §7.1, `spec/api.md` §7.2 (WP-132): an identifier piece with a key is an
+// obligation where its text lands, carried by copies like a spelled
+// piece's; one without a key is text and no obligation.
+#[test]
+fn s7_1_identifier_pieces_and_obligations() {
+    let ident =
+        |t: &[u8], k: Option<u8>| Piece::Identifier { text: t.to_vec(), key: k.map(key_id) };
+    let pre: &[u8] = b"f(a + b); g(); h();";
+    let b = built(
+        &[("/t/x", pre)],
+        vec![
+            edit(0, 2, 3, vec![ident(b"alpha", Some(1))]),
+            edit(0, 10, 11, vec![copy(0, 2, 7)]),
+            edit(0, 15, 16, vec![ident(b"k", None)]),
+        ],
+    );
+    assert_eq!(b.blobs[0].1, b"f(alpha + b); alpha + b(); k();");
+    assert_eq!(b.overlay.spellings, vec![ob(0, 2, 7, 1), ob(0, 14, 19, 1)]);
+}
+
 // §7.1: the exchange of two ranges, with an edit inside one of them; the
 // edit is applied where its range is carried.
 #[test]
@@ -404,10 +424,11 @@ impl Model<'_> {
         for p in &self.set.edits[i].pieces {
             match p {
                 Piece::Literal(b) => out.extend_from_slice(b),
-                Piece::Spelled { key, text } => {
+                Piece::Spelled { key, text } | Piece::Identifier { key: Some(key), text } => {
                     spells.push((out.len() as u64, (out.len() + text.len()) as u64, *key));
                     out.extend_from_slice(text);
                 }
+                Piece::Identifier { key: None, text } => out.extend_from_slice(text),
                 Piece::Copy(r) => {
                     let (t, ts) = self.text(r.file, r.lo, r.hi);
                     let shift = out.len() as u64;
@@ -454,10 +475,15 @@ fn generate(rng: &mut Rng) -> Option<(EditSet, Digest, Mem, Vec<Vec<u8>>)> {
             let mut pieces: Vec<Piece> = Vec::new();
             let has_inner = ranges[f].iter().any(|&r| r != (lo, hi) && lo <= r.0 && r.1 <= hi);
             for _ in 0..rng.below(4) {
-                let p = match rng.below(4) {
+                let p = match rng.below(5) {
                     0 => lit(&rng.bytes_n(1, 3, b"XY\n")),
                     1 => spell(1 + rng.below(3) as u8, &rng.bytes_n(1, 3, b"kq")),
                     2 if has_inner => copy(f as u64, lo, hi),
+                    // WP-132: an identifier piece, with a key or not.
+                    4 => Piece::Identifier {
+                        text: rng.bytes_n(1, 3, b"kq"),
+                        key: rng.chance(1, 2).then(|| key_id(1 + rng.below(3) as u8)),
+                    },
                     _ => match random_copy(rng) {
                         Some(p) => p,
                         None => continue,

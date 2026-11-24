@@ -28,8 +28,8 @@ pub struct Place {
 }
 
 /// One piece of a replacement (§7.1, §7.6 `Piece`). The derived order
-/// (literal, then copy, then spelled; then by content) is the order of
-/// edits with the same range.
+/// (literal, then copy, then spelled, then identifier; then by content)
+/// is the order of edits with the same range.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Piece {
     Literal(Vec<u8>),
@@ -38,6 +38,15 @@ pub enum Piece {
     Spelled {
         key: Digest,
         text: Vec<u8>,
+    },
+    /// One identifier given as data (§7.1 rule 7); not empty. `key` is
+    /// present when the piece is the whole replacement of the name range
+    /// of references whose referents' origin is declared renamed to `text`
+    /// (§7.2 rule 6, §7.5 rule 3): then it is that entity's key, checked
+    /// as a spelled piece's is (§7.2 rule 5).
+    Identifier {
+        text: Vec<u8>,
+        key: Option<Digest>,
     },
 }
 
@@ -306,7 +315,8 @@ impl RunOutput {
     /// counter <name> <value>
     /// ```
     ///
-    /// A piece is `"<bytes>"`, `copy(<place>)` or `spell(<key> "<text>")`.
+    /// A piece is `"<bytes>"`, `copy(<place>)`, `spell(<key> "<text>")`,
+    /// `identifier("<name>")` or, with a key, `identifier(<key> "<name>")`.
     /// A name is its identifier quoted, or the form's name of
     /// `spec/digest-kinds.md` §3.2 with its operand in parentheses
     /// (`operator(3)`, `conversion(<digest>)`, `literal_operator("_km")`,
@@ -339,6 +349,17 @@ impl RunOutput {
                     Piece::Copy(at) => write!(f, " copy({})", Rendered::Place(at, s))?,
                     Piece::Spelled { key, text } => {
                         write!(f, " spell({} {})", Rendered::Key(key, s), Rendered::Quoted(text))?;
+                    }
+                    Piece::Identifier { text, key: None } => {
+                        write!(f, " identifier({})", Rendered::Quoted(text))?;
+                    }
+                    Piece::Identifier { text, key: Some(key) } => {
+                        write!(
+                            f,
+                            " identifier({} {})",
+                            Rendered::Key(key, s),
+                            Rendered::Quoted(text)
+                        )?;
                     }
                 }
             }
