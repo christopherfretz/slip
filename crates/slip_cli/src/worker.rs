@@ -12,7 +12,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use slip_digest::map::{counters, map_unit};
+use slip_digest::map::{counters, map_unit, with_input};
 use slip_digest::{Detail, Options};
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, Post, PostImage, ServeOptions, Task, serve};
@@ -20,11 +20,14 @@ use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::declared::Declared;
 use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
-use slip_model::{Digest, Observer, Phase, Shard, Status};
+use slip_model::{Digest, Observer, Phase, Shard, Status, Transform};
 
 use crate::args::WorkerArgs;
 use crate::image::Image;
 use crate::verify_job::{Params, verify};
+
+pub mod post;
+pub mod transform;
 
 /// Opens the job's store shared into `slot`, unless `slot` holds that
 /// store already (`spec/exec.md` §8.4: kept for the task's lifetime; a
@@ -74,13 +77,21 @@ impl Task for MapTask {
         if job.post.is_some() {
             return Err("a map job with a post".to_owned());
         }
-        if job.transform.is_some() {
-            return Err("a map job with a transform: the map task does not run transforms yet \
-                        (spec/edits.md §8.1, M2)"
-                .to_owned());
-        }
-        open_store(&mut self.store, job)?;
-        map_observer(&job.observer, job.round, true)
+        let store = open_store(&mut self.store, job)?;
+        // spec/edits.md §8.1 (WP-074): with a transform, the request is
+        // read and checked, and a kind this worker does not run refused,
+        // before anything is parsed.
+        let transform = match &job.transform {
+            None => None,
+            Some(id) => {
+                let t = transform::read_transform(store, id)?;
+                if t.kind == slip_model::transform::TransformKind::Script {
+                    return Err(transform::NO_SCRIPT.to_owned());
+                }
+                Some((t, *id))
+            }
+        };
+        map_shard(&job.observer, job.round, true, transform.as_ref().map(|(t, id)| (t, *id)))
     }
 }
 
@@ -111,6 +122,30 @@ fn phase_name(phase: Phase) -> &'static str {
 /// The parse task's, the walk's (above), and `negatives::record`'s (the
 /// tree changed during the parse).
 pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<Shard, String> {
+    map_shard(observer, round, negatives, None)
+}
+
+/// [`map_observer`], and with `transform` (the request and its id) the map
+/// job of a transform (`spec/edits.md` §8.1; work package WP-074): the
+/// parse records Kiln's written-reference tables and preprocessing record
+/// (`ParseOptions::written`, `pp_record`), the walk runs as without, and
+/// then, in the same closure and on a walk that succeeded,
+/// [`transform::run_transform`] over the same input. An `ok` shard gets
+/// `edits` and the `edits.*` counters beside the walk's; a shard that is
+/// not `ok` has no `edits`. Without `transform` this is M1's map task,
+/// byte for byte (the options and the closure's work are those of before).
+///
+/// # Errors
+///
+/// [`map_observer`]'s; the transform's (an `Err` of the native rename fails
+/// the job, §4.6); an `edits` section whose `transform` is not the job's
+/// request id.
+fn map_shard(
+    observer: &Observer,
+    round: u64,
+    negatives: bool,
+    transform: Option<(&Transform, Digest)>,
+) -> Result<Shard, String> {
     let rules = RuleTable::empty();
     let options = Options {
         rules: &rules,
@@ -122,14 +157,29 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
     let identity = |path: &[u8]| path.to_vec();
     let mut parse = ParseOptions::default();
     parse.lookups = negatives;
+    if transform.is_some() {
+        parse.written = true;
+        parse.pp_record = true;
+    }
     let directory = &observer.command.directory;
     let (mut shard, ran) = parse_observer_with(observer, Phase::Map, round, parse, |unit| {
         let places = unit.lookups().map(|l| {
             (crate::negatives::places(directory, l), crate::negatives::found_places(directory, l))
         });
-        (map_unit(unit, &options, &identity), places)
+        let walked = map_unit(unit, &options, &identity);
+        // §8.1: the transform is entered once the walk's output is
+        // complete, and only after a walk that succeeded.
+        let edits = match (transform, &walked) {
+            (Some((t, _)), Some(Ok(_))) => {
+                Some(with_input(unit, &identity, |input| transform::run_transform(t, unit, input)))
+            }
+            _ => None,
+        };
+        (walked, places, edits)
     })?;
-    let (walked, places) = ran.map_or((None, None), |(w, p)| (w, p));
+    let (walked, places, edits) = ran.map_or((None, None, None), |(w, p, e)| (w, p, e));
+    // An `Err` of the transform fails the job, whatever the outcome.
+    let edits = edits.map(|ran| ran.and_then(|e| e)).transpose()?;
     if negatives
         && let Some(inputs) = &shard.inputs
         && let Some((missed, found)) = places
@@ -144,6 +194,19 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
     };
     if shard.outcome.status == Status::Ok {
         shard.counters.extend(counters(&output));
+        if let Some((_, id)) = transform {
+            let Some((section, edit_counters)) = edits else {
+                return Err("the unit is ok and the transform did not run".to_owned());
+            };
+            if section.transform != id {
+                return Err(format!(
+                    "the edits name the request {}, not the job's {id}",
+                    section.transform
+                ));
+            }
+            shard.counters.extend(edit_counters);
+            shard.edits = Some(section);
+        }
         shard.counters.sort_by(|a, b| a.name.cmp(&b.name));
         shard.digests = Some(output.digests);
         shard.names = Some(slip_model::names::Names {
@@ -400,8 +463,8 @@ mod tests {
     }
 
     // The map task runs phase `map` only: a job of another phase, and a
-    // map job with a `post` or a `transform` (spec/exec.md §5.5, §8.4),
-    // are `Err` before anything is opened or parsed.
+    // map job with a `post` (spec/exec.md §5.5, §8.4), are `Err` before
+    // anything is opened or parsed.
     #[test]
     fn map_task_refuses_a_job_that_does_not_fit() {
         use slip_exec::worker::{Job, Post, PostImage, Task};
@@ -437,10 +500,12 @@ mod tests {
             ..job.clone()
         };
         assert_eq!(run(&post), "a map job with a post");
-        let transform = Job { transform: Some(Digest([4; 32])), ..job.clone() };
-        assert!(run(&transform).starts_with("a map job with a transform"));
         // The store is opened only after these checks: with neither field,
-        // the job gets as far as opening it, and fails there.
+        // the job gets as far as opening it, and fails there. A map job
+        // with a transform (WP-074) reads its request from the store, so it
+        // too gets as far.
         assert!(run(&job).starts_with("cannot open the store"), "{}", run(&job));
+        let transform = Job { transform: Some(Digest([4; 32])), ..job.clone() };
+        assert!(run(&transform).starts_with("cannot open the store"), "{}", run(&transform));
     }
 }

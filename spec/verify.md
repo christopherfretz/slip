@@ -1284,8 +1284,9 @@ checked elsewhere:
 - by `slip apply --write`, for the files it replaces, before it writes
   (`spec/edits.md` §7.3 step 1, `stale_file`);
 - by the overlay form, which reads the subject on disk as its pre-image
-  and so must check the sums of the subject's inputs and the subject's
-  negatives on every run (`docs/wp/WP-074.md` decides it).
+  and so checks the sums of the subject's inputs and the subject's
+  negatives on every run: O1, O2, the subject's sums, N1 and N2 of §5.2
+  step 2 (`spec/landed/exec/WP-074.md` §5).
 
 N2 (ii)'s comparison of identities at the recorded paths of subject
 inputs is stricter than the claim needs: a subject changed in content is
@@ -1476,7 +1477,9 @@ post-image's bytes being a blob in the store.
    §10.2 when the overlay has obligations.
 2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
    and, with an image other than the identity, O2, N1 then N2 (tree form), or
-   guards O1, O2 then N1 (overlay form); `comparable` (§3). The first that fails makes
+   guards G4, O1, O2, the subject's sums, N1 then N2 (overlay form,
+   `spec/landed/exec/WP-074.md` §5: G1, L1, G5 and G6 do not run);
+   `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
    L1 reads the lookups of the step 1 parse (Kiln's lookup log, asked for
    by `slip_kiln::ParseOptions::lookups`).
@@ -1622,11 +1625,11 @@ cut as §6 says.
 
   Two inputs that were one file at the map phase and still are
   (stores that deduplicate) pass. With the identity image it is not
-  checked, as O2; nor with the overlay form today, which is not
-  implemented: since the overlay form reads the subject on disk as
-  its pre-image, it must also check the sums of the subject's inputs and
-  the subject's negatives on every run (§5.1, "The claim";
-  `docs/wp/WP-074.md` decides it). A pre shard without the section (written before work
+  checked, as O2. With the overlay form it is checked over every place
+  (there is no subject root): the overlay form reads the subject on disk
+  as its pre-image, so it checks the sums of the subject's inputs and the
+  subject's negatives on every run (§5.1, "The claim";
+  `spec/landed/exec/WP-074.md` §5). A pre shard without the section (written before work
   package WP-135, or by another writer) is refused: `slip parse` writes
   it again.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map

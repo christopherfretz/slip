@@ -20,7 +20,8 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
-use slip_digest::map::counters as walk_counters;
+use slip_digest::map::{counters as walk_counters, with_input};
+use slip_digest::spelling::{Spelling, check_spellings};
 use slip_digest::{
     Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest, digest_kept,
 };
@@ -34,14 +35,18 @@ use slip_model::formats::content_id;
 use slip_model::hash::content_digest;
 use slip_model::keys::RuleTable;
 use slip_model::names::{NameNote, Names, NamesEntry};
+use slip_model::overlay::Overlay;
+use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::verdict::{FindingKind, Verdict, VerdictKind};
 use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
     names_changed, unverifiable, verdict, verified,
 };
+use slip_verify::guards::{OverlayGuard, overlay_inputs};
 
 use crate::image::{Image, Resolver, Side, show_path};
+use crate::worker::post::{Loaded, Read, reads};
 use crate::{locate, negatives};
 
 /// A verify job's parameters (`spec/verify.md` §5; `spec/exec.md` §8.6).
@@ -117,7 +122,11 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let sums: Vec<GroupSum> =
         pre_digests.map(|d| d.groups.iter().map(Group::sum).collect()).unwrap_or_default();
     let detail = if pre_digests.is_some() { Detail::Differing(&sums) } else { Detail::None };
-    let (mut shard, output) = post_walk(params, observer, job.round, detail)?;
+    // The overlay form (§5.1, WP-074) loads "the pre shard's inputs (every
+    // file of the overlay if the pre shard is not usable)" first.
+    let first = pre_digests.and(pre.as_ref()).and_then(|p| p.shard.inputs.as_deref());
+    let (mut shard, output, mut through) =
+        step_1(store, params, observer, job.round, detail, first)?;
     if shard.outcome.status != Status::Ok {
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
@@ -126,6 +135,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         return Err("the post-image parsed without error and the walk did not run".to_owned());
     };
     let mut post = Post::new(&mut shard, output, rules_id, !rules.is_empty());
+    post.spellings = through.as_mut().and_then(|t| t.spellings.take());
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -144,7 +154,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let Some(post_inputs) = shard.inputs.as_ref() else {
         return Err("the post-image parsed without error and has no inputs".to_owned());
     };
-    if let Some(reason) = image_guards(params, observer, &pre, post_inputs, &lookups) {
+    let guards = step_2_guards(params, observer, &pre, post_inputs, &lookups, through.as_ref());
+    if let Some(reason) = guards {
         return unverifiable_now(post, shard, &reason);
     }
     if let Some(reason) = not_comparable(pre_digests, &post.digests) {
@@ -193,9 +204,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let locate_n = params.locate;
     if v.total > 0 && locate_n > 0 {
         let keys = locate::wanted(&v.findings, locate_n);
-        let again = params.image.parse(observer, Side::Post, Phase::Verify, job.round, |input| {
-            locate::take(input, rules, files, &keys)
-        });
+        let take = |input: &slip_digest::Input<'_>| locate::take(input, rules, files, &keys);
+        let again = post_again(params, through.as_ref(), observer, job.round, take);
         post.reparsed += 1;
         let (again_shard, post_side) = again?;
         let same = again_shard.outcome.status == Status::Ok
@@ -249,7 +259,11 @@ fn post_walk(
             digest_kept(input, &options, kept)
         })
         .map(|(mut shard, output)| {
-            if !rules.is_empty() && shard.outcome.status != Status::Failed {
+            // An overlay image is not parsed here (`overlay_walk`); the
+            // condition keeps WP-121's tree form, which WP-114 widens.
+            if (!rules.is_empty() || params.image.overlay_id().is_some())
+                && shard.outcome.status != Status::Failed
+            {
                 shard.binding = Some(binding(params));
             }
             (shard, output)
@@ -257,10 +271,274 @@ fn post_walk(
 }
 
 /// The `binding` of the job's shards (`spec/verify.md` §9.1), from its
-/// parameters, which are `Job.post`'s: no overlay (the image is a tree),
-/// the declared changes' content id, the round of the pre shard.
+/// parameters, which are `Job.post`'s: the content id of the image's
+/// `OVLY` (absent for a tree), the declared changes' content id, the round
+/// of the pre shard.
 fn binding(params: &Params) -> Binding {
-    Binding { overlay: None, declared: params.declared_id, pre: params.pre }
+    Binding { overlay: params.image.overlay_id(), declared: params.declared_id, pre: params.pre }
+}
+
+/// Step 1's shard, the walk's output with the lookups when it ran, and
+/// with an overlay image what [`Through`] adds.
+type Step1<'o> = (Shard, Option<(Output, Lookups)>, Option<Through<'o>>);
+
+/// Step 1 (§5.2): [`post_walk`] for a tree; for an overlay image,
+/// [`overlay_walk`] with the blobs this observer reads ([`Loaded`], made
+/// here: one job's), which the shard's [`Through`] keeps for step 6.
+fn step_1<'o>(
+    store: &Store,
+    params: &'o Params,
+    observer: &Observer,
+    round: u64,
+    detail: Detail<'_>,
+    first: Option<&[FileRef]>,
+) -> Result<Step1<'o>, String> {
+    match params.image.overlay_of() {
+        None => {
+            let (shard, output) = post_walk(params, observer, round, detail)?;
+            Ok((shard, output, None))
+        }
+        Some((id, overlay)) => {
+            let loaded = Loaded::new(overlay, id);
+            overlay_walk(store, params, loaded, observer, round, detail, first)
+        }
+    }
+}
+
+/// What step 1's parse of an overlay image gives beside M1's: the blobs
+/// given, how the unit read each input (for guard O1) and section 26.
+struct Through<'o> {
+    loaded: Loaded<'o>,
+    read: Vec<Read>,
+    spellings: Option<(Spellings, Vec<Counter>)>,
+}
+
+/// The walk's result in the loading loop's last parse: the walk's output
+/// and, with obligations, the checks of §10.2 with each obligation's index.
+type Checked = (Output, Option<Result<(Vec<Spelling>, Vec<u64>), String>>);
+
+/// What the closure of one parse of the loading loop gives back: how each
+/// input was read, the overlay files to give next, and (in the last parse,
+/// when the unit has no error) the walk with the lookups.
+type LoopParse = (Vec<Read>, Vec<usize>, Option<(Result<Checked, String>, Option<Lookups>)>);
+
+/// Step 1 (§5.2) of an overlay image: the loading loop of §5.1 "Loading",
+/// whose last parse is step 1's. `first` is the pre shard's `inputs` when
+/// it is usable: the overlay files among them are given first; without, every
+/// file of the overlay is. Each parse that read, from the file system, an
+/// overlay file not given (by path or identity, `Loaded::missing`; the unit
+/// with errors or without) gives those and parses again. The walk runs only
+/// in the last parse: the one that read no such file, or the one the test
+/// hook (`Image::with_loading_limit`) stops at. In it, after the walk and on
+/// the same input, the checks of §10.2 over the obligations of the overlay
+/// files the unit read, with the declared rules and the walk's read-only
+/// files. The number of parses is in nothing returned.
+///
+/// The parse is the observer's own command with the overlay given, Kiln's
+/// written-reference tables when the overlay has obligations, and the
+/// lookup log (for G5's `#line` part). The shard has `binding` (its
+/// `overlay` the image's) unless the parse failed.
+///
+/// # Errors
+///
+/// [`Loaded::load`]'s (a blob absent or invalid: the job fails); the
+/// parse's; the walk's.
+fn overlay_walk<'o>(
+    store: &Store,
+    params: &Params,
+    mut loaded: Loaded<'o>,
+    observer: &Observer,
+    round: u64,
+    detail: Detail<'_>,
+    first: Option<&[FileRef]>,
+) -> Result<Step1<'o>, String> {
+    match first {
+        Some(inputs) => loaded.load(store, &mut inputs.iter().map(|f| f.path.as_slice()))?,
+        None => loaded.load_all(store)?,
+    };
+    let (rules, files, kept) =
+        (params.declared.rules(), params.declared.files(), params.declared.kept());
+    let limit = params.image.loading_limit();
+    let mut parses = 0usize;
+    loop {
+        parses += 1;
+        let stop = limit.is_some_and(|n| parses >= n);
+        let l = &loaded;
+        let mut options = l.parse_options();
+        options.lookups = true;
+        let (mut shard, ran): (Shard, Option<LoopParse>) = params.image.parse_unit(
+            observer,
+            Side::Post,
+            Phase::Verify,
+            round,
+            options,
+            |unit, subject| {
+                let read = reads(unit);
+                let missing = l.missing(unit.inputs(), &read);
+                if (!missing.is_empty() && !stop) || unit.errors() != 0 {
+                    return (read, missing, None);
+                }
+                let walked = with_input(unit, subject, |input| {
+                    let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
+                    let options = Options {
+                        rules,
+                        read_only: ReadOnly::files(&read_only),
+                        detail,
+                        names: false,
+                        rule_use: !rules.is_empty(),
+                    };
+                    let output = digest_kept(input, &options, kept);
+                    let checked = (!l.overlay().spellings.is_empty()).then(|| {
+                        let (obligations, indices) = l.obligations(unit.inputs())?;
+                        let ro = ReadOnly::files(&read_only);
+                        Ok((check_spellings(unit, input, rules, ro, &obligations), indices))
+                    });
+                    (output, checked)
+                });
+                (read, missing, Some((walked, unit.lookups().cloned())))
+            },
+        )?;
+        if shard.outcome.status != Status::Failed {
+            shard.binding = Some(binding(params));
+        }
+        let Some((read, missing, walked)) = ran else {
+            // No parse happened (a command the front end rejects).
+            return Ok((shard, None, None));
+        };
+        if !missing.is_empty() && !stop {
+            if loaded.load_indices(store, &mut missing.into_iter())? == 0 {
+                unreachable!("the files missing are files not given");
+            }
+            continue;
+        }
+        if shard.outcome.status != Status::Ok {
+            return Ok((shard, None, None));
+        }
+        let Some((walked, lookups)) = walked else {
+            return Err("the post-image parsed without error and the walk did not run".to_owned());
+        };
+        let (output, checked) = walked?;
+        let Some(lookups) = lookups else {
+            return Err("the front end recorded no lookup log".to_owned());
+        };
+        let spellings = match checked {
+            None => None,
+            Some(checked) => {
+                let (results, indices) = checked?;
+                Some(spellings_section(&results, &indices)?)
+            }
+        };
+        let through = Through { loaded, read, spellings };
+        return Ok((shard, Some((output, lookups)), Some(through)));
+    }
+}
+
+/// Step 2's guards on what the post-image parse read: [`image_guards`] for
+/// a tree, [`overlay_guards`] with the loaded blobs and how the unit read
+/// each input for an overlay image.
+fn step_2_guards(
+    params: &Params,
+    observer: &Observer,
+    pre: &Pre,
+    post_inputs: &[FileRef],
+    lookups: &Lookups,
+    through: Option<&Through<'_>>,
+) -> Option<String> {
+    match through {
+        Some(t) => overlay_guards(params, observer, pre, post_inputs, &t.loaded, &t.read),
+        None => image_guards(params, observer, pre, post_inputs, lookups),
+    }
+}
+
+/// Step 6's second parse (§5.2): [`Image::parse`] of the post-image for a
+/// tree, [`overlay_again`] for an overlay image (G3 through the overlay:
+/// the same entries as step 1's last parse).
+///
+/// # Errors
+///
+/// The parse's.
+fn post_again<R: Send>(
+    params: &Params,
+    through: Option<&Through<'_>>,
+    observer: &Observer,
+    round: u64,
+    f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send,
+) -> Result<(Shard, Option<R>), String> {
+    match through {
+        None => params.image.parse(observer, Side::Post, Phase::Verify, round, f),
+        Some(t) => overlay_again(params, &t.loaded, observer, round, f),
+    }
+}
+
+/// Step 6's second parse (§5.2) of an overlay image: the post-image through
+/// the same entries as step 1's last parse (guard G3 then compares the two),
+/// `f` on the input when the unit has no error and is `ok`.
+///
+/// # Errors
+///
+/// The parse's; `with_input`'s.
+fn overlay_again<R: Send>(
+    params: &Params,
+    loaded: &Loaded<'_>,
+    observer: &Observer,
+    round: u64,
+    f: impl FnOnce(&slip_digest::Input<'_>) -> R + Send,
+) -> Result<(Shard, Option<R>), String> {
+    let (shard, ran) = params.image.parse_unit(
+        observer,
+        Side::Post,
+        Phase::Verify,
+        round,
+        loaded.parse_options(),
+        |unit, subject| (unit.errors() == 0).then(|| with_input(unit, subject, f)),
+    )?;
+    let value = ran.flatten().transpose()?;
+    let ok = shard.outcome.status == Status::Ok;
+    Ok((shard, value.filter(|_| ok)))
+}
+
+/// Section 26 (§10.4) from `check_spellings`'s answers, parallel to
+/// `indices` (each obligation's index in the overlay's `spellings`,
+/// ascending), and its counters `verify.spelling.*`.
+///
+/// # Errors
+///
+/// The answers are not one per obligation, or the indices not ascending: a
+/// defect, never a section that says less.
+fn spellings_section(
+    results: &[Spelling],
+    indices: &[u64],
+) -> Result<(Spellings, Vec<Counter>), String> {
+    if results.len() != indices.len() || !indices.windows(2).all(|w| w[0] < w[1]) {
+        return Err("the spelling checks are not one per obligation, in order".to_owned());
+    }
+    let mut held: Vec<Span> = Vec::new();
+    let mut failed: Vec<Failed> = Vec::new();
+    for (result, &index) in results.iter().zip(indices) {
+        match result {
+            Spelling::Holds => match held.last_mut() {
+                Some(span) if span.first + span.count == index => span.count += 1,
+                _ => held.push(Span { first: index, count: 1 }),
+            },
+            Spelling::NotSeen => {}
+            Spelling::Fails { found, found_name } => {
+                failed.push(Failed { index, found: *found, name: found_name.clone() });
+            }
+        }
+    }
+    let seen = indices.len() as u64;
+    let holds: u64 = held.iter().map(|s| s.count).sum();
+    let fails = failed.len() as u64;
+    let counters = [
+        ("verify.spelling.fails", fails),
+        ("verify.spelling.holds", holds),
+        ("verify.spelling.not_seen", seen - holds - fails),
+        ("verify.spelling.obligations", seen),
+    ]
+    .iter()
+    .map(|&(name, value)| Counter { name: name.to_owned(), value })
+    .collect();
+    Ok((Spellings { seen, held, failed }, counters))
 }
 
 /// Step 4 (§5.2): the pre-image parsed with detail for the groups of `G`,
@@ -353,6 +631,9 @@ struct Post {
     /// `verify.traces.panicked` (§7.2): the images whose second writing
     /// panicked; present only when not 0.
     panicked: u64,
+    /// Step 1's checks of §10.2 (section 26) and their counters of §10.4,
+    /// with an overlay image that has obligations.
+    spellings: Option<(Spellings, Vec<Counter>)>,
 }
 
 impl Post {
@@ -386,6 +667,7 @@ impl Post {
             name_strings: output.name_strings,
             unstable: 0,
             panicked: 0,
+            spellings: None,
         }
     }
 
@@ -418,6 +700,7 @@ impl Post {
             name_strings: _,
             unstable,
             panicked,
+            spellings,
         } = self;
         let by_name = [
             ("verify.groups.differing", differing),
@@ -441,6 +724,10 @@ impl Post {
                 .zip(by_kind)
                 .map(|(&(_, n), value)| Counter { name: format!("verify.findings.{n}"), value }),
         );
+        let spellings = spellings.map(|(section, spelling_counters)| {
+            counters.extend(spelling_counters);
+            section
+        });
         counters.sort_by(|a, b| a.name.cmp(&b.name));
         for grp in &mut digests.groups {
             grp.units = None;
@@ -455,6 +742,7 @@ impl Post {
         out.names = Some(names);
         out.verdict = Some(v);
         out.rule_use = rule_use;
+        out.spellings = spellings;
         out
     }
 }
@@ -587,6 +875,17 @@ fn image_guards(
     if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
         return Some(how.reason(path));
     }
+    negatives_guards(&mut resolver, pre, pre_inputs)
+}
+
+/// Guards N1 then N2 (§5.3) of the pre shard; the reason of the first that
+/// fails. With a resolver of no root (the overlay form) every negative
+/// input and every place is checked.
+fn negatives_guards(
+    resolver: &mut Resolver<'_>,
+    pre: &Pre,
+    pre_inputs: &[FileRef],
+) -> Option<String> {
     // N1: no file has appeared, outside the subject roots, where the map
     // parse looked for one and found none. Without the record, fail closed.
     let Some(negatives) = pre.shard.negatives.as_deref() else {
@@ -594,7 +893,7 @@ fn image_guards(
             "pre-image: the map shard has no negative inputs (run `slip parse` again)".to_owned(),
         );
     };
-    if let Some(path) = negatives::appeared(&mut resolver, negatives) {
+    if let Some(path) = negatives::appeared(resolver, negatives) {
         return Some(format!("pre-image: {} appeared since the map phase", show_path(path)));
     }
     // N2: every found lookup of the map parse leads where it led, and the
@@ -606,7 +905,70 @@ fn image_guards(
                 .to_owned(),
         );
     };
-    negatives::found_moved(&mut resolver, found, pre_inputs)
+    negatives::found_moved(resolver, found, pre_inputs)
+}
+
+/// Step 2's guards of the overlay form (§5.1 "What guards it", §5.3), over
+/// step 1's last parse, in this order; the reason of the first that fails:
+///
+/// - G4, on the observer's command (the post command);
+/// - O1, the part only the unit answers ([`Loaded::not_overlaid`]): no
+///   input that is an overlay file, by path or identity, was read from the
+///   file system;
+/// - O1 then O2 by path (`slip_verify::guards::overlay_inputs`): an input
+///   the overlay names has the overlay's post content, one it does not and
+///   the pre shard lists has the content listed there;
+/// - the subject's sums (WP-074): each input of the pre shard that the
+///   overlay names was the overlay's `pre` (the overlay was made from the
+///   files the map phase read), and each that the post-image parse does not
+///   list is still on disk as listed ([`left_behind`], with no subject
+///   root: every such input is checked);
+/// - N1 over every negative input of the pre shard, then N2 (with no
+///   subject root, every place is checked).
+///
+/// G1, L1 and G6 guard the tree form's rewrite and do not run; G5 has
+/// nothing to check (no map pair).
+fn overlay_guards(
+    params: &Params,
+    observer: &Observer,
+    pre: &Pre,
+    post_inputs: &[FileRef],
+    loaded: &Loaded<'_>,
+    read: &[Read],
+) -> Option<String> {
+    if let Some(word) = response_file(&observer.command) {
+        return Some(format!(
+            "post-image: the command names the response file {}, whose words slip cannot examine",
+            show_path(word)
+        ));
+    }
+    if read.len() != post_inputs.len() {
+        return Some("post-image: the parse's inputs are not those read".to_owned());
+    }
+    if let Some(path) = loaded.not_overlaid(post_inputs, read) {
+        return Some(OverlayGuard::O1(path.to_vec()).reason());
+    }
+    let overlay: &Overlay = loaded.overlay();
+    let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
+    if let Err(guard) = overlay_inputs(pre_inputs, post_inputs, overlay) {
+        return Some(guard.reason());
+    }
+    if let Some(f) = pre_inputs.iter().find(|f| {
+        overlay.find(&f.path).is_some_and(|i| {
+            let o = &overlay.files[i].pre;
+            (o.size, o.content) != (f.size, f.content)
+        })
+    }) {
+        return Some(format!(
+            "pre-image: the overlay was made from another {} than the map phase read",
+            show_path(&f.path)
+        ));
+    }
+    let mut resolver = params.image.resolver();
+    if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
+        return Some(how.reason(path));
+    }
+    negatives_guards(&mut resolver, pre, pre_inputs)
 }
 
 /// The guards of §5.3 that need only the post-image parse, in this order:

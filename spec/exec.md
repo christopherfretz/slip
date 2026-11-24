@@ -1353,21 +1353,23 @@ M2 adds (§8.11 to §8.14):
 pub mod transform_cmd; pub mod stages;
 // args.rs — spec/edits.md §10
 pub enum Invocation { /* … */ Map(MapArgs), Rename(RenameArgs), Reduce(ReduceArgs), Check(CheckArgs), Apply(ApplyArgs) }
-// image.rs — spec/verify.md §5.1, the overlay form
-pub type Blobs = std::sync::Arc<dyn Fn(&Digest) -> std::io::Result<Vec<u8>> + Send + Sync>;
+// image.rs — spec/verify.md §5.1, the overlay form (WP-074)
 impl Image {
-    pub fn overlay(id: Digest, overlay: slip_model::Overlay, blobs: Blobs) -> Image;
-    pub fn overlay_id(&self) -> Option<&Digest>;
+    pub fn overlay(id: Digest, overlay: std::sync::Arc<slip_model::Overlay>) -> Image;
+    pub fn overlay_id(&self) -> Option<Digest>;
 }
-// worker.rs
-pub struct TransformTask;   impl Task for TransformTask;             // a map job with `transform`; PhaseTask dispatches to it
+// worker/post.rs — the blobs one verify job loads (spec/verify.md §5.1 "Loading")
+pub struct Loaded<'o>;
+// worker.rs: MapTask runs a map job with `transform` (worker/transform.rs)
 ```
 
 For an image of the overlay form `maps()` is empty, `is_identity()` is
 false, `command` returns the command as it is, `to_subject` is the
 identity and `under_subject` is false: no path is rewritten and guard G1
-has nothing to refuse. `Image::parse` with `Side::Post` gives the front
-end the overlay's bytes (`spec/verify.md` §5.1).
+has nothing to refuse. The image holds no blob: a verify job loads the
+blobs its observer reads (`Loaded`) and parses the post-image with them
+(`spec/verify.md` §5.1); `Image::parse` with `Side::Post` of an overlay
+image is `Err` (`spec/landed/exec/WP-074.md` §2).
 
 ### 8.7 `verify`
 
