@@ -485,6 +485,7 @@ fn ok_shard(job: &Job) -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 

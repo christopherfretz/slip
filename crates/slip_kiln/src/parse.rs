@@ -491,6 +491,7 @@ fn new_shard(
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 
