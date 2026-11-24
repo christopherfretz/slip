@@ -2144,8 +2144,11 @@ NameNote     := { "key": <id>, "name": <str>, "file": <path>, "observers": <n>,
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
   `failed`; empty if there is no shard; for a shard the report refuses
   as not this run's, §7 and §9.3, the reason it refuses it, never the
-  shard's own message: `spec/landed/verify/WP-121.md` §4) or the empty
-  string (`mismatch`);
+  shard's own message: `spec/landed/verify/WP-121.md` §4; for a shard the
+  state table refuses, §7, the reason it refuses it, such as an `ok` shard
+  without a verdict, counters that disagree with the verdict, a verdict
+  against another map shard: `spec/landed/verify/WP-114.md` §5) or the
+  empty string (`mismatch`);
   and for a `mismatch` the verdict's `total`, how many of them are
   `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
   and how many the verdict lists; three zeros otherwise. An observer is
@@ -2228,7 +2231,11 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
 | `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
-A shard without a verdict has none of them. The counters by kind are what
+A shard without a verdict has none of them; a shard with a verdict has
+`verify.findings` and the six by kind always (the job writes them with
+every verdict), and one without any of them is not believed: the
+observer is `failed`, "the shard has no counter <name>" (§7, WP-114).
+The counters by kind are what
 `indeterminate_only` (§7) is computed from: a verdict lists only its first
 `limit` findings.
 
@@ -2242,8 +2249,10 @@ pub enum State { Verified, Unchanged, Mismatch, NotParsed, Unverifiable, NeverPa
 impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
 
 /// §7: `verify` is this run's shard of the observer (None: there is none, or
-/// it is not this run's); `map` the status of its map shard (None: absent).
-pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
+/// it is not this run's); `map` its map shard as the run reads it, status and
+/// content id (None: absent; unusable: there and not a valid map shard of the
+/// observer; §9.3, §9.5 `MapShard`).
+pub fn state(verify: Option<&Shard>, map: Option<MapShard>) -> State;
 
 /// Re-exported: `slip_model::result::RunVerdict` (spec/edits.md §8.5), the
 /// one type, `Verified = 0, NotVerified = 1, Incomplete = 2`.
@@ -2259,13 +2268,13 @@ impl Report {
     pub fn new(header: Header, declared: &Declared) -> Report;
     /// `add_at` at the next position (the number of calls so far): for a caller
     /// that adds every selected observer in plan order (M1's `slip verify`).
-    pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<Status>);
+    pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<MapShard>);
     /// One call per selected observer, `position` its index in the plan, in any
     /// order: nothing the report holds depends on the order of the calls. Panics if
     /// `position` is not below `plan_observers`, or it or the observer was added
     /// before: a defect of the caller, which would let one observer stand for another.
     pub fn add_at(&mut self, position: u64, observer: &Digest, main: &[u8],
-                  verify: Option<&Shard>, map: Option<Status>);
+                  verify: Option<&Shard>, map: Option<MapShard>);
     pub fn verdict(&self) -> RunVerdict;
     pub fn states(&self) -> [u64; 7];
     pub fn to_json(&self) -> slip_model::json::Value;
@@ -2282,8 +2291,13 @@ impl Report {
 
 `add` refuses a shard that is not this observer's result in this run: a
 shard whose `observer` is not `observer`, whose `round` is not the
-header's, or whose verdict's `rules` is not the header's `rules` makes the
-observer `failed`, with an empty message.
+header's, or whose verdict's `rules` is not the header's `rules` (and
+what §9.3 adds) makes the observer `failed`. So does a shard the state
+table refuses (§7's `failed` row). Every refusal says why: the observer's
+message (§7.1 `not_verified`, and its line on standard error) is the
+reason, in the order checked (`spec/landed/verify/WP-121.md` §4,
+`spec/landed/verify/WP-114.md` §5). Only an observer with no shard has the
+empty message.
 
 `add` keeps the findings of a shard and drops the shard; a report over
 4000 observers of 64 findings each holds a quarter of a million findings.
@@ -2683,8 +2697,17 @@ not the one the store has now)" is checked by content id, not by status
 alone, so a map shard replaced within a round (`Store::publish` renames
 over an existing shard) makes such a verdict `failed`, with the reason.
 `Report::add` and `Report::add_at` take the map shard as `MapShard`
-(§9.5). An `unverifiable` verdict compared nothing and is not held to
-it.
+(§9.5). Bytes at the map shard's address that are not a valid map shard
+of the observer (they do not decode, or are of another observer, phase or
+round) are `MapShard::Unusable`: not `ok`, and the reason says that, not
+"no map shard". An `unverifiable` verdict is not held to it: it is not believed
+as a comparison (§7: the observer is `unverifiable` whatever its map
+shard is), so no result of a comparison is read from it. That is not
+because it compared nothing: one ended by a guard after the sums (R1, G2,
+R2, §5.3) or after the full comparison (G3) compared against the map
+shard the job read, and names it as `pre`; but its findings are not the
+run's. Nor is its `rule_use` folded: it is checked as any other and not
+folded ("Which `rule_use` is folded", below).
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -2788,9 +2811,12 @@ The run's half, in `slip_verify::run` (trusted base), added to §7.3:
 ```rust
 pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64, pub kept_via: u64 }
 
-/// §9.3 (WP-114): the observer's map shard as the run reads it. In place of
-/// §7.3's `map: Option<Status>` in `state`, `Report::add` and `Report::add_at`.
-pub struct MapShard { pub status: Status, pub id: Digest /* its content id */ }
+/// §9.3 (WP-114): the observer's map shard as the run reads it: the `map` of
+/// §7.3's `state`, `Report::add` and `Report::add_at` (before WP-114, its status alone).
+pub enum MapShard {
+    Read { status: Status, id: Digest /* its content id */ },  // a valid map shard of the observer, round 0
+    Unusable,   // bytes at its address that do not decode, or are of another observer, phase or round: not `ok`
+}
 
 /// §9.3: the verdict of the states, with the two conditions over all observers.
 pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;

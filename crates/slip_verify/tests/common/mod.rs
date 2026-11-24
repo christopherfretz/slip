@@ -44,7 +44,7 @@ pub const OVERLAY: u8 = 0x07;
 /// The map shard every verdict of [`Run::verdict`] names as its `pre`,
 /// with `status` (`spec/verify.md` §9.3, WP-114).
 pub const fn map_of(status: Status) -> MapShard {
-    MapShard { status, id: Digest([0x70; 32]) }
+    MapShard::Read { status, id: Digest([0x70; 32]) }
 }
 
 /// An `ok` map shard, the one the verdicts name.

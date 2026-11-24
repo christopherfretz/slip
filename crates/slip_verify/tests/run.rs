@@ -204,14 +204,16 @@ fn declared(changed: &[u8], created: &[u8], removed: &[u8]) -> Declared {
 /// The map shard every verdict of these tests names (`verified_verdict`'s
 /// `pre`), with `status`.
 const fn map_of(status: Status) -> MapShard {
-    MapShard { status, id: Digest([0x70; 32]) }
+    MapShard::Read { status, id: Digest([0x70; 32]) }
 }
 
 /// An `ok` map shard, the one the verdicts name.
 const MAP_OK: Option<MapShard> = Some(map_of(Status::Ok));
 
-const MAP_STATUSES: [Option<MapShard>; 5] = [
+/// Every map shard the run can read, an unusable one too (WP-114 review F3).
+const MAP_STATUSES: [Option<MapShard>; 6] = [
     None,
+    Some(MapShard::Unusable),
     MAP_OK,
     Some(map_of(Status::Diagnosed)),
     Some(map_of(Status::Rejected)),
@@ -314,12 +316,9 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
         for i in 0..base.counters.len() {
             let mut s = base.clone();
             let removed = s.counters.remove(i);
-            let want = if removed.name == "verify.findings" {
-                state(Some(&base), MAP_OK)
-            } else {
-                State::Failed
-            };
-            assert_eq!(ok(&s), want, "without {}", removed.name);
+            // Each of the seven, `verify.findings` too (WP-114 review F8:
+            // the job writes it with every verdict).
+            assert_eq!(ok(&s), State::Failed, "without {}", removed.name);
         }
         let mut s = base.clone();
         s.counters.clear();
@@ -427,7 +426,7 @@ fn s7_1_a_foreign_shard_says_why() {
 // compared nothing and is not held to it.
 #[test]
 fn s9_3_verdict_of_another_map_shard_is_failed() {
-    let replaced = Some(MapShard { status: Status::Ok, id: d(0x71) });
+    let replaced = Some(MapShard::Read { status: Status::Ok, id: d(0x71) });
     let mismatch = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
     assert_eq!(state(Some(&verified(1)), replaced), State::Failed);
     assert_eq!(state(Some(&mismatch), replaced), State::Failed);
@@ -454,14 +453,18 @@ fn s9_3_verdict_of_another_map_shard_is_failed() {
 // §7.1 (WP-114, from WP-121's follow-up): a shard the state table refuses
 // says why, as one that is not this run's does: not of phase `verify`,
 // invalid, `ok` without a verdict, a counter missing, counters that
-// disagree with the verdict, a `verified` or `mismatch` verdict whose map
-// shard is absent or not `ok`. A shard of status `failed` keeps its own
-// message, and an observer without a shard has none.
+// disagree with the verdict (their sum past 2^64 too), `verify.findings`
+// missing (the job writes it with every verdict, §7.2), a `verified` or
+// `mismatch` verdict whose map shard is absent, there and unusable, or not
+// `ok`. A map shard in the verify slot (no binding, as map shards have
+// none) is refused for its phase, not for the binding. A shard of status
+// `failed` keeps its own message, and an observer without a shard has none.
 #[test]
 fn s7_1_refused_by_the_state_table_says_why() {
     let mut map_phase = verified(1);
     map_phase.phase = Phase::Map;
     map_phase.verdict = None;
+    map_phase.binding = None;
     let mut invalid = verified(2);
     invalid.verdict.as_mut().unwrap().total = 1;
     let invalid_why = invalid.validate().unwrap_err();
@@ -478,6 +481,15 @@ fn s7_1_refused_by_the_state_table_says_why() {
         mismatch_verdict(1, vec![finding(FindingKind::Changed, 1, "/a.h", "")], &[]),
         Some([0, 0, 0, 0, 1, 0]),
     );
+    let mut overflow = ok_shard(
+        11,
+        mismatch_verdict(1, vec![finding(FindingKind::Changed, 1, "/a.h", "")], &[]),
+        Some([1, 0, 0, 0, 0, 0]),
+    );
+    overflow.counters.iter_mut().find(|c| c.name == "verify.findings.removed").unwrap().value =
+        u64::MAX;
+    let mut no_findings = verified(12);
+    no_findings.counters.retain(|c| c.name != "verify.findings");
     let cases: Vec<(Shard, Option<MapShard>, String)> = vec![
         (map_phase, MAP_OK, "the shard is of phase map, not verify".to_owned()),
         (invalid, MAP_OK, format!("the shard is not valid: {invalid_why}")),
@@ -499,9 +511,23 @@ fn s7_1_refused_by_the_state_table_says_why() {
             "the shard's verdict lists 1 findings of kind changed, its counter 0".to_owned(),
         ),
         (
+            overflow,
+            MAP_OK,
+            "the shard's counters by kind add up to at least 2^64, not its verdict's total 1"
+                .to_owned(),
+        ),
+        (no_findings, MAP_OK, "the shard has no counter verify.findings".to_owned()),
+        (
             verified(8),
             None,
             "the shard's verdict is verified: the observer has no map shard".to_owned(),
+        ),
+        (
+            verified(13),
+            Some(MapShard::Unusable),
+            "the shard's verdict is verified: its map shard is there and is not a valid map \
+             shard of the observer"
+                .to_owned(),
         ),
         (
             verified(9),
@@ -523,8 +549,8 @@ fn s7_1_refused_by_the_state_table_says_why() {
         r.add(&s.observer, main.as_bytes(), Some(s), *map);
         writeln!(want, "slip: failed: {main}: {why}").unwrap();
     }
-    r.add(&d(11), b"/f.cpp", Some(&unparsed_shard(11, Status::Failed, "killed")), MAP_OK);
-    r.add(&d(12), b"/n.cpp", None, MAP_OK);
+    r.add(&d(0x31), b"/f.cpp", Some(&unparsed_shard(0x31, Status::Failed, "killed")), MAP_OK);
+    r.add(&d(0x32), b"/n.cpp", None, MAP_OK);
     want.push_str("slip: failed: /f.cpp: killed\nslip: failed: /n.cpp: \n");
     assert_eq!(r.error_lines(), want);
 }
@@ -637,7 +663,7 @@ fn s7_report_properties() {
         let mut states = Vec::new();
         let mut truly_verified = true;
         for obs in 0..n {
-            let map = MAP_STATUSES[rng.below(5) as usize];
+            let map = MAP_STATUSES[rng.below(MAP_STATUSES.len() as u64) as usize];
             let (shard, good) = match rng.below(13) {
                 0..=2 => (Some(verified(obs)), map == MAP_OK),
                 3 => (

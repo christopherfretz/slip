@@ -3083,7 +3083,7 @@ fn run_report(
     let mut r = Report::new(header, &params.declared);
     for (o, v) in shards {
         let (map, id) = tree.stored_map(o);
-        let map = slip_verify::run::MapShard { status: map.outcome.status, id };
+        let map = slip_verify::run::MapShard::Read { status: map.outcome.status, id };
         r.add(&o.id, &o.main.path, Some(v), Some(map));
     }
     r

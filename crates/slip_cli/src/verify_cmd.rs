@@ -19,7 +19,6 @@ use slip_exec::signals;
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::Post;
 use slip_model::declared::Declared;
-use slip_model::formats::content_id;
 use slip_model::result::RunVerdict;
 use slip_model::{Digest, Observer, Phase, RunRecord, Shard, Status, json};
 use slip_verify::run::{Header, MapShard, Report};
@@ -240,26 +239,26 @@ fn this_runs_shard(
 /// The shard in `bytes`, if they decode and their content id is
 /// `expected`.
 fn ours(bytes: &[u8], expected: &Digest) -> Option<Shard> {
-    match content_id(bytes) {
-        Ok(id) if id == *expected => Shard::from_bytes(bytes).ok(),
+    match Shard::from_bytes_with_id(bytes) {
+        Ok((s, id)) if id == *expected => Some(s),
         _ => None,
     }
 }
 
-/// The status and content id of the observer's map shard of round 0
-/// (`None`: absent, or not a valid shard of phase `map`, round 0 and this
-/// observer). The id is what a `verified` or `mismatch` verdict must name
-/// as its `pre` (`spec/verify.md` §9.3, WP-114).
+/// The observer's map shard of round 0 as the run reads it: its status and
+/// content id, from one decode (`None`: absent; `MapShard::Unusable`: bytes
+/// that are not a valid shard of phase `map`, round 0 and this observer).
+/// The id is what a `verified` or `mismatch` verdict must name as its `pre`
+/// (`spec/verify.md` §9.3, WP-114).
 fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<MapShard>> {
     let bytes = store
         .read_shard(plan, Phase::Map, 0, observer)
         .map_err(|e| commands::store_failure(store.root(), &e))?;
-    Ok(bytes.and_then(|b| {
-        let id = content_id(&b).ok()?;
-        Shard::from_bytes(&b)
-            .ok()
-            .filter(|s| s.observer == *observer && s.phase == Phase::Map && s.round == 0)
-            .map(|s| MapShard { status: s.outcome.status, id })
+    Ok(bytes.map(|b| match Shard::from_bytes_with_id(&b) {
+        Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == 0 => {
+            MapShard::Read { status: s.outcome.status, id }
+        }
+        _ => MapShard::Unusable,
     }))
 }
 
@@ -327,6 +326,7 @@ mod tests {
     //! lines this command adds to the text (§7.1).
 
     use super::*;
+    use slip_model::formats::content_id;
     use slip_model::{End, Outcome, Run};
 
     fn shard(observer: Digest, message: &str) -> Vec<u8> {
@@ -408,7 +408,7 @@ mod tests {
     }
 
     // §7's map shard: one of the observer, phase `map` and round 0, else
-    // none. Through the executable the task refuses such a pre shard first
+    // unusable (WP-114 review F3: not "absent"). Through the executable the task refuses such a pre shard first
     // (the verify shard is then `failed` and no map shard is read), so the
     // filter is tested here, over a store whose files are put in place.
     #[test]
@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "absent");
         let ok = map(a, Phase::Map, 0);
         at(&a, &ok);
-        let want = MapShard { status: Status::Ok, id: content_id(&ok).unwrap() };
+        let want = MapShard::Read { status: Status::Ok, id: content_id(&ok).unwrap() };
         assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(want));
         for (wrong, why) in [
             (map(b, Phase::Map, 0), "another observer's"),
@@ -442,7 +442,7 @@ mod tests {
             (b"not a shard".to_vec(), "not a shard"),
         ] {
             at(&a, &wrong);
-            assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "{why}");
+            assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(MapShard::Unusable), "{why}");
         }
         drop(store);
         std::fs::remove_dir_all(&dir).unwrap();

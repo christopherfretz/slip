@@ -391,13 +391,17 @@ fn state_of(run: &Run, s: &slip_model::Shard) -> State {
 
 // §9.3: a shard a worker wrote must carry the run's binding: without
 // one, or bound to another overlay, another pre round or other declared
-// changes, it is not this run's and the observer is `failed`. For `ok`
-// and for `not_parsed` shards alike.
+// changes, it is not this run's and the observer is `failed`. For `ok`,
+// `diagnosed` and `rejected` shards alike.
 #[test]
 fn s9_3_binding_must_be_the_runs() {
     let runs = [two_rules(), Run::new(vec![], Some(overlay()))];
     for run in &runs {
-        let shards = [run.verified(0xa0), run.unparsed(0xa0, Status::Diagnosed, "e")];
+        let shards = [
+            run.verified(0xa0),
+            run.unparsed(0xa0, Status::Diagnosed, "e"),
+            run.unparsed(0xa0, Status::Rejected, "e"),
+        ];
         for good in &shards {
             let want = state_of(run, good);
             assert_ne!(want, State::Failed);
@@ -422,12 +426,17 @@ fn s9_3_binding_must_be_the_runs() {
 
 // §9.3 (WP-114): the exception of a run with a tree image and no rule is
 // gone. A shard a worker wrote without a binding is not this run's there
-// either: `failed`, with the reason, for an `ok` and a `not_parsed` shard;
+// either: `failed`, with the reason, for an `ok`, a `diagnosed` and a
+// `rejected` shard;
 // one with a binding must have the run's.
 #[test]
 fn s9_3_tree_run_without_rules_needs_the_binding() {
     let run = Run::new(vec![], None);
-    for good in [run.verified(0xa0), run.unparsed(0xa0, Status::Diagnosed, "e")] {
+    for good in [
+        run.verified(0xa0),
+        run.unparsed(0xa0, Status::Diagnosed, "e"),
+        run.unparsed(0xa0, Status::Rejected, "e"),
+    ] {
         assert_ne!(state_of(&run, &good), State::Failed);
         let mut s = good.clone();
         s.binding = None;
