@@ -132,12 +132,14 @@ pub fn differ(dir: &Path) -> Result<Vec<String>, String> {
 
 /// [`differ`] over two digested sides.
 pub fn judge_differ(
-    expect: &BTreeSet<Expect>,
+    all: &BTreeSet<Expect>,
     exact: bool,
     a: &Digested,
     b: &Digested,
 ) -> Result<Vec<String>, String> {
+    let expect = &without_names(all);
     let (mut problems, held) = held_indeterminate(expect, a, b);
+    problems.extend(judge_names(all, a, b, false));
     let keys: BTreeSet<_> = a.units.keys().chain(b.units.keys()).copied().collect();
     let mut got = BTreeSet::new();
     for k in keys.iter().filter(|k| !held.contains(*k)) {
@@ -318,10 +320,62 @@ pub fn lines_read(
 /// derived, that only one side has makes them differ. `expect.txt` has
 /// no line (comments and `# pending` only).
 pub fn equal(dir: &Path) -> Result<(), String> {
-    lines_read(dir, "an equal test", |_| false)?;
+    let lines = lines_read(dir, "an equal test", Expect::is_names)?;
     let a = digest_side(dir, Side::A)?;
     let b = digest_side(dir, Side::B)?;
-    judge_equal(&a, &b)
+    let mut problems: Vec<String> = judge_equal(&a, &b).err().into_iter().collect();
+    problems.extend(judge_names(&lines, &a, &b, true));
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// The lines of `all` but the `names-changed` lines.
+pub fn without_names(all: &BTreeSet<Expect>) -> BTreeSet<Expect> {
+    all.iter().filter(|e| !e.is_names()).cloned().collect()
+}
+
+/// The names digests of `d` by key (`Output::name_strings`).
+fn names_of(d: &Digested) -> BTreeMap<Digest, Digest> {
+    d.output.name_strings.iter().map(|n| (n.key, n.names)).collect()
+}
+
+/// The names judgment of every pair runner (`spec/digest.md` §14.1,
+/// WP-112): the keys both sides give a names digest and whose names
+/// digests differ are exactly the `names-changed` lines of `expect`. In
+/// an equal judgment (`equal`), a key with a names digest on one side only
+/// is a failure too: the units are equal, so the strings they hold are
+/// the same strings. Returns the problems.
+pub fn judge_names(
+    expect: &BTreeSet<Expect>,
+    a: &Digested,
+    b: &Digested,
+    equal: bool,
+) -> Vec<String> {
+    let (na, nb) = (names_of(a), names_of(b));
+    let mut got = BTreeSet::new();
+    let mut problems = Vec::new();
+    for (k, x) in &na {
+        match nb.get(k) {
+            Some(y) if x != y => {
+                got.insert(Expect::NamesChanged(a.name(k)));
+            }
+            None if equal => problems.push(format!("names digest only in A: {}", a.name(k))),
+            Some(_) | None => {}
+        }
+    }
+    if equal {
+        for k in nb.keys().filter(|k| !na.contains_key(*k)) {
+            problems.push(format!("names digest only in B: {}", b.name(k)));
+        }
+    }
+    let want: BTreeSet<Expect> = expect.iter().filter(|e| e.is_names()).cloned().collect();
+    if got != want {
+        let missing: Vec<String> = want.difference(&got).map(Expect::line).collect();
+        let extra: Vec<String> = got.difference(&want).map(Expect::line).collect();
+        problems.push(format!(
+            "names: expected but not seen: {missing:?}\nnames: seen but not expected: {extra:?}"
+        ));
+    }
+    problems
 }
 
 /// An indeterminate test (`tests/indeterminate.rs`, `spec/digest.md` §10,

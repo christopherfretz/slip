@@ -302,7 +302,7 @@ fn raw_edits(x: &Edits) -> Raw {
 fn raw(s: &Shard) -> Vec<u8> {
     assert!(s.digests.is_none() && s.verdict.is_none() && s.binding.is_none());
     assert!(s.rule_use.is_none() && s.spellings.is_none());
-    let mut w = Writer::new(*b"SHRD", 1);
+    let mut w = Writer::new(*b"SHRD", Shard::VERSION);
     let mut e = Encoder::new();
     e.digest(&s.observer).uv(s.phase as u64).uv(s.round);
     w.section(1, e.as_bytes());
@@ -539,6 +539,7 @@ fn map_shard(edits: Edits) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
     }
 }
@@ -597,6 +598,7 @@ fn small() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
     }
 }
@@ -605,7 +607,7 @@ const SMALL_TRAILER: &str = "000000000000000000000000000000000000000000000000000
 
 fn small_bytes() -> Vec<u8> {
     reseal(hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",
         &rep("33", 32),
         "01 00",              // header: observer, map, round 0
@@ -979,7 +981,7 @@ fn edits_unlisted_values() {
     let s = small();
     let mut payload = raw_edits(s.edits.as_ref().unwrap()).e.into_bytes();
     let with = |p: &[u8]| {
-        let mut w = Writer::new(*b"SHRD", 1);
+        let mut w = Writer::new(*b"SHRD", Shard::VERSION);
         let full = raw(&s);
         for id in [1u64, 2, 4] {
             let at = payload_at(&full, id);

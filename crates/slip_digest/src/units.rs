@@ -507,9 +507,13 @@ pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
         #[cfg(test)]
         tests::count_candidate(true);
         let saved = w.take_unit();
+        // A candidate's strings are not the unit's (digest §9 "The names
+        // digest"): the chosen one is written again by the unit.
+        let names = w.names_off();
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
         w.decl_stream(&mut s, d, e);
+        w.names_end(names);
         w.unit = saved;
         let h = s.finish(UNIT_TAG);
         if least.is_none_or(|(l, _)| h.digest < l) {

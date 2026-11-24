@@ -20,6 +20,7 @@ pub mod formats;
 pub mod hash;
 pub mod json;
 pub mod keys;
+pub mod names;
 pub mod overlay;
 mod plan;
 pub mod result;
