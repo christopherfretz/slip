@@ -212,7 +212,11 @@ pub(crate) fn read<'a>(ctx: &Ctx<'a>, index: usize) -> Result<Read<'a>, String> 
             ));
         }
     }
-    Ok(Read { entry: BasisEntry { observer, shard: Some(id) }, shard: Some(shard), _held: Some(held) })
+    Ok(Read {
+        entry: BasisEntry { observer, shard: Some(id) },
+        shard: Some(shard),
+        _held: Some(held),
+    })
 }
 
 fn put(records: &mut BTreeMap<Key, Val>, key: Key, val: Val) -> Result<(), String> {

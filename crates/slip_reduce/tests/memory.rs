@@ -111,7 +111,11 @@ impl Shards for Lazy {
 
 /// Every shard replaces one byte the same way.
 fn one_site(i: usize) -> Option<Shard> {
-    Some(ShardB::new(i).claim(replace("/s/a.cc", 10, 11, vec![lit("g")]).notes(&["the rename"])).build())
+    Some(
+        ShardB::new(i)
+            .claim(replace("/s/a.cc", 10, 11, vec![lit("g")]).notes(&["the rename"]))
+            .build(),
+    )
 }
 
 /// One call over `n` shards of `make`, `fan_in` 2, one thread; the edit

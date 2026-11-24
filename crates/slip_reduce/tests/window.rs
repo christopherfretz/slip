@@ -173,8 +173,8 @@ fn a_slow_first_run_holds_at_most_a_window() {
     let r = returned(within(&store, THREADS)).unwrap();
     let seen = store.seen_at_release.lock().unwrap().expect("the slow run was opened");
     eprintln!("slow first run: run {seen} opened at its release, {:?}", r.peak);
-    assert!(seen < WINDOW, "run {seen} was opened while run 0 was not folded");
     assert!(r.peak.waiting_runs <= WINDOW as u64, "{:?}", r.peak);
+    assert!(seen < WINDOW, "run {seen} was opened while run 0 was not folded");
     assert!(r.peak.sections <= THREADS as u64, "{:?}", r.peak);
     let one = one_thread((usize::MAX, Act::Give)).unwrap();
     same(&r, &one);
