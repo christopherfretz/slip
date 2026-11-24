@@ -3,6 +3,7 @@
 //! `negatives` (work package WP-117) and `found` (work package WP-135).
 
 use crate::json::Value;
+use crate::verdict::VerdictKind;
 use crate::wire::Encoder;
 use crate::{Counter, Digest, Outcome, Shard, Status};
 
@@ -12,7 +13,7 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
     negatives, open, read_container, render_container, seal, spellings, verdict,
 };
 
@@ -26,6 +27,7 @@ const VERDICT: u64 = verdict::ID;
 const BINDING: u64 = agreement::BINDING;
 const RULE_USE: u64 = agreement::RULE_USE;
 const SPELLINGS: u64 = spellings::ID;
+const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
 const FOUND: u64 = found::ID;
 
@@ -46,6 +48,9 @@ enum Loc {
     Edits(edits::Loc),
     Agreement(agreement::Loc),
     Spellings(spellings::Loc),
+    Names(names::Loc),
+    /// A shard with `digests` and no `names`: at the `digests` payload.
+    NoNames,
     Negatives(negatives::Loc),
     Found(found::Loc),
 }
@@ -63,6 +68,8 @@ impl Loc {
             Loc::Edits(l) => l.path(),
             Loc::Agreement(l) => l.path(),
             Loc::Spellings(l) => l.path(),
+            Loc::Names(l) => l.path(),
+            Loc::NoNames => "sections.names".to_owned(),
             Loc::Negatives(l) => l.path(),
             Loc::Found(l) => l.path(),
         }
@@ -136,6 +143,23 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
         && let Some((l, what)) = spellings::violation(x, phase, status)
     {
         return Some((Loc::Spellings(l), what));
+    }
+    // spec/model.md §8.7: `names` with `digests`, and only with it.
+    match &s.names {
+        None if s.digests.is_some() => {
+            return Some((Loc::NoNames, "a shard with a digests section has no names section"));
+        }
+        None => {}
+        Some(n) => {
+            let compared = s
+                .verdict
+                .as_ref()
+                .is_some_and(|v| matches!(v.kind, VerdictKind::Verified | VerdictKind::Mismatch));
+            let cx = names::Context { phase, status, digests: s.digests.is_some(), compared };
+            if let Some((l, what)) = names::violation(n, cx) {
+                return Some((Loc::Names(l), what));
+            }
+        }
     }
     if let Some(r) = &s.rule_use
         && let Some((l, what)) = agreement::rule_use_violation(r, phase, status)
@@ -228,6 +252,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(spellings) = &spellings {
         sections.push((SPELLINGS, spellings));
     }
+    let names = s.names.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        names::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(names) = &names {
+        sections.push((NAMES, names));
+    }
     let negatives = s.negatives.as_ref().map(|x| {
         let mut e = Encoder::new();
         negatives::encode(&mut e, x);
@@ -255,6 +287,15 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
+/// The first version this reader reads (`model.md` §8): a version-1
+/// shard predates the `names` section (WP-112), and one without it is
+/// not "a shard without notes"; a store written before is parsed again.
+const FIRST_READ: u32 = 2;
+
+/// Why a shard older than [`FIRST_READ`] is refused.
+const OLDER: &str = "shard version older than this reader reads (it predates the names \
+                     section; parse again)";
+
 /// The shard, its unknown ignorable sections and its content id.
 #[allow(clippy::too_many_lines, reason = "one block per section of spec/model.md §8")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
@@ -263,10 +304,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS,
+            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
             NEGATIVES, RULE_USE, FOUND,
         ],
     )?;
+    if opened.version < FIRST_READ {
+        return Err(crate::wire::Error::new(crate::wire::ErrorKind::UnsupportedVersion, 12, OLDER));
+    }
     let end = opened.end;
     let [
         header,
@@ -278,6 +322,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         verdict,
         binding,
         spellings,
+        names,
         negatives,
         rule_use,
         found,
@@ -356,6 +401,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (names, names_at) = match names {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = names::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
     let (negatives, negatives_at) = match negatives {
         None => (None, None),
         Some(mut d) => {
@@ -394,6 +447,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         binding,
         rule_use,
         spellings,
+        names,
         negatives,
         found,
     };
@@ -420,6 +474,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("a spellings violation without spellings"),
                 |o| o.of(l),
             ),
+            Loc::Names(l) => names_at
+                .as_ref()
+                .map_or_else(|| unreachable!("a names violation without names"), |o| o.of(l)),
+            Loc::NoNames => digests_at.as_ref().map_or_else(
+                || unreachable!("no names section without digests"),
+                |o| o.of(digests::Loc::Section),
+            ),
             Loc::Negatives(l) => negatives_at.as_ref().map_or_else(
                 || unreachable!("a negatives violation without negatives"),
                 |o| o.of(l),
@@ -436,7 +497,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const NAMES: [SectionName; 12] = [
+const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -446,6 +507,7 @@ const NAMES: [SectionName; 12] = [
     SectionName { id: VERDICT, name: "verdict", required: false },
     SectionName { id: BINDING, name: "binding", required: false },
     SectionName { id: SPELLINGS, name: "spellings", required: false },
+    SectionName { id: NAMES, name: "names", required: false },
     SectionName { id: NEGATIVES, name: "negatives", required: false },
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: FOUND, name: "found", required: false },
@@ -495,6 +557,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.spellings {
         sections.push(("spellings", spellings::render(x)));
     }
+    if let Some(x) = &s.names {
+        sections.push(("names", names::render(x)));
+    }
     if let Some(x) = &s.negatives {
         sections.push(("negatives", negatives::render(x)));
     }
@@ -509,7 +574,10 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
 
 /// The shard and the unknown ignorable sections of a JSON rendering.
 pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
-    let s = read_container(v, Shard::KIND, Shard::VERSION, &NAMES)?;
+    let s = read_container(v, Shard::KIND, Shard::VERSION, &SECTION_NAMES)?;
+    if s.version < FIRST_READ {
+        return Err(At::Root.key("version").error(OLDER));
+    }
     let [
         Some(header),
         Some(outcome),
@@ -520,6 +588,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         verdict,
         binding,
         spellings,
+        names,
         negatives,
         rule_use,
         found,
@@ -565,6 +634,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use.map(|v| agreement::read_rule_use(v, &sections.key("rule_use"))).transpose()?;
     let spellings =
         spellings.map(|v| spellings::read(v, &sections.key("spellings"))).transpose()?;
+    let names = names.map(|v| names::read(v, &sections.key("names"))).transpose()?;
     let negatives =
         negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
     let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
@@ -582,6 +652,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         binding,
         rule_use,
         spellings,
+        names,
         negatives,
         found,
     };

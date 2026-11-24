@@ -657,7 +657,7 @@ fn missed_absolute_name() {
 }
 
 // `Lookups::found`, the places where a lookup found its file (work package
-// WP-135, `spec/model.md` §8.7): one test per form, as for `missed`.
+// WP-135, `spec/model.md` §8.8): one test per form, as for `missed`.
 
 fn found(l: &Lookups, dir: &str, name: &str) -> bool {
     l.found.iter().any(|(d, n)| d == dir && n == name)

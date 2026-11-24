@@ -473,14 +473,18 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
         for (k, v) in &units {
             for u in v {
                 eprintln!(
-                    "  {:?} {} {:?} flags={} {:?}",
+                    "  {:?} {} {:?} d={:?} flags={} {:?}",
                     u.class,
                     u.name,
                     &k.0[..4],
+                    &u.digest.0[..4],
                     u.flags,
                     u.cause
                 );
             }
+        }
+        for n in &output.name_strings {
+            eprintln!("  names {} {:?} {:?}", n.name, &n.key.0[..4], &n.names.0[..4]);
         }
         for c in &output.counters {
             eprintln!("  counter {c:?}");
@@ -651,6 +655,9 @@ pub enum Expect {
     DerivedAdded(String),
     /// Side A has a derived unit under a key of the name, side B none.
     DerivedRemoved(String),
+    /// Both sides have a names digest under a key of the name and they
+    /// differ (`spec/digest.md` §9 "The names digest", §14.1; WP-112).
+    NamesChanged(String),
 }
 
 impl Expect {
@@ -663,7 +670,8 @@ impl Expect {
             | Self::Indeterminate(n)
             | Self::DerivedChanged(n)
             | Self::DerivedAdded(n)
-            | Self::DerivedRemoved(n) => n,
+            | Self::DerivedRemoved(n)
+            | Self::NamesChanged(n) => n,
         }
     }
 
@@ -677,8 +685,14 @@ impl Expect {
             Self::DerivedChanged(_) => "derived-changed",
             Self::DerivedAdded(_) => "derived-added",
             Self::DerivedRemoved(_) => "derived-removed",
+            Self::NamesChanged(_) => "names-changed",
         };
         format!("{word} {}", self.name())
+    }
+
+    /// Whether it is a `names-changed` line.
+    pub fn is_names(&self) -> bool {
+        matches!(self, Self::NamesChanged(_))
     }
 
     /// Whether it is a `derived-*` line.
@@ -720,6 +734,7 @@ fn read_expect(dir: &Path) -> Result<(BTreeSet<Expect>, bool), String> {
             "derived-changed" => Expect::DerivedChanged(name),
             "derived-added" => Expect::DerivedAdded(name),
             "derived-removed" => Expect::DerivedRemoved(name),
+            "names-changed" => Expect::NamesChanged(name),
             _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
         };
         if out.contains(&e) {
@@ -769,6 +784,7 @@ pub fn expect_text(text: &str, own: impl Fn(&str) -> bool) -> Result<ExpectText,
             "derived-changed" => Expect::DerivedChanged(name),
             "derived-added" => Expect::DerivedAdded(name),
             "derived-removed" => Expect::DerivedRemoved(name),
+            "names-changed" => Expect::NamesChanged(name),
             _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
         };
         if out.contains(&e) {

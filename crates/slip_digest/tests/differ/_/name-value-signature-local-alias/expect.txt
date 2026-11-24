@@ -1,2 +1,5 @@
 changed G
 derived-changed G::<value>
+# WP-112: the names digests of these units differ (digest §9).
+names-changed G
+names-changed f()

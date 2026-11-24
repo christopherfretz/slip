@@ -1,0 +1,4 @@
+# WP-112: the names digest of these units differs (digest §9); legacy::pn() by the use of
+# current's default argument in its body, which passes its name on (R1).
+names-changed legacy::G
+names-changed legacy::pn()

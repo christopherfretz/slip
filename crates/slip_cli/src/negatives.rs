@@ -4,7 +4,7 @@
 //! refuses a verdict when a file now exists at one of them. Their positive
 //! counterpart (work package WP-135): the places where it found one, with
 //! the input each led to, and the inputs that were one file
-//! (`spec/model.md` §8.7), and guard N2, which refuses a verdict when
+//! (`spec/model.md` §8.8), and guard N2, which refuses a verdict when
 //! either differs now.
 
 use std::collections::HashMap;
@@ -79,7 +79,7 @@ pub fn appeared<'a>(resolver: &mut Resolver<'_>, negatives: &'a [Vec<u8>]) -> Op
 }
 
 // ---------------------------------------------------------------------------
-// Found lookups (work package WP-135): `spec/model.md` §8.7, guard N2 of
+// Found lookups (work package WP-135): `spec/model.md` §8.8, guard N2 of
 // `spec/verify.md` §5.3.
 
 /// The identity of the file `path` leads to now (links followed): its
@@ -90,7 +90,7 @@ fn identity(path: &[u8]) -> Option<(u64, u64)> {
 }
 
 /// The found places of a parse run from `directory` that looked at
-/// `lookups` (`spec/model.md` §8.7): the path of each place of
+/// `lookups` (`spec/model.md` §8.8): the path of each place of
 /// `Lookups::found` and of each name of `Lookups::read` (the main file and
 /// every buffer as the front end first spelled it, so a file reached
 /// through a spelling the log does not record is covered as well), each
@@ -108,7 +108,7 @@ pub fn found_places(directory: &[u8], lookups: &Lookups) -> Vec<Vec<u8>> {
     out
 }
 
-/// The `found` section of a map shard (`spec/model.md` §8.7) whose parse
+/// The `found` section of a map shard (`spec/model.md` §8.8) whose parse
 /// found `places` ([`found_places`]) and read `inputs`, made right after
 /// the parse: each place with the input it leads to (the input whose path
 /// is the place's real path, else the input that is the same file, by

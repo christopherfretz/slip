@@ -130,7 +130,7 @@ fn measure_negatives_on_a_unit() {
         )
         .expect("a String");
     }
-    // The found lookups (work package WP-135, `spec/model.md` §8.7): the
+    // The found lookups (work package WP-135, `spec/model.md` §8.8): the
     // places, the classes, the section's bytes in the shard, and guard
     // N2 over them now (no root: every input is outside, so (ii) looks at
     // every input; the unit's own tree, unchanged, so it passes).

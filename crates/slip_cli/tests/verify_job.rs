@@ -354,6 +354,87 @@ fn s5_2_mismatch_on_a_changed_callee() {
     assert!(f.location.is_some());
 }
 
+const NOTE_PRE: &str = "void take(const char *);\nnamespace ns { struct V {}; }\n\
+     void f(ns::V) { take(__PRETTY_FUNCTION__); }\nint g() { take(__func__); return 1; }\n";
+
+// WP-112 (verify §4.4, §8): a parameter type requalified changes the
+// string `f` passes on and nothing `f` does: verified, with one note for
+// `f`; `g`'s string is unchanged and gives none. The map shard carries
+// the section with both units' entries.
+#[test]
+fn names_note_beside_verified() {
+    let tree = Tree::new("note", &[("a.cpp", NOTE_PRE)]);
+    write(&tree.post.join("a.cpp"), &NOTE_PRE.replace("void f(ns::V)", "void f(::ns::V)"));
+    let o = tree.observer();
+    let m = tree.map(&o);
+    assert_eq!(m.names.as_ref().expect("names").units.len(), 2);
+    assert!(m.names.as_ref().unwrap().notes.is_empty());
+    let v = tree.verify(&o);
+    let verdict = v.verdict.as_ref().unwrap();
+    assert_eq!(verdict.kind, VerdictKind::Verified);
+    assert_eq!(verdict.total, 0);
+    check_post_shard(&v);
+    let notes = &v.names.as_ref().expect("names").notes;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].name, "f(ns::V)");
+}
+
+// WP-112: a note beside a finding of the same key (the body changed
+// too): a mismatch keeps its notes.
+#[test]
+fn names_note_beside_a_finding() {
+    let tree = Tree::new("note-mismatch", &[("a.cpp", NOTE_PRE)]);
+    let post = NOTE_PRE.replace(
+        "void f(ns::V) { take(__PRETTY_FUNCTION__); }",
+        "void f(::ns::V) { take(__PRETTY_FUNCTION__); take(0); }",
+    );
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    tree.map(&o);
+    let v = tree.verify(&o);
+    let verdict = v.verdict.as_ref().unwrap();
+    assert_eq!(verdict.kind, VerdictKind::Mismatch);
+    assert!(
+        verdict.findings.iter().any(|f| f.kind == FindingKind::Changed && f.name == "f(ns::V)")
+    );
+    check_post_shard(&v);
+    assert_eq!(v.names.as_ref().unwrap().notes.len(), 1);
+}
+
+// WP-112: `g` changed and the string it passes on did not: a finding,
+// no note. (A test of its own: a `Tree` holds the lock while it lives.)
+#[test]
+fn names_no_note_without_a_string_change() {
+    let same = Tree::new("note-none", &[("a.cpp", NOTE_PRE)]);
+    write(&same.post.join("a.cpp"), &NOTE_PRE.replace("return 1;", "return 2;"));
+    let o = same.observer();
+    same.map(&o);
+    let v = same.verify(&o);
+    assert_eq!(v.verdict.as_ref().unwrap().kind, VerdictKind::Mismatch);
+    assert!(v.names.as_ref().unwrap().notes.is_empty());
+}
+
+// WP-112 (`spec/model.md` §8.7): the notes are computed before step 4;
+// when step 4 refuses (R1: the subject no longer parses) the verdict is
+// unverifiable and the shard keeps its names units but no note.
+#[test]
+fn names_no_note_beside_unverifiable() {
+    let tree = Tree::new("note-r1", &[("a.cpp", NOTE_PRE)]);
+    let post =
+        NOTE_PRE.replace("void f(ns::V)", "void f(::ns::V)").replace("return 1;", "return 2;");
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    tree.map(&o);
+    write(&tree.subject.join("a.cpp"), "int a = ;\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).starts_with("pre-image: no longer parses"), "{}", reason(&v));
+    check_post_shard(&v);
+    let names = v.names.as_ref().expect("names");
+    assert_eq!(names.units.len(), 2);
+    assert!(names.notes.is_empty(), "{:?}", names.notes);
+}
+
 // §5.2 step 6 and §6.1: with `locate` 0 no finding is named and the
 // post-image is parsed once more only for step 4; with `locate` 1 only
 // the first finding is.
@@ -521,6 +602,7 @@ fn p3_map_shard_without_digests() {
     let o = tree.observer();
     let mut m = tree.map(&o);
     m.digests = None;
+    m.names = None;
     let id = tree.put_map(&o, &m);
     let v = tree.verify(&o);
     assert_eq!(reason(&v), "pre-image: the map shard has no digests");
@@ -2829,6 +2911,7 @@ fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
     let mut s = v.clone();
     s.counters.retain(|c| c.name.starts_with("verify."));
     s.digests = None;
+    s.names = None;
     let mut text = slip_model::json::write_pretty(&s.to_json()).unwrap();
     text = text.replace(tree.base.to_str().unwrap(), "<base>");
     text = text.replace(&v.observer.to_string(), "<observer>");

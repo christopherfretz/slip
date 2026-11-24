@@ -313,6 +313,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
         negatives: None,
         found: None,
     };
@@ -348,7 +349,15 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
             if pre.groups != post.groups {
                 return Err("at_sums: Equal, but the groups differ".into());
             }
-            if full != (Comparison { findings: vec![], only_pre: 0, only_post: 0, used: vec![] }) {
+            if full
+                != (Comparison {
+                    findings: vec![],
+                    only_pre: 0,
+                    only_post: 0,
+                    used: vec![],
+                    notes: vec![],
+                })
+            {
                 return Err(format!("at_sums: Equal, but the full comparison is {full:?}"));
             }
             Ok(())
@@ -532,6 +541,7 @@ fn s4_4_through_groups() {
             only_pre: 0,
             only_post: 0,
             used: vec![],
+            notes: vec![],
         };
         assert_eq!(cmp, found);
         assert_eq!(through_groups(pre, post, &not_changed).0, found);

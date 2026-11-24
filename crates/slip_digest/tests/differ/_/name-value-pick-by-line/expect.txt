@@ -1,1 +1,3 @@
 changed h()
+# WP-112: the names digest of this unit differs (digest §9).
+names-changed h()

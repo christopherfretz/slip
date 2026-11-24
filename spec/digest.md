@@ -932,8 +932,9 @@ enclosing function's parameter and return types as written, an alias, an
 elaborated keyword, a qualifier as written, template parameters' names;
 Kiln's `kiln_ast/src/dump/pretty.rs` `pretty_function`): that is content,
 and equal in the unit digest by this rule. A second, informational digest
-of the bytes of every name-derived string a unit holds is compared by the
-verifier and reported (WP-112). `__func__`, `__FUNCTION__` and
+of the bytes of every name-derived string a unit holds symbolically is
+compared by the verifier and reported ("The names digest", below).
+`__func__`, `__FUNCTION__` and
 `__builtin_FUNCTION()` hold the unqualified name only; a conversion
 function's names its canonical type.
 
@@ -1019,7 +1020,134 @@ as a mangled name does. `assert` expands to `__PRETTY_FUNCTION__`; were
 its length a fact, no function that asserts could be relocated and
 verify. A program that observes such a string (a log that is parsed, a
 registry keyed by it) is told by the report, not by the verdict
-(`verify.md` "Open questions", WP-112).
+(`verify.md` §4.4, §7.1).
+
+**The names digest** (WP-112). Beside its digest, a unit has a **names
+digest**: `H("slip.names.v1", entries)` of the bytes of the name-derived
+strings it writes symbolically, as Kiln evaluated them, in the order the
+walk writes them. A unit that writes none has no names digest (not the
+digest of nothing). The entries, each after what the symbolic form holds,
+so that two strings swapped are seen:
+
+| Entry | Fed where |
+|---|---|
+| `uv 1`, the `PredefinedKind` (0 `__func__`, 1 `__FUNCTION__`, 2 `__PRETTY_FUNCTION__`), `bytes` | a `PredefinedExpr` written symbolically, or a string a pointer names that is one |
+| `uv 2`, `uv 0` plain or `uv 1` pretty, `bytes` | a source-location function name a pointer names; a `__builtin_FUNCTION()` (plain), also at a use of a default that passes it on (below) |
+| `uv 3`, `bool` has one, `bytes` | the function name an `__impl` object points to (what `function_name()` returns), from a pointer to the object or a `__builtin_source_location()`, also at a use of a default that passes it on (below) |
+| `uv 4`, `digest` | the names digest of a constant a pointer names, where the walk writes the constant by its content digest (the constant's own entries, memoised with it) |
+
+An entry is fed only where the value is written symbolically: never where
+it is written by value (`by_value` raised: a key, a type, a
+`static_assert` condition, a template argument, a constant computed and
+read), since the unit's digest already holds those bytes; never while an
+owner is being numbered (§11's numbering streams are not the unit's) nor
+for a candidate stream of `canonical_decl` (the chosen one is written
+again). An operator that reads only the array's type (`sizeof(__func__)`,
+`alignof`, `decltype`) writes the length by value and leaves the string
+symbolic, so the string is fed too: the unit differs and notes. A
+`std::source_location`'s `function_name()` is fed; its `line()`
+and `column()` are not (any edit above moves them: `verify.md` §8), and its
+`file_name()` is not, because it is written by value (above). A string
+reached twice is fed each time it is written: two uses of one string
+object, or two uses of one default, feed two entries; a back-reference
+(§4.3) writes no string and feeds nothing. A unit resolved into another (an inline body, an
+instantiation's `<definition>`, §6) feeds the entity's unit: the strings
+of an instantiation's body are its key's (`h<int>(int, int)`), each
+instantiation its own; a pattern's dependent string has no bytes (Kiln
+evaluates none) and feeds nothing. `typeid(T).name()` is not a constant
+in Kiln (the call is written as a call): nothing to feed. `__FILE__` and
+its kin are literals written by value.
+
+**Defaults at a use** (WP-112, R2). A default argument or default member
+initializer is written once, with its declaration (§7 "Shared nodes"), but
+the source-location builtins in it are evaluated at each use
+(`CXXDefaultArgExpr`, `CXXDefaultInitExpr`), as the function the use is
+in. The principle: a use contributes the value of the immediate
+invocations evaluated at the use, written as every constant is written.
+Kiln does not evaluate them per use (it holds one value of each, `default_imm`,
+evaluated in the declaration's context, contrary to CWG 2631), so the
+digest does not infer from that value whether the use's inputs are passed
+on. At each use, for each `__builtin_FUNCTION()` and
+`__builtin_source_location()` its default reaches, through nested defaults
+(a default argument inside a default argument or a default member
+initializer, the rebuilt default where Kiln rebuilt one for the use), in
+walk order, after the use's rows:
+
+- (a) one that is the operand of no immediate invocation is passed on: the
+  use's value (Kiln's `source_loc` of the use: the plain function name, or
+  the `__impl` object's function name) is fed, as at a `SourceLocExpr`,
+  and the local scope names are written once after them (as there).
+  Nothing by value.
+- (b) one that is the argument of `std::source_location::current`, and of
+  no other immediate invocation, is passed on, as (a). `current` is
+  identified by the entity: the static member function `current` of the
+  class `source_location` of namespace `std`, inline namespaces skipped,
+  every argument absent (its default) or itself a source-location builtin.
+  Not `std::experimental`'s, nor a derived or wrapping class's, nor a user's
+  `mine::source_location::current`.
+- (c) one that is an operand of any other immediate invocation is
+  consumed: the use's value is written by value in the unit that holds the
+  use (`bool` pretty, `opt`, `bytes`: the plain function name, or the
+  `__impl` object's function name where one is built; never the file, the
+  line or the column), cause-free (the unit stays determinate), and nothing
+  is fed for it. Where the use reaches a builtin of (a), (b) or (c), its
+  rows are followed by `count`, the number of (c), and then theirs. (c)
+  over-approximates: an immediate function that passes the name on (a
+  user's `id(p)`, `mine::source_location::current`) makes the use's unit
+  differ under a rename that changes the name. Those false findings go
+  away when Kiln evaluates the invocations per use (`spec/landed/verify/WP-112.md`
+  "For Kiln").
+- (d) a use whose default reaches none of these, or where Kiln recorded no
+  values at the use, writes nothing more. Nor does a use that is itself
+  inside a `ConstantExpr` (`current()` written in a body, `pick()` an
+  argument of an immediate invocation there): that invocation is evaluated
+  where it is written, its value is written as every constant is (a name
+  it passes on fed with it), and the use's inputs are its operands. A
+  nested use met where the default itself is written, with its
+  declaration, is judged by these rules with the values Kiln recorded for
+  it there (the declaration's context), as a `SourceLocExpr` written there
+  is.
+- A body written in place inside an expression (a closure type's members
+  at its lambda-expression, the members of a local class declared in such
+  a body or anywhere else: whatever `local_type` writes) is an evaluation
+  context of its own, also inside a `ConstantExpr`: a use in it is judged
+  by (a) to (d) as in any body, not as an operand of the invocation
+  around the lambda-expression (`pass([] { log(); })`, a consteval
+  constructor taking `+[] { log(); }`). The reason: the body runs where it
+  is called, not where the constant is evaluated, and the constant's value
+  is the closure, not a name. Where the constant's value also holds a name
+  the body passes on, feeding it is at worst a note too many, never a
+  wrong equal.
+- A use the walk writes by value (`by_value` raised, above: inside a
+  constant the walk does not see the result of, such as an immediate
+  invocation in a default argument, which Kiln evaluates per use and has
+  no value for at the declaration) writes every builtin it reaches as (c),
+  fed for none, as a `SourceLocExpr` there is written by value (WP-115's
+  known cost C1).
+- What a default reaches does not depend on the use: it is computed once
+  per translation unit for each default expression (the shared one, and
+  each rebuilt one) and memoised; a nested default is composed from its
+  own answer. A default met again while it is being walked (a default
+  that reaches itself, which is ill-formed: "recursive evaluation of
+  default argument") contributes nothing the second time, and an answer
+  that met one is not memoised, so every answer is the same wherever the
+  walk began. The walk is bounded by the defaults' sizes. A default whose
+  own expression has more than 65,536 nodes, or a nesting of more than
+  65,536 defaults, makes the unit holding the use indeterminate,
+  `Unsupported("default/reach-limit")` (§10): the walk never gives up
+  silently.
+
+A `__func__` or `__PRETTY_FUNCTION__` in a default is none of these: Kiln
+records no value of it at a use (its value is its declaration context's,
+`""` outside a function), and it is written, and fed, where the default is.
+
+Per key (`model.md` §8.7): a key with one unit that has a names digest has
+it; a key with several has `H("slip.names.key.v1", count, digests)` of
+them in its units' order. Its file and name are its first such unit's.
+
+The names digest is never part of a unit's digest, a group's or `tu`:
+no unit digest changes by it. Its mutations and the cases that pin each
+decision are in `spec/landed/verify/WP-112.md`.
 
 ## 10. Indeterminate units
 
@@ -1054,7 +1182,9 @@ this spec says:
 - its entity's declarations are given different visibilities by the
   namespace openings around them (`digest-kinds.md` §1.7 items 4-5), so a
   symbol's visibility depends on where each use is
-  (`visibility_by_use`, WP-113).
+  (`visibility_by_use`, WP-113);
+- it holds a use of a default too large for the walk to follow
+  (`Unsupported("default/reach-limit")`, §9 "Defaults at a use").
 
 **No unit vanishes.** An entity that §2.1 makes a unit and whose key
 cannot be formed (an unexpected parent or name, a cycle, a kind whose key
@@ -1303,6 +1433,7 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 | `derived-removed <name>` | the other way round |
 | `derived-changed <name>` | the derived units under a key of the name differ in any way, presence included; under `exact derived`, both sides have one and they differ |
 | `exact derived` | a directive, not a line: the derived keys that differ between the sides are exactly the keys the `derived-*` lines name, each in the way its line says |
+| `names-changed <name>` | both sides give a key of the name a names digest (§9 "The names digest"), and they differ |
 
 1. Any other line is an error of the test, as is a line written twice
    and a second `exact derived`. The directive is exactly the text
@@ -1328,10 +1459,19 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
    `derived-added` line holds, and under the directive the derived
    differences are exactly those lines, so that an unnamed instantiation
    only B has, or any derived unit only A has, fails.
-5. **`equal`** reads no line and no directive: every unit both sides have
+5. **`equal`** reads no line but `names-changed` (rule 6) and no
+   directive: every unit both sides have
    is equal already, and a unit only one side has, declared or derived,
    fails the test (the derived groups are part of the `Digests`
    compared). **`indeterminate`** reads `indeterminate` lines only.
+6. **Names** (WP-112). `differ`, `equal` and the rule suite
+   (`tests/rules.rs`) read `names-changed` lines: the keys both sides
+   give a names digest whose names digests differ are exactly those
+   lines, so a names change no line names fails, and so does a line that
+   does not hold. In `equal` a key with a names digest on one side only
+   fails the test too, since its units are equal. A pair whose units are
+   equal and whose strings changed is therefore an `equal` pair with
+   `names-changed` lines.
 
 ## Tests
 
@@ -1343,9 +1483,13 @@ A pair test's directory (`spec/digest-kinds.md` §1.5) may hold
 - `crates/slip_digest/tests/runner.rs` — §14.1, the runners' reading of
   `expect.txt`, over the fixtures of `tests/runner/`.
 - `crates/slip_digest/tests/records.rs`, `trace.rs` — §4.4.
+- `crates/slip_digest/tests/names.rs` and the `names-changed` lines of
+  the pairs — §9 "The names digest" (WP-112).
 - `frames_fit_the_stack` in `crates/slip_digest/src/expr.rs` and the
   tests each area adds to it — §12.1.
-- `crates/slip_model/tests/formats.rs` — §11, the section's encoding.
+- `crates/slip_model/tests/formats.rs` — §11, the section's encoding;
+  `crates/slip_model/tests/sections.rs` — the `names` section
+  (`model.md` §8.7).
 - `spec/pitfalls.md` and its tests — the mutation catalogue.
 
 ## Open questions

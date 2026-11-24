@@ -1,7 +1,7 @@
-//! The shard's `found` section (section 31, `spec/model.md` §8.7; work
+//! The shard's `found` section (section 31, `spec/model.md` §8.8; work
 //! package WP-135): its bytes, written out by hand, its JSON form, its
 //! invariants F-1 to F-10 and the front-coding's own rules, each at the
-//! offset and JSON path §8.7 gives.
+//! offset and JSON path §8.8 gives.
 
 use slip_model::container::Writer;
 use slip_model::formats::{JsonFormError, dump, undump};
@@ -29,6 +29,7 @@ fn map_shard(found: Option<Found>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
         negatives: None,
         found,
     }
@@ -45,7 +46,7 @@ fn sealed_with(s: &Shard, payload: &[u8]) -> Vec<u8> {
         .uv(s.outcome.errors)
         .uv(s.outcome.warnings)
         .str(&s.outcome.message);
-    let mut w = Writer::new(*b"SHRD", 1);
+    let mut w = Writer::new(*b"SHRD", Shard::VERSION);
     w.section(1, &header.into_bytes());
     w.section(2, &outcome.into_bytes());
     if let Some(inputs) = &s.inputs {
@@ -114,7 +115,7 @@ const PAYLOAD: &[u8] = b"\x03\
 \x03\x05x/\xff.h\x01\
 \x01\x02\x00\x02";
 
-// §8.7: the bytes, the JSON form (whole paths, non-UTF-8 as JSON bytes are
+// §8.8: the bytes, the JSON form (whole paths, non-UTF-8 as JSON bytes are
 // written), and binary → JSON → binary.
 #[test]
 fn found_bytes_and_round_trip() {
@@ -134,7 +135,7 @@ fn found_bytes_and_round_trip() {
     assert_eq!(undump(&json::parse(text.as_bytes()).unwrap()).unwrap(), bytes);
 }
 
-// §8.7: an empty section (nothing found, every input a file of its own) is
+// §8.8: an empty section (nothing found, every input a file of its own) is
 // a section; no section is `None`. They are two shards.
 #[test]
 fn found_empty_and_absent() {

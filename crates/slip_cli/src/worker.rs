@@ -102,7 +102,7 @@ fn phase_name(phase: Phase) -> &'static str {
 /// With `negatives` (the map task's, always) the parse records Kiln's
 /// lookup log and a shard with `inputs` gets its negative inputs
 /// (`spec/model.md` §8.6, work package WP-117) and its found lookups
-/// (§8.7, work package WP-135). Without, it is the parse of before WP-117:
+/// (§8.8, work package WP-135). Without, it is the parse of before WP-117:
 /// what the measurement of the log's cost compares against
 /// (`spec/landed/verify/WP-117.md`).
 ///
@@ -146,6 +146,14 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
         shard.counters.extend(counters(&output));
         shard.counters.sort_by(|a, b| a.name.cmp(&b.name));
         shard.digests = Some(output.digests);
+        shard.names = Some(slip_model::names::Names {
+            units: output
+                .name_strings
+                .iter()
+                .map(|n| slip_model::names::NamesEntry { key: n.key, names: n.names })
+                .collect(),
+            notes: Vec::new(),
+        });
     }
     Ok(shard)
 }

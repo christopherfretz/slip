@@ -678,6 +678,43 @@ fn s2_relocation_through_the_whole_path() {
     assert_eq!(shard.verdict.unwrap().kind, VerdictKind::Verified);
 }
 
+// spec/verify.md §7.1, spec/exec.md §8.7 (WP-112 R3): `--strict-names`
+// on the command line. A relocation of a function that returns its
+// `__PRETTY_FUNCTION__`: without the option the run is `verified` and the
+// report notes the name-derived string; with it the note is a finding,
+// the observer `mismatch`, the run not verified (status 1).
+#[test]
+fn s7_1_strict_names_on_the_command_line() {
+    let f = Fixture::new("strict-names");
+    let header = "#pragma once\nnamespace old {\n\
+                  inline const char *who() { return __PRETTY_FUNCTION__; }\n}\n";
+    f.write("s/a.h", header);
+    f.write("post/a.h", &header.replace("namespace old", "namespace fresh"));
+    f.write("s/u0.cpp", "#include \"a.h\"\nconst char *f0() { return old::who(); }\n");
+    f.write("post/u0.cpp", "#include \"a.h\"\nconst char *f0() { return fresh::who(); }\n");
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    relocation(&f, &plan, "d.decl", "fresh");
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(u64_at(&report, "names_changed.total"), 1, "{report:?}");
+    assert!(out.stdout.contains("note: name-derived string changed: "), "{out:?}");
+    assert_eq!(get(&report, "findings.groups").as_array().unwrap().len(), 0, "{report:?}");
+
+    with.push("--strict-names");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(states(&report), [0, 0, 1, 0, 0, 0, 0]);
+    let g = get(&report, "findings.groups").as_array().unwrap();
+    assert_eq!(g.len(), 1, "{report:?}");
+    assert_eq!(g[0].get("kind").unwrap().as_str(), Some("names_changed"), "{report:?}");
+}
+
 // spec/verify.md §2.3 `m(P')`: a `relocate` whose parent is named as the
 // post-image has it (`fresh`, which only the post-images declare) is
 // resolved through the post-images' records: the class moved into the

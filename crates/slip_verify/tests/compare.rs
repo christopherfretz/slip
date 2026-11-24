@@ -3,12 +3,13 @@
 //! step or sentence it covers.
 
 use slip_model::digests::{Digests, Group, GroupClass, SCHEME, Unit, group_digest, tu_digest};
+use slip_model::names::NamesEntry;
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
 use slip_model::{Digest, Outcome, Phase, Shard, Status};
 use slip_verify::compare::{NO_REASON, REASON_MAX};
 use slip_verify::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
-    unverifiable, verdict, verified,
+    names_changed, unverifiable, verdict, verified,
 };
 
 use FindingKind::{Added, Changed, DerivedChanged, DerivedIndeterminate, Indeterminate, Removed};
@@ -98,7 +99,7 @@ fn f(kind: FindingKind, k: u8, file: &str, pre: Option<u8>, post: Option<u8>) ->
 }
 
 fn none() -> Comparison {
-    Comparison { findings: vec![], only_pre: 0, only_post: 0, used: vec![] }
+    Comparison { findings: vec![], only_pre: 0, only_post: 0, used: vec![], notes: vec![] }
 }
 
 fn only(findings: Vec<Finding>) -> Comparison {
@@ -126,6 +127,7 @@ fn check_valid(v: &Verdict) {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(slip_model::names::Names::default()),
         negatives: None,
         found: None,
     };
@@ -474,6 +476,7 @@ fn s4_3_derived_indeterminate_on_one_side_only_is_a_finding_not_counted() {
             only_pre: 1,
             only_post: 1,
             used: vec![],
+            notes: vec![],
         }
     );
     // No exemption prevents it.
@@ -486,7 +489,8 @@ fn s4_3_derived_indeterminate_on_one_side_only_is_a_finding_not_counted() {
 // §4 step 4: declared in one image, derived in the other
 
 fn counts(findings: Vec<Finding>, only_pre: u64, only_post: u64, used: &[u8]) -> Comparison {
-    Comparison { findings, only_pre, only_post, used: used.iter().map(|&n| key(n)).collect() }
+    let used = used.iter().map(|&n| key(n)).collect();
+    Comparison { findings, only_pre, only_post, used, notes: vec![] }
 }
 
 // §4 step 4, both directions: declared before and derived after (an
@@ -1400,4 +1404,63 @@ fn s4_1_at_sums_unsorted_and_duplicate_groups() {
         Digests { scheme: SCHEME, tu: dg(3), groups: vec![a.clone(), a.clone(), b.clone()] };
     let once = Digests { scheme: SCHEME, tu: dg(4), groups: vec![a, b] };
     assert_eq!(at_sums(&twice, &once), AtSums::Differing(vec![(Declared, b"/a.h".to_vec())]));
+}
+
+// ---------------------------------------------------------------------------
+// §4.4: the notes `names_changed` (WP-112)
+
+/// A names section's units: `(key, names digest)`, ascending by key.
+fn names(entries: &[(u8, u8)]) -> Vec<NamesEntry> {
+    entries.iter().map(|&(k, n)| NamesEntry { key: key(k), names: dg(n) }).collect()
+}
+
+// §4.4: a key with a names digest in both images whose names digests differ
+// is noted; one whose names digests are equal is not.
+#[test]
+fn notes_a_key_in_both_with_different_names() {
+    let pre = names(&[(1, 1), (2, 2), (3, 3)]);
+    let post = names(&[(1, 1), (2, 9), (3, 8)]);
+    assert_eq!(names_changed(&pre, &post), [key(2), key(3)]);
+    assert_eq!(names_changed(&pre, &pre), Vec::<Digest>::new());
+}
+
+// §4.4: a key with a names digest in one image only gives no note, on
+// either side, whatever its neighbours.
+#[test]
+fn no_note_for_a_key_on_one_side() {
+    let pre = names(&[(1, 1), (3, 3), (5, 5)]);
+    let post = names(&[(2, 7), (3, 9), (4, 7), (6, 6)]);
+    assert_eq!(names_changed(&pre, &post), [key(3)]);
+    assert_eq!(names_changed(&pre, &[]), Vec::<Digest>::new());
+    assert_eq!(names_changed(&[], &post), Vec::<Digest>::new());
+}
+
+// §4.4: a note beside a `changed` of the same key: the two are independent;
+// the note is in `notes`, the finding in `findings`.
+#[test]
+fn a_note_beside_a_changed_of_the_same_key() {
+    let mut c = plain(&[decl("/a", &[u(1, 1)])], &[decl("/a", &[u(1, 2)])]);
+    assert_eq!(c.findings, [f(Changed, 1, "/a", Some(1), Some(2))]);
+    c.notes = names_changed(&names(&[(1, 1)]), &names(&[(1, 2)]));
+    assert_eq!(c.notes, [key(1)]);
+    let v = verdict(c, dg(0x70), dg(0x71), 10);
+    assert_eq!((v.kind, v.total), (VerdictKind::Mismatch, 1));
+}
+
+// §4.4: notes are not findings: they change no verdict, no count and no
+// `used`, and take no exemption; `compare_groups` leaves them empty.
+#[test]
+fn notes_do_not_touch_the_verdict() {
+    let c = run(&[decl("/a", &[u(1, 1)])], &[decl("/a", &[u(1, 2)])], &ex(&[1], &[], &[]));
+    assert_eq!(c.notes, Vec::<Digest>::new());
+    let without = verdict(c.clone(), dg(0x70), dg(0x71), 10);
+    let noted = verdict(Comparison { notes: vec![key(1), key(2)], ..c }, dg(0x70), dg(0x71), 10);
+    assert_eq!(noted, without);
+    assert_eq!(
+        (noted.kind, noted.total, noted.used.clone()),
+        (VerdictKind::Verified, 0, vec![key(1)])
+    );
+    let none_noted = verdict(Comparison { notes: vec![key(3)], ..none() }, dg(0x70), dg(0x71), 10);
+    assert_eq!(none_noted, verdict(none(), dg(0x70), dg(0x71), 10));
+    check_valid(&noted);
 }

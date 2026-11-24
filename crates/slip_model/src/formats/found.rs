@@ -1,4 +1,4 @@
-//! The `found` section, id 31 of a map shard (`spec/model.md` §8.7; work
+//! The `found` section, id 31 of a map shard (`spec/model.md` §8.8; work
 //! package WP-135): each place where the map parse found a file, with the
 //! input it reached (the paths front-coded as `negatives` codes them), and
 //! the classes of `inputs` that were one file at the map phase.
@@ -40,7 +40,7 @@ impl Loc {
     }
 }
 
-/// The first violation (§8.7), in this order: F-1 the shard's phase is
+/// The first violation (§8.8), in this order: F-1 the shard's phase is
 /// `map`; F-2 it has `inputs`; then for each place in turn F-3 its path is
 /// absolute, F-4 above the one before, F-5 its input is one of the `n`
 /// inputs; then for each class in turn F-6 two inputs or more, F-7 its
