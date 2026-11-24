@@ -1,0 +1,3 @@
+# WP-141 row A5, observer O2: the alias named both parts of legacy; left untouched, the
+# owned use respelled acme::g. Pinned as it is before WP-141 (a wrong equal, T3).
+use 1 via 1 direct 0
