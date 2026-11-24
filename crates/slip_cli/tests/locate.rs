@@ -238,3 +238,23 @@ fn s6_1_indeterminate_unit() {
         assert!(!s.what.is_empty(), "no cause: {s:#?}");
     }
 }
+
+// An explicit specialisation removed (E11 `bad-3`, WP-128): declared in
+// the pre-image, derived in the post-image, a `changed` of §4 step 4 whose
+// sites are the units' first marks. The pre side is the specialisation the
+// source wrote (line 3), not the declaration Kiln made from the template
+// before it was specialised, which is at the pattern (line 1); the post
+// side, an instantiation, is at the pattern.
+#[test]
+fn s6_1_explicit_specialisation_removed() {
+    let pre = "template <class T> int pick() { return 1; }\n\n\
+               template <> int pick<int>() { return 2; }\nint user() { return pick<int>(); }\n";
+    let post = "template <class T> int pick() { return 1; }\n\n\n\
+                int user() { return pick<int>(); }\n";
+    let tree = Tree::new("explicit-spec", pre, post);
+    let v = tree.verify();
+    let w = finding(&v, FindingKind::Changed, "pick<int>()").location.clone().expect("a location");
+    at(&w.pre, &tree.file(), 3, "specialisation");
+    at(&w.post, &tree.file(), 1, "specialisation");
+    assert_eq!((w.pre.what.as_str(), w.post.what.as_str()), ("", ""));
+}
