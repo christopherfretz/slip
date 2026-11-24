@@ -1240,12 +1240,10 @@ mod reach_tests {
     // a depth error to a shorter chain nor lets a longer one through).
     #[test]
     fn the_nesting_limit_does_not_depend_on_the_order() {
-        let mut src = String::from("const char *c0(const char *p = __builtin_FUNCTION());\n");
-        for k in 1..=7 {
-            src.push_str(&format!("const char *c{k}(const char *p = c{}());\n", k - 1));
-        }
-        src.push_str("void f() { c7(); }\n");
         const LIMIT: usize = 4;
+        let mut src = String::from("const char *c0(const char *p = __builtin_FUNCTION());\n");
+        src.extend((1..=7).map(|k| format!("const char *c{k}(const char *p = c{}());\n", k - 1)));
+        src.push_str("void f() { c7(); }\n");
         with_walk(&src, |w| {
             let n = u32::try_from(w.ast.exprs.len()).unwrap();
             // Each use with its nesting: a use of `ck`'s default reaches
