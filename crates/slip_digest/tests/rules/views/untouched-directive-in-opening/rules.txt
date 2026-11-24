@@ -1,0 +1,3 @@
+# The edit touched nothing; the rule is the run's (relocate legacy => :: acme), written
+# field by field since this pre-image has no legacy.
+rule namespace | root | id acme | none | root | id legacy

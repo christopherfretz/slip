@@ -1,0 +1,6 @@
+# WP-140 review F3 (docs/wp/WP-141.md Addendum A4): an owned opening that holds only an empty
+# nested namespace holds nothing, so acme has no owned view (no `added acme`). The owned
+# inner is itself an owned namespace keyed under acme's owned view (rule 2): legacy::inner.
+added acme::inner
+removed acme::inner
+use 3 via 0 direct 0

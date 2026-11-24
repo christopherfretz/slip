@@ -1,0 +1,8 @@
+# WP-140 review F3 (A4): a using-directive written in the owned opening counts: it is keyed
+# under acme's owned view (legacy, rule 2), and acme has an owned-view unit (`added acme`,
+# the unit keyed legacy). Untouched, and a difference: rule 2 says what owned code holds in
+# acme came from legacy.
+added acme
+added acme::<using_directive other>
+removed acme::<using_directive other>
+use 3 via 1 direct 0

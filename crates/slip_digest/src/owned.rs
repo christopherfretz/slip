@@ -160,11 +160,15 @@ pub(crate) struct OwnedState {
     /// owned, rules apply along the chain) when that is not the
     /// namespace's own ownership.
     pub views: HashMap<(DeclId, bool), KeyRes>,
-    /// The namespaces (their entities) some entity was keyed in, in the
-    /// view `.1` that is not the namespace's own ownership
-    /// (`Walk::namespace_parent`): each has a unit in that view too
-    /// (`units::view_units`, WP-140).
+    /// The namespaces (their entities) under which an entity that is not
+    /// a namespace was keyed, with the view `.1` it was keyed in
+    /// (`Walk::namespace_parent`, its own view or not): the namespace
+    /// holds something in that view (`units::view_units`, WP-140).
     pub member_views: HashSet<(DeclId, bool)>,
+    /// `(N, view, M)`: the namespace `M` was keyed under the namespace `N`
+    /// in `view`. `N` holds something in that view if `M` does
+    /// (`units::view_units`).
+    pub nested_views: HashSet<(DeclId, bool, DeclId)>,
 }
 
 impl Walk<'_> {
