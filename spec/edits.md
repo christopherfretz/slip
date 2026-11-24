@@ -78,6 +78,25 @@ tree, and whatever `readonly` carves out of an owned directory.
 `owned` must not be empty. Entries are made real paths when the request is
 built (§10.1); an entry that does not exist is an `Input` error.
 
+**One spelling.** Ownership compares bytes, and so does every path a
+record names; but some volumes find a name in any case (or any Unicode
+normalisation), and the real path such a volume gives keeps the spelling
+it was asked for. So apply touches a file only under the one spelling
+its directories have: before any ownership decision, every component
+of the path, from `/` down, must equal byte for byte a name its
+directory lists (`read_dir`). A component that does not, where a listed
+name differs from it only in case or the path finds something all the
+same, is refused (`not_canonical`, naming the path given and, when a
+listed name differs only in case, the spelling on disk), and nothing is
+touched. Otherwise there is nothing at the path, and the checks that
+follow find it missing. Without this, `src/Vendor/x.h` would pass for a
+file of `src/` that a `readonly` entry `src/vendor` carves out, and one
+file could be named twice in one overlay. `--write` (§7.3 step 1),
+`--patch` (§7.2) and `--recover` check it. That reduce and the front
+end give a file one spelling from the start is work package WP-147;
+until it lands, reduce accepts an edit set naming such a path, and
+apply refuses it.
+
 This is the ownership `api.md` §6.6 rule 6 cites: `is_editable(r)` is
 true exactly when `r` is not null and its file is owned.
 
@@ -812,7 +831,10 @@ or with `no_edit` if no `replace` claim remains after §5.2's treatment
 ### 5.6 Cost
 
 Reduce must run in memory that does not grow with the number of
-observers or of claims:
+observers or of claims, with one exception: the edit set lists the
+unparsed observers (§6), 32 bytes each, and that list is the one thing
+reduce holds that grows with the observers (a million unparsed observers
+are 32 MiB). Otherwise:
 
 - Shards are read in runs of at most `fan_in` (default 64) in plan order.
   Each run is merged by site into a temporary file of collapsed claims
@@ -828,18 +850,36 @@ observers or of claims:
 - File agreement reads each shard's `inputs` once, in a second pass over
   the shards, keeping only the paths of live sites and of copied files.
 - The first level may run on several threads (one run of shards each).
-  By §5.3 the result is the same.
+  By §5.3 the result is the same. The runs' joined states are folded in
+  run order; a run is started only while it is fewer than `W` runs ahead
+  of the earliest run not yet folded, `W = WINDOW_PER_THREAD × threads`
+  with `WINDOW_PER_THREAD` 4, so at most `W` runs' joined states wait to
+  be folded, and the earliest run not yet folded can always be started.
 
-Three things grow with the transform and not with the observers, and are
-held in memory, one record of bounded size each: each distinct edit that
-is a member of a group, unless the request is `indivisible` (§5.5); each
-copy piece of a live edit; and each live edit that lies within another
-live edit or within a copied range (§5.4, §5.5). A native rename has none
-of the three.
+What grows with the transform and not with the observers is held in
+memory, one record of bounded size apart from its pieces for each: the
+paths some shard's `files` names, with the distinct `(size, content)` the
+shards give each; the live sites (§5.4); the claimed sites, with the
+ranges they copy; the sites with a kept or unresolved range; the
+refusals of sites; the joined reports, `changed` entries and failures;
+the distinct edits that are members of a group, unless the request is
+`indivisible` (§5.5); and the edit set made of them. This is a statement
+of what is held, not a bound beyond the transform's size.
 
 Work is `O(C log C)` in the total number of claims `C` in the worst case
 and `O(C)` when the collapsed claims fit in one run. Reduce registers the
 counters of §6.3.
+
+Reduce also counts exactly the most it held at once, as the counters
+`reduce.peak.*` of `Reduced::peak` (§5.7): `sections`, the shards'
+decoded `edits` sections (at most one per thread); `files`, the open
+temporary files (at most `fan_in + 1` per thread); `records`, the
+collapsed records of one run or one merge; `waiting_runs`, the runs'
+joined states waiting, the run just finished included (at most `W`); and
+`unparsed`, the observers the set lists as unparsed. They depend on
+`fan_in` and `threads`, which the edit set does not (§1 rule 3), so they
+are returned beside it, never in its `counters`: they are informational
+and no part of its identity.
 
 ### 5.7 Interface
 
@@ -856,7 +896,14 @@ pub trait Shards: Sync {
     fn observer(&self, index: usize) -> Digest;
 }
 
-pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared> }
+pub struct Reduced { pub edits: EditSet, pub declared: Option<Declared>, pub peak: Peak }
+
+/// §5.6: the most reduce held at once; `Peak::counters` names them
+/// `reduce.peak.files`, `.records`, `.sections`, `.unparsed`, `.waiting_runs`.
+pub struct Peak { pub sections: u64, pub files: u64, pub records: u64,
+                  pub waiting_runs: u64, pub unparsed: u64 }
+
+pub const WINDOW_PER_THREAD: usize = 4;
 
 pub fn reduce(request: &Transform, request_id: Digest, plan: Digest, round: u64,
               shards: &dyn Shards, options: &Options) -> Result<Reduced, ReduceError>;
@@ -1164,8 +1211,16 @@ it. The patch and the write skip such a file.
 files and blobs ([KF2](../docs/requests/KF2-overlay-and-file-identity.md)).
 Every read of a file the overlay names yields the post-image bytes, by
 whatever spelling the file is reached; every other read goes to the file
-system. The post-image has the pre-image's paths, so a subject path
-(`digest.md` §11) is the file's real path in both images. The verify job
+system. An overlay's paths are absolute only: a relative one is refused
+(it would resolve against the process's directory, not the command's).
+An entry is matched to the file a unit reads by the file's identity, not
+by its path text, and a shard records an input under the spelling the
+unit reached it by (on a case-insensitive volume, `#include "h.h"`
+reaching the entry `…/H.h`); so a consumer never matches an input to an
+entry by path, and asks the parse which of its files were overlaid
+(`slip_kiln::Unit::overlaid`). The post-image has the pre-image's paths,
+so a subject path (`digest.md` §11) is the file's real path in both
+images. The verify job
 through an overlay is `verify.md` §5.1, "The overlay form".
 
 ### 7.2 The patch
@@ -1187,6 +1242,12 @@ overlay and the pre-image bytes:
 - A line ends at `\n`. A `\r` before it is part of the line. A last line
   without `\n` is followed by `\ No newline at end of file`. Bytes are
   copied as they are.
+- A patch is something the user applies, so it never carries what
+  `--write` would refuse by path: before anything is written, every
+  file the patch would hold must be spelled as on disk and owned (§2.1,
+  `not_canonical`, `not_owned`, §7.3 step 1), and its bytes must be the
+  `pre` image (`stale_file`). A refusal writes no patch (§10.5:
+  status 1).
 
 `patch -p0` applied to the pre-image must give the post-image byte for
 byte, for every file whose lines `patch` can represent; the test of
@@ -1214,9 +1275,11 @@ The **staged name** of an overlay file is, in the file's own directory,
    (the others take no part in the write): it is owned (§2.1), it is a regular
    file with one hard link, its owner's write bit is set, its directory is
    writable, nothing has its staged name, and its bytes have the `pre`
-   size and digest. Any failure refuses the write (`not_owned`,
-   `not_regular`, `hard_linked`, `read_only`, `not_writable`,
-   `staged_exists`, `stale_file`) and nothing is touched. A store with an
+   size and digest. First, for every file, its spelling (§2.1, "One
+   spelling"), then its ownership, then the rest. Any failure refuses the
+   write (`not_canonical`, `not_owned`, `not_regular`, `hard_linked`,
+   `read_only`, `not_writable`, `staged_exists`, `stale_file`) and
+   nothing is touched. A store with an
    unfinished write is refused first, and an ownership that is not valid
    (§2.1: an entry not a canonical absolute path, none owned) is
    `Invalid`. A file whose owner write bit is clear (a file not opened for
@@ -1286,10 +1349,17 @@ From step 2 on, a failure that the command cannot undo, or an
 interruption, leaves a journal, and the journal names every file the
 write may have created. Every Slip command that opens the store
 exclusively finds it and refuses to run (`Input`: the store has an
-unfinished write). `slip apply --recover` finishes it. It is given the
-ownership the write was given; a journal naming a path that ownership
-does not own (outside it, or under a `readonly` entry) is refused
-(`journal_not_owned`) before anything is touched, and kept. Otherwise,
+unfinished write). `slip apply --recover` finishes it. The journal must be exactly the one a
+write of the overlay it names publishes (the same files, `pre` and
+`post` images and staged names), or it is refused (`Input`) before
+anything is touched, and kept: a journal naming a file its overlay does
+not change would have recovery write a blob over a file no write
+replaced. It is given the ownership the write was given (that of the
+request of the overlay's edit set); a journal naming a path not spelled
+as on disk (§2.1) is refused (`not_canonical`), and one naming a path
+that ownership does not own (outside it, or under a `readonly` entry)
+is refused (`journal_not_owned`), before anything is touched, and kept.
+Otherwise,
 for each file, first its `lstat` and the real path of its directory: a
 file that is missing, not a regular file, or under a directory that is
 a link is reported, and nothing is removed under it. Then its bytes: a
@@ -2272,15 +2342,18 @@ Exit status (`exec.md` §8.5):
 
 | Status | `rename`, `check` | `map` | `reduce` | `apply` |
 |---|---|---|---|---|
-| 0 | state `verified`, and what `--write` or `--patch` asked was done | every selected observer's shard is `ok` and no run failed | `accepted` | done |
-| 1 | `not_verified`, `verified_with_residue` or `refused`; or a state that does not permit the write that was asked | a shard is not `ok`, or a run failed | `refused` | the result does not permit it; a refused write (§7.3 step 1 or 4) |
+| 0 | state `verified`, and what `--write` or `--patch` asked was done | every selected observer's shard is `ok` and no run failed | `accepted` | everything asked was done: the tree written, the patch written, or (`--recover`) the tree the pre-image again; whatever state the options given permitted |
+| 1 | `not_verified`, `verified_with_residue` or `refused`; or a state that does not permit the write that was asked | a shard is not `ok`, or a run failed | `refused` | refused, nothing written: the result does not permit it, or the write or the patch was refused (§7.2, §7.3 step 1 or 4; a stale file included) |
 | 2 | usage | usage | usage | usage |
-| 3 | input error: as `parse`; a shard without the request; a stale file; a store with a journal; a transform that does not compile | the same | the same | the same; `--recover` with a file it had to report |
+| 3 | input error: as `parse`; a shard without the request; a stale file; a store with a journal; a transform that does not compile | the same | the same | an error: as `parse`; a store with a journal; a failed operation; `--recover` with a file it had to report, or a journal it refuses |
 | 4 | `incomplete` | — | — | — |
 
-A `verified_with_residue` result written under the options that permit
-it exits with status 1: the command did what was asked and has something
-to report. `map`'s status is `parse`'s (`exec.md` §8.5), with a failed
+For `rename` and `check`, a `verified_with_residue` result written under
+the options that permit it exits with status 1: the command did what was
+asked and has something to report. `apply`'s status says what apply did,
+not the result's verdict: status 1 never means that something was
+written, and a result written under the options that permit it exits 0
+(its state is the `state` line). `map`'s status is `parse`'s (`exec.md` §8.5), with a failed
 run counted like a shard that is not `ok`; `reduce` runs after either.
 
 ### 10.6 The transform run record

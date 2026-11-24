@@ -1,6 +1,7 @@
 subjects:
-  361bc504 seed unreachable rule=yes n::v
+  d7b266e8 seed - rule=yes n::v
 links:
 claims:
-  main.cpp:1:36+1 replace "w" t0 votes=1 none [361bc504]
+  main.cpp:1:36+1 replace "w" t0 votes=1 none [d7b266e8]
+  main.cpp:2:18+1 replace "w" t0 votes=1 none [d7b266e8]
 changed:

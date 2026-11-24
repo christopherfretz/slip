@@ -936,20 +936,19 @@ fn s10_6_unit_and_input_of_two_parses() {
     });
 }
 
-// The named hole of §10.7: names Kiln does not record at this pin (a
+// The names of §10.7 Kiln did not record before its WP-1932 stage 3 (a
 // using-declaration's name, a namespace alias's target, a
 // using-directive's namespace, a type-constraint's concept, a designator,
-// an explicit instantiation's target; its stage 3). Alone at a range they
-// are not seen. Every role takes part (§10.2 rule 1), so the day Kiln
-// records one this test fails, and the `s10_7_hole_*` tests below run.
+// an explicit instantiation's target): recorded with a name range since,
+// each alone at a range holds. Every role takes part (§10.2 rule 1).
 #[test]
-fn s10_7_unrecorded_names_are_not_seen() {
+fn s10_7_names_recorded_since_stage_3_are_seen() {
     let src = "namespace a { int f(); struct S { int x; }; template <class T> concept C = true; template <class T> int t(T) { return 0; } }\nnamespace b { using a::«f»; }\nnamespace al = «a»;\nusing namespace «a»;\ntemplate <a::«C» T> int k(T);\na::S s = { .«x» = 1 };\ntemplate int a::«t»<int>(int);\n";
     let got = one(
         src,
         &[Named("a::f()"), Named("a"), Named("a"), Named("a::C"), Named("a::S::x"), Named("a::t")],
     );
-    assert_eq!(got, [NotSeen, NotSeen, NotSeen, NotSeen, NotSeen, NotSeen]);
+    assert_eq!(got, [Holds, Holds, Holds, Holds, Holds, Holds]);
 }
 
 // §10.2 rule 3 "starts at or after `lo`": bytes that are the end of a
@@ -1208,8 +1207,9 @@ fn f2_the_two_unresolved_names_differ() {
 }
 
 // The named hole (§10.2 rule 5, §10.7): a use Kiln does not record, or
-// records with no range, cannot veto. Each program below is a wrong
-// `Holds` today; each expects `Fails` and waits for Kiln.
+// records with no range, cannot veto. Each program below was a wrong
+// `Holds`; each expects `Fails`. Kiln WP-1932 stage 3 closed all but the
+// pasted use, which still waits for Kiln.
 
 #[test]
 #[ignore = "needs: Kiln, a range for a pasted use of a macro argument (WP-096 For Kiln)"]
@@ -1220,35 +1220,30 @@ fn s10_7_hole_a_pasted_use() {
 }
 
 #[test]
-#[ignore = "needs: Kiln, the designator role (stage 3; WP-096 For Kiln)"]
 fn s10_7_hole_a_designator() {
     let src = "struct S { int n; };\nint n = 2;\n#define M(x) S s{.x = 1}; int k = x;\nM(«n»)\n";
     assert!(fails(&one(src, &[Named("n")])[0]).is_some());
 }
 
 #[test]
-#[ignore = "needs: Kiln, the using-declaration role (stage 3; WP-096 For Kiln)"]
 fn s10_7_hole_a_using_declaration() {
     let src = "namespace a { int f(); }\nnamespace b { int f(); }\n#define M(x) namespace c { using a::x; } int k = b::x();\nM(«f»)\n";
     assert!(fails(&one(src, &[Named("b::f()")])[0]).is_some());
 }
 
 #[test]
-#[ignore = "needs: Kiln, a type-constraint's concept name (WP-096 For Kiln)"]
 fn s10_7_hole_a_type_constraint() {
     let src = "namespace a { template <class T> concept C = true; }\nnamespace b { template <class T> struct C {}; }\n#define M(x) template <a::x T> void f(T); b::x<int> v;\nM(«C»)\n";
     assert!(fails(&one(src, &[Named("b::C")])[0]).is_some());
 }
 
 #[test]
-#[ignore = "needs: Kiln, the elaborated role for a friend (stage 3; WP-096 For Kiln)"]
 fn s10_7_hole_a_friend_declaration() {
     let src = "namespace a { struct F; }\nnamespace b { int F(); }\n#define M(x) struct S { friend struct a::x; }; int k = b::x();\nM(«F»)\n";
     assert!(fails(&one(src, &[Named("b::F()")])[0]).is_some());
 }
 
 #[test]
-#[ignore = "needs: Kiln, the explicit-instantiation target role (stage 3; WP-096 For Kiln)"]
 fn s10_7_hole_an_explicit_instantiation() {
     let src = "namespace a { template <class T> int t(T) { return 0; } }\nnamespace b { int t(int); }\n#define M(x) template int a::x<int>(int); int k = b::x(1);\nM(«t»)\n";
     assert!(fails(&one(src, &[Named("b::t(int)")])[0]).is_some());

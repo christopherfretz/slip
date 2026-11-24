@@ -1,8 +1,8 @@
 subjects:
-  95010aba seed - rule=yes n::f
+  725d1d7a seed - rule=yes n::f
 links:
 claims:
-  main.cpp:2:25+1 replace "g" t0 votes=1 none [95010aba]
-  main.cpp:4:15+1 replace spell(95010aba, "g") t0 votes=1 none [95010aba]
-  main.cpp:4:29+1 replace spell(95010aba, "g") t0 votes=1 none [95010aba]
+  main.cpp:2:25+1 replace "g" t0 votes=1 none [725d1d7a]
+  main.cpp:4:15+1 replace spell(725d1d7a, "g") t0 votes=1 none [725d1d7a]
+  main.cpp:4:29+1 replace spell(725d1d7a, "g") t0 votes=1 none [725d1d7a]
 changed:

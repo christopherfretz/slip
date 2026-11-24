@@ -1407,11 +1407,13 @@ observer's command never holds an `@` word; only a command given to
 `slip verify` by other means can.
 
 **What remains outside.** A post tree written while step 1 runs is not
-seen until G3, which runs only when there is a finding to localise. Kiln's
-lookup log does not record a lookup of an absolute name
-(`kiln_pp/src/resolver.rs:132`, `:161`): a failed `__has_include` or
-`__has_embed` of an absolute name under a subject root is not seen (one
-that succeeds is a read, which G1 sees). The log does not name the
+seen until G3, which runs only when there is a finding to localise.
+Since Kiln WP-2620 (in the pin since WP-066) the lookup log records a
+lookup of an absolute name, found (`Found::Absolute`, or `Found::Embed`
+for `#embed`) or not (`Found::Missing`; Kiln `kiln_pp/src/resolver.rs:130-145`),
+and `slip_kiln::Lookups` lists it where it is, so L1 sees a failed
+`__has_include` or `__has_embed` of an absolute name under a subject
+root. The log does not name the
 `--embed-dir` directories; L1 takes them from Kiln's driver
 (`Args::embed_dirs`) and treats every one as tried. The driver's own
 probes of the toolchain (the GCC installation, the resource directory)
@@ -1427,32 +1429,27 @@ form: `-fprebuilt-module-path` and the standard module's directory
 miss a file the two images spell differently. The command itself is the
 plan's (§8, "The command").
 
-Two holes are known and pinned by tests that wait (`#[ignore = "needs:
-…"]`, `crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
-recording a lookup of an absolute name (Kiln WP-2620; Kiln has been asked
-to):
+Two holes were pinned by tests that waited (`#[ignore = "needs: …"]`,
+`crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
+recording a lookup of an absolute name. Kiln's log records it since Kiln
+WP-2620 (in the pin since WP-066), and both are closed with no new code:
 
 - **An absolute name looked for and not found** (F7 of the re-check):
-  `#if __has_include("<s>/new.h")` with an edit that adds `new.h`. Kiln's
-  log does not record it (Kiln `spec/pp.md`, "Lookup log").
-  `slip_kiln::Lookups` already lists an absolute name where it
-  is, whatever the form, so L1 refuses it with no new code once the log
-  holds it. Test: `f7_absolute_has_include`; the absolute name is then
-  also a negative input (`crates/slip_kiln/tests/lookups.rs`
-  `missed_absolute_name`, waiting too).
+  `#if __has_include("<s>/new.h")` with an edit that adds `new.h`.
+  `slip_kiln::Lookups` lists an absolute name where it is, whatever the
+  form, so L1 refuses it. Test: `f7_absolute_has_include`; the absolute
+  name is also a negative input (`crates/slip_kiln/tests/lookups.rs`
+  `missed_absolute_name`).
 - **An absolute name found, through a link retargeted since, when the
   front end first read its file through another spelling**: `#include
   <cfg.h>` found in `ext-a`, then `#include "/b/lnk/cfg.h"` with `lnk ->
   ext-a`, retargeted after the map phase to a directory with another
-  `cfg.h`. The second lookup is in no log, and `Lookups::read` holds the
-  file's first spelling only, so the place `/b/lnk/cfg.h` is not in the
-  shard's `found` (`model.md` §8.8) and N2 does not see it move. An
-  absolute name that is its file's first spelling is a place of `found`
-  and is checked. `Lookups::found` lists an absolute name once the log
-  holds it, so N2 refuses it with no new code. Test:
+  `cfg.h`. The second lookup is in the log, so `Lookups::found` lists
+  the place `/b/lnk/cfg.h` in the shard's `found` (`model.md` §8.8) and
+  N2 sees it move. Test:
   `n2_absolute_name_first_read_through_another_spelling`.
 
-  But for these two, every way for the map parse's files to be no longer
+  With these two closed, every way for the map parse's files to be no longer
   the ones a lookup reaches is refused: a file deleted, changed, made a
   link to another (its real path is no longer its own), or shadowed by
   one that appeared, in a directory that was absent or a duplicate of a
@@ -3067,15 +3064,17 @@ comparison of digests alone.
 written-reference table records with a name range (§10.2 rule 5). A use
 of the same bytes elsewhere — the same macro argument substituted twice,
 or the same header entered twice — that the table does not record, or
-records without a range, cannot veto. At this pin those are: a
-designator (`.x = 1`); a using-declaration's name (`using a::x;`); a
-type-constraint's concept (`template <a::C T>`); a friend's elaborated
-name (`friend struct a::x;`); an explicit instantiation's or
-specialisation's target (`template int a::t<int>(int);`); and a use made
-by token pasting (`x##_`), which has no name range. (A plain elaborated
-name, `struct x s;`, is recorded as a type name and takes part.) Each
-shape has a pending test in `crates/slip_digest/tests/spelling.rs`
-(`s10_7_hole_*`); the hole closes as Kiln records them
+records without a range, cannot veto. At this pin that is a use made by
+token pasting (`x##_`), which has no name range. Kiln's written-reference
+table stage 3 (Kiln WP-1932, in the pin since WP-066) records the
+shapes that were in the hole with it: a designator (`.x = 1`), a
+using-declaration's name (`using a::x;`), a type-constraint's concept
+(`template <a::C T>`), a friend's elaborated name (`friend struct
+a::x;`), an explicit instantiation's or specialisation's target
+(`template int a::t<int>(int);`). (A plain elaborated name, `struct x
+s;`, is recorded as a type name and takes part.) Each shape has a test in
+`crates/slip_digest/tests/spelling.rs` (`s10_7_hole_*`); the pasted use's
+is pending, until Kiln records a range for it
 (`spec/landed/verify/WP-096.md`, "For Kiln").
 
 ## Tests
@@ -3144,7 +3143,8 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
 - `crates/slip_kiln/tests/lookups.rs` — what Kiln's lookup log holds, each
   form through a real parse: `#include` both forms, `#include_next`,
   `__has_include`, `__has_include_next`, `#embed`, `__has_embed`,
-  `-include`; `-imacros` not accepted; an absolute name not recorded; a
+  `-include`; `-imacros` not accepted; an absolute name recorded, found
+  or not; a
   lookup after five thousand; a lookup from another directory; the
   toolchain's directories in the list.
 - `crates/slip_cli/tests/locate.rs` — §6.1 through the task: names from
@@ -3450,9 +3450,9 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
 - **The tree image rewrites commands** (§5.1). G1, L1, G6, G4 and O2 make it
   safe; how often a word it does not resolve costs an `unverifiable` on
   real build trees is to be seen on the corpus. The overlay (KF2)
-  rewrites nothing. Kiln could close the two gaps L1 has: record
-  lookups of absolute names, and name the `--embed-dir` directories in
-  the log.
+  rewrites nothing. Kiln could close the gap L1 still has: name the
+  `--embed-dir` directories in the log (lookups of absolute names are
+  recorded since Kiln WP-2620).
 - **In place.** The identity image compares the tree as it is with the
   map shards, and can only answer `verified` or, through G2,
   `unverifiable`. A copy of the pre-image kept at map time (or the

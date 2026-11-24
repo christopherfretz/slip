@@ -1,5 +1,5 @@
 #include "side.h"
-// §10.1, §5.4 ParamData (WP-100 decision 4): a function template's parameter chain is over its declarations' patterns; the explicit instantiation's parameter is written as Kiln instantiated it, from no declaration (unit test `attrs::tests::kiln_does_not_instantiate_parameter_attributes`).
+// §10.1, §5.4 ParamData (WP-100 decision 4): a function template's parameter chain is over its declarations' patterns; the explicit instantiation's parameter is written as Kiln instantiated it, with the attribute the definition inherited (Kiln WP-2476; unit test `attrs::tests::kiln_instantiates_parameter_attributes`).
 #ifdef B
 template<class T> void f(T *p __attribute__((nonnull)));
 template<class T> void f(T *p) {}

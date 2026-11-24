@@ -1088,11 +1088,12 @@ template <class T> struct P<T, f(1)> {};
 }
 
 /// §6.6 rule 3 with the guard on a qualified name's first token: Kiln's
-/// begin of `Q::f` is `f` when a member calls a static overload through
-/// its class (`For Kiln` 1), so the first token is not known and the
-/// call has no extent; never `f(*this, 1)`.
+/// begin of `Q::f` was `f` when a member calls a static overload through
+/// its class (`spec/landed/api/WP-086.md`, For Kiln 1), and the call had
+/// no extent (the "qualifier" reason). Kiln's begin locations at the pin
+/// of WP-066 (WP-2543) give the qualifier: every call has its extent.
 #[test]
-fn s6_6_rule3_a_qualified_name_whose_begin_is_its_name() {
+fn s6_6_rule3_a_qualified_name_begins_at_its_qualifier() {
     let src = "\
 struct Q;
 int f(const Q&, int);
@@ -1106,7 +1107,7 @@ struct Q {
         let c = s.extent_census();
         assert_eq!(c.calls, 3);
         let why: Vec<_> = c.calls_null.iter().map(|(w, n)| (w.reason, *n)).collect();
-        assert_eq!(why, [("qualifier", 2)]);
+        assert_eq!(why, []);
         assert_eq!(calls(s, "::f"), some(&["::f(*this, 3)"]));
     });
 }

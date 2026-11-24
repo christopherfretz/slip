@@ -63,7 +63,7 @@ fn observer(dir: &Path, argv: &[String]) -> Observer {
     }
 }
 
-fn options(written: bool) -> ParseOptions {
+fn options(written: bool) -> ParseOptions<'static> {
     let mut o = ParseOptions::default();
     o.written = written;
     o
@@ -289,13 +289,12 @@ fn s9_3_role_concept_name() {
     });
 }
 
-// The roles of Kiln's stage 3 (WP-1932) are not recorded at this pin: a
+// The roles of Kiln's stage 3 (WP-1932), recorded since: a
 // using-declaration's name, a using-directive's namespace, a namespace
 // alias's target, an elaborated or friend reference, a specialisation's
-// target, a designator. Their qualifiers are (`spec/edits.md` §9.3: the
-// rows neither table serves).
+// target, a designator; their qualifiers as before (`spec/edits.md` §9.3).
 #[test]
-fn kiln_hole_stage_3_roles_are_not_recorded() {
+fn s9_3_stage_3_roles_are_recorded() {
     let src = "\
 namespace n { int f(int); struct S { int x; }; template <class T> struct H {}; }
 using n::f;
@@ -306,27 +305,30 @@ template <> struct n::H<int> {};
 n::S s = {.x = 1};
 ";
     with_unit("stage3", src, |u| {
-        let roles: Vec<Role> = written_refs(u).iter().map(|r| r.role).collect();
-        for r in [
-            Role::UsingDecl,
-            Role::UsingDirective,
-            Role::NamespaceAlias,
-            Role::Elaborated,
-            Role::SpecTarget,
-            Role::Designator,
-        ] {
-            assert!(!roles.contains(&r), "{r:?} is recorded: turn this test around");
-        }
-        let x = decl_at(u, at(src, "int x;", "x").0);
-        assert!(written_refs(u).iter().all(|r| r.referent != x), "the designator `.x`");
-        let fs: Vec<_> = written_refs(u)
-            .iter()
-            .filter(|r| bytes(u, r.name) == at(src, "using n::f", "f"))
-            .map(|r| r.role)
-            .collect();
-        assert!(fs.is_empty(), "the using-declaration's name: {fs:?}");
-        // Its qualifier is a reference.
         let n = decl_at(u, at(src, "namespace n {", "n").0);
+        let f = decl_at(u, at(src, "int f(int)", "f").0);
+        let ns = decl_at(u, at(src, "struct S {", "S").0);
+        let x = decl_at(u, at(src, "int x;", "x").0);
+        let h = decl_at(u, at(src, "struct H {}", "H").0);
+        let role_at = |ctx: &str, word: &str| -> Vec<(Role, DeclId)> {
+            written_refs(u)
+                .iter()
+                .filter(|r| bytes(u, r.name) == at(src, ctx, word))
+                .map(|r| (r.role, r.referent))
+                .collect()
+        };
+        assert_eq!(role_at("using n::f", "f"), [(Role::UsingDecl, f)]);
+        assert_eq!(role_at("using namespace n", "n"), [(Role::UsingDirective, n)]);
+        assert_eq!(role_at("m = n", "n"), [(Role::NamespaceAlias, n)]);
+        assert_eq!(role_at("friend struct n::S", "S"), [(Role::Elaborated, ns)]);
+        let target = role_at("struct n::H<int>", "H");
+        assert!(
+            target.iter().all(|&(r, _)| r == Role::SpecTarget) && !target.is_empty(),
+            "{target:?}"
+        );
+        let _ = h;
+        assert_eq!(role_at(".x = 1", "x"), [(Role::Designator, x)]);
+        // Its qualifier is a reference.
         assert!(refs_of(u, Role::Nns).contains(&(at(src, "using n::f", "n"), n)));
     });
 }
@@ -645,13 +647,12 @@ fn s9_3_decl_names() {
     });
 }
 
-// Kiln finding: an explicit instantiation of a function template or of a
-// variable template has no row in the declaration-extent table (only its
-// parameters do), although Kiln `spec/ast.md` §19.1 says an explicit
-// instantiation is a written declaration with the specialisation's row;
-// one of a class template has its row.
+// Kiln finding K1, fixed by Kiln WP-2470: an explicit instantiation of a
+// function template or of a variable template has its row in the
+// declaration-extent table, as Kiln `spec/ast.md` §19.1 says (one of a
+// class template had its row before).
 #[test]
-fn kiln_hole_explicit_instantiation_of_function_and_variable_has_no_extent() {
+fn s9_3_explicit_instantiation_of_function_and_variable_has_its_row() {
     let src = "\
 template <class T> void t(T) {}
 template <class T> T vt = T();
@@ -662,25 +663,18 @@ template long vt<long>;
 template void S2<long>::m();
 template void t(short);
 ";
-    with_unit("inst-hole", src, |u| {
-        for (ctx, word) in [
-            ("template void t<double>", "t"),
-            ("extern template void t<long>", "t"),
-            ("template long vt<long>", "vt"),
-            ("template void S2<long>::m()", "m"),
-            ("template void t(short)", "t"),
+    with_unit("inst-row", src, |u| {
+        let inst = DeclNameKind::ExplicitInstantiation;
+        for (ctx, word, kind) in [
+            ("template void t<double>", "t", DeclKind::Function),
+            ("extern template void t<long>", "t", DeclKind::Function),
+            ("template long vt<long>", "vt", DeclKind::Var),
+            ("template void S2<long>::m()", "m", DeclKind::CXXMethod),
+            ("template void t(short)", "t", DeclKind::Function),
         ] {
-            assert!(
-                names_at(u, src, ctx, word).is_empty(),
-                "`{ctx}` has a row: turn this test around"
-            );
+            assert_eq!(names_at(u, src, ctx, word), [(inst, kind)], "`{ctx}`");
         }
-        // No row of the unit is an explicit instantiation's, and none of
-        // the five specialisations has one.
         let ast = u.ast();
-        for (d, _) in ast.decl_extents.iter() {
-            assert_ne!(row(u, d), Some(DeclNameKind::ExplicitInstantiation), "{d:?}");
-        }
         let instantiated: Vec<DeclId> = ast
             .decls
             .ids()
@@ -698,16 +692,16 @@ template void t(short);
             })
             .collect();
         assert_eq!(instantiated.len(), 5, "{instantiated:?}");
-        assert!(instantiated.iter().all(|&d| row(u, d).is_none()));
+        assert!(instantiated.iter().all(|&d| row(u, d) == Some(inst)));
     });
 }
 
-// Kiln finding: two explicit instantiations of one specialisation (a
-// declaration, then a definition) are two written declarations, but the
-// table keys a row by the specialisation and the second replaces the
-// first (`DeclExtents::set`), so the first one's name is lost.
+// Kiln finding, fixed by Kiln WP-2470: two explicit instantiations of one
+// specialisation (a declaration, then a definition) are two written
+// declarations, each with its row (`DeclExtents::rows_of`; the second
+// replaced the first before), so both names are given.
 #[test]
-fn kiln_hole_two_explicit_instantiations_of_one_specialisation_are_one_row() {
+fn s9_3_two_explicit_instantiations_of_one_specialisation_are_two_rows() {
     let src = "\
 template <class T> struct S { void m() {} };
 extern template struct S<int>;
@@ -716,10 +710,7 @@ template struct S<int>;
     with_unit("inst-twice", src, |u| {
         let inst = [(DeclNameKind::ExplicitInstantiation, DeclKind::CXXRecord)];
         assert_eq!(names_at(u, src, ";\ntemplate struct S<int>;", "S"), inst);
-        assert!(
-            names_at(u, src, "extern template struct S<int>", "S").is_empty(),
-            "the declaration has its row: turn this test around"
-        );
+        assert_eq!(names_at(u, src, "extern template struct S<int>", "S"), inst);
     });
 }
 
@@ -953,6 +944,12 @@ fn classify(u: &Unit<'_>, role: Role, text: &str, referent: DeclId) -> Result<()
         }
         DeclNameView::Constructor(_) | DeclNameView::Destructor(_) => match ident_of(u, referent) {
             Some(c) if c == text => Ok(()),
+            // `using AT::AT;` (Kiln WP-1932 stage 3): the inheriting
+            // constructor's name is its qualifier's last component as
+            // written, a typedef's or an alias's (`s9_3_inheriting_…`).
+            _ if role == Role::UsingDecl => {
+                Err("inheriting constructor: the name its qualifier is written with")
+            }
             _ => Err("constructor or destructor: text is not the class name"),
         },
         DeclNameView::Operator(_)
@@ -973,7 +970,10 @@ fn classify(u: &Unit<'_>, role: Role, text: &str, referent: DeclId) -> Result<()
 
 /// Classes of exception that the property accepts, each explained in the
 /// package's handback.
-const EXPLAINED: &[&str] = &["operator-function-id (checked: starts with `operator`)"];
+const EXPLAINED: &[&str] = &[
+    "operator-function-id (checked: starts with `operator`)",
+    "inheriting constructor: the name its qualifier is written with",
+];
 
 fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
     let mut t = Tally { sides: 1, ..Tally::default() };
@@ -1393,7 +1393,7 @@ void use(int) { int k = 1; auto l = [&k2 = k]() { return k2; }; (void)l; }
         assert_eq!(row(u, pattern), decl);
         assert_eq!(row(u, t), decl);
         // The specialisations: explicit, instantiated (a class template's
-        // has a row; a function template's has none, Kiln finding K1).
+        // and, since Kiln WP-2470, a function template's: Kiln finding K1).
         assert_eq!(
             row(u, decl_at(u, at(src, "void t<int>", "t").0)),
             Some(DeclNameKind::ExplicitSpecialisation)
@@ -1411,12 +1411,12 @@ void use(int) { int k = 1; auto l = [&k2 = k]() { return k2; }; (void)l; }
                     && ast.decls.get(d).kind() == DeclKind::Function
             })
             .expect("t<long>");
-        assert_eq!(row(u, long), None);
-        // An init-capture's declared name has no row.
+        assert_eq!(row(u, long), Some(DeclNameKind::ExplicitInstantiation));
+        // An init-capture's declared name has its row (Kiln WP-2470).
         let r = written_refs(u);
         let k2 =
             r.iter().find(|x| bytes(u, x.name) == at(src, "return k2", "k2")).unwrap().referent;
-        assert_eq!(row(u, k2), None);
+        assert_eq!(row(u, k2), decl);
     });
 }
 
@@ -1507,9 +1507,22 @@ fn nothing_at(u: &Unit<'_>, src: &str, ctx: &str, word: &str) {
     assert!(deps.is_empty(), "`{word}` of `{ctx}` is a dependent name: {deps:?}");
 }
 
-// The rows neither table serves (`spec/landed/edits/WP-067.md`, the
+/// The written references at `word` of `ctx`: role and referent's kind.
+fn refs_at(u: &Unit<'_>, src: &str, ctx: &str, word: &str) -> Vec<(Role, DeclKind)> {
+    let want = at(src, ctx, word);
+    written_refs(u)
+        .into_iter()
+        .filter(|r| bytes(u, r.name) == want)
+        .map(|r| (r.role, u.ast().decls.get(r.referent).kind()))
+        .collect()
+}
+
+// The rows neither table served (`spec/landed/edits/WP-067.md`, the
 // rename's `unreachable`), each pinned: a test fails, and is turned
-// around, the day Kiln records the name.
+// around, the day Kiln records the name. Kiln's written-reference table
+// stage 3 (WP-1932) and WP-2470 recorded most of them: those tests are
+// `recorded_…` now; what the rename does with them is WP-138's
+// (`spec/landed/edits/WP-066.md`, "For WP-138").
 
 #[test]
 fn unreachable_overloaded_operator_used_as_an_operator() {
@@ -1523,31 +1536,33 @@ fn unreachable_overloaded_operator_used_as_an_operator() {
 }
 
 #[test]
-fn unreachable_offsetof_member_designator() {
+fn recorded_offsetof_member_designator() {
     let src = "struct S { int m; };\nint o = __builtin_offsetof(S, m);\n";
     with_unit("unreach-offsetof", src, |u| {
-        nothing_at(u, src, "S, m)", "m");
+        assert_eq!(refs_at(u, src, "S, m)", "m"), [(Role::Designator, DeclKind::Field)]);
         let s = decl_at(u, at(src, "struct S {", "S").0);
         assert!(refs_of(u, Role::Type).contains(&(at(src, "(S, m)", "S"), s)));
     });
 }
 
 #[test]
-fn unreachable_init_capture_declared_name() {
+fn recorded_init_capture_declared_name() {
     let src = "void k() { int k1 = 1; auto l = [&k2 = k1]() { return k2; }; (void)l; }\n";
     with_unit("unreach-capture", src, |u| {
-        assert!(names_at(u, src, "&k2 =", "k2").is_empty());
+        assert_eq!(names_at(u, src, "&k2 =", "k2"), [(DeclNameKind::Declaration, DeclKind::Var)]);
         let r = written_refs(u);
         let k2 =
             r.iter().find(|x| bytes(u, x.name) == at(src, "return k2", "k2")).unwrap().referent;
-        assert_eq!(row(u, k2), None, "the init-capture has a row: turn this test around");
+        assert_eq!(row(u, k2), Some(DeclNameKind::Declaration));
     });
 }
 
 #[test]
-fn unreachable_designator() {
+fn recorded_designator() {
     let src = "struct P { int x; };\nP p{.x = 1};\n";
-    with_unit("unreach-designator", src, |u| nothing_at(u, src, ".x = 1", "x"));
+    with_unit("unreach-designator", src, |u| {
+        assert_eq!(refs_at(u, src, ".x = 1", "x"), [(Role::Designator, DeclKind::Field)]);
+    });
 }
 
 #[test]
@@ -1557,7 +1572,7 @@ fn unreachable_name_in_a_string_attribute_argument() {
 }
 
 #[test]
-fn unreachable_using_declaration_directive_and_alias_names() {
+fn recorded_using_declaration_directive_and_alias_names() {
     let src = "\
 namespace n { int v; }
 using n::v;
@@ -1565,9 +1580,11 @@ using namespace n;
 namespace na = n;
 ";
     with_unit("unreach-using", src, |u| {
-        nothing_at(u, src, "using n::v", "v");
-        nothing_at(u, src, "using namespace n", "n");
-        nothing_at(u, src, "na = n", "n");
+        assert_eq!(refs_at(u, src, "using n::v", "v"), [(Role::UsingDecl, DeclKind::Var)]);
+        let ns = [(Role::UsingDirective, DeclKind::Namespace)];
+        assert_eq!(refs_at(u, src, "using namespace n", "n"), ns);
+        let alias = [(Role::NamespaceAlias, DeclKind::Namespace)];
+        assert_eq!(refs_at(u, src, "na = n", "n"), alias);
         let n = decl_at(u, at(src, "namespace n {", "n").0);
         assert!(
             refs_of(u, Role::Nns).contains(&(at(src, "using n::v", "n"), n)),
@@ -1577,13 +1594,16 @@ namespace na = n;
 }
 
 #[test]
-fn unreachable_friend_elaborated_reference() {
+fn recorded_friend_elaborated_reference() {
     let src = "struct S2 {};\nstruct T { friend struct S2; };\n";
-    with_unit("unreach-friend", src, |u| nothing_at(u, src, "friend struct S2", "S2"));
+    with_unit("unreach-friend", src, |u| {
+        let got = refs_at(u, src, "friend struct S2", "S2");
+        assert_eq!(got, [(Role::Elaborated, DeclKind::CXXRecord)]);
+    });
 }
 
 #[test]
-fn unreachable_specialisation_target_as_a_reference() {
+fn recorded_specialisation_target_as_a_reference() {
     let src = "\
 template <class T> void t(T) {}
 template <> void t<int>(int) {}
@@ -1591,21 +1611,49 @@ template <class T> struct H {};
 template struct H<int>;
 ";
     with_unit("unreach-target", src, |u| {
-        nothing_at(u, src, "void t<int>", "t");
-        nothing_at(u, src, "struct H<int>;", "H");
+        // One reference each, at the name of the explicit specialisation
+        // or instantiation, unqualified (it begins at its name), whose
+        // referent is the template declared on the line before.
+        let ast = u.ast();
+        let sm = u.sm();
+        for (ctx, word, decl, kind) in [
+            ("void t<int>", "t", "template <class T> void t", DeclKind::FunctionTemplate),
+            ("struct H<int>;", "H", "template <class T> struct H", DeclKind::ClassTemplate),
+        ] {
+            let want = at(src, ctx, word);
+            let found: Vec<_> =
+                written_refs(u).into_iter().filter(|r| bytes(u, r.name) == want).collect();
+            assert_eq!(found.len(), 1, "{word}: {found:?}");
+            let r = &found[0];
+            assert_eq!(r.role, Role::SpecTarget, "{word}");
+            assert_eq!(
+                sm.offset_of(sm.spelling_loc(r.first)).map(|(_, o)| o as usize),
+                Some(want.0)
+            );
+            assert!(!r.global, "{word}");
+            let n = ast.decls.get(r.referent);
+            assert_eq!(n.kind(), kind, "{word}");
+            let (_, lo) = sm.offset_of(sm.spelling_loc(n.loc())).expect("the template's place");
+            let line = src.find(decl).expect("the template's line");
+            assert!(
+                (line..line + decl.len()).contains(&(lo as usize)),
+                "{word}: the referent is the template at {lo}"
+            );
+        }
     });
 }
 
 #[test]
-fn unreachable_concept_in_a_type_constraint() {
+fn recorded_concept_in_a_type_constraint() {
     let src = "\
 template <class T> concept Co = true;
 template <Co T> void tc(T) {}
 void ac(Co auto x) { (void)x; }
 ";
     with_unit("unreach-concept", src, |u| {
-        nothing_at(u, src, "<Co T>", "Co");
-        nothing_at(u, src, "(Co auto", "Co");
+        let co = [(Role::Concept, DeclKind::Concept)];
+        assert_eq!(refs_at(u, src, "<Co T>", "Co"), co);
+        assert_eq!(refs_at(u, src, "(Co auto", "Co"), co);
     });
 }
 
@@ -1622,13 +1670,15 @@ fn unreachable_dependent_name_per_specialisation() {
     });
 }
 
-// Kiln finding K3: a later construct that Kiln resolves to an existing
-// declaration overwrites that declaration's row (`kiln_parse/src/extents.rs`
-// get-or-create by declaration, `DeclExtents::set` overwrites), against
-// Kiln `spec/ast.md` §19.1. The module gives a correct token (of the later
-// construct) for the earlier declaration, and the earlier name is lost.
+// Kiln finding K3, fixed by Kiln WP-2470: a later construct that Kiln
+// resolves to an existing declaration overwrote that declaration's row,
+// against Kiln `spec/ast.md` §19.1, and the earlier name was lost. Each
+// written declaration has its row now (`DeclExtents::rows_of`): the
+// earlier name is given; a friend naming a class declared before it
+// declares nothing (WP-1932, a reference now), and a later definition's
+// name is its own.
 #[test]
-fn kiln_hole_a_later_construct_overwrites_a_declarations_row() {
+fn s9_3_a_later_construct_keeps_a_declarations_row() {
     let src = "\
 struct S;
 struct T { friend struct S; };
@@ -1647,17 +1697,21 @@ template <> struct Q<int> {};
             assert_eq!(names.len(), 1, "`{ctx}`: {names:?}");
             off(u, u.ast().decls.get(names[0].decl).loc())
         };
-        let lost = |ctx: &str, word: &str| {
-            assert!(
-                names_at(u, src, ctx, word).is_empty(),
-                "`{ctx}` has its row: turn this test around"
-            );
+        let kept = |ctx: &str, word: &str| {
+            assert!(!names_at(u, src, ctx, word).is_empty(), "`{ctx}` has no row");
         };
-        lost("struct S;\n", "S");
-        assert_eq!(decl_loc("friend struct S", "S"), at(src, "struct S;\n", "S").0);
-        lost("; class K;\nstruct U", "K");
-        assert_eq!(decl_loc("friend class K", "K"), at(src, "; class K;\nstruct U", "K").0);
-        lost("template <> struct Q<int>;", "Q");
+        // A friend naming a class declared before it declares nothing new
+        // (Kiln `spec/ast.md` §19.5): no declaration name, a written
+        // reference of the role `Elaborated` to the class.
+        let named = |ctx: &str, word: &str| {
+            assert!(names_at(u, src, ctx, word).is_empty(), "`{ctx}` declares");
+            assert_eq!(refs_at(u, src, ctx, word), [(Role::Elaborated, DeclKind::CXXRecord)]);
+        };
+        kept("struct S;\n", "S");
+        named("friend struct S", "S");
+        kept("; class K;\nstruct U", "K");
+        named("friend class K", "K");
+        kept("template <> struct Q<int>;", "Q");
         assert_eq!(
             decl_loc("template <> struct Q<int> {}", "Q"),
             at(src, "template <> struct Q<int>;", "Q").0

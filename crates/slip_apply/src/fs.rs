@@ -89,6 +89,24 @@ impl Tree for DiskTree {
     fn sync_dir(&self, dir: &[u8]) -> io::Result<()> {
         File::open(path(dir))?.sync_all()
     }
+
+    /// `read_dir`: `None` when `dir` is missing or is not a directory.
+    fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        let entries = match fs::read_dir(path(dir)) {
+            Ok(e) => e,
+            Err(e)
+                if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            names.push(entry?.file_name().as_bytes().to_vec());
+        }
+        Ok(Some(names))
+    }
 }
 
 /// Where `create` lets a test change the file system (`seam`).

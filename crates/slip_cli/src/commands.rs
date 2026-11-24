@@ -58,6 +58,8 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
         Invocation::Verify(a) => return crate::verify_cmd::main(&a, out, err),
         Invocation::Declare(a) => return crate::declare::main(&a, out, err),
         Invocation::Units(a) => return crate::units::main(&a, out, err),
+        Invocation::Reduce(a) => crate::transform::reduce::main(&a, out, err),
+        Invocation::Apply(a) => crate::transform::apply::main(&a, out, err),
         Invocation::Panic => panic!("slip __panic: a deliberate panic"),
         Invocation::Worker(_) => unreachable!("the worker is run by `run`, not dispatched"),
     };

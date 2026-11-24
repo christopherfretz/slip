@@ -1,9 +1,10 @@
 //! The parse task: one observer through Kiln's front-end library entry
 //! (`kiln_driver::front_end::run_front_end`) to its shard
 //! (`spec/model.md` §8, §8.4, `spec/exec.md` §5.1). Work packages WP-010,
-//! WP-025; the preprocessing record on request, WP-101.
+//! WP-025; the preprocessing record on request, WP-101; an overlay, WP-066.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use kiln_driver::args::Args;
 use kiln_driver::front_end::{FrontEnd, FrontEndError, FrontEndOptions, run_front_end};
@@ -16,7 +17,7 @@ use crate::kiln::ast::Ast;
 use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
-use crate::kiln::source::{FileId, FileOrigin, Loc, SourceManager};
+use crate::kiln::source::{DirCache, FileId, FileOrigin, Loc, Overlay, Resolved, SourceManager};
 use crate::lookups::{Driver, Lookups};
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
@@ -28,7 +29,7 @@ use crate::lookups::{Driver, Lookups};
 /// fields wanted.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ParseOptions {
+pub struct ParseOptions<'a> {
     /// Keep Kiln's preprocessing record (Kiln `FrontEndOptions::pp_record`,
     /// Kiln `spec/pp.md` "Preprocessing record"), which the closure reads
     /// as [`Unit::pp_record`].
@@ -42,6 +43,18 @@ pub struct ParseOptions {
     /// Kiln `spec/pp.md` "Lookup log"), which the closure reads as
     /// [`Unit::lookups`] (`spec/verify.md` §5.3, guard L1).
     pub lookups: bool,
+    /// Replacement contents, by real path (`spec/edits.md` §7.1): the
+    /// unit reads each file named here as these bytes, never as the
+    /// disk's (Kiln's overlay, `kiln_source::Overlay`, given to the front
+    /// end as `FrontEndOptions::overlay`). The paths must be absolute
+    /// and exist. Sorted by path, no two equal. An entry is matched to
+    /// the file the unit reads by file identity, not by its text: a
+    /// consumer never matches an input to an entry by path, it asks
+    /// [`Unit::overlaid`]. Empty (the default): the parse is the parse
+    /// without one. The shard's `inputs` give an overlaid file's size and
+    /// digest from these bytes; [`Unit::overlaid`] says which buffers are
+    /// the overlay's.
+    pub overlay: &'a [(&'a [u8], Arc<[u8]>)],
 }
 
 /// The words `options` adds to the front end's command line, right after
@@ -49,34 +62,35 @@ pub struct ParseOptions {
 /// words of the line the front end is given, never of the plan: the
 /// observer and its id do not change, and neither does the shard.
 ///
-/// At Kiln `913a490bb` [`ParseOptions::written`] is two driver flags:
+/// At Kiln `4a83f6e3c` [`ParseOptions::written`] is two driver flags:
 ///
 /// - `-fkiln-decl-extents`, which records the declaration extents and
-///   prints nothing (Kiln `kiln_driver/src/args.rs:2057`);
-/// - `-fkiln-dump-written-refs`, the only switch of the written-reference
-///   table (`args.rs:2056`; Kiln's `FrontEndOptions` has none until
-///   Kiln WP-2320, `docs/requests/KR1-amendment-1.md` §1). Through the
-///   front-end library entry it records the table and formats no dump:
-///   the entry returns before any dump is made
-///   (`kiln_driver/src/syntax_cmd.rs:692-696`; Kiln `spec/driver.md`
-///   "Front-end library entry": "no dumps"). So at this pin it is in
-///   effect a recording-only switch, spelled as the dump flag.
+///   prints nothing (Kiln `kiln_driver/src/args.rs:2107`);
+/// - `-fkiln-dump-written-refs`, a switch of the written-reference
+///   table (`args.rs:2102`). Through the front-end library entry it
+///   records the table and formats no dump: the entry returns before any
+///   dump is made (`kiln_driver/src/syntax_cmd.rs:710-714`; Kiln
+///   `spec/driver.md` "Front-end library entry": "no dumps"). So it is in
+///   effect a recording-only switch, spelled as the dump flag. Kiln
+///   WP-2320 gave `FrontEndOptions` its own switch, `written_refs`
+///   (`kiln_driver/src/front_end.rs:78`, `docs/requests/KR1-amendment-1.md`
+///   §1); moving to it is WP-138's (`spec/landed/digest-kinds/WP-066.md`).
 ///
 /// When Kiln gives the entry a recording switch, this function is the one
 /// place that changes.
-fn written_words(options: ParseOptions) -> &'static [&'static str] {
+fn written_words(options: ParseOptions<'_>) -> &'static [&'static str] {
     if options.written { &["-fkiln-dump-written-refs", "-fkiln-decl-extents"] } else { &[] }
 }
 
 /// The token starts of the buffers a unit lexed ([`Unit::is_token_start`]).
 #[derive(Default)]
-struct TokenStarts(std::sync::Mutex<std::collections::HashMap<FileId, std::sync::Arc<[u32]>>>);
+struct TokenStarts(std::sync::Mutex<std::collections::HashMap<FileId, Arc<[u32]>>>);
 
 impl TokenStarts {
     /// The starts of `file`, made by `lex` the first time.
-    fn of(&self, file: FileId, lex: impl FnOnce() -> Vec<u32>) -> std::sync::Arc<[u32]> {
+    fn of(&self, file: FileId, lex: impl FnOnce() -> Vec<u32>) -> Arc<[u32]> {
         let mut map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::sync::Arc::clone(map.entry(file).or_insert_with(|| lex().into()))
+        Arc::clone(map.entry(file).or_insert_with(|| lex().into()))
     }
 }
 
@@ -415,6 +429,20 @@ impl<'r> Unit<'r> {
         self.inputs
     }
 
+    /// Whether the unit read `file` from the overlay of
+    /// [`ParseOptions::overlay`] (Kiln's `FileOrigin::Overlay`): its bytes
+    /// are the overlay's, and so are the offsets of every location in it.
+    ///
+    /// Kiln matches an entry to a file by its identity, and the shard's
+    /// input keeps the path the unit reached the file by, which need not
+    /// be the entry's text (`#include "h.h"` reaching an entry `…/H.h` on
+    /// a case-insensitive volume). So this is the only test of whether an
+    /// input is overlaid: a consumer never compares an input's path with
+    /// an entry's (`spec/edits.md` §7.1).
+    pub fn overlaid(&self, file: FileId) -> bool {
+        self.sm.file_origin(file) == FileOrigin::Overlay
+    }
+
     /// Errors reported so far by the job's engine (when the closure is
     /// called: the parse's own, without the driver's).
     pub fn errors(&self) -> u32 {
@@ -518,16 +546,19 @@ fn new_shard(
 ///
 /// # Errors
 ///
-/// Only a failure of the worker itself: the directory cannot be entered,
-/// an input cannot be resolved to its real path, a consulted file cannot
-/// be read, a file changed during the parse, the front end or `f`
-/// panicked, or the front end's thread could not be started. Diagnostics
-/// about the subject are a shard with status `diagnosed` or `rejected`.
+/// Only a failure of the worker itself: an entry of the overlay names no
+/// regular file, or names the file of another entry (before the parse);
+/// the directory cannot be entered, an input cannot be resolved to its
+/// real path, a consulted file cannot be read, a file changed during the
+/// parse, the overlay failed the run (Kiln's
+/// `FrontEndReport::overlay_failures`), the front end or `f` panicked, or
+/// the front end's thread could not be started. Diagnostics about the
+/// subject are a shard with status `diagnosed` or `rejected`.
 pub fn parse_observer_with<R: Send>(
     observer: &Observer,
     phase: Phase,
     round: u64,
-    options: ParseOptions,
+    options: ParseOptions<'_>,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String> {
     let shard = |outcome, parsed| new_shard(observer, phase, round, outcome, parsed);
@@ -539,6 +570,7 @@ pub fn parse_observer_with<R: Send>(
         }
     };
 
+    let overlay = overlay(options.overlay)?;
     let directory = bytes_path(&observer.command.directory)?;
     std::env::set_current_dir(&directory)
         .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
@@ -549,8 +581,9 @@ pub fn parse_observer_with<R: Send>(
     let program = program(&argv0);
     let dir: &Path = &directory;
     let (program_ref, line_ref) = (&program, &line);
+    let overlay_ref = overlay.as_deref();
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
-        let (inputs, buffers) = collect_inputs(fe, dir)?;
+        let (inputs, buffers) = collect_inputs(fe, dir, overlay_ref)?;
         let lookups = Lookups::of(fe, || driver(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
@@ -569,16 +602,22 @@ pub fn parse_observer_with<R: Send>(
         let value = f(&unit);
         Ok((inputs, fe.tokens, value))
     };
-    let report = match run_front_end(&program, &line, fe_options(options), see) {
+    let report = match run_front_end(&program, &line, fe_options(options, overlay.clone()), see) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));
         }
         // `Panicked`, `Thread`, and any reason Kiln adds (`FrontEndError`
-        // is `#[non_exhaustive]` at Kiln `83566cc47`): a failure of the
+        // is `#[non_exhaustive]` at Kiln `4a83f6e3c`): a failure of the
         // worker until it is classified here.
         Err(e) => return Err(e.to_string()),
     };
+    // "A run with any is void" (Kiln `FrontEndReport::overlay_failures`):
+    // a lazy entry's content failed to load. Slip's entries are bytes, so
+    // none is expected; a run with one is never a shard.
+    if let Some((path, why)) = report.overlay_failures.first() {
+        return Err(format!("the overlay's {} failed to load: {why}", path.display()));
+    }
     let parsed = report.value.transpose()?;
 
     let errors = u64::from(report.errors);
@@ -611,12 +650,50 @@ pub fn parse_observer_with<R: Send>(
     }
 }
 
-/// Kiln's options for `options`.
-fn fe_options(options: ParseOptions) -> FrontEndOptions {
+/// Kiln's options for `options`, with `overlay` (that of
+/// `options.overlay`).
+fn fe_options(options: ParseOptions<'_>, overlay: Option<Arc<Overlay>>) -> FrontEndOptions {
     let mut fe = FrontEndOptions::default();
     fe.pp_record = options.pp_record;
     fe.record_lookups = options.lookups;
+    fe.overlay = overlay;
     fe
+}
+
+/// Kiln's overlay of `entries` (`None` when there are none: the parse is
+/// the parse without one). Each path must name an existing regular file
+/// (Kiln `Overlay::replace`); two entries naming one file (one identity,
+/// whatever the spelling: a symbolic or a hard link) are refused here,
+/// since Kiln lets the second replace the first. Entries out of order or
+/// repeated are refused too (the interface asks for them sorted, no two
+/// equal).
+fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<Arc<Overlay>>, String> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut overlay = Overlay::new();
+    for (i, (path, bytes)) in entries.iter().enumerate() {
+        let shown = String::from_utf8_lossy(path);
+        if i > 0 && entries[i - 1].0 >= *path {
+            return Err(format!(
+                "overlay: {shown} is not after the entry before it (sorted, no two equal)"
+            ));
+        }
+        let at = bytes_path(path)?;
+        // A relative entry would be resolved against the process's
+        // directory, not the command's, and could overlay a file the unit
+        // never reads under that name (second review F7).
+        if !at.is_absolute() {
+            return Err(format!("overlay: {shown} is not an absolute path"));
+        }
+        overlay
+            .replace(&at, Arc::clone(bytes))
+            .map_err(|e| format!("overlay: cannot replace {shown}: {e}"))?;
+        if overlay.len() != i + 1 {
+            return Err(format!("overlay: {shown} and an entry before it are one file"));
+        }
+    }
+    Ok(Some(Arc::new(overlay)))
 }
 
 /// What the lookup log does not name (the `--embed-dir` directories, the
@@ -644,17 +721,20 @@ type Buffers = Vec<(FileId, usize)>;
 
 /// The unit's inputs (`spec/model.md` §8.4 "Inputs"), sorted by path and
 /// unique, and each buffer among them with the index of its entry, sorted
-/// by buffer.
+/// by buffer. A buffer of the overlay is its bytes (`original_bytes`); a
+/// consulted path the overlay replaces is the overlay's bytes, never
+/// read from the disk.
 fn collect_inputs(
     fe: &FrontEnd<'_, '_>,
     directory: &Path,
+    overlay: Option<&Overlay>,
 ) -> Result<(Vec<FileRef>, Buffers), String> {
     let sm = fe.sm;
     let mut found: Vec<Candidate> = Vec::new();
     for file in sm.file_ids() {
         let bytes = match sm.file_origin(file) {
             FileOrigin::Virtual => continue,
-            FileOrigin::Disk => sm.original_bytes(file).ok_or_else(|| {
+            FileOrigin::Disk | FileOrigin::Overlay => sm.original_bytes(file).ok_or_else(|| {
                 format!("buffer {} has no bytes although read from disk", sm.file_name(file))
             })?,
             // Only from a module file or a precompiled header: listed when
@@ -674,9 +754,31 @@ fn collect_inputs(
         if found[..buffers_end].iter().any(|(p, ..)| *p == real) {
             continue;
         }
-        let (size, content) = read_consulted(&real)?;
+        let (size, content) = match overlaid_bytes(overlay, &real)? {
+            Some(bytes) => (bytes.len() as u64, content_digest(&bytes)),
+            None => read_consulted(&real)?,
+        };
         found.push((real, size, content, None));
     }
+    merge_inputs(found)
+}
+
+/// The overlay's bytes for the file at `real`, if the overlay replaces it.
+fn overlaid_bytes(overlay: Option<&Overlay>, real: &[u8]) -> Result<Option<Arc<[u8]>>, String> {
+    let Some(overlay) = overlay else { return Ok(None) };
+    match overlay.resolve(&bytes_path(real)?, &mut DirCache::default()) {
+        Resolved::Disk { replaced: Some(c), .. } | Resolved::Created { content: c, .. } => {
+            c.bytes().map(Some).map_err(|e| {
+                format!("the overlay's {} failed to load: {e}", String::from_utf8_lossy(real))
+            })
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `found` sorted by path and made unique: two candidates of one path
+/// that differ are a file that changed during the parse.
+fn merge_inputs(mut found: Vec<Candidate>) -> Result<(Vec<FileRef>, Buffers), String> {
     found.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut inputs: Vec<FileRef> = Vec::with_capacity(found.len());
@@ -745,7 +847,25 @@ fn bytes_path(b: &[u8]) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_bytes, read_consulted};
+    use super::{merge_inputs, path_bytes, read_consulted};
+    use slip_model::hash::content_digest;
+
+    // spec/model.md §8.4 "Inputs" (WP-066): two buffers of one real path
+    // that differ are `Err`; the same bytes twice are one entry. A file
+    // cannot be made to change between two reads of one parse from
+    // outside Kiln, so the rule is checked here, on the candidates.
+    #[test]
+    fn s8_4_inputs_a_file_changed_during_the_parse_is_err() {
+        let one = content_digest(b"one");
+        let two = content_digest(b"two");
+        let path = b"/t/h.h".to_vec();
+        let same = vec![(path.clone(), 3, one, None), (path.clone(), 3, one, None)];
+        let (inputs, _) = merge_inputs(same).expect("one file read twice");
+        assert_eq!(inputs.len(), 1);
+        let changed = vec![(path.clone(), 3, one, None), (path, 3, two, None)];
+        let e = merge_inputs(changed).unwrap_err();
+        assert!(e.contains("changed during the parse"), "{e}");
+    }
 
     // spec/model.md §8.4 "Inputs": a consulted path that cannot be read
     // here (a directory, a file gone since Kiln read it) is `Err`.

@@ -1,9 +1,9 @@
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
-  fc2d99d6 follower - rule=yes n::S<int>::f() of=32ae9afe
+  089ac656 seed - rule=yes n::S::f()
+  fb97e1db follower - rule=yes n::S<int>::f() of=089ac656
 links:
 claims:
-  main.cpp:2:35+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:2:35+1 replace "g" t0 votes=1 none [089ac656]
   main.cpp:3:16+1 keep t0 votes=1 none
-  main.cpp:5:45+1 refuse t0 votes=1 mixed_instances [32ae9afe]
+  main.cpp:5:45+1 refuse t0 votes=1 mixed_instances [089ac656]
 changed:

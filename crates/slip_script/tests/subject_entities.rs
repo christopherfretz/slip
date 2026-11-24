@@ -40,7 +40,7 @@ fn with<R>(files: &[(&str, &str)], f: impl FnOnce(&Parsed<'_>, &KilnSubject<'_>)
 }
 
 /// Options of a real parse with Kiln's two tables, which the subject needs.
-fn written_options() -> slip_kiln::ParseOptions {
+fn written_options() -> slip_kiln::ParseOptions<'static> {
     let mut o = slip_kiln::ParseOptions::default();
     o.written = true;
     o
@@ -1365,8 +1365,8 @@ int da(int x = [] { int dz = 2; return dz; }());
             assert_eq!(d.len(), 1, "{name}: {d:?}");
             decls_at(p, s, s.entity_number(d[0]))
         };
-        let none = Vec::<String>::new();
-        assert_eq!(at_of(DeclKind::Var, "ic"), none, "init-capture: no row (Kiln hole)");
+        // An init-capture has its row since Kiln WP-2470 (it had none).
+        assert_eq!(at_of(DeclKind::Var, "ic"), ["main.cpp:3"], "init-capture");
         assert_eq!(at_of(DeclKind::CXXRecord, "LL"), ["main.cpp:4"], "local class");
         assert_eq!(at_of(DeclKind::Field, "lm"), ["main.cpp:4"], "its member");
         assert_eq!(at_of(DeclKind::Binding, "b1"), ["main.cpp:5"], "binding");

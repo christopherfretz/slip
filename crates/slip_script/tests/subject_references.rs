@@ -341,30 +341,23 @@ fn s6_5_rule4_elaborated_type_specifier_is_a_type_name() {
     });
 }
 
-/// A Kiln hole of the K3 kind (`spec/landed/api/WP-085.md` "For Kiln"):
-/// a qualified elaborated type specifier in a declaration (`struct n::S
-/// *p;`) overwrites the row of the class's definition, with the
-/// specifier's qualifier as the row's. The subject sees that the row's
-/// name is not at the declaration's location and refuses it: the
-/// definition has no name range, and the row's qualifier is not taken
-/// for a declarator's.
+/// Was a Kiln hole of the K3 kind (`spec/landed/api/WP-085.md` "For
+/// Kiln"): a qualified elaborated type specifier in a declaration (`struct
+/// n::S *p;`) overwrote the row of the class's definition. Since Kiln
+/// WP-2470 each written declaration has its own row: the definition's name
+/// is its own token, and the specifier's names are references.
 #[test]
-fn kiln_hole_k3_a_qualified_elaborated_specifier_overwrites_the_row() {
+fn k3_fixed_a_qualified_elaborated_specifier_keeps_the_row() {
     let src = "namespace n { struct S {}; }\nstruct n::S *p;\n";
     main_only(src, |_, s| {
-        // The specifier names a type: both names are references (its row
-        // is the definition's, overwritten, and is not a declarator's).
         assert_eq!(refs(s, one(s, "n::S")), ["main.cpp:S | main.cpp:n::S"]);
         assert_eq!(refs(s, one(s, "n")), ["main.cpp:n | main.cpp:n"]);
-        // The definition's row names line 2's `S`: refused, no name
-        // range; its place is its own token, marked not its own.
         let d = s.declarations(one(s, "n::S")).unwrap();
         let names: Vec<String> =
             d.iter().map(|&d| exact(s, s.name_range(Value::Declaration(d)).unwrap())).collect();
-        assert_eq!(names, ["-"]);
-        assert_eq!(place(s, Value::Declaration(d[0])), "nearest main.cpp:S");
+        assert_eq!(names, ["main.cpp:21..22:S"]);
         let own = s.place(Value::Declaration(d[0]));
-        assert!(matches!(own, PlaceOf::Nearest(r) if r.lo == 21), "{own:?}");
+        assert!(matches!(own, PlaceOf::Own(r) if r.lo == 21), "{own:?}");
     });
 }
 
@@ -659,7 +652,7 @@ fn on_disk<R: Send>(
     got.expect("the closure ran")
 }
 
-fn written_options() -> slip_kiln::ParseOptions {
+fn written_options() -> slip_kiln::ParseOptions<'static> {
     let mut options = slip_kiln::ParseOptions::default();
     options.written = true;
     options
@@ -962,44 +955,42 @@ fn s6_4_rule3_block_scope_and_template_parameters_are_written() {
     });
 }
 
-/// Kiln hole K3 (`spec/landed/edits/WP-067.md`): a later friend
-/// declaration overwrites an earlier declaration's row, whose name is
-/// then the friend's: refused, so the earlier declaration has no name
-/// range, and its place is its own token, marked not its own.
+/// Was Kiln hole K3 (`spec/landed/edits/WP-067.md`): a later friend
+/// declaration overwrote an earlier declaration's row. Since Kiln WP-1932
+/// a friend naming a class declared before it declares nothing (Kiln
+/// `spec/ast.md` §19.5): the earlier declaration's name is its own.
 #[test]
-fn kiln_hole_k3_a_friend_overwrites_the_row() {
+fn k3_fixed_a_friend_keeps_the_row() {
     let src = "struct S;\nstruct T { friend struct S; };\n";
     main_only(src, |_, s| {
         let e = one(s, "S");
         let ds = s.declarations(e).unwrap();
         let names: Vec<String> =
             ds.iter().map(|&d| exact(s, s.name_range(Value::Declaration(d)).unwrap())).collect();
-        // The row names the friend's `S`: refused.
-        assert_eq!(names, ["-"]);
+        assert_eq!(names, ["main.cpp:7..8:S"]);
         let own = s.place(Value::Declaration(ds[0]));
-        assert!(matches!(own, PlaceOf::Nearest(r) if r.lo == 7 && r.hi == 8), "{own:?}");
+        assert!(matches!(own, PlaceOf::Own(r) if r.lo == 7 && r.hi == 8), "{own:?}");
     });
 }
 
-/// Kiln hole (`spec/landed/edits/WP-067.md`): an init-capture has no row,
-/// so it is no written declaration today.
+/// Was a Kiln hole (`spec/landed/edits/WP-067.md`): an init-capture had
+/// no row. Since Kiln WP-2470 it has one: a written declaration.
 #[test]
-fn kiln_hole_an_init_capture_has_no_row() {
+fn an_init_capture_has_its_row() {
     let src = "void g() { auto l = [ic = 1] { return ic; }; (void)l; }\n";
     main_only(src, |p, s| {
-        for i in 1..=p.ast.decls.len() as u32 {
-            let d = Declaration(i);
-            if s.is_live(Value::Declaration(d)) {
-                assert_ne!(s.identifier(Value::Declaration(d)).unwrap(), b"ic");
-            }
-        }
+        let declared = (1..=p.ast.decls.len() as u32).map(Declaration).any(|d| {
+            s.is_live(Value::Declaration(d))
+                && s.identifier(Value::Declaration(d)).unwrap() == b"ic"
+        });
+        assert!(declared, "the init-capture is a declaration");
         // Its reference is returned.
         let r: Vec<Reference> = all(s)
             .into_iter()
             .filter(|&r| s.identifier(Value::Reference(r)).unwrap() == b"ic")
             .collect();
         assert_eq!(r.len(), 1);
-        assert_eq!(place(s, Value::Entity(s.referent(r[0]))), "nowhere");
+        assert_eq!(place(s, Value::Entity(s.referent(r[0]))), "own main.cpp:ic");
     });
 }
 

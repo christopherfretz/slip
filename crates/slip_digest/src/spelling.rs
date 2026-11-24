@@ -202,7 +202,9 @@ fn takes_part(role: Role) -> bool {
         | Role::Elaborated
         | Role::SpecTarget
         | Role::Concept
-        | Role::Designator => true,
+        | Role::Designator
+        // The qualified declarator-id of a redeclaration (Kiln WP-1932).
+        | Role::Redecl => true,
     }
 }
 
