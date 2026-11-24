@@ -493,13 +493,18 @@ fn s5_1_verify_a_correct_rename() {
 // id, so that the binding is the only difference).
 #[test]
 fn s9_3_a_shard_bound_to_another_overlay() {
-    use slip_verify::run::{Header, Report, State};
+    use slip_verify::run::{Header, MapShard, Report, State};
     let tree = Tree::new("other-overlay");
     let r = tree.map_and_reduce();
     let (ovly, overlay) = tree.publish_overlay(&r.set, r.set_id);
     let o = tree.observer("a.cpp");
     let shard = tree.verify_task(&o, ovly, r.declared_id).unwrap();
     assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    // The map shard the verdict was made against (WP-114: `Report` reads
+    // its status and content id).
+    let bytes = tree.store.read_shard(&tree.plan_id, Phase::Map, ROUND, &o.id).unwrap().unwrap();
+    let (map, map_id) = Shard::from_bytes_with_id(&bytes).unwrap();
+    let map = MapShard::Read { status: map.outcome.status, id: map_id };
     let report = |run_overlay: Digest| {
         let header = Header {
             plan: tree.plan_id,
@@ -515,7 +520,7 @@ fn s9_3_a_shard_bound_to_another_overlay() {
         let mut report = Report::new(header, &r.declared);
         report.pre_round(ROUND);
         report.overlay(run_overlay, &overlay);
-        report.add(&o.id, &o.main.path, Some(&shard), Some(Status::Ok));
+        report.add(&o.id, &o.main.path, Some(&shard), Some(map));
         report
     };
     let ours = report(ovly);
@@ -761,8 +766,8 @@ fn interface_loads_only_what_the_observer_reads() {
 }
 
 // docs/wp/WP-114.md, WP-074 item 3: a verify job with a tree image never
-// has `spellings`, with rules or without; its `binding`, when present, has
-// no overlay.
+// has `spellings`, with rules or without; it always has a `binding`, with
+// no overlay (WP-114: every shard not `failed`).
 #[test]
 fn s10_4_a_tree_image_has_no_spellings() {
     let tree = Tree::new("tree");
@@ -777,9 +782,10 @@ fn s10_4_a_tree_image_has_no_spellings() {
         assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
         assert!(shard.spellings.is_none());
         assert!(counter(&shard, "verify.spelling.obligations").is_none());
-        if let Some(b) = shard.binding {
-            assert_eq!(b.overlay, None);
-        }
+        let b = shard.binding.expect("WP-114: every shard not failed has a binding");
+        assert_eq!(b.overlay, None);
+        assert_eq!(b.declared, declared);
+        assert_eq!(b.pre, ROUND);
     }
 }
 

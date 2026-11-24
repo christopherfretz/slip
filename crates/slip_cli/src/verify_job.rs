@@ -3,10 +3,10 @@
 //! verdict. Work package WP-052.
 //!
 //! [`verify`] does steps 0 to 6 of §5.2 with every guard of §5.3, writes
-//! the post shard of §5.4 and the counters of §7.2; under a rule table
-//! that is not empty, the shard's `binding` and `rule_use` of §9.1 (work
-//! package WP-121; with an empty table the shard is M1's, without
-//! either). It takes everything
+//! the post shard of §5.4 and the counters of §7.2; the shard's `binding`
+//! of §9.1 in every shard (work package WP-114; under a rule table that is
+//! not empty since WP-121), and its `rule_use` in an `ok` shard under a
+//! rule table that is not empty (WP-121). It takes everything
 //! it is parameterised by from [`Params`]; it reads neither the job's
 //! `post` nor the worker's arguments (`spec/exec.md` §8.6).
 //!
@@ -230,11 +230,10 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
 /// (`Input::subject_path` maps the real path, never the path as the front
 /// end spells it; `spec/verify.md` §2.1), and the lookups for L1.
 ///
-/// §9.1: under a rule table that is not empty the shard has `binding`,
-/// whatever the parse's outcome (a `failed` one would be the
-/// coordinator's, which has none), and the walk counts the rule use. With
-/// an empty table the shard is M1's (§9.3's temporary exception), byte
-/// for byte.
+/// §9.1: the shard has `binding`, whatever the parse's outcome and the
+/// rule table (a `failed` one would be the coordinator's, which has none;
+/// WP-114 removed §9.3's exception for a tree image and no rule); under a
+/// rule table that is not empty the walk counts the rule use.
 fn post_walk(
     params: &Params,
     observer: &Observer,
@@ -259,11 +258,7 @@ fn post_walk(
             digest_kept(input, &options, kept)
         })
         .map(|(mut shard, output)| {
-            // An overlay image is not parsed here (`overlay_walk`); the
-            // condition keeps WP-121's tree form, which WP-114 widens.
-            if (!rules.is_empty() || params.image.overlay_id().is_some())
-                && shard.outcome.status != Status::Failed
-            {
+            if shard.outcome.status != Status::Failed {
                 shard.binding = Some(binding(params));
             }
             (shard, output)
