@@ -391,9 +391,12 @@ struct Impl {
     /// The literal of the file name it points to (always one: below,
     /// [`impl_file`]).
     file: Option<StringLitId>,
-    /// The literal of the function name it points to: the relocation
-    /// whose string is not the file's (role [`Role::Pretty`]); what its
-    /// `function_name()` returns, fed to the names digest (WP-112).
+    /// The literal of the function name it points to: the relocation at
+    /// the `_M_function_name` field (role [`Role::Pretty`],
+    /// [`impl_field_offset`]); what its `function_name()` returns, fed to
+    /// the names digest (WP-112). `None` where that field or its pointer
+    /// is not found: every use of the object is then indeterminate,
+    /// [`IMPL_NAME_CAUSE`] (WP-145 item 1).
     pretty: Option<StringLitId>,
 }
 
@@ -494,7 +497,7 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 continue;
             };
             if let ConstValue::Aggregate(ByteImage {
-                ty: _,
+                ty,
                 bytes: _,
                 relocs,
                 padding: _,
@@ -509,10 +512,15 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 let n = ordinals.entry(group).or_insert(0);
                 let this = *n;
                 *n += 1;
-                let file_origin = origin_of(file);
-                let pretty = relocs
-                    .iter()
-                    .find(|r| origin_of(r.value) != file_origin)
+                // The two strings are told apart by the field that
+                // points to each, never by their objects: Kiln makes one
+                // string object per content, so a file named as the
+                // function's pretty name is one object with it
+                // (WP-145 item 1).
+                let name_at = impl_field_offset(ast, ty, FUNCTION_NAME_FIELD);
+                let file_at = impl_field_offset(ast, ty, FILE_NAME_FIELD);
+                let pretty = name_at
+                    .and_then(|at| relocs.iter().find(|r| r.at == at))
                     .and_then(|r| lit_of(r.value));
                 nv.objects.entry(obj.index()).or_insert(Impl {
                     group,
@@ -520,9 +528,14 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                     file: lit_of(file),
                     pretty,
                 });
-                for &Reloc { at: _, value } in relocs {
-                    let role =
-                        if origin_of(value) == file_origin { Role::File } else { Role::Pretty };
+                for &Reloc { at, value } in relocs {
+                    // A pointer no field accounts for counts as the
+                    // file's: its object's bytes are written.
+                    let role = if Some(at) == name_at && Some(at) != file_at {
+                        Role::Pretty
+                    } else {
+                        Role::File
+                    };
                     add(&mut nv, value, role);
                 }
             }
@@ -530,6 +543,47 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
         (nv.bodies, nv.split) = definition_extents(ast, sm);
         nv
     })
+}
+
+/// The field of `std::source_location::__impl` that points to the
+/// function name (`kiln_sema/src/builtins.rs` `source_location_object`).
+const FUNCTION_NAME_FIELD: &str = "_M_function_name";
+
+/// The field of `std::source_location::__impl` that points to the file
+/// name.
+const FILE_NAME_FIELD: &str = "_M_file_name";
+
+/// The cause of a use that built an `__impl` object whose function name
+/// is not found by its field ([`impl_field_offset`]): the unit is
+/// indeterminate rather than written as if the object had no name
+/// (WP-145 item 1).
+pub(crate) const IMPL_NAME_CAUSE: Cause = Cause::Unaccounted("value/source-location.function-name");
+
+/// The byte offset, in an `__impl` object of the record type `ty`, of
+/// the field `name`: the field found by its member, its offset by Kiln's
+/// layout of the record, as `kiln_sema/src/builtins.rs`
+/// `source_location_object` placed it (the fields of the definition in
+/// declaration order, beside `RecordLayout::fields`). `None` where `ty`
+/// is no record with a layout and such a field.
+fn impl_field_offset(
+    ast: &slip_kiln::kiln::ast::Ast,
+    ty: slip_kiln::kiln::ast::QualType,
+    name: &str,
+) -> Option<u32> {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_kiln::kiln::ast::types::TypeView;
+    let TypeView::Record(d) = ast.types.view(ty.ty()) else { return None };
+    let def = ast.definition(d)?;
+    let layout = ast.layouts.get(ast.first(d))?;
+    let i =
+        ast.members(def).filter(|&m| ast.decls.get(m).kind() == DeclKind::Field).position(|m| {
+            ast.decls.get(m).name().as_ident().is_some_and(|id| ast.symbols().as_str(id) == name)
+        })?;
+    let bits = *layout.fields.get(i)?;
+    if !bits.is_multiple_of(8) {
+        return None;
+    }
+    u32::try_from(bits / 8).ok()
 }
 
 /// The declaration that holds each use of `uses` that builds an `__impl`
@@ -852,6 +906,9 @@ fn write_location(w: &mut Walk<'_>, s: &mut Stream, obj: ConstValueId) {
     let Impl { group, n, file, pretty } = name_values(w).objects[&obj.index()];
     let ast = w.ast;
     feed_impl(w, pretty.map(|lit| ast.strings.get(lit).1));
+    if pretty.is_none() {
+        s.indeterminate(IMPL_NAME_CAUSE);
+    }
     match group {
         Group::Function(f) => {
             w.write_ref(s, f);
@@ -957,8 +1014,8 @@ fn feed_const(w: &mut Walk<'_>, cx: &Ctx, c: ConstValueId) {
 pub(crate) enum ImplObject {
     /// Not an `__impl` object a `__builtin_source_location()` use built.
     Other,
-    /// Such an object, with its function name's literal (`None` for a use
-    /// that built none).
+    /// Such an object, with its function name's literal (`None` where it
+    /// is not found: the use is indeterminate, [`IMPL_NAME_CAUSE`]).
     Impl(Option<StringLitId>),
 }
 

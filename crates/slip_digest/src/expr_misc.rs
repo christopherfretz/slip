@@ -179,7 +179,7 @@ pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let n = node(w, e);
     source_loc_expr_of(s, &n);
     if matches!(source_loc(n.aux), Some(SourceLocKind::Function | SourceLocKind::SourceLocStruct)) {
-        feed_source_loc_values(w, e, source_loc(n.aux));
+        feed_source_loc_values(w, s, e, source_loc(n.aux));
         crate::local::write_scope_names(w, s);
     }
 }
@@ -189,7 +189,14 @@ pub(crate) fn source_loc_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 /// `__builtin_FUNCTION()`, the `__impl` object's for
 /// `__builtin_source_location()`. Nothing for the other kinds (the file,
 /// the line and the column are not fed) nor where Kiln recorded no value.
-fn feed_source_loc_values(w: &mut Walk<'_>, e: ExprId, kind: Option<SourceLocKind>) {
+/// An `__impl` object whose function name is not found makes the unit
+/// indeterminate ([`crate::value::IMPL_NAME_CAUSE`]).
+fn feed_source_loc_values(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    e: ExprId,
+    kind: Option<SourceLocKind>,
+) {
     let ast = w.ast;
     let Some(&v) = ast.exprs.cold.source_loc.get(e) else { return };
     match kind {
@@ -204,6 +211,9 @@ fn feed_source_loc_values(w: &mut Walk<'_>, e: ExprId, kind: Option<SourceLocKin
                 crate::value::impl_function_name(w, location)
             {
                 crate::value::feed_impl(w, pretty.map(|l| ast.strings.get(l).1));
+                if pretty.is_none() {
+                    s.indeterminate(crate::value::IMPL_NAME_CAUSE);
+                }
             }
         }
         Some(
@@ -269,14 +279,18 @@ impl Under {
 /// What one default reaches, in walk order: each source-location builtin
 /// of kind `Function` or `SourceLocStruct`, with the invocations above it
 /// inside the default (nested defaults included). `Err` with the cause
-/// where the walk gave up ([`REACH_LIMIT`]).
-pub(crate) type Reached = Result<std::rc::Rc<[(SourceLocKind, Under)]>, Cause>;
+/// where the walk gave up ([`REACH_LIMIT`]). `Ok` also holds the
+/// default's nesting: the defaults on its deepest chain of nested
+/// defaults, itself counted.
+pub(crate) type Reached = Result<(std::rc::Rc<[(SourceLocKind, Under)]>, usize), Cause>;
 
 /// The nodes one default's own expression may have (nested defaults are
 /// each counted on their own), and the nesting of defaults: past either,
 /// the use is indeterminate, `Unsupported("default/reach-limit")`. Each
 /// default is walked once per translation unit (memoised by
-/// [`Walk::default_reach`]), so the bound only refuses a default too
+/// [`Walk::default_reach`], but for a nesting past the bound below the
+/// default the walk began from: [`reach_default`]), so the bound only
+/// refuses a default too
 /// large to be anything a program writes; it is never shared between
 /// defaults.
 pub(crate) const REACH_LIMIT: usize = 1 << 16;
@@ -306,7 +320,7 @@ fn default_reach_within(
     let Some(d) = default_of(w, e) else { return Ok(Vec::new()) };
     let mut walking = Vec::new();
     let (found, _) = reach_default(w, d, &mut walking, limit);
-    Ok(found?.iter().map(|&(k, u)| (k, u.reach())).collect())
+    Ok(found?.0.iter().map(|&(k, u)| (k, u.reach())).collect())
 }
 
 /// The default a use `e` evaluates: the one rebuilt for it, else the
@@ -322,38 +336,75 @@ fn default_of(w: &Walk<'_>, e: ExprId) -> Option<ExprId> {
     x.default_arg_rewritten(e).or(shared)
 }
 
+/// Whether an answer of [`reach_default`] depends on where the walk
+/// began, and so may not be memoised where it was found.
+#[derive(Clone, Copy, Debug, Default)]
+struct Taint {
+    /// It met a default already being walked (`walking`: a default that
+    /// reaches itself, which contributes nothing the second time).
+    cycle: bool,
+    /// It met the nesting limit: whether it does depends on how deep in
+    /// the stack the default was entered.
+    depth: bool,
+}
+
+impl Taint {
+    fn own(self) -> bool {
+        !self.cycle && !self.depth
+    }
+
+    fn join(&mut self, other: Taint) {
+        self.cycle |= other.cycle;
+        self.depth |= other.depth;
+    }
+}
+
 /// What the default expression `d` reaches, and whether that answer is
-/// its own: false when it met a default already being walked
-/// (`walking`, a default that reaches itself, which contributes nothing
-/// the second time), since the answer then depends on where the walk
-/// began and is not memoised. A default is walked once per translation
-/// unit otherwise; `limit` bounds its own nodes.
+/// its own ([`Taint`]). A default whose answer is its own is walked once
+/// per translation unit and memoised with its nesting (the defaults on
+/// its deepest chain, itself counted); `limit` bounds its own nodes and
+/// the nesting, so a memoised answer met with defaults already on the
+/// stack is past the limit where their number and its nesting together
+/// pass it. The verdict is so the
+/// same wherever the walk began (digest §9): a default whose nesting
+/// passes `limit` is indeterminate from every starting point, one under
+/// it determinate from every starting point. A depth error is memoised
+/// only at the root that met it (where the stack was empty: its nesting
+/// alone passes the limit), never below it (WP-145 item 2).
 fn reach_default(
     w: &mut Walk<'_>,
     d: ExprId,
     walking: &mut Vec<ExprId>,
     limit: usize,
-) -> (Reached, bool) {
+) -> (Reached, Taint) {
     if let Some(r) = w.default_reach.get(&d) {
-        return (r.clone(), true);
+        return match r {
+            Ok((_, height)) if walking.len() + height > limit => {
+                (Err(REACH_LIMIT_CAUSE), Taint { cycle: false, depth: true })
+            }
+            Ok(_) | Err(_) => (r.clone(), Taint::default()),
+        };
     }
     if walking.contains(&d) {
-        return (Ok(std::rc::Rc::from(Vec::new())), false);
+        return (Ok((std::rc::Rc::from(Vec::new()), 0)), Taint { cycle: true, depth: false });
     }
-    if walking.len() >= REACH_LIMIT {
-        return (Err(REACH_LIMIT_CAUSE), true);
+    if walking.len() >= limit {
+        return (Err(REACH_LIMIT_CAUSE), Taint { cycle: false, depth: true });
     }
+    let root = walking.is_empty();
     walking.push(d);
     let mut out = Vec::new();
     let mut budget = limit;
-    let mut own = true;
-    let r = reach(w, d, Under::Nothing, &mut out, &mut budget, walking, &mut own, limit);
+    let mut taint = Taint::default();
+    let mut below = 0;
+    let r =
+        reach(w, d, Under::Nothing, &mut out, &mut budget, walking, &mut taint, &mut below, limit);
     walking.pop();
-    let found: Reached = r.map(|()| std::rc::Rc::from(out));
-    if own {
+    let found: Reached = r.map(|()| (std::rc::Rc::from(out), below + 1));
+    if taint.own() || (root && !taint.cycle) {
         w.default_reach.insert(d, found.clone());
     }
-    (found, own)
+    (found, taint)
 }
 
 /// [`reach_default`] of the expression `e`, under the invocations `under`.
@@ -365,7 +416,8 @@ fn reach(
     out: &mut Vec<(SourceLocKind, Under)>,
     budget: &mut usize,
     walking: &mut Vec<ExprId>,
-    own: &mut bool,
+    taint: &mut Taint,
+    below: &mut usize,
     limit: usize,
 ) -> Result<(), Cause> {
     if *budget == 0 {
@@ -385,19 +437,21 @@ fn reach(
         ExprKind::CXXDefaultArgExpr | ExprKind::CXXDefaultInitExpr => {
             if let Some(d) = default_of(w, e) {
                 let (found, mine) = reach_default(w, d, walking, limit);
-                *own &= mine;
-                out.extend(found?.iter().map(|&(k, u)| (k, under.then(u))));
+                taint.join(mine);
+                let (items, height) = found?;
+                *below = (*below).max(height);
+                out.extend(items.iter().map(|&(k, u)| (k, under.then(u))));
             }
             return Ok(());
         }
         ExprKind::ConstantExpr => {
             let inner = under.enter(is_source_location_current(w, e));
-            return reach(w, x.operand(e), inner, out, budget, walking, own, limit);
+            return reach(w, x.operand(e), inner, out, budget, walking, taint, below, limit);
         }
         _ => {}
     }
     for c in x.children(e, &ast.lists) {
-        reach(w, c, under, out, budget, walking, own, limit)?;
+        reach(w, c, under, out, budget, walking, taint, below, limit)?;
     }
     Ok(())
 }
@@ -492,10 +546,15 @@ pub(crate) fn default_use_names(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
         // The use's value: the plain name of `__builtin_FUNCTION()`, the
         // `__impl` object's of `__builtin_source_location()`; `known` is
         // false where Kiln built neither (nothing is fed, as at a
-        // `SourceLocExpr`).
+        // `SourceLocExpr`). An object whose name is not found by its
+        // field makes the unit indeterminate (WP-145 item 1), never
+        // nameless.
         let (known, bytes) = if pretty {
             match values.location.map(|loc| crate::value::impl_function_name(w, loc)) {
                 Some(crate::value::ImplObject::Impl(p)) => {
+                    if p.is_none() {
+                        s.indeterminate(crate::value::IMPL_NAME_CAUSE);
+                    }
                     (true, p.map(|lit| ast.strings.get(lit).1))
                 }
                 Some(crate::value::ImplObject::Other) | None => (false, None),
@@ -1169,6 +1228,71 @@ mod reach_tests {
                 default_reach_within(w, uses[0], 1000),
                 Ok(vec![(SourceLocKind::Function, Reach::Passed)])
             );
+        });
+    }
+
+    // digest §9 "Defaults at a use" (WP-145 item 2): the nesting limit
+    // gives the same verdict wherever the walk began. A chain
+    // `c7 -> c6 -> ... -> c0` of nested defaults at a lowered limit: a
+    // use whose nesting passes the limit is indeterminate, one under it
+    // determinate, in ascending, descending and mixed order and with each
+    // use first on a fresh memo (the memo neither spreads
+    // a depth error to a shorter chain nor lets a longer one through).
+    #[test]
+    fn the_nesting_limit_does_not_depend_on_the_order() {
+        const LIMIT: usize = 4;
+        let mut src = String::from("const char *c0(const char *p = __builtin_FUNCTION());\n");
+        src.extend((1..=7).map(|k| format!("const char *c{k}(const char *p = c{}());\n", k - 1)));
+        src.push_str("void f() { c7(); }\n");
+        with_walk(&src, |w| {
+            let n = u32::try_from(w.ast.exprs.len()).unwrap();
+            // Each use with its nesting: a use of `ck`'s default reaches
+            // `k + 1` defaults.
+            let uses: Vec<(ExprId, usize)> = (1..=n)
+                .filter_map(ExprId::try_new)
+                .filter(|&e| w.ast.exprs.get(e).kind() == ExprKind::CXXDefaultArgExpr)
+                .map(|e| {
+                    let param = w.ast.exprs.default_arg_param(e);
+                    let f = w.ast.decls.get(param).ctx().expect("a function");
+                    let name = w.ast.decls.get(f).name().as_ident().expect("a name");
+                    let k: usize = w.ast.symbols().as_str(name)[1..].parse().expect("ck");
+                    (e, k + 1)
+                })
+                .collect();
+            assert!(uses.iter().any(|&(_, n)| n > LIMIT) && uses.iter().any(|&(_, n)| n <= LIMIT));
+            let mut ascending = uses.clone();
+            ascending.sort_by_key(|&(_, n)| n);
+            let mut descending = ascending.clone();
+            descending.reverse();
+            // The deepest first, then the shallowest, then the rest.
+            let mut mixed = descending.clone();
+            let last = mixed.len() - 1;
+            mixed.swap(1, last);
+            // Each use first on a fresh memo, then the rest from the
+            // shallowest: a walk begun at `c5` meets the limit with `c2`
+            // (nesting 3) on the stack, which must stay determinate.
+            let firsts = ascending.iter().map(|&first| {
+                let mut order = vec![first];
+                order.extend(ascending.iter().copied().filter(|&u| u != first));
+                order
+            });
+            let orders: Vec<Vec<(ExprId, usize)>> =
+                [ascending.clone(), descending, mixed].into_iter().chain(firsts).collect();
+            for order in orders {
+                w.default_reach.clear();
+                for &(e, nesting) in &order {
+                    let got = default_reach_within(w, e, LIMIT);
+                    if nesting > LIMIT {
+                        assert_eq!(got, Err(REACH_LIMIT_CAUSE), "nesting {nesting}");
+                    } else {
+                        assert_eq!(
+                            got,
+                            Ok(vec![(SourceLocKind::Function, Reach::Passed)]),
+                            "nesting {nesting}"
+                        );
+                    }
+                }
+            }
         });
     }
 }

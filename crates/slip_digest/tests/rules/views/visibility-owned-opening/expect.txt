@@ -1,0 +1,5 @@
+# The moved opening carries a visibility attribute, which applies to its own declarations only.
+# WP-140: changed acme, a stated limit that fails closed: the namespace's one digest holds the
+# attribute, which the members' own rows hold already (option B+ was not taken).
+changed acme
+use 1 via 1 direct 0

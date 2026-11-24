@@ -1,5 +1,8 @@
 # Pitfall row N34, bad-3: inner.h is a dependency file, so Inner is the
 # dependency's; moved into acme it is a new entity, and legacy::Inner is gone.
+# WP-140: the owned acme has a dependency member (Inner), so it has a unit in the
+# dependency view too: `added acme (the dependency's part of acme)`, which the pre-image has not.
 changed user()
+added acme (the dependency's part of acme)
 added acme::Inner
 removed legacy::Inner

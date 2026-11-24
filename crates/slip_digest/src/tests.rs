@@ -225,6 +225,8 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         default_argument: None,
         owner: None,
         collided: false,
+        view: None,
+        denotes: None,
     }
 }
 
@@ -681,4 +683,90 @@ fn a_unit_without_a_key_is_kept() {
         };
         assert_eq!(u.key, want.id());
     });
+}
+
+/// A view unit's key, its namespace's own key, its digest, its own unit's
+/// digest, and its view (`view_units_of`).
+type ViewUnit = (Digest, Digest, Digest, Digest, Option<bool>);
+
+/// The view units (`units::view_units`) of `files` (the first is the main
+/// file) under `rules`, with every file named in `read_only` read-only:
+/// for each, its key, the key and digest of its namespace's own unit and
+/// its view; and the rule use.
+fn view_units_of(
+    files: &[(&str, &str)],
+    read_only: &[&str],
+    rules: &RuleTable,
+) -> (Vec<ViewUnit>, Vec<slip_model::agreement::Use>) {
+    let snippet =
+        slip_kiln::snippet::Snippet { files, main: files[0].0, include: &[""], std: "c++20" };
+    slip_kiln::snippet::parse(&snippet, |p| {
+        assert_eq!(p.errors, 0, "{}", p.diagnostics);
+        let ro: Vec<slip_kiln::kiln::source::FileId> =
+            p.sm.file_ids()
+                .filter(|&f| read_only.iter().any(|r| p.sm.file_name(f).ends_with(r)))
+                .collect();
+        assert_eq!(ro.len(), read_only.len(), "every read-only file is a buffer");
+        let pred = move |f: slip_kiln::kiln::source::FileId| ro.contains(&f);
+        let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+        let options = Options {
+            rules,
+            read_only: crate::ReadOnly::new(&pred),
+            detail: Detail::None,
+            names: false,
+            rule_use: true,
+        };
+        crate::walk::run_with(&input, &options, |_, written, out| {
+            let views = written
+                .iter()
+                .filter(|u| u.view.is_some())
+                .map(|v| {
+                    let own = written
+                        .iter()
+                        .find(|u| u.view.is_none() && u.entity == v.entity)
+                        .expect("the namespace's own unit");
+                    (v.key, own.key, v.digest, own.digest, v.view)
+                })
+                .collect();
+            (views, out.rule_use)
+        })
+    })
+    .expect("the snippet parses")
+}
+
+// WP-140 (`spec/digest.md` §3.4, `units::view_units`): a namespace that a
+// read-only file and owned code both open has a unit in the owned view
+// when that view's key differs from its own: one, whatever the number of
+// owned openings, with the namespace's own digest, and the rule that
+// matched its key counts `via` once (mutants: the unit written when the
+// keys are equal, which the dedup of `groups::build` would hide from every
+// `Output`; `via` counted per opening). Under a rule that matches nothing
+// the keys are equal and no unit is written; under the empty table none
+// is, and with no read-only file there is no second view.
+#[test]
+fn wp140_a_view_unit_only_where_its_key_differs() {
+    let files = [
+        (
+            "main.cpp",
+            "#include \"dep.h\"\nnamespace acme { int g(int); }\nnamespace acme { int h(int); }\n",
+        ),
+        ("dep.h", "namespace acme { struct Dep {}; }\n"),
+    ];
+    let moved = RuleTable::new(vec![rename_rule("acme", "legacy")]).expect("a valid rule");
+    let (views, uses) = view_units_of(&files, &["dep.h"], &moved);
+    assert_eq!(views.len(), 1, "{views:?}");
+    let (key, own, digest, own_digest, view) = views[0];
+    assert_ne!(key, own);
+    assert_eq!(digest, own_digest, "the namespace's one digest");
+    assert_eq!(view, Some(true));
+    assert_eq!(uses, [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]);
+    let inert =
+        RuleTable::new(vec![rename_rule("slip_wp140_none", "legacy")]).expect("a valid rule");
+    let (views, uses) = view_units_of(&files, &["dep.h"], &inert);
+    assert_eq!((views.len(), uses.len()), (0, 0), "{views:?}");
+    let (views, _) = view_units_of(&files, &["dep.h"], &RuleTable::empty());
+    assert!(views.is_empty());
+    let (views, _) = view_units_of(&files, &[], &moved);
+    assert!(views.is_empty(), "every file owned: one view");
 }

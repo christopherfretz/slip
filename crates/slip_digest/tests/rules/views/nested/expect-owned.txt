@@ -1,0 +1,6 @@
+# Every file owned: no two views.
+added acme::detail::D
+removed acme
+removed acme::detail
+removed acme::detail::D
+use 1 via 1 direct 0

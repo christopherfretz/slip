@@ -1,0 +1,5 @@
+# Row (b): the same moved by a rule per member, no namespace rule: g's keys agree, acme keeps its own
+# key, and the pre-image's legacy, which nothing opens now, is gone: a declared removal.
+# WP-140: removed legacy only (a declared removal of legacy verifies it).
+removed legacy
+use 1 via 1 direct 0

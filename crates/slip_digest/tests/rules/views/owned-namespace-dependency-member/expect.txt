@@ -1,0 +1,4 @@
+# An owned acme (no read-only opening) holding a read-only header's Inner; legacy::g moves into it.
+# WP-140: the owned acme has a dependency member (Inner), so a unit in the dependency view
+# (acme, unmapped) partners the pre-image's acme: equal.
+use 1 via 1 direct 0

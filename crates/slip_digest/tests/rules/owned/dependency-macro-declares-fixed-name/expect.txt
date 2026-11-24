@@ -1,7 +1,10 @@
 # Flipped in the WP-110 fix round: Thing's name is spelled in dep.h, so Thing
 # is a dependency entity, keyed as declared (legacy::Thing in A, acme::Thing
 # in B): the dependency's binary may define it.
+# WP-140: the owned acme has dependency members, so it has a unit in the dependency
+# view too (acme, unmapped), which the pre-image has not: `added acme (the dependency's part of acme)`.
 changed use()
+added acme (the dependency's part of acme)
 added acme::Thing
 added acme::Thing::v
 removed legacy::Thing

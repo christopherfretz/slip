@@ -1,5 +1,4 @@
 # The member S is keyed in its own (owned) view all the way up: mid and acme
-# are the dependency's in B, so only the namespace units only owned code
-# opened are gone (declarable removals).
-removed legacy
-removed legacy::mid
+# are the dependency's in B. WP-140: each has a unit in the owned view (by
+# opening, and mid by its owned member), keyed legacy::mid and legacy: the
+# pre-image's units have their partners. Equal.

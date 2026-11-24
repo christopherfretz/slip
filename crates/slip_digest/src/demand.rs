@@ -222,6 +222,8 @@ fn write_part(
         default_argument: owner.default_argument,
         owner: Some(owner.key),
         collided: false,
+        view: None,
+        denotes: None,
     }
 }
 
