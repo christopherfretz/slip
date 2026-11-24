@@ -2189,7 +2189,7 @@ fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
 }
 
 /// A case-sensitive tree (a name is found only as made) in which `/home`
-/// can be searched but not listed, as a shared `/home` is for a user.
+/// can be searched but not listed, as a shared `/home` is for a user (here `/srv`).
 struct Unlistable(Vec<(Vec<u8>, Vec<u8>)>);
 
 impl Tree for Unlistable {
@@ -2229,7 +2229,7 @@ impl Tree for Unlistable {
         Ok(())
     }
     fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
-        if d == b"/home" {
+        if d == b"/srv" {
             return Err(err(io::ErrorKind::PermissionDenied, "Permission denied"));
         }
         let prefix = if d == b"/" { b"/".to_vec() } else { [d, b"/"].concat() };
@@ -2262,8 +2262,8 @@ impl Tree for Unlistable {
 /// one that is not still lists `/home` and fails, `Io`.
 #[test]
 fn s2_1_a_directory_that_cannot_be_listed() {
-    let tree = Unlistable(vec![(b"/home/alice/w/a.cc".to_vec(), b"a".to_vec())]);
-    let own = Ownership { owned: vec![b"/home/alice/w".to_vec()], readonly: vec![] };
-    let (o, _) = one_file("/home/alice/w/a.cc", b"a", b"b");
+    let tree = Unlistable(vec![(b"/srv/alice/w/a.cc".to_vec(), b"a".to_vec())]);
+    let own = Ownership { owned: vec![b"/srv/alice/w".to_vec()], readonly: vec![] };
+    let (o, _) = one_file("/srv/alice/w/a.cc", b"a", b"b");
     assert_eq!(slip_apply::check_owned(&o, &own, &tree), Ok(()));
 }

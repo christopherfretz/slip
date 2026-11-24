@@ -302,14 +302,14 @@ fn an_overlay_device_is_listed() {
 /// it must be listed, `Unlistable` names it.
 #[test]
 fn a_directory_that_cannot_be_listed() {
-    let s = Spelling::new(Fake::new().file("/home/u/a.cc", 1).unlistable("/home").consistent(1));
-    assert_eq!(ok(&s, "/home/u/a.cc"), "/home/u/a.cc");
-    assert_eq!(s.lookup().listings_of("/home"), 0);
+    let s = Spelling::new(Fake::new().file("/srv/u/a.cc", 1).unlistable("/srv").consistent(1));
+    assert_eq!(ok(&s, "/srv/u/a.cc"), "/srv/u/a.cc");
+    assert_eq!(s.lookup().listings_of("/srv"), 0);
 
-    let s = Spelling::new(Fake::new().file("/home/u/a.cc", 1).unlistable("/home"));
-    let got = on_disk(&s, "/home/u/a.cc");
+    let s = Spelling::new(Fake::new().file("/srv/u/a.cc", 1).unlistable("/srv"));
+    let got = on_disk(&s, "/srv/u/a.cc");
     let Err(SpellingError::Unlistable { dir, .. }) = got else { panic!("{got:?}") };
-    assert_eq!(dir, b"/home");
+    assert_eq!(dir, b"/srv");
 }
 
 /// A hard link in another case in a case-sensitive directory: the probe
