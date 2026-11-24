@@ -2146,9 +2146,10 @@ struct Unlistable(Vec<(Vec<u8>, Vec<u8>)>);
 
 impl Tree for Unlistable {
     fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
-        let exists = self.0.iter().any(|(f, _)| {
-            f == p || (f.starts_with(p) && f.get(p.len()) == Some(&b'/'))
-        });
+        let exists = self
+            .0
+            .iter()
+            .any(|(f, _)| f == p || (f.starts_with(p) && f.get(p.len()) == Some(&b'/')));
         Ok(exists.then_some(Stat {
             regular: true,
             links: 1,

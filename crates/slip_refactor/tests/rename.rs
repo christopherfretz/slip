@@ -2061,7 +2061,7 @@ fn rename_of_a_dependency(name: &str, include: &str) -> (String, slip_reduce::Re
         [("dep/x.h", b"namespace n { void f(); }\n"), ("a.cpp", main.as_bytes())];
     let root = std::cell::RefCell::new(String::new());
     let t = |r: &str| {
-        *root.borrow_mut() = r.to_owned();
+        r.clone_into(&mut root.borrow_mut());
         Transform {
             kind: TransformKind::Rename,
             ownership: Ownership {
@@ -2152,6 +2152,7 @@ fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
     let r = reduced(name, &t, shards);
     let files: Vec<String> =
         r.edits.files.iter().map(|f| String::from_utf8_lossy(&f.path).into_owned()).collect();
-    let headers: Vec<&String> = files.iter().filter(|p| p.to_ascii_lowercase().ends_with("/h.h")).collect();
+    let headers: Vec<&String> =
+        files.iter().filter(|p| p.to_ascii_lowercase().ends_with("/h.h")).collect();
     assert_eq!(headers.len(), 1, "one name for the header: {files:?}");
 }
