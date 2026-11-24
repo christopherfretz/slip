@@ -209,6 +209,7 @@ fn rebuild_fn_spec(spec: FnSpec) -> FnSpec {
         .with_storage_inherited(spec.storage_inherited())
         .with_not_selected(spec.not_selected())
         .with_return_deduced(spec.return_deduced())
+        .with_exc_spec_computed(spec.exc_spec_computed())
 }
 
 /// `VarData` (§5.4), then the language linkage (§5.6).
@@ -751,7 +752,8 @@ pub(crate) mod tests {
             .with_virtual_written(true)
             .with_storage_inherited(true)
             .with_not_selected(true)
-            .with_return_deduced(true);
+            .with_return_deduced(true)
+            .with_exc_spec_computed(true);
         assert_eq!(super::rebuild_fn_spec(f).bits(), f.bits());
         let v = VarSpec::new()
             .with_storage(VarStorage::Register)

@@ -168,6 +168,9 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         shadow_using: _,
         // `keyed` (§10.4): the parent of a closure's key (`local.rs`).
         closure_owner: _,
+        // `out` (§5.7): what code generation reads of it is the row
+        // `enclosing` (§1.7).
+        written_ns: _,
     } = &ast.decls.cold;
     let e = w.entity(d);
     // The chain of `d`'s declarations, the first first (§2.3).

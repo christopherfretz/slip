@@ -1,12 +1,12 @@
 subjects:
+  27503f17 candidate - rule=yes n::B::f()
   3b98ec8e seed - rule=yes n::D::f()
-  5bcd1a5e follower - rule=yes n::B<int>::f() of=fa8fdd44
-  fa8fdd44 candidate - rule=yes n::B::f()
+  da871802 follower - rule=yes n::B<int>::f() of=27503f17
 links:
-  3b98ec8e fa8fdd44
+  27503f17 3b98ec8e
 claims:
-  main.cpp:2:44+1 replace "g" t0 votes=1 none [fa8fdd44]
+  main.cpp:2:44+1 replace "g" t0 votes=1 none [27503f17]
   main.cpp:3:26+1 replace "g" t0 votes=1 none [3b98ec8e]
   main.cpp:5:35+1 replace spell(3b98ec8e, "g") t0 votes=1 none [3b98ec8e]
-  main.cpp:5:42+1 replace spell(fa8fdd44, "g") t0 votes=1 none [fa8fdd44]
+  main.cpp:5:42+1 replace spell(27503f17, "g") t0 votes=1 none [27503f17]
 changed:

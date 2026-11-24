@@ -1,10 +1,10 @@
 subjects:
   599ef791 seed - rule=yes n::B::f()
-  8e046f8d candidate - rule=yes n::D<int>::f()
+  91d7e426 candidate - rule=yes n::D<int>::f()
 links:
-  599ef791 8e046f8d
+  599ef791 91d7e426
 claims:
   main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
-  main.cpp:4:38+1 replace "g" t0 votes=1 none [8e046f8d]
-  main.cpp:6:26+1 replace spell(8e046f8d, "g") t0 votes=1 none [8e046f8d]
+  main.cpp:4:38+1 replace "g" t0 votes=1 none [91d7e426]
+  main.cpp:6:26+1 replace spell(91d7e426, "g") t0 votes=1 none [91d7e426]
 changed:

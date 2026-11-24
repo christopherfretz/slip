@@ -597,12 +597,11 @@ fn s8_5_pattern_friend_of_operator_new() {
 }
 
 // The third placement of F1, `A<int>` instantiated between the template
-// and `new.h`: the instantiated friend is left unchained by Kiln (its
-// allocation path chains `new.h`'s declaration to the pattern's friend,
-// not to the instantiated one), so two entities have one key, both
-// flagged `collision`. Kiln's to fix (`spec/landed/model/WP-050.md`); this
-// pins what the walk does with it today: no `failed` shard, the declared
-// unit still in `new.h`.
+// and `new.h`: since Kiln WP-2540 (one entity per allocation function) the
+// instantiated friend is chained with `new.h`'s declaration like the
+// pattern's, so one entity, one unit, in `new.h`, unflagged, and the same
+// digest as the other two placements (it was two entities of one key,
+// both flagged `collision`: `spec/landed/model/WP-050.md`).
 #[test]
 fn s8_5_pattern_friend_instantiated_before_the_declaration() {
     let units = units_named(
@@ -616,7 +615,17 @@ fn s8_5_pattern_friend_instantiated_before_the_declaration() {
     );
     let shape: Vec<(GroupClass, &str, u64)> =
         units.iter().map(|(c, f, _, fl)| (*c, f.as_str(), *fl)).collect();
-    assert_eq!(shape, vec![(GroupClass::Declared, "new.h", 1), (GroupClass::Derived, "tmpl.h", 1)]);
+    assert_eq!(shape, vec![(GroupClass::Declared, "new.h", 0)]);
+    let after = units_named(
+        &Fixture::new("f1-between-after"),
+        &[
+            ("tmpl.h", TMPL_H),
+            ("new.h", NEW_H),
+            ("main.cpp", "#include \"tmpl.h\"\n#include \"new.h\"\nA<int> a;\n"),
+        ],
+        "operator new(unsigned long)",
+    );
+    assert_eq!(units[0].2, after[0].2, "one digest wherever A<int> is");
 }
 
 // digest §11 origin file, review F3: Kiln's implicit `operator new` (made

@@ -1,13 +1,13 @@
 subjects:
-  361bc504 seed - rule=yes n::v
+  d7b266e8 seed - rule=yes n::v
 links:
 claims:
-  main.cpp:1:48+1 replace "w" t0 votes=1 none [361bc504]
-  main.cpp:1:88+1 replace "w" t0 votes=1 none [361bc504]
-  main.cpp:1:125+1 replace "w" t0 votes=1 none [361bc504]
-  main.cpp:2:37+1 replace "w" t0 votes=1 none [361bc504]
-  main.cpp:3:40+1 refuse t0 votes=1 mixed_instances [361bc504]
-  main.cpp:3:50+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
-  main.cpp:4:21+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
-  main.cpp:4:34+1 replace spell(361bc504, "w") t0 votes=1 none [361bc504]
+  main.cpp:1:48+1 replace "w" t0 votes=1 none [d7b266e8]
+  main.cpp:1:88+1 replace "w" t0 votes=1 none [d7b266e8]
+  main.cpp:1:125+1 replace "w" t0 votes=1 none [d7b266e8]
+  main.cpp:2:37+1 replace "w" t0 votes=1 none [d7b266e8]
+  main.cpp:3:40+1 refuse t0 votes=1 mixed_instances [d7b266e8]
+  main.cpp:3:50+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
+  main.cpp:4:21+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
+  main.cpp:4:34+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
 changed:

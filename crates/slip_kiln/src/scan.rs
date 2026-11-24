@@ -35,7 +35,7 @@
 //! file's. Kiln, loading the file, makes each maximal invalid sequence one
 //! U+FFFD that its lexer knows for a replacement (`load_report`): it ends
 //! an identifier and is dropped between tokens
-//! (`kiln_lex/src/lexer.rs:574`, `:1060` at `913a490bb`). U+0001 does the
+//! (`kiln_lex/src/lexer.rs:574`, `:1060` at `4a83f6e3c`). U+0001 does the
 //! same for every hit: it is no identifier character, no whitespace (so a
 //! `\` before it splices no line), no character of a raw string's
 //! delimiter and no word character. A U+FFFD spelled in a virtual buffer

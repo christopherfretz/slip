@@ -1,11 +1,11 @@
 subjects:
-  0c0ea3d4 candidate - rule=yes n::D::f()
   599ef791 seed - rule=yes n::B::f()
-  8e046f8d follower - rule=yes n::D<int>::f() of=0c0ea3d4
+  91d7e426 follower - rule=yes n::D<int>::f() of=c59c794c
+  c59c794c candidate - rule=yes n::D::f()
 links:
-  0c0ea3d4 599ef791
+  599ef791 c59c794c
 claims:
   main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
-  main.cpp:3:40+1 replace "g" t0 votes=1 none [0c0ea3d4]
-  main.cpp:5:26+1 replace spell(0c0ea3d4, "g") t0 votes=1 none [0c0ea3d4]
+  main.cpp:3:40+1 replace "g" t0 votes=1 none [c59c794c]
+  main.cpp:5:26+1 replace spell(c59c794c, "g") t0 votes=1 none [c59c794c]
 changed:

@@ -37,7 +37,6 @@ SECTION = {
     "DeclNode": "§5.3",
     "DeclFlags": "§5.3",
     "DeclMisc": "§5.3",
-    "ModuleOwnership": "§5.3",
     "DeclName": "§10.2",
     "DeclNameKind": "§10.2",
     "OverloadedOperator": "§10.2",
@@ -264,7 +263,7 @@ differ("DeclNode", "flags",
        pre='#include "meta.h"\nstruct S;', std="c++26")
 
 # ---------------------------------------------------------------------------
-# §5.3 DeclFlags, DeclMisc, ModuleOwnership.
+# §5.3 DeclFlags, DeclMisc.
 
 differ("DeclFlags", "0-injected",
        "struct S { int e; };",
@@ -281,14 +280,8 @@ differ("DeclMisc", "0-name-independent", "int _;", "int _; int _;",
        note="`0-name-independent`: a second member named `_` (P2169); the bit follows from the "
             "name and the scope, so no pair flips it alone.",
        pre="struct S {", post="};", std="c++26")
-differ("DeclMisc", "0-module-ownership", "int x;", "export int x;", ["changed x"],
-       note="`0-module-ownership`: an exported declaration against one that is not.",
-       pre="export module m;", std="c++20", needs="kiln",
-       why="Kiln sets no module ownership: `DeclMisc::with_module_ownership` has no caller "
-           "(kiln_ast/src/decl.rs:512), so every declaration is `Unowned`")
-equal("_", "module-ownership-unowned", "int x;", "int x;",
-      note="ModuleOwnership `Unowned` is every declaration Kiln makes (no other value is set, kiln_ast/src/decl.rs:512).",
-      pre="export module m;", std="c++20")
+# An exported declaration against one that is not: since Kiln WP-2477 the
+# owner is the module table's alone (`differ/Owner/exported`).
 
 # ---------------------------------------------------------------------------
 # §10.2 DeclNameKind and DeclName: a name in a key (digest-kinds §3.2: the

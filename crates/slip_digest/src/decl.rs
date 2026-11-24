@@ -8,7 +8,7 @@ use slip_kiln::kiln::ast::types::{ExcSpec, FuncProto};
 use crate::Cause;
 use crate::keys::info;
 use crate::stream::{FlagWord, Hashed, Stream, UNIT_TAG};
-use crate::tables::{Decision, access, decl_kind, friend_kind, module_ownership};
+use crate::tables::{Decision, access, decl_kind, friend_kind};
 use crate::walk::{TOO_DEEP, Walk};
 
 /// A content-keyed entity whose key needs its own digest
@@ -17,8 +17,8 @@ const CONTENT_CYCLE: Cause = Cause::Unaccounted("key/content-cycle");
 
 /// The `DeclMisc` friend field holding 3, which no row accounts for.
 const MISC_FRIEND_SHIFT: u32 = 2;
-/// The `DeclMisc` module-ownership field (bits 5-7) holding 5 to 7.
-const MISC_MODULE_SHIFT: u32 = 5;
+/// The reserved `DeclMisc` bits 5-7, zero since Kiln WP-2477.
+const MISC_RESERVED_SHIFT: u32 = 5;
 
 impl Walk<'_> {
     /// A declaration's stream (§5.1): read from `d`, for the entity `e`
@@ -166,8 +166,8 @@ impl Walk<'_> {
             if (bits >> MISC_FRIEND_SHIFT) & 0b11 == 0b11 {
                 s.indeterminate(Cause::Unaccounted("DeclMisc/0-friend"));
             }
-            if (bits >> MISC_MODULE_SHIFT) & 0b111 > 4 {
-                s.indeterminate(Cause::Unaccounted("DeclMisc/0-module-ownership"));
+            if (bits >> MISC_RESERVED_SHIFT) & 0b111 != 0 {
+                s.indeterminate(Cause::Unaccounted("DeclMisc/0-reserved"));
             }
         }
         // Kiln gives a specialisation its template's first declaration's
@@ -181,9 +181,6 @@ impl Walk<'_> {
             && redecls.iter().all(|&x| ast.decls.get(x).misc().friend() == FriendKind::Undeclared);
         let friend = if undeclared { FriendKind::Undeclared } else { FriendKind::None };
         let local_extern = redecls.iter().all(|&x| self.is_local_extern(x));
-        // The first declaration written, not one an instantiation added
-        // before it (WP-032 rule 1).
-        let first = ast.decls.get(self.representative(e)).misc();
         // In `definition` for the definition class (§11.9), whose
         // definition Kiln makes on use: its empty form here
         // (`spec/landed/digest-kinds/WP-026.md`).
@@ -192,7 +189,6 @@ impl Walk<'_> {
         s.tag(access::row(&misc.access()));
         s.tag(friend_kind::row(&friend));
         s.flags(FlagWord::new().bit(local_extern).bit(misc.name_independent()).bit(definition));
-        s.tag(module_ownership::row(&first.module_ownership()));
     }
 
     /// `DeclNode` `ty-exception-spec` (§5.3, §11.2): `enum ExcSpec?`,

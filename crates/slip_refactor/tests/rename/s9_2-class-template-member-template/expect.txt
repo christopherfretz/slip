@@ -1,10 +1,10 @@
 subjects:
-  5be9d2cb seed - rule=yes n::S::f
-  d9a748a1 follower - rule=yes n::S<int>::f of=5be9d2cb
+  ca9094e6 seed - rule=yes n::S::f
+  da53929b follower - rule=yes n::S<int>::f of=ca9094e6
 links:
 claims:
-  main.cpp:1:69+1 replace "g" t0 votes=1 none [5be9d2cb]
-  main.cpp:2:27+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
-  main.cpp:2:35+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
-  main.cpp:2:58+1 replace spell(5be9d2cb, "g") t0 votes=1 none [5be9d2cb]
+  main.cpp:1:69+1 replace "g" t0 votes=1 none [ca9094e6]
+  main.cpp:2:27+1 replace spell(ca9094e6, "g") t0 votes=1 none [ca9094e6]
+  main.cpp:2:35+1 replace spell(ca9094e6, "g") t0 votes=1 none [ca9094e6]
+  main.cpp:2:58+1 replace spell(ca9094e6, "g") t0 votes=1 none [ca9094e6]
 changed:

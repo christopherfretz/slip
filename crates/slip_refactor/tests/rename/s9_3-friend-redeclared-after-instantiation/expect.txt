@@ -1,9 +1,9 @@
 subjects:
-  9357b9db follower - rule=yes n::f(n::S<type-parameter-0-0>) of=cd11b972
-  cd11b972 seed - rule=yes n::f(n::S<int>)
+  dcf39641 follower - rule=yes n::f(n::S<type-parameter-0-0>) of=e96909b4
+  e96909b4 seed - rule=yes n::f(n::S<int>)
 links:
 claims:
-  main.cpp:1:57+1 replace "g" t0 votes=1 none [9357b9db]
-  main.cpp:2:16+1 replace "g" t0 votes=1 none [cd11b972]
-  main.cpp:2:38+1 replace spell(cd11b972, "g") t0 votes=1 none [cd11b972]
+  main.cpp:1:57+1 replace "g" t0 votes=1 none [dcf39641]
+  main.cpp:2:16+1 replace "g" t0 votes=1 none [e96909b4]
+  main.cpp:2:38+1 replace spell(e96909b4, "g") t0 votes=1 none [e96909b4]
 changed:

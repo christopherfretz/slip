@@ -1824,12 +1824,10 @@ fn g5_line_name() {
 }
 
 // F7 (re-check): an absolute `__has_include` of a file under the subject
-// root; the edit adds the file. Kiln's lookup log does not record an
-// absolute name (Kiln `spec/pp.md`), so L1 cannot see the probe: §5.1
-// "What remains outside". When the log has it, `Lookups::of` lists the
-// name where it is and L1 refuses, with no new code.
+// root; the edit adds the file. Kiln's lookup log records an absolute
+// name since Kiln WP-2620 (in the pin since WP-066), so `Lookups::of`
+// lists the name where it is and L1 refuses, with no new code.
 #[test]
-#[ignore = "needs: kiln (absolute names in the lookup log)"]
 fn f7_absolute_has_include() {
     let tree = Tree::new("f7", &[]);
     let main = format!(
@@ -2478,11 +2476,11 @@ fn n2_map_shard_without_found() {
 }
 
 // An absolute name the front end first read through another spelling:
-// Kiln's log does not record a lookup by an absolute name (Kiln WP-2620),
-// and `Lookups::read` holds the first spelling only, so the absolute place
-// is in no record and its link retargeted is not seen.
+// `Lookups::read` holds the first spelling only, but Kiln's log records a
+// lookup by an absolute name since Kiln WP-2620 (in the pin since
+// WP-066), so the absolute place is in `found` and its link retargeted is
+// seen.
 #[test]
-#[ignore = "needs: kiln (the lookup log to record absolute names, Kiln WP-2620)"]
 fn n2_absolute_name_first_read_through_another_spelling() {
     let tree = Tree::new("n2-absolute", &[]);
     let abs = tree.base.join("lnk/cfg.h");

@@ -1,10 +1,10 @@
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
-  4fafa1b6 follower - rule=yes n::S<long>::f() of=32ae9afe
-  fc2d99d6 follower - rule=yes n::S<int>::f() of=32ae9afe
+  089ac656 seed - rule=yes n::S::f()
+  da925178 follower - rule=yes n::S<long>::f() of=089ac656
+  fb97e1db follower - rule=yes n::S<int>::f() of=089ac656
 links:
 claims:
-  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
-  main.cpp:2:27+1 replace spell(32ae9afe, "g") t0 votes=1 none [32ae9afe]
-  main.cpp:2:48+1 replace spell(32ae9afe, "g") t0 votes=1 none [32ae9afe]
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [089ac656]
+  main.cpp:2:27+1 replace spell(089ac656, "g") t0 votes=1 none [089ac656]
+  main.cpp:2:48+1 replace spell(089ac656, "g") t0 votes=1 none [089ac656]
 changed:

@@ -731,11 +731,13 @@ fn t8_author_options() {
     );
 }
 
-// WP-080 fix round, B1: Kiln's driver expands a response file named by a
-// word beginning with `@` (`kiln_driver/src/session.rs:81`), so a word
-// `@opts.rsp` would bring in any option. Given to Kiln directly, the file's
-// `-DSMUGGLED=1` arrives; every way of naming it through `TransformCommand`
-// is refused; the unit built from the options that remain does not see it.
+// WP-080 fix round, B1: Kiln's driver expanded a response file named by a
+// word beginning with `@`, so a word `@opts.rsp` would bring in any
+// option. Since Kiln WP-2411 `with_eval_session` reads no `@file` (the
+// word is an ordinary word: `kiln_driver/src/session.rs:167-170`): given
+// to Kiln directly, the file's `-DSMUGGLED=1` does not arrive. Slip still
+// refuses every way of naming it through `TransformCommand`; the unit
+// built from the options that remain does not see it.
 #[test]
 fn b1_a_response_file_never_reaches_kiln() {
     let dir = scratch("b1");
@@ -746,7 +748,7 @@ fn b1_a_response_file_never_reaches_kiln() {
                 static_assert(__cplusplus > 202302L);\nconsteval void transform() {}\n";
     std::fs::write(&file, text).unwrap();
     let rsp_word = format!("@{}", rsp.to_str().unwrap());
-    // The hole: Kiln, given the word, reads the file.
+    // The hole, closed by Kiln: given the word, Kiln does not read the file.
     let mut line =
         TransformCommand::new(resource_include(), &[], file.clone()).unwrap().command_line();
     line.insert(line.len() - 1, rsp_word.clone());
@@ -768,7 +770,7 @@ fn b1_a_response_file_never_reaches_kiln() {
             .join()
             .unwrap()
     });
-    assert!(!raw.0 && raw.1.contains("error: smuggled"), "Kiln expands the file: {}", raw.1);
+    assert!(!raw.1.contains("smuggled"), "Kiln expands the file: {}", raw.1);
     let author =
         |words: &[&str]| words.iter().map(|&w| w.replace("RSP", &rsp_word)).collect::<Vec<_>>();
     for words in [&["-D", "RSP"][..], &["-DRSP"], &["-I", "RSP"], &["-IRSP"], &["RSP"]] {
@@ -1105,12 +1107,12 @@ impl HostCalls for NoCalls {
 // `instantiation_diagnostics_are_reported_by_every_run`), an entry that is
 // an uninstantiated member of a class template, so the first run
 // instantiates it. Compiled under a 4 MiB guard, run first on another
-// thread: the instantiation is checked against the compiling thread's
-// guard and fails with "stack exhausted", and the flag is sticky, so the
-// next run, at home, fails too. A known hole waiting on Kiln: when K2
-// lands, both runs complete and this test is to say so.
+// thread: the instantiation was checked against the compiling thread's
+// guard and failed with "stack exhausted", sticky for the next run at
+// home. Since Kiln WP-2410 (the guard of the running thread) both runs
+// complete.
 #[test]
-fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
+fn k2_a_kiln_run_instantiating_away_from_the_compiling_thread_completes() {
     let dir = scratch("k2");
     let file = dir.join("k2.cpp");
     std::fs::write(
@@ -1122,7 +1124,12 @@ fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
     .unwrap();
     let line: Vec<String> =
         ["-std=c++26", "-fsyntax-only", file.to_str().unwrap()].map(str::to_owned).into();
-    let budget = kiln_sema::session::RunBudget { steps: 1 << 32, bytes: 256 << 20, depth: 4096 };
+    let budget = kiln_sema::session::RunBudget {
+        steps: 1 << 32,
+        bytes: 256 << 20,
+        depth: 4096,
+        ..kiln_sema::session::RunBudget::PROGRAM
+    };
     let shown =
         |r: &kiln_sema::session::RunReport| (r.result.is_ok(), format!("{:?}", r.diagnostics));
     let (away, home) = std::thread::scope(|t| {
@@ -1158,7 +1165,7 @@ fn k2_known_hole_a_kiln_run_instantiating_away_from_the_compiling_thread() {
             .unwrap()
     });
     for (at, (ok, diagnostics)) in [("away", away), ("home", home)] {
-        assert!(!ok && diagnostics.contains("stack exhausted"), "{at}: {diagnostics}");
+        assert!(ok && !diagnostics.contains("stack exhausted"), "{at}: {diagnostics}");
     }
 }
 
@@ -1190,9 +1197,11 @@ fn wp089_the_target_of_the_unit() {
     assert!(files.iter().all(|f| f.path != b"<built-in>"), "a virtual buffer is not a file read");
 }
 
-// WP-089 (`Session::stack_exhausted`): Kiln's sticky flag reads false
-// after runs at home and away that reach no stack check. That it reads
-// Kiln's flag and not a constant: `kn1_…` below, where a run sets it.
+// WP-089 (`Session::stack_exhausted`): the flag reads false after runs at
+// home and away that reach no stack check. That a run sets it (Kiln's
+// `RunError::StackExhausted`, kept set by the host since Kiln WP-2410
+// puts Kiln's flag back after each run): `slip_script` `driver::tests::
+// a_tripped_guard_is_seen_before_a_run_and_retires`.
 #[test]
 fn wp089_stack_exhausted_reads_false_after_ordinary_runs() {
     let cmd = transform("wp089_stack", "consteval void transform() { host(1, 1); }");
@@ -1288,25 +1297,17 @@ impl Handler for NoCalls2 {
     }
 }
 
-// KN1 of WP-089 (H1 a of its review), confirmed: an instantiation made at
-// run time through reflection, on another thread than the compiling one,
-// is checked against the compiling thread's guard and trips it, whatever
-// the guard's size (here 63 MiB, KN1's one level of `box<long>`); the flag
-// is sticky, so the next run at home fails too, "stack exhausted" again. At home alone both runs
-// complete. Hence `slip_script::driver`'s rule: a transform is run only on
-// the thread that loaded it (spec/api.md §2.5 rule 5).
+// KN1 of WP-089 (H1 a of its review): an instantiation made at run time
+// through reflection, on another thread than the compiling one, was
+// checked against the compiling thread's guard and tripped it, sticky for
+// the next run at home. Since Kiln WP-2410 (the guard of the running
+// thread) both runs complete, away then at home, and the flag stays
+// clear. `slip_script::driver`'s rule that a transform is run only on the
+// thread that loaded it (spec/api.md §2.5 rule 5) is kept: relaxing it is
+// "For WP-138" in `spec/landed/edits/WP-066.md`.
 #[test]
-fn kn1_an_instantiation_at_run_time_away_trips_the_guard_and_sticks() {
+fn kn1_an_instantiation_at_run_time_away_completes() {
     let guard = STACK - (1 << 20);
     assert_eq!(kn1(false, guard), ((true, false), (true, false), false), "at home");
-    assert_eq!(kn1(true, guard), ((false, true), (false, true), true), "away, then home");
-}
-
-// The behaviour KN1 waits for (Kiln WP-2410: the guard of the running
-// thread): away from the compiling thread, then at home, both runs
-// complete and the flag stays clear.
-#[test]
-#[ignore = "needs: Kiln WP-2410"]
-fn kn1_pending_a_run_away_from_the_compiling_thread_completes() {
-    assert_eq!(kn1(true, STACK - (1 << 20)), ((true, false), (true, false), false));
+    assert_eq!(kn1(true, guard), ((true, false), (true, false), false), "away, then home");
 }
