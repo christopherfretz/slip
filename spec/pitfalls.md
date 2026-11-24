@@ -307,6 +307,36 @@ caught only by a failed parse (`not_parsed` in every `bad` tree) is marked
 so in its `expect.txt`, and counted separately in the suite's summary: it
 exercises the pipeline, not the digest.
 
+## 6. Rows with a transform test
+
+The rows above test the trusted base on edits written by hand. Where a
+row is a hazard the native rename can meet, a transform test of
+`spec/harness.md` §6.2 runs the rename itself into it, under
+`tests/transform/rename/` (`docs/wp/WP-078.md`):
+
+| Row | Transform tests | The rename ends |
+|---|---|---|
+| R01 | `hazard-joins-associated-overload-set`, `hazard-using-directive-joins`; in one scope `hazard-name-taken-same-scope` | `not_verified`; `refused` (`name_taken`) |
+| R02 | `hazard-member-hides-base` | `refused` (`name_taken`) |
+| R03 | `family-overrider-without-override` | `verified` (every override renamed) |
+| R04 | `hazard-customisation-point` | `not_verified` |
+| R06 | `macro-pasted-name` | `refused` (`pasted`) |
+| R07 | `hazard-requires-probe`, `hazard-requires-probed-member` | `not_verified` |
+| R11 | `ref-block-scope-extern`, `ref-friend-declaration` | `verified` (the declarations renamed) |
+| R12 | `hazard-func-value`, `hazard-func-length` | `verified`; `not_verified` |
+| R13 | `hazard-using-declaration-ambiguous`, `hazard-using-directive-ambiguous` | `refused` (`name_taken`); `not_verified` |
+| R14 | `hazard-attribute-argument` | `verified` (the attribute's name edited) |
+| R15 | `macro-argument-stringised` | `not_verified` |
+| R17 | `hazard-range-for-begin` | `not_verified` |
+| R19 | `hazard-new-name-is-macro` | `refused` (`name_taken`) |
+| R20 | `hazard-hides-enclosing` | `not_verified` |
+| R23 | `hazard-pragma-weak` | `not_verified` (the pragma's name is left, residue `not_compiled`) |
+
+R05, R08, R09, R10, R16, R18, R21 and R22 rename what the native
+rename does not (locals, two names at once, enumerators, types, template
+parameters): they wait for the renames of
+`spec/edits.md` §11.
+
 ## Tests
 
 - `crates/slip_cli/tests/pitfalls.rs` — runs every directory under

@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R23: `#pragma weak f` names the function in a directive, which the rename does not edit (edits §9.3: identifiers in preprocessor directives are no references). Left, the renamed function loses `weak`. Not verified.
+spec: pitfalls §3
+spec: edits §8.4
+run: rename --from f --to g
+state: not_verified
