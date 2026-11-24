@@ -1942,3 +1942,51 @@ fn golden(name: &str, actual: &str) {
         .unwrap_or_else(|e| panic!("{}: {e} (SLIP_BLESS=1 writes it)", path.display()));
     assert_eq!(actual, expected, "{name} differs from its golden; SLIP_BLESS=1 rewrites it");
 }
+
+// ----- WP-147 item 1: one spelling per file ----------------------------------------
+
+/// `spec/edits.md` §2.1, `spec/verify.md` §2.1 (`spec/landed/edits/WP-147.md`,
+/// row L1): `--readonly` given in another case than the file's directory
+/// entry (`s/A.h` for `s/a.h`) on a volume that finds a name in any case
+/// makes the same file read-only as its own spelling does: `S`, declared
+/// there, is a dependency entity and no rule renames it. Today
+/// `commands::ownership` keeps the spelling asked (`<root>/s/A.h`), which
+/// covers no path the pre-images read, and `slip declare` writes the rule
+/// (status 0): a read-only file's entity mapped by rule.
+#[test]
+#[ignore = "WP-147 item 2: --owned and --readonly are given their on-disk spelling"]
+fn s2_1_readonly_in_another_case_is_read_only() {
+    let f = Fixture::new("declare-readonly-case");
+    f.both("a.h", "#pragma once\nstruct S { int v; };\n");
+    f.both("u0.cpp", "#include \"a.h\"\nint f0() { return S{1}.v; }\n");
+    f.db(&["u0.cpp"]);
+    if std::fs::metadata(f.path("s/A.h")).is_err() {
+        eprintln!("skipped: the fixture's volume is case-sensitive: `s/A.h` names no file");
+        return;
+    }
+    let plan = f.parse();
+    f.write("t.txt", "relocate S => :: S2\n");
+    let out = declare(&f, &plan, "t.txt", &["--owned", "s", "--readonly", "s/A.h"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.stderr.contains("dependency entity: `S`"), "{out:?}");
+}
+
+/// `spec/verify.md` §5.1 (row L3): `--root` and `--post` given in another
+/// case than on disk name the same trees: an unchanged copy verifies, as
+/// with the spellings on disk. (`Image`'s regions are decided by the
+/// directories' identity; the subject path of a post-image file is built
+/// from the root's bytes.) This passes today: the regions are by
+/// identity and the subject paths agree with the pre-image's, so WP-147
+/// found no defect here; item 2's normalisation must keep it passing.
+#[test]
+fn s5_1_roots_in_another_case() {
+    let f = two_units("roots-case");
+    if std::fs::metadata(f.path("S")).is_err() {
+        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+        return;
+    }
+    let plan = f.parse();
+    let (s, post) = (Fixture::text(&f.path("S")), Fixture::text(&f.path("POST")));
+    let (out, report) = f.verify_report(&plan, &["--root", &s, "--post", &post]);
+    assert_verdict(&out, &report, "verified");
+}
