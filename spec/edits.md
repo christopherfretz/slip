@@ -371,21 +371,25 @@ Piece := literal = 0: bytes                         not empty
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
-        | directive = 10 | instantiated = 11
+        | directive = 10 | instantiated = 11 | no_holder = 12
 
 MacroSite := name_start: uv          offset, in the claim's file, of the name token of the outermost
                                       macro invocation the bytes are an argument of or were produced by
              name:       bytes       that macro's name
 ```
 
-`mixed_set`, `mixed_instances` and `instantiated` are the rename's
-reasons of §9.2 and §9.4: what a name names is mixed, over the set found
-at the definition or over the instantiations the observer made; or (since
-`docs/wp/WP-139.md`, item 8) every instantiation binds the name to a
-subject and the request asked for the refusing form (`dependent: refuse`,
-§3), where WP-127 said `mixed_instances` of one instance and one subject.
-`instantiated` was added without a change of format version, as a new
-enumeration value is (`model.md` §2).
+`mixed_set`, `mixed_instances`, `instantiated` and `no_holder` are the
+rename's reasons of §9.2 and §9.4: what a name names is mixed, over the
+set found at the definition or over the instantiations the observer
+made; or (since `docs/wp/WP-139.md`, item 8) every instantiation binds
+the name to a subject and the request asked for the refusing form
+(`dependent: refuse`, §3), where WP-127 said `mixed_instances` of one
+instance and one subject; or every instantiation binds it to a subject
+and the edit has no holder to exempt (§9.4, "The holder"): the front end
+records no declaration holding the name, so the edit could not verify.
+`slip reduce` prints a `no_holder` refusal with what it means (§10.5).
+`instantiated` and `no_holder` were added without a change of format
+version, as a new enumeration value is (`model.md` §2).
 
 **Pieces** are those of `api.md` §7.1, and mean what it says:
 
@@ -2174,10 +2178,18 @@ Read precisely (`docs/wp/WP-073.md`, `docs/wp/WP-139.md`):
   instances (§10.5), and the specialisations a refusal was made on.
 - **The holder** is `Keys::unit_of` the entry's enclosing declaration
   (the front end's innermost declaration whose extent holds the name);
-  its key is `Keys::key_id` of that unit. No entry when the name has no
-  enclosing declaration, no unit holds it, or the unit has no key. A
-  `replace` that `slip_kiln::sites` turns into a `refuse` (a name in a
-  macro body) edits nothing and gets no entry.
+  its key is `Keys::key_id` of that unit. A row-2 `replace` needs one:
+  when the name has no enclosing declaration (at the pin, the front end
+  encloses a dependent name of an alias template's pattern or of a head
+  requires-clause by the translation unit), no unit holds it, or the unit
+  has no key, the pattern's unit would differ with nothing to exempt it,
+  and the run could not verify. The claim is then `refuse(no_holder)`
+  (the supervisor's ruling on WP-139's finding 2), not an edit that
+  fails verification. When the front end records the enclosing
+  declaration the refusal goes, with no change here. `keep`, `unresolved`
+  and `mixed_instances` need no holder. A `replace` that
+  `slip_kiln::sites` turns into a `refuse` (a name in a macro body)
+  edits nothing and gets no entry.
 - **A dependent using-declarator** (`using T::f;`) is not claimed by
   row 2: what it names is §9.2's (the mixed follower of its
   instantiations), and its name stays `unresolved`.
@@ -2209,17 +2221,35 @@ This is where rename guesses, and where it leans on verification most:
   every spelled piece (§9.3). An error in a dependent name of an exempt
   pattern that no observer instantiates is not detected. The report lists
   every exempt unit with the place and the reason.
-- Known limits at this pin (`spec/landed/edits/WP-139.md`, "Findings").
-  A row-2 `replace` does not ask what `new_name` finds in the
+- A row-2 `replace` does not ask what `new_name` finds in the
   instantiation: a member of the instantiating class named `new_name`
   (`this->g()` in `D : T`, `D::g`) captures it, and verification fails
-  the run. A dependent name in an alias template or a requires-clause has
-  no holder (the front end encloses it by the translation unit): its
-  `replace` gets no `changed` entry, the pattern's unit differs, and the
-  run is not verified. A dependent name in a default template argument
-  has no row: `unresolved`; its post-image fails to compile, or, when the
-  old name has another declaration to fall back on, binds it and is
-  **verified**: the one silent case found, for the supervisor.
+  the run (loud; `spec/landed/edits/WP-139.md`, "Findings"). A check of
+  what `new_name` finds per instance is a package of its own.
+- A dependent name inside its holder's key (a trailing return type, a
+  parameter type, a trailing requires-clause; `digest-kinds.md` §3.3,
+  §3.4): the holder is exempt, but the edit changes the holder's own key,
+  so its `changed` entry names a key the post-image does not have, and
+  the post-image has one the pre-image did not. Accepted and not verified
+  (loud). It is not refused: telling a name in the key from one in the
+  body, before the claim, needs the extents of the body, of each default
+  argument and of the exception specification (in the declarator, not in
+  the key), which is not cheap at the pin (`spec/landed/edits/WP-139.md`,
+  "Findings" 4).
+
+**What the digest sees of a substitution.** A substitution whose
+expression the front end does not keep (a default template argument, an
+alias template's pattern, a constraint's satisfaction, a signature
+substituted during deduction) is seen by the digest by its outcome: the
+argument's value or type, the alias's type, the candidate chosen; never
+by what its names bound. A dependent name there whose binding moves is
+not seen by verification when the outcome is the same. For a name the
+rename leaves `unresolved` (a default template argument has no row in
+the front end's table at the pin), the name is residue `dependent`
+(§8.4), so a run that leaves it is `verified_with_residue` and the
+report names the token: the digest's verdict alone would be `verified`.
+This is a limit of the digest, wider than the rename; what was tried is
+in `spec/landed/edits/WP-139.md` ("Findings", "For Kiln").
 
 ### 9.5 Refusals
 
@@ -2232,7 +2262,12 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
 | `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged; one that follows the member's explicit specialisation is recorded nowhere at this pin: **not detected** (since WP-119 lifted the follower's `unsupported`, the run is accepted and its post-image does not compile, `template void S<int>::f();` naming no member, so verification fails it: loud, not silent; `spec/landed/edits/WP-073.md`, fix round F3; `spec/landed/digest/WP-119.md`); a friend whose declarator-id names a member of a dependent specialisation (`template <class T> friend void n::S<T>::f();`), which the front end records as a type with no declaration: its name is claimed `unresolved` and every seed in a pattern is flagged (which class it names is not recorded) |
 
-and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3).
+and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3),
+and at a name what it names cannot be told or the edit cannot verify:
+`mixed_set` (§9.2), `mixed_instances`, `instantiated` and `no_holder`
+(§9.4; `no_holder` until the front end records the declaration holding
+a dependent name of an alias template's pattern or a head
+requires-clause).
 
 **What the rename does not see.** An overrider in a class template
 whose base is dependent (`template <class T> struct G : T { void f()
@@ -2432,7 +2467,7 @@ omitted. Then the details, each list in the order of its record, paths
 relative to `--relative-to` when given:
 
 ```
-refusal <cause>[ <reason>]: <path>:<line>:<column>: <display of the subject>[ in macro <name>] (<n> observer(s), first <main file>)
+refusal <cause>[ <reason>][ (the front end records no declaration holding the name)]: <path>:<line>:<column>: <display of the subject>[ in macro <name>] (<n> observer(s), first <main file>)
 refusal <cause>: <display of the subject> (<n> observer(s), first <main file>)
 report <severity>: [<path>:<line>:<column>: ]<message> (<n> observer(s), first <main file>)
 failed run <kind>: <message> (<n> observer(s), first <main file>)
@@ -2444,6 +2479,9 @@ instances: <n> edited, <n> refused; a specialisation made only outside the run i
 instance <edited|refused> <path>:<line>:<column>: <display of the specialisation>: <displays of the subjects, ", "-separated | another declaration> (<n> observer(s), first <main file>)
 residue <category>: <path>:<line>:<column>
 ```
+
+The parenthesis after the reason is printed for `no_holder` only (§9.4,
+"The holder"): what the refusal means, at the place that follows.
 
 **Names edited on instances** (`docs/wp/WP-139.md` item 3). The
 `instances:` heading and its `instance` lines are printed when the edit

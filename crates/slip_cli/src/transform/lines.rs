@@ -240,6 +240,10 @@ pub fn edit_set_details(
         if r.reason != Reason::None {
             line.extend_from_slice(format!(" {}", r.reason.name()).as_bytes());
         }
+        if r.reason == Reason::NoHolder {
+            // §10.5: what `no_holder` means, at the place that follows.
+            line.extend_from_slice(b" (the front end records no declaration holding the name)");
+        }
         line.push(b':');
         let display = r
             .subject

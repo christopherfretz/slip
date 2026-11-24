@@ -413,6 +413,7 @@ pub(crate) fn reason_of(v: u64) -> Option<Reason> {
         Reason::MixedInstances,
         Reason::Directive,
         Reason::Instantiated,
+        Reason::NoHolder,
     ]
     .get(v as usize)
     .copied()

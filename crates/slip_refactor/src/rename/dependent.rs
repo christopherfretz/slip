@@ -27,7 +27,7 @@
 //!
 //! | The rows | Claim |
 //! |---|---|
-//! | every one binds the name to a subject | `replace` (literal piece), the holder's `changed` entry; `refuse(instantiated)` under `dependent: refuse` (item 4) |
+//! | every one binds the name to a subject | `replace` (literal piece), the holder's `changed` entry; `refuse(no_holder)` when there is no holder; `refuse(instantiated)` under `dependent: refuse` (item 4) |
 //! | none binds a subject, and one binds a declaration named like the old name | `keep` |
 //! | some bind a subject and some do not | `refuse(mixed_instances)` |
 //! | no row is evidence, or no row binds a declaration named like the old name | `unresolved` |
@@ -114,13 +114,15 @@ fn claim(ctx: &mut Ctx<'_, '_, '_>, name: &DependentName, rows: &[Row]) {
         (false, false) => {
             if ctx.request.dependent == Dependent::Refuse {
                 ctx.claims.refuse(&ctx.sites, name.name, &subjects, Reason::Instantiated);
-            } else {
+            } else if let Some(key) = holder(ctx, name.enclosing) {
                 ctx.claims.replace(&ctx.sites, name.name, &subjects, Written::Literal);
-                if let Some(key) = holder(ctx, name.enclosing) {
-                    let mut reason = b"dependent name ".to_vec();
-                    reason.extend_from_slice(ctx.old);
-                    ctx.claims.changed(name.name, key, reason);
-                }
+                let mut reason = b"dependent name ".to_vec();
+                reason.extend_from_slice(ctx.old);
+                ctx.claims.changed(name.name, key, reason);
+            } else {
+                // No holder to exempt: the pattern's unit would differ and
+                // the run could not verify (§9.4, "The holder").
+                ctx.claims.refuse(&ctx.sites, name.name, &subjects, Reason::NoHolder);
             }
             record(ctx, name.name, &bound);
         }

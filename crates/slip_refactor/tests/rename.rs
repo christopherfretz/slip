@@ -641,6 +641,7 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::MixedInstances => "mixed_instances",
         Reason::Directive => "directive",
         Reason::Instantiated => "instantiated",
+        Reason::NoHolder => "no_holder",
     }
 }
 
@@ -2554,7 +2555,7 @@ fn wp139_template_name_is_refused_at_the_target() {
 /// loudly, never `verified` (the harness's post-image parse asserts no
 /// error). "For Kiln" in `spec/landed/edits/WP-139.md`; the same shape
 /// where the old name has a fallback is
-/// `wp139_finding_no_row_with_a_fallback_verifies`.
+/// `wp139_no_row_with_a_fallback_is_residue`.
 #[test]
 fn wp139_no_row_fails_verification_loudly() {
     let text = format!(
@@ -2569,17 +2570,20 @@ fn wp139_no_row_fails_verification_loudly() {
     assert!(m.contains("main.cpp has errors"), "{m}");
 }
 
-/// FINDING (for the supervisor, `docs/wp/WP-139.md` Handback): the shape
-/// with no row in Kiln's table, where the old name has a fallback. With
-/// `n::S<int>` (whose base `Base` declares a static `s`), renaming `n::S::s`
-/// leaves `T::s` in the default template argument, which in the post-image
-/// binds `Base::s`: the binding moved, and the run is accepted and
-/// verified, because neither the rename nor verification sees the
-/// substitution of a default template argument. This test records the
-/// behaviour at the pin; it is to be turned around when Kiln records the
-/// row ("For Kiln").
+/// The shape with no row in Kiln's table, where the old name has a
+/// fallback. With `n::S<int>` (whose base `Base` declares a static `s`),
+/// renaming `n::S::s` leaves `T::s` in the default template argument
+/// `unresolved` (no evidence: the right claim), and in the post-image it
+/// binds `Base::s`. This helper runs the rename and the digest only: the
+/// digest's verdict is `verified`, because the digest sees a default
+/// template argument by its outcome (the value), not by what its names
+/// bound (§9.4, "What the digest sees of a substitution"). The run's
+/// result is `verified_with_residue`: the token is covered by an
+/// `unresolved` range, residue `dependent` (§8.4), and the report names
+/// it. The command-level test is a later package's (the commands are
+/// WP-076's).
 #[test]
-fn wp139_finding_no_row_with_a_fallback_verifies() {
+fn wp139_no_row_with_a_fallback_is_residue() {
     let text = format!(
         "{WP139_MORE}template <class T, int = sizeof(T::s())> int call() {{ return 0; }}\nint u() {{ return call<n::S<int>>(); }}\n"
     );
@@ -2607,15 +2611,15 @@ fn wp139_new_name_captured_in_an_instantiation_is_not_verified() {
     assert!(!r.differences.is_empty(), "the captured name verified: {r:?}");
 }
 
-/// FINDING (Handback): a dependent name whose enclosing declaration Kiln
-/// records as the translation unit: in an alias template, and in a
-/// requires-clause. Every instantiation binds the name to the subject, so
-/// it is edited, but there is no holder (§9.4, "The holder") and no
-/// `changed` entry: the pattern's unit (`A`, `call`) differs, and the run
-/// is not verified. Accepted and not verified, loudly; never `verified`.
-/// "For Kiln" in `spec/landed/edits/WP-139.md`.
+/// A dependent name whose enclosing declaration the front end records as
+/// the translation unit (an alias template's pattern, a requires-clause):
+/// every instantiation binds it to the subject, but there is no holder to
+/// exempt (§9.4, "The holder"), so the edit could not verify. The site is
+/// refused, `no_holder`, naming the subject and the specialisation seen
+/// (the ruling on WP-139's finding 2). When the front end records the
+/// enclosing declaration, the refusal goes with no change to the rename.
 #[test]
-fn wp139_finding_no_holder_is_not_verified() {
+fn wp139_no_holder_is_refused() {
     for (name, pattern) in [
         (
             "alias-template",
@@ -2630,9 +2634,9 @@ fn wp139_finding_no_holder_is_not_verified() {
         let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
         let n = format!("wp139-no-holder-{name}");
         let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
-        assert!(r.refusals.is_empty() && r.exempt == 0, "{n}: {r:?}");
-        assert!(r.instances.iter().any(|i| i.starts_with("edited ")), "{n}: {r:?}");
-        assert!(!r.differences.is_empty(), "{n}: verified: {r:?}");
+        assert_eq!(r.refusals, ["SiteRefused no_holder n::S::s()"], "{n}: {r:?}");
+        assert!(r.instances.iter().all(|i| i.starts_with("refused main.cpp:")), "{n}: {r:?}");
+        assert!(!r.instances.is_empty(), "{n}: {r:?}");
     }
 }
 
@@ -2672,4 +2676,43 @@ fn wp139_directories_edited_on_instances_verify() {
         checked.push(case.name);
     }
     assert!(checked.len() >= 5, "{checked:?}");
+}
+
+/// FINDING (`spec/landed/edits/WP-139.md`, "Findings" 4): a dependent
+/// name inside its holder's key: a trailing return type, a parameter type,
+/// a trailing requires-clause (`digest-kinds.md` §3.3, §3.4). The holder
+/// exists and is exempt, but the edit changes the holder's own key: the
+/// post-image has a template the pre-image did not, and the
+/// specialisation's key moves with it. Accepted and not verified (loud).
+/// Not refused: telling a name in the key from one in the body before the
+/// claim needs the extents of the body, of each default argument and of
+/// the exception specification (`noexcept(...)` is in the declarator and
+/// not in the key: that shape verifies), which is not cheap at the pin;
+/// the supervisor takes it from here.
+#[test]
+fn wp139_finding_name_in_the_holders_key_is_not_verified() {
+    for (name, pattern) in [
+        (
+            "trailing-return",
+            "template <class T> auto f() -> decltype(T::s()) { return T::s(); }\nint u() { return f<n::S<int>>(); }\n",
+        ),
+        (
+            "parameter-type",
+            "template <class T> int f(T, decltype(T::s()) x) { return x; }\nint u() { return f(n::S<int>(), 0); }\n",
+        ),
+        (
+            "trailing-requires",
+            "template <class T> int f() requires (sizeof(T::s()) > 0) { return 0; }\nint u() { return f<n::S<int>>(); }\n",
+        ),
+    ] {
+        let text = format!("{WP139_MORE}{pattern}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp139-in-key-{name}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
+        assert!(r.refusals.is_empty() && r.exempt == 1, "{n}: {r:?}");
+        assert!(
+            r.differences.iter().any(|d| d.starts_with("main.cpp: added template <class>")),
+            "{n}: verified: {r:?}"
+        );
+    }
 }

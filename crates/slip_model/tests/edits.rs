@@ -1009,7 +1009,7 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 12), // reason
+        (187, 0, 13), // reason
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -1071,8 +1071,8 @@ fn edits_unlisted_values() {
 
 // spec/edits.md §4.2: every value of `Reason` is written as its number
 // and read back, in binary and in JSON (by its name); the number after
-// the last, 12, is Malformed (`edits_unlisted_values`). `directive` (10)
-// was added by WP-068, `instantiated` (11) by WP-139.
+// the last, 13, is Malformed (`edits_unlisted_values`). `directive` (10)
+// was added by WP-068, `instantiated` (11) and `no_holder` (12) by WP-139.
 #[test]
 fn edits_reason_values() {
     let all = [
@@ -1087,6 +1087,7 @@ fn edits_reason_values() {
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
+        (Reason::NoHolder, 12, "no_holder"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");
