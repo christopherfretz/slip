@@ -7291,9 +7291,13 @@ of a reported difference.
   that only a type or a value holds in an instantiated declaration.
   After a transform, a name inside one can bind another entity (the
   argument-dependent lookup inside a trait finds another `swap` and
-  the trait still says yes) with every digest equal. No evaluated call
-  of the substituted expression changes; what the name's binding
-  instantiated can (digest §2.3). Nothing counts these substitutions:
+  the trait still says yes) with every digest equal. No call evaluated
+  at run time is in such an expression. What the binding instantiated
+  can change the program: a variable whose initialiser or destructor
+  runs, a function with `constructor`, `destructor` or `used`. So can
+  a candidate that is no longer considered, with no name bound to
+  another entity; only WP-155 closes that (digest §2.3). Nothing
+  counts these substitutions:
   the AST holds no fact to count. The design and the request to Kiln
   are `spec/landed/digest/WP-153.md` and
   `docs/requests/KR9-substitution-bindings.md`.

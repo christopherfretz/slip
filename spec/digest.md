@@ -279,22 +279,56 @@ shapes, and the outcome that is compared today:
 In each of these an operator, a constructor or a conversion function
 that the substitution selected is as unseen as a name is.
 
-No evaluated call of the substituted expression changes while the
-outcome is equal: the expression is not evaluated. Two things are not
-proven. The first is the statement Slip makes, "every name resolves as
-it did": in a namespace migration, the argument-dependent lookup inside
-a trait can find another `swap` and the trait still say yes. The second
-is behaviour that follows from what was instantiated: a name that binds
-a function with a deduced return type instantiates its body, and that
-can instantiate a variable whose initialiser runs. Such a demand is
-written in no unit, so the argument of the paragraph above does not
-hold for it: the derived units it made are on one side only and no
-unit both sides have differs. It holds whether the substitution
-succeeded or failed after the name bound.
-`spec/landed/digest/WP-153.md` §1 has the programs.
+No call evaluated at run time is written in such an expression: it is
+an unevaluated operand, or it is evaluated during translation. So no
+call of the substituted expression changes at run time while the
+outcome is equal. Two things are not proven.
 
-The same is true, outside any template, of a name in an operand that
-is not dependent and that only a type or a value holds
+The first is the statement Slip makes, "every name resolves as it
+did": in a namespace migration, the argument-dependent lookup inside a
+trait can find another `swap` and the trait still say yes.
+
+The second is behaviour that follows from what was instantiated. A
+name that binds a function with a deduced return type instantiates its
+body. That can instantiate a definition that is emitted whether or not
+it is referenced: a variable of static or thread storage duration whose
+initialiser or destructor runs, or a function with the attribute
+`constructor`, `destructor` or `used`. Such a demand is written in no
+unit, so the argument of the paragraph above does not hold for it: the
+derived units it made are on one side only and no unit both sides have
+differs, and `spec/verify.md` §4 step 3 reports nothing. It holds
+whether the substitution succeeded or failed after the name bound.
+
+The same behaviour changes with no name bound to another entity, when
+a candidate is no longer considered:
+
+```cpp
+extern "C" int puts(const char *);
+inline int note() { puts("registered"); return 0; }
+template <class T> struct Tr { static int r; };
+template <class T> int Tr<T>::r = note();
+namespace lib {
+struct X {};
+template <class T> auto probe() { return (void)&Tr<T>::r, 1; }
+template <class T, int = sizeof(probe<T>())> void f(T, char);
+}
+void f(lib::X, long) {}
+void use() { f(lib::X(), 0); }
+int main() { use(); }
+```
+
+Write the call `::f(lib::X(), 0)`: the callee is the same function,
+argument-dependent lookup no longer supplies `lib::f`, its default
+template argument is not substituted, `Tr<lib::X>::r` is not
+instantiated, and the program no longer prints. No record of what
+names bound can see this. Only WP-155 closes it: a derived unit that
+is emitted whether or not it is referenced, and that one image only
+has, is a finding. WP-155 is a package of its own and comes first.
+`spec/landed/digest/WP-153.md` §1 has the programs and what closes
+each.
+
+The limit of names is the same, outside any template, for a name in
+an operand that is not dependent and that only a type or a value holds
 (`decltype(n::S::s()) v;`): by §1 rule 2 the operand is spelling.
 
 Nothing is counted for this limit. The AST holds no fact that says a
