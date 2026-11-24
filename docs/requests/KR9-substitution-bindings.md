@@ -659,6 +659,16 @@ same is asked for a class template-id, `decltype`, an array bound, a
 variable template-id and a concept-id. Where a shape is first-use-only,
 per-use written sugar is the ask.
 
+**Kiln's answer to the follow-up (2026-11-24): every use keeps its own
+written operand**, in plain code and after substitution: an alias
+template-id, a class template-id, `decltype`, an array bound in plain
+code, a variable template-id, a concept-id. The nodes are interned by
+structure and the key includes the expression's id. What the alias
+cache shares is the alias's substituted aliased type, whose key holds
+non-type arguments as values, so it carries no use's expression. The
+first answer's "partial" for an alias's result meant that. Nothing is
+asked.
+
 ### 5.9 "Emitted whether or not referenced"
 
 Slip's WP-155 reports a derived unit that is emitted whether or not it
@@ -669,6 +679,69 @@ predicate on the AST, in `kiln_ast` or `kiln_sema`, that says of a
 declaration what code generation will decide, so that Slip does not
 rebuild it from attributes, the initialiser's value and the
 destructor. Slip builds its own first and replaces it.
+
+## 5.10 Kiln's design pass and Slip's rulings (2026-11-24)
+
+Kiln's design pass on this request: **roots are feasible for all four
+kinds, each with the stage that gives the kind's keys; its stage 0 is
+unchanged.**
+
+- The shape: a table parallel to `subst_keys`, a span per key into
+  12-byte slots tagged not reached, failed, expression, type or
+  arguments. `PartialMatch`: a slot per written argument, the
+  substituted sugared argument; a pack's elements in order; a bare
+  non-type parameter its value. `Satisfaction`: a slot per atom of the
+  declaration's **own** constraint expression, not of the flattened
+  normal form; a concept-id is one atom, checked under the concept's
+  own key, and its slot holds the concept-id and leads to that key.
+  `DefaultArg`: one slot, the expression after the site's conversion
+  and before evaluation. `Alias` and a new kind `ParamType` (§5.4
+  item 1): one type slot. Estimated 0.3 to 0.8 MB on
+  `<bits/stdc++.h>`.
+- Operators have entries and rows at Kiln `3d56da28a` (its spec
+  §18.13), later than the pin. `T()`, `T{1, 2}`, `is_v<T>`,
+  `__is_constructible(T, int)`, casts and `int = T()` have no
+  dependent entry: hence the key condition below.
+- A failed substitution is counted from Kiln's stage 1 (estimated
+  5,000 to 16,000 on the header, nearly all partial specialisations
+  that did not match).
+- `void_t`'s written argument is reachable from the root. A deduction
+  guide's names are in `specs()` under the guide's specialisation. For
+  `HasS` (§9) both keys exist: the name is under
+  `Satisfaction(HasS)`, and `Satisfaction(g)` has one slot that leads
+  there. Root omissions are readable per file or module, never per key.
+- Kiln's stages: 0 the table; 1 `PartialMatch` keys, rows, roots, the
+  key condition, the counter; K1 the substituted requirements of a
+  requires-expression kept (instantiated bodies too); K2 the
+  substituted array bound kept, and the written type of a type-only
+  function parameter; K3 the explicit-specifier's operand kept for a
+  function template specialisation; its WP-3520; 2 `Satisfaction`
+  (needs K1); 3 `DefaultArg` and `ParamType`; 4 `Alias` (needs K2);
+  5 the out-of-line redeclaration's rows; 6 the builtin traits' side
+  table; 7 the emitted predicate.
+
+Slip's rulings on Kiln's eleven questions:
+
+| # | Question | Ruling |
+|---|---|---|
+| 1 | the key condition "instantiation-dependent", 10,000 to 20,000 keys | yes |
+| 2 | `Satisfaction` slots over the declaration's own expression, a concept-id leading to the concept's key, a fold as one slot | yes, if the concept's key exists whenever a slot leads to it (also when answered from a cache), and a fold's slot keeps its elements in order, each with its own state; if that is costly, a limit |
+| 3 | one switch or two | one preferred; with two, a readable fact that roots were recorded |
+| 4 | a `ParamType` root has no marker (substituted from canonical arguments) | acceptable; elsewhere everything of the first use under the marker |
+| 5 | an unsatisfied requires-expression keeps the requirements before the failing one | enough, if the slot says which requirement failed |
+| 6 | the integral shortcut gives a slot with no conversion node | acceptable if the shortcut is taken only where no function is selected; confirmation asked |
+| 7 | "stays dependent" rows | none for every member template; for the four kinds' own patterns, low priority, edit planning only; the found set is the rebuilt node's, and the bit "ADL will run" |
+| 8 | no record for the alias guide and template template matching | limits, with a count per translation unit of substitutions made and not keyed, if cheap |
+| 9 | builtin traits: the expression the check built when true, placeholder operands | yes; reachable from the trait's node in plain code too; nothing of the use in a placeholder |
+| 10 | `SPEC_ALSO_KEYED` = a committed key has this entry with this resolution | yes |
+| 11 | the emitted predicate takes options and the caller's "is constant" | self-contained preferred (yes, no, unknown from what Sema stored); options as input are fine |
+
+What this changes in the proposal (`spec/landed/digest/WP-153.md`):
+§3.4's slots of a `Satisfaction` unit are per atom of the declaration's
+own expression, and a concept-id's slot writes the concept-id and the
+key it leads to (a reference to that unit's key), not the concept's
+atoms; `k` 5 is Kiln's `ParamType`. The stage that builds
+`Satisfaction` restates it.
 
 ## 6. Still open between Slip and Kiln
 
