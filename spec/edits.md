@@ -1738,11 +1738,24 @@ seed of either kind: it is the §9.2 follower of what it names
     or a shadow whose target is not in the set, make it unknown, and a
     using-declaration whose set is unknown is a follower `unsupported`
     when it names a subject, a subject hides what it names, or a member
-    of its class named like it is a subject. A named declaration without
+    of its class named like it is a subject; its `of` is then its
+    shadows' targets **and every member of its class named like it**, so
+    that the follower is selected (and refused) when the rename renames
+    all of them and is `mixed_follower` when it renames part (a hider
+    that is a subject otherwise left it unselected, its flag inert, and
+    the rename accepted without verifying). Lookup through bases that
+    give different sets by dominance ([class.member.lookup]/6) is not
+    built: such a set is unknown, a limit (it refuses). A named
+    declaration without
     a shadow is hidden: by the member that overrides it (Kiln's record of
     overriding), which is of its family and renamed with it; or, when
-    none does, by a member with its parameter-type list that Kiln does
-    not name, and then it and every member of the class named like it
+    none does, by a member that corresponds to it ([namespace.udecl]/14:
+    the same parameter-type-list, cv-qualification and ref-qualifier),
+    which Kiln does not name. Correspondence is told exactly only
+    between non-static member functions that are no templates and whose
+    function types are not dependent (the canonical parameter types,
+    variadic-ness and qualifiers compared); any other member named like
+    it counts as one that may hide it. Then it and those members
     are in the using-declaration's `of`, so that renaming the hider and
     not the hidden declaration, or the reverse, is `mixed_follower` (the
     using-declaration with the shadow's role; a declaration without a
@@ -1752,7 +1765,10 @@ seed of either kind: it is the §9.2 follower of what it names
     rewritten to `using B::g;` and verifies in both orders (it was
     WP-119's known mismatch F2), and `struct B { void f(); void f(int);
     }; struct D : B { void f(); using B::f; };` refuses with `D::f` or
-    `B::f` the seed, in both orders. An inheriting
+    `B::f` the seed, in both orders; `struct A { virtual void f(int); };
+    struct B { void f(); }; struct D : A, B { void f(int) override; void
+    f(); using B::f; };` from `n::A::f` is accepted and verifies in both
+    orders (`D::f(int)` does not correspond to `B::f()`). An inheriting
     constructor's shadows (`using B::B;`) are another name and never
     followers. A using-declaration that names a class and functions of
     one name has both in its `of`; the class is a seed of another kind

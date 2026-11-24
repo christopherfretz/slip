@@ -1820,3 +1820,161 @@ fn wp127_using_named_set_dependent_base_both_orders() {
         assert!(causes(&r).contains(&"MixedFollower"), "{n}: {r:?}");
     }
 }
+
+/// The classes of the review's F1 and F3 (`spec/landed/edits/WP-127.md`):
+/// `C`'s lookup of `f` is decided by dominance through the virtual base
+/// `A` ([class.member.lookup]/6), which `member_lookup` does not
+/// implement, so what `using C::f;` names cannot be told. `b1` is `B1`'s
+/// members, `d` `D`'s.
+fn dominance(b1: &str, d: &str, calls: &str) -> String {
+    format!(
+        "namespace n {{\nstruct A {{ void f(); }};\nstruct B1 : virtual A {{ {b1} }};\nstruct B2 : virtual A {{}};\nstruct C : B1, B2 {{}};\nstruct D : C {{ {d} }};\n}}\nvoid h(n::D& d) {{ {calls} }}\n"
+    )
+}
+
+/// A chain `C0 <- C1 <- ... <- C65` deeper than `member_lookup`'s cap
+/// (64), `C0` with `f()` and `f(int)`, `D : C65` with `d`.
+fn deep_chain(d: &str) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("namespace n {\nstruct C0 { void f(); void f(int); };\n");
+    for i in 1..=65 {
+        writeln!(s, "struct C{i} : C{} {{}};", i - 1).unwrap();
+    }
+    writeln!(s, "struct D : C65 {{ {d} }};\n}}\nvoid h(n::D& d) {{ d.f(); d.f(1); }}").unwrap();
+    s
+}
+
+/// The review's F1: a using-declaration whose named set cannot be told
+/// (bases give different sets; the depth cap) and a member of its class
+/// named like it a subject is refused in both member orders. Member first
+/// it was accepted and did not verify (`added n::D::<shadow n::B1::f()>`):
+/// the follower was flagged `unsupported` but its `of` held the shadows
+/// only, so it was never selected. Now the class's members named like it
+/// are in `of` too.
+#[test]
+fn wp127_unknown_named_set_refused_both_orders() {
+    let both = "void f(); void f(int);";
+    let longs = "void f(long); void f(int);";
+    let cases: [(&str, String, [&str; 3]); 8] = [
+        (
+            "dominance-mf",
+            dominance(both, "void f(); using C::f;", "d.f(); d.f(1);"),
+            ["n", "D", "f"],
+        ),
+        (
+            "dominance-uf",
+            dominance(both, "using C::f; void f();", "d.f(); d.f(1);"),
+            ["n", "D", "f"],
+        ),
+        (
+            "dominance-mf-b1",
+            dominance(both, "void f(); using C::f;", "d.f(); d.f(1);"),
+            ["n", "B1", "f"],
+        ),
+        (
+            "dominance-uf-b1",
+            dominance(both, "using C::f; void f();", "d.f(); d.f(1);"),
+            ["n", "B1", "f"],
+        ),
+        (
+            "long-mf",
+            dominance(longs, "void f(long); using C::f;", "d.f(1L); d.f(1);"),
+            ["n", "D", "f"],
+        ),
+        (
+            "long-uf",
+            dominance(longs, "using C::f; void f(long);", "d.f(1L); d.f(1);"),
+            ["n", "D", "f"],
+        ),
+        ("deep-mf", deep_chain("void f(); using C65::f;"), ["n", "D", "f"]),
+        ("deep-uf", deep_chain("using C65::f; void f();"), ["n", "D", "f"]),
+    ];
+    for (tag, text, target) in &cases {
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-unknown-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], target, "g", &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{n}: {r:?}");
+    }
+}
+
+/// F1's shape in an instantiated class whose dependent base is the
+/// dominance hierarchy (`instantiated_unfollowed_using` with a set that
+/// cannot be told): refused in both member orders.
+#[test]
+fn wp127_unknown_named_set_instantiated_refused_both_orders() {
+    for (tag, e) in [("mf", "void f(); using T::f;"), ("uf", "using T::f; void f();")] {
+        let text = format!(
+            "namespace n {{\nstruct A {{ void f(); }};\nstruct B1 : virtual A {{ void f(); void f(int); }};\nstruct B2 : virtual A {{}};\nstruct C : B1, B2 {{}};\ntemplate <class T> struct E : T {{ {e} }};\n}}\nvoid h(n::E<n::C>& e) {{ e.f(); e.f(1); }}\n"
+        );
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-unknown-inst-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "E", "f"], "g", &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{n}: {r:?}");
+    }
+}
+
+/// The review's F2: a member hides a declaration the using-declarator
+/// names only if it corresponds to it ([namespace.udecl]/14); where both
+/// are non-template non-static member functions with non-dependent types
+/// that is told exactly. `D::f(int)` (renamed with `A::f(int)`) does not
+/// correspond to `B::f()` and is no hider of it, so the answer is one in
+/// both orders: accepted, and it verifies (member first it was
+/// `MixedFollower`).
+#[test]
+fn wp127_hider_corresponds_both_orders() {
+    for (tag, d) in [
+        ("mf", "void f(int) override; void f(); using B::f;"),
+        ("uf", "using B::f; void f(int) override; void f();"),
+    ] {
+        let text = format!(
+            "namespace n {{\nstruct A {{ virtual void f(int); }};\nstruct B {{ void f(); }};\nstruct D : A, B {{ {d} }};\n}}\nvoid h(n::D& d) {{ d.f(); d.f(1); }}\n"
+        );
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-corresponds-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "A", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+    }
+}
+
+/// The review's F3, a limit: lookup in `C` finds `B1::f()` by dominance,
+/// which `member_lookup` does not implement, so renaming `n::B1::f` is
+/// refused (the right edit is `using C::g;`). Recorded so that the day it
+/// is built this test changes.
+#[test]
+fn wp127_dominance_limit_refused() {
+    for (tag, d) in [("uf", "using C::f; void f(int);"), ("mf", "void f(int); using C::f;")] {
+        let text = dominance("void f();", d, "d.f(); d.f(1);");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp127-dominance-limit-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "B1", "f"], "g", &right);
+        assert_eq!(causes(&r), ["MixedFollower"], "{n}: {r:?}");
+    }
+}
+
+/// Item 1 over two observers in both orders, one of which includes the
+/// using-declaration's class and uses it, the other the header only; and
+/// a class template instantiated in one observer only. A class's members
+/// and bases are in its definition, which is one in every observer that
+/// sees it (ODR), so a non-template class's named set is one; what can
+/// differ is whether an observer instantiates a template, and the
+/// refusal of the one that does holds.
+#[test]
+fn wp127_named_set_two_observers() {
+    let header = "namespace n {\nstruct A { void f(); };\nstruct B1 : virtual A { void f(); void f(int); };\nstruct B2 : virtual A {};\nstruct C : B1, B2 {};\nstruct D : C { void f(); using C::f; };\ntemplate <class T> struct E : T { void f(); using T::f; };\n}\n";
+    for (tag, use_) in [
+        ("class", "#include \"t.h\"\nvoid h(n::D& d) { d.f(); d.f(1); }\n"),
+        ("template", "#include \"t.h\"\nvoid h(n::E<n::C>& e) { e.f(); e.f(1); }\n"),
+    ] {
+        let target: [&str; 3] = if tag == "class" { ["n", "D", "f"] } else { ["n", "E", "f"] };
+        let files: [(&str, &[u8]); 3] = [
+            ("t.h", header.as_bytes()),
+            ("use.cpp", use_.as_bytes()),
+            ("other.cpp", b"#include \"t.h\"\nint k() { return 0; }\n"),
+        ];
+        for mains in [["use.cpp", "other.cpp"], ["other.cpp", "use.cpp"]] {
+            let n = format!("wp127-named-two-{tag}-{}", mains[0].trim_end_matches(".cpp"));
+            let r = end_to_end(&n, &files, &mains, &target, "g", &right);
+            assert_eq!(causes(&r), ["MixedFollower"], "{n}: {r:?}");
+        }
+    }
+}
