@@ -837,37 +837,42 @@ fn s5_3_subject_sums_and_n1() {
     let tree = Tree::new("sums");
     let (o, _, declared) = tree.map_c();
     let mut overlay = tree.include_overlay(&[]);
-    let c = overlay.find(&tree.path("c.cpp")).unwrap();
-    overlay.files[c].pre = content(b"int c = 1;\n");
+    let at = overlay.find(&tree.path("c.cpp")).unwrap();
+    overlay.files[at].pre = content(b"int c = 1;\n");
     let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
     let shard = tree.verify_task(&o, ovly, declared).unwrap();
     assert_eq!(kind(&shard), VerdictKind::Unverifiable);
-    let c = String::from_utf8(tree.path("c.cpp")).unwrap();
+    let c_cpp = String::from_utf8(tree.path("c.cpp")).unwrap();
     assert_eq!(
         reason(&shard),
-        format!("pre-image: the overlay was made from another {c} than the map phase read")
+        format!("pre-image: the overlay was made from another {c_cpp} than the map phase read")
     );
 
     // `n.cpp` includes `<w.h>` searching `i/` before the subject: the map
     // parse looked for `i/w.h` and found none.
-    let i = tree.base.join("i");
-    std::fs::create_dir_all(&i).unwrap();
+    let first = tree.base.join("i");
+    std::fs::create_dir_all(&first).unwrap();
     std::fs::write(tree.subject.join("n.cpp"), "#include <w.h>\nint n = W;\n").unwrap();
-    let mut n = observer_of(&tree.subject, "n.cpp", 5);
-    let flags = [format!("-I{}", i.display()), format!("-I{}", tree.subject.display())];
-    n.command.argv.splice(2..2, flags.iter().map(|f| f.as_bytes().to_vec()));
-    n.id = n.command.observer_id();
-    let shard = tree.map(&n, None).unwrap();
+    let mut n_cpp = observer_of(&tree.subject, "n.cpp", 5);
+    let flags = [format!("-I{}", first.display()), format!("-I{}", tree.subject.display())];
+    n_cpp.command.argv.splice(2..2, flags.iter().map(|f| f.as_bytes().to_vec()));
+    n_cpp.id = n_cpp.command.observer_id();
+    let shard = tree.map(&n_cpp, None).unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
-    tree.store.publish_shard(&tree.plan_id, Phase::Map, ROUND, &n.id, &shard.to_bytes()).unwrap();
+    tree.store
+        .publish_shard(&tree.plan_id, Phase::Map, ROUND, &n_cpp.id, &shard.to_bytes())
+        .unwrap();
     let good = tree.put_overlay(&tree.include_overlay(&[]), &[]);
-    let shard = tree.verify_task(&n, good, declared).unwrap();
+    let shard = tree.verify_task(&n_cpp, good, declared).unwrap();
     assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
-    std::fs::write(i.join("w.h"), "#define W 1\n").unwrap();
-    let shard = tree.verify_task(&n, good, declared).unwrap();
+    std::fs::write(first.join("w.h"), "#define W 1\n").unwrap();
+    let shard = tree.verify_task(&n_cpp, good, declared).unwrap();
     assert_eq!(kind(&shard), VerdictKind::Unverifiable);
-    let w = i.join("w.h");
-    assert_eq!(reason(&shard), format!("pre-image: {} appeared since the map phase", w.display()));
+    let w_h = first.join("w.h");
+    assert_eq!(
+        reason(&shard),
+        format!("pre-image: {} appeared since the map phase", w_h.display())
+    );
 }
 
 // spec/verify.md §5.1 "Loading": a blob of the right digest but not of the
