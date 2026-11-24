@@ -1427,3 +1427,104 @@ fn s2_1_collisions_are_marked_under_the_same_ownership() {
     };
     assert_eq!(run(&c), [Holds]);
 }
+
+// ---------------------------------------------------------------------
+// WP-141 A5: a piece that names a namespace with two view keys
+// (`spec/digest.md` §3.4 "A reference to a namespace"). `legacy` moved
+// into `acme`, which a read-only dependency also opens; `old_dep.h`
+// keeps a read-only `legacy`.
+// ---------------------------------------------------------------------
+
+const A5_OLD: &str = "namespace legacy { struct Old {}; int k(Old); int h(int); int h(long); }\n";
+const A5_NEW: &str = "namespace acme { int h(int); int h(long); }\n";
+const A5_READ_ONLY: &[&str] = &["old_dep.h", "new_dep.h"];
+
+/// The A5 case: `pre` and `post` are `main.cpp` after the two includes.
+fn a5_case(pre: &str, post: &str) -> Vec<Spelling> {
+    let head = "#include \"old_dep.h\"\n#include \"new_dep.h\"\n";
+    let pre = format!("{head}{pre}");
+    let post = format!("{head}{post}");
+    let pre_files = [("main.cpp", pre.as_str()), ("old_dep.h", A5_OLD), ("new_dep.h", A5_NEW)];
+    let post_files = [("main.cpp", post.as_str()), ("old_dep.h", A5_OLD), ("new_dep.h", A5_NEW)];
+    let marks = unmark(&post).1.len();
+    let wants = vec![Named("legacy"); marks];
+    run(&Case {
+        post: &post_files,
+        pre: Some(&pre_files),
+        renames: &[("legacy", "acme")],
+        wants: &wants,
+        tables: true,
+        std: "c++20",
+        read_only: A5_READ_ONLY,
+    })
+}
+
+// F7 of the design review: the qualifier of an unresolved name that now
+// finds the dependency's twin. The piece's key is a view key of `acme`
+// (the owned view's, `legacy`), but at an R1 site only the key R1 writes
+// holds, and R1 writes the dependency view's: fails (mutation 13).
+#[test]
+fn wp141_a5_r1_site_fails_with_another_view_key() {
+    let got = a5_case(
+        "namespace legacy { int g(int); }\ntemplate <class T> int f(T t) { return legacy::h(t); }\n",
+        "namespace acme { int g(int); }\ntemplate <class T> int f(T t) { return «acme»::h(t); }\n",
+    );
+    assert!(fails(&got[0]).is_some(), "{got:?}");
+}
+
+// The same site finding the moved overloads: R1 writes the owned view's
+// key, the pre-image's `legacy`: holds.
+#[test]
+fn wp141_a5_r1_site_holds_with_its_key() {
+    let got = a5_case(
+        "namespace legacy { int g(int); int g(long); }\ntemplate <class T> int f(T t) { return legacy::g(t); }\n",
+        "namespace acme { int g(int); int g(long); }\ntemplate <class T> int f(T t) { return «acme»::g(t); }\n",
+    );
+    assert_eq!(got, vec![Holds]);
+}
+
+// The qualifier of a resolved name: nothing is written there and the
+// next piece decides, so any view key holds.
+#[test]
+fn wp141_a5_resolved_qualifier_holds_with_a_view_key() {
+    let got = a5_case(
+        "namespace legacy { int g(int); }\nint u() { return legacy::g(1); }\n",
+        "namespace acme { int g(int); }\nint u() { return «acme»::g(1); }\n",
+    );
+    assert_eq!(got, vec![Holds]);
+}
+
+// A using-directive's or an alias's target: Kiln does not record it at
+// this pin (§10.7, `s10_7_unrecorded_names_are_not_seen`), so A5's
+// whole-reading branch is not reached yet; the day Kiln records it this
+// test fails and the branch gets its cases (not whole fails, whole holds).
+#[test]
+fn wp141_a5_directive_and_alias_targets_not_seen() {
+    let got = a5_case(
+        "namespace legacy { int g(int); }\nusing namespace legacy;\nnamespace L = legacy;\n",
+        "namespace acme { int g(int); }\nusing namespace «acme»;\nnamespace L = «acme»;\n",
+    );
+    assert_eq!(got, vec![NotSeen, NotSeen]);
+}
+
+// A using-declaration's scope (row 3): the shadow's entity is a member
+// of the owned part: R1 writes `legacy`: holds.
+#[test]
+fn wp141_a5_using_declaration_scope_holds() {
+    let got = a5_case(
+        "namespace legacy { int g(int); }\nusing legacy::g;\n",
+        "namespace acme { int g(int); }\nusing «acme»::g;\n",
+    );
+    assert_eq!(got, vec![Holds]);
+}
+
+// The same scope naming the dependency's twin: R1 writes the dependency
+// view's key, not the pre-image's `legacy`: fails (mutation 13).
+#[test]
+fn wp141_a5_using_declaration_scope_fails_with_another_view_key() {
+    let got = a5_case(
+        "namespace legacy { int g(int); }\nusing legacy::h;\n",
+        "namespace acme { int g(int); }\nusing «acme»::h;\n",
+    );
+    assert!(fails(&got[0]).is_some(), "{got:?}");
+}

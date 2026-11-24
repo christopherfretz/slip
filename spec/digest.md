@@ -501,10 +501,77 @@ views' units, and fails closed (`views/visibility-owned-opening`). So a
 move into a namespace that a dependency also opens compares the owned
 view's unit with the pre-image's namespace (`verify.md` §2.1). Units are
 added, never changed: no key or digest of a member moves, and no
-pre-image (digested under the empty table) has a unit in a view. A
-**reference** to a namespace (an alias's target, a using-directive, a
-qualifier, a using-declaration's key) writes the namespace's own key, in
-any view (`verify.md` "Open questions" lists every such place).
+pre-image (digested under the empty table) has a unit in a view.
+
+**A reference to a namespace** (WP-141, build A). A namespace is
+referred to by a view key. With one view key there is nothing to
+choose, and the reference is `Ref::unit` of the own key, as anywhere.
+
+*Named to find members*: the scope of a using-declaration in its key,
+the qualifier of a name left unresolved when the qualifier is a
+namespace, in a stream or in a profile, and the qualifier of a qualified
+concept-id. Take the declarations the lookup found (the
+using-declaration's shadows, each as the entity it stands for; the
+unresolved name's set; the concept). Each gives the key of the part of
+the named namespace that holds it, by its **route**, in this order:
+
+1. a member of the named namespace or of its inline namespace set: its
+   own view (the view of its ownership);
+2. else, reached through using-directives written in the named
+   namespace or its inline set, followed transitively as
+   [namespace.qual] follows them: the view of each such directive (the
+   ownership of the file it is written in), both keys if both;
+3. else the route is not known (it came through a using-declaration,
+   whose shadow Kiln does not keep in a found set): every view key, and
+   the counter `digest.ref.namespace_route_unknown` counts it. The
+   shadow is never guessed by searching the namespace.
+
+The keys are sorted and duplicates removed. One key is written as
+`Ref::unit`. Two or more, or nothing found (then every view key, and
+`digest.ref.namespace_no_referent` counts it), are written as
+`Ref::views`: the count and the keys. The route is asked only when the
+named namespace has two view keys.
+
+*Named whole*: the namespace a using-directive at namespace scope
+nominates, and the target of a namespace alias. In a read-only file
+(by the path of the file the declaration is written in) it is written
+with its key in the dependency view (its one view key if it has no
+dependency part), never `Ref::part`. In an owned file it has a
+**reading** for each of its view keys `k`. A namespace **holds
+something under `k`** if, in a view of it whose key is `k`, it has a
+read-only opening, or an entity that is not a namespace keyed under it
+(a using-directive, an alias, a using-declaration and a `static_assert`
+in an owned opening count), or a nested namespace that itself holds
+something in that view; an owned opening that is empty, or holds only
+empty nested namespaces, holds nothing. `E(k)` is the set of namespaces
+of the image that hold something under `k`. The reference is **whole
+for `k`** if every namespace of `E(k)` is named: by this alias; or, for
+a using-directive, by the using-directives of the same enclosing
+namespace **entity** in the same file, taken together (never by those of
+another namespace that has the same mapped key). The reading for `k` is
+`Ref::unit(k)` if the reference is whole for `k`, else `Ref::part(k,
+view)`, `view` the ownership of the named namespace's own unit. The
+unit is written with the reading of the namespace's own key. A
+directive or an alias at block scope is written as before. *(The other
+readings, the alternates of `verify.md` §4 step 1a, are WP-143's and
+not built: a unit has no alternate, and §11 has no `tu_alt`.)*
+
+The guard: with one view key everywhere (the empty table, a table that
+maps no namespace of the chain, an image with no namespace that has two
+view keys) every namespace has one reading and every reference is
+`Ref::unit` of the own key, written exactly as before WP-141: no digest
+moves. The table of namespaces (`E(k)`, the inline sets, the
+directives written in each) is made in one pass over the image before
+the walk reads it, so nothing depends on the order units are written in.
+`Ref::views` and `Ref::part` are never written for a pre-image.
+
+Each owned using-directive and alias whose reading for a view key is
+not whole is reported, informational only (`Output::namespace_parts`):
+the unit, the key, whether it is the written reading, and the
+namespaces of `E(k)` it misses with the file of each one's first
+opening. The display name of a using-directive whose written reading is
+`Ref::part` says which part it names (`verify.md` §2.1; the words are
+provisional).
 
 Every site that writes a key (a unit's
 own, a reference from another unit's stream, a parent, a
@@ -566,6 +633,8 @@ Ref := none = 0
      | template_param = 3, depth: uv, index: uv
      | param = 4, level: uv, index: uv            a function parameter named inside a signature
      | outer = 5, owner: KeyId, index: uv         a local variable, parameter or binding of another unit (§4.3)
+     | views = 6, count: uv, ids: KeyId*          a namespace named to find members under several view keys (§3.4), ascending
+     | part = 7, id: KeyId, view: bool            a namespace named whole, not whole for its own key (§3.4)
 ```
 
 A reference names the entity, never the declaration it was found through:

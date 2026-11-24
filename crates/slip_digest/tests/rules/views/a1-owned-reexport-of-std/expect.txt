@@ -1,5 +1,6 @@
 # A1 (O1): an owned re-export namespace legacy { using std::string; using std::forward; } moved to acme.
-# Pinned as it is before WP-141's build.
+# WP-141 build A: still a finding (route unknown: the using-shadow is not kept).
+# needs: kiln (found shadows)
 added <using acme::string>
 changed template <class> type-parameter-0-0 g(type-parameter-0-0)
 removed <using legacy::string>

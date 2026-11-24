@@ -280,7 +280,9 @@ fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec
 /// computed per unit, so the one of this unit is computed alone and must
 /// be among them.
 fn name_of(w: &Walk<'_>, u: &Written, output: &Output) -> Result<String, String> {
-    let one = crate::names::names(w, std::slice::from_ref(u));
+    let mut one = crate::names::names(w, std::slice::from_ref(u));
+    // The part a using-directive names (WP-141) is in its name.
+    crate::ns_refs::part_names(w, std::slice::from_ref(u), &mut one);
     let Some((_, name)) = one.into_iter().next() else {
         return Err(format!("the unit {} has no name", u.key));
     };
@@ -392,6 +394,7 @@ mod tests {
             rule_use: Vec::new(),
             kept: Vec::new(),
             name_strings: Vec::new(),
+            namespace_parts: Vec::new(),
         }
     }
 
@@ -457,6 +460,7 @@ mod tests {
                 rule_use: Vec::new(),
                 kept: Vec::new(),
                 name_strings: Vec::new(),
+                namespace_parts: Vec::new(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

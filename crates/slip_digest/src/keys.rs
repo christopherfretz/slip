@@ -54,6 +54,20 @@ pub(crate) struct KindInfo {
     pub c_linkage: bool,
 }
 
+/// What an entity is keyed under, by the climb of `Walk::parent_scope`.
+enum Scope {
+    Builtin,
+    /// `local(n)` under an owner (`local::local_parent`).
+    Local,
+    /// A class, a closure type or a class template: its own key.
+    Unit(DeclId),
+    CLinkage,
+    Root,
+    /// A namespace, keyed from the member's point of view.
+    Namespace(DeclId),
+    Bad(Cause),
+}
+
 const fn k(role: Role) -> KindInfo {
     KindInfo { role, on_demand: false, function: false, local_scope: false, c_linkage: false }
 }
@@ -659,32 +673,86 @@ impl Walk<'_> {
         e: DeclId,
         view: Option<bool>,
     ) -> Result<(Parent, Option<Cause>), Option<Cause>> {
+        match self.parent_scope(e) {
+            Scope::Builtin => Ok((Parent::Builtin, None)),
+            Scope::Local => crate::local::local_parent(self, e),
+            Scope::Unit(x) => self.unit_parent(x),
+            Scope::CLinkage => Ok((Parent::CLinkage, None)),
+            Scope::Root => Ok((Parent::Root, None)),
+            Scope::Namespace(x) => self.namespace_parent(x, e, view),
+            Scope::Bad(c) => Err(Some(c)),
+        }
+    }
+
+    /// The namespace entity `e` is keyed directly under (its parent in
+    /// `parent_in` is that namespace, `namespace_parent`), from the same
+    /// climb; `None` for an entity whose parent is anything else (a class,
+    /// `root`, `c_linkage`, a template for a specialisation, an owner for
+    /// a local entity). Structural: no key is computed (WP-141, the
+    /// namespaces that hold something, `ns_refs.rs`).
+    pub(crate) fn key_namespace(&self, e: DeclId) -> Option<DeclId> {
+        let ast = self.ast;
+        let r = self.representative(e);
+        match ast.templ_link(r).get() {
+            Some((TemplLinkKind::Specialization, _)) if ast.spec_info(r).is_some() => {
+                return None;
+            }
+            Some((TemplLinkKind::PartialSpecialization, _))
+                if ast.partial_spec_info(r).is_some() =>
+            {
+                return None;
+            }
+            Some(_) | None => {}
+        }
+        match info(ast.decls.get(r).kind()).role {
+            Role::Entity(_) | Role::Content(_) => {}
+            Role::Unsupported(_)
+            | Role::Nothing
+            | Role::Transparent
+            | Role::Root
+            | Role::Local
+            | Role::InParent => return None,
+        }
+        match self.parent_scope(r) {
+            Scope::Namespace(x) => Some(self.entity(x)),
+            Scope::Builtin
+            | Scope::Local
+            | Scope::Unit(_)
+            | Scope::CLinkage
+            | Scope::Root
+            | Scope::Bad(_) => None,
+        }
+    }
+
+    /// What `parent_in` keys entity `e` under, before any key is
+    /// computed: the climb of the contexts around it.
+    fn parent_scope(&self, e: DeclId) -> Scope {
         let ast = self.ast;
         let n = ast.decls.get(e);
         if ast.decls.builtin_id(e).is_some() || n.kind() == DeclKind::BuiltinTemplate {
-            return Ok((Parent::Builtin, None));
+            return Scope::Builtin;
         }
         if ast.decls.record(e).is_some_and(|r| r.lambda.is_some()) {
             // A closure type: `local(n)` under its owner (digest §4.3).
-            return crate::local::local_parent(self, e);
+            return Scope::Local;
         }
         if let Some(class) = self.friend_class(e) {
-            return self.unit_parent(class);
+            return Scope::Unit(class);
         }
         let local_extern = self.is_local_extern(e);
         if info(n.kind()).c_linkage && self.in_c_linkage(e) {
-            return Ok((Parent::CLinkage, None));
+            return Scope::CLinkage;
         }
         let mut c = n.ctx();
         let mut to_namespace = false;
         for _ in 0..CTX_LIMIT {
-            let Some(x) = c else { return Ok((Parent::Root, None)) };
+            let Some(x) = c else { return Scope::Root };
             let xn = ast.decls.get(x);
             let xi = info(xn.kind());
             if to_namespace {
                 match xi.role {
-                    Role::Root => return Ok((Parent::Root, None)),
-                    Role::Entity(KeyKind::Namespace) => return self.namespace_parent(x, e, view),
+                    Role::Root => return Scope::Root,
+                    Role::Entity(KeyKind::Namespace) => return Scope::Namespace(x),
                     Role::Nothing
                     | Role::Transparent
                     | Role::Entity(_)
@@ -707,33 +775,33 @@ impl Walk<'_> {
                 // class or enumeration under its owner; any other local
                 // entity has no key (digest §4.3).
                 if ast.decls.record(x).is_some_and(|r| r.lambda.is_some()) {
-                    return self.unit_parent(x);
+                    return Scope::Unit(x);
                 }
                 if crate::local::is_local_type(self, e) {
-                    return crate::local::local_parent(self, e);
+                    return Scope::Local;
                 }
-                return Err(Some(LOCAL_ENTITY));
+                return Scope::Bad(LOCAL_ENTITY);
             }
             match xi.role {
-                Role::Root => return Ok((Parent::Root, None)),
+                Role::Root => return Scope::Root,
                 Role::Transparent => c = xn.ctx(),
-                Role::Entity(KeyKind::Namespace) => return self.namespace_parent(x, e, view),
+                Role::Entity(KeyKind::Namespace) => return Scope::Namespace(x),
                 Role::Entity(
                     KeyKind::Class
                     | KeyKind::Enumeration
                     | KeyKind::Specialisation
                     | KeyKind::PartialSpecialisation
                     | KeyKind::ClassTemplate,
-                ) => return self.unit_parent(x),
+                ) => return Scope::Unit(x),
                 Role::Entity(_)
                 | Role::Nothing
                 | Role::Content(_)
                 | Role::Local
                 | Role::InParent
-                | Role::Unsupported(_) => return Err(Some(BAD_PARENT)),
+                | Role::Unsupported(_) => return Scope::Bad(BAD_PARENT),
             }
         }
-        Err(Some(BAD_PARENT))
+        Scope::Bad(BAD_PARENT)
     }
 
     /// The class a friend function or function template `e` is keyed in,
@@ -1313,7 +1381,11 @@ impl Walk<'_> {
                 if let Some(q) = q {
                     // A key reads no spelling; the unit's stream reads
                     // the written qualifier (`own_spelling::using_qualifier`).
+                    // R1 (WP-141): the scope names the namespace to find
+                    // the declarations the shadows stand for.
+                    self.ns_refs.pending = Some(ast.using_shadows(e).collect());
                     self.write_canonical_nns(&mut s, q);
+                    self.ns_refs.pending = None;
                 }
             }
             KeyKind::UsingShadow => {

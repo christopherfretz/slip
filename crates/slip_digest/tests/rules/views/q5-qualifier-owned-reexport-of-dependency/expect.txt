@@ -1,5 +1,6 @@
 # Q5 (O2): legacy::h(t) becomes acme::h(t) with an owned namespace acme { using legacy::h; } (created).
-# Pinned as it is before WP-141's build.
+# WP-141 build A: still a finding (route unknown: the using-shadow is not kept).
+# needs: kiln (found shadows)
 added acme::<shadow legacy::h(legacy::Old)>
 added acme::<shadow legacy::h(long)>
 added acme::<using legacy::h>

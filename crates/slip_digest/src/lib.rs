@@ -227,6 +227,7 @@ mod keys;
 mod local;
 pub mod map;
 mod names;
+mod ns_refs;
 mod order;
 mod other;
 mod own_spelling;
@@ -249,6 +250,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use ns_refs::NamespacePart;
 pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
@@ -322,6 +324,11 @@ pub struct Output {
     /// symbolically, sorted by key; empty when the translation unit holds
     /// none.
     pub name_strings: Vec<NamesUnit>,
+    /// The readings of owned whole-namespace references that are not
+    /// whole (`spec/digest.md` §3.4, WP-141): informational, for the notes
+    /// of `spec/verify.md`; sorted; empty under a table that gives no
+    /// namespace a second view.
+    pub namespace_parts: Vec<NamespacePart>,
 }
 
 /// The names digest of one key (`Output::name_strings`), with what a note

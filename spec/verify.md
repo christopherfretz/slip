@@ -306,9 +306,28 @@ came from, and nothing about the rest:
   (`views/deprecated-owned-opening`, `deprecated-dependency-opening`,
   `inline-reopened-plain`); so is an attribute that applies to its own
   opening only (`visibility`), which fails closed
-  (`views/visibility-owned-opening`). A reference to the namespace
-  writes its own key, the dependency's: "Open questions", "References to
-  a namespace that two views key".
+  (`views/visibility-owned-opening`). A reference from owned code to a
+  namespace that has an owned and a dependency part needs no
+  declaration (`digest.md` §3.4 "A reference to a namespace", WP-141).
+  Where it finds members (a using-declaration's scope, the qualifier of
+  an unresolved name or of a concept-id) it is written from the point of
+  view of what it found, by the part that holds it. Where it names the
+  whole namespace (a using-directive, a namespace alias) it is compared
+  under its own key's reading. A reference that names only some of the
+  namespaces that share a key names less than the pre-image's did, and
+  differs: a nomination the pre-image had and the post-image dropped is
+  a finding whether or not a parsed lookup needs it (the edit that keeps
+  it always exists). The display name of such a using-directive says so,
+  `<using_directive legacy (the part the rule leaves)>` or `(the part
+  the rule moves)`, and `Output::namespace_parts` lists, per view key
+  whose reading is not whole, the namespaces it misses and where each is
+  first opened. *These words are provisional (the operator may reword
+  them).* Comparing a reference under its other readings (step 1a,
+  alternates) is WP-143's and not built: until then a reference that
+  now names more than the pre-image's (a `using namespace acme;` that
+  stays, where `acme` gained owned members) is compared by its own
+  key's reading alone. What stays failing closed: "Open questions",
+  "References to a namespace that two views key".
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -2164,6 +2183,18 @@ observer `failed`, with an empty message.
 
 ## 8. What this does not show
 
+- **What a reference to a namespace names in addition** (WP-141). A
+  rule that moves owned members into a namespace a dependency opens
+  makes every reference to that namespace name both. The run shows that
+  every key a pre-image reference named is still named whole, and that
+  no lookup in an analysed observer changed. It does not show that a
+  lookup in code it did not analyse is unchanged by what a reference
+  names in addition; no edit could keep that. And a using-directive
+  written inside the moved namespace moves with it like any owned
+  member: that it no longer nominates into the part the rule leaves is
+  the rule's consequence, not a finding (`digest.md` §3.4, "the same
+  enclosing namespace entity"; `tests/rules/views/a3-f4-edit-b`).
+
 - **Only analysed observers.** A configuration that is not in a database,
   a branch of `#if` no observer takes, and a template nothing instantiates
   are not verified. The coverage report says which
@@ -3143,6 +3174,25 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   - a spelling (`spelled-nns`, the own spelling of a qualifier): writes
     a named namespace's identifier, not its key, and nothing for a
     namespace level of the own spelling; not affected.
+
+  WP-141 build A (`digest.md` §3.4, "A reference to a namespace")
+  writes the using-declaration's scope, the qualifier of an unresolved
+  name in a stream and in a profile, and the qualifier of a concept-id
+  by the part that holds what was found, so where the route is known
+  `using-declaration-redirected`, `qualifier-dependent-overloaded` and
+  `profile-qualifier-overloaded` verify; and a using-directive or an
+  alias that names less than the pre-image's is now a finding
+  (`views/c2-central-only-acme`, `c3-central-directive-untouched`,
+  `a4-alias-both-parts-to-acme`, `a5-central-alias-untouched`). What
+  still fails closed: a directive or an alias
+  that now names more (`directive-redirected`, `alias-redirected`:
+  WP-143's alternates); a route through a using-declaration, whose shadow
+  Kiln does not keep in a found set (the fixtures marked
+  `# needs: kiln (found shadows)`); a name reached through an owned and a
+  read-only directive both (`views/a1-owned-and-read-only-directive`); a
+  dependent destructor name (`views/a2-dependent-destructor`); a
+  qualifier in a type; and a namespace named by its bytes in a signature
+  (`views/q12-member-qualifier-in-signature`).
 
   What a user can declare today: `changed L` for the alias, and a
   declared removal with `created` for a unit keyed by content

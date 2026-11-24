@@ -1,6 +1,5 @@
 # An owned using-declaration redirected: using legacy::g; becomes using acme::g;. Its key holds the
 # canonical qualifier, a reference to the namespace.
 # WP-140: the key writes acme's own key: removed and added, fails closed.
-added <using acme::g>
-removed <using legacy::g>
+# WP-141 build A: no finding (R1, row 3).
 use 1 via 1 direct 0

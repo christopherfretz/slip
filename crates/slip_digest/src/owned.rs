@@ -368,7 +368,7 @@ impl Walk<'_> {
     }
 
     /// The buffer of file location `loc`, if it is a file.
-    fn buffer_of(&self, loc: Loc) -> Option<FileId> {
+    pub(crate) fn buffer_of(&self, loc: Loc) -> Option<FileId> {
         if self.sm.is_written_in_scratch_space(loc) {
             return None;
         }
@@ -380,7 +380,7 @@ impl Walk<'_> {
     }
 
     /// Whether `file` is read-only, as `ReadOnly` answers, once per file.
-    fn file_read_only(&mut self, file: FileId) -> bool {
+    pub(crate) fn file_read_only(&mut self, file: FileId) -> bool {
         if let Some(&r) = self.owned_state.files.get(&file) {
             return r;
         }
