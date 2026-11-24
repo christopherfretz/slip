@@ -609,38 +609,54 @@ pub(crate) fn main(
     let shards = StoreShards::new(&store, plan_id, &plan, a.round, &selected);
     let (transform_id, transform) =
         request_of_round(&store, plan_id, a.round, &shards).map_err(failure)?;
-    if (!a.run.only.is_empty() || a.run.limit.is_some())
-        && selection(&plan, &a.run, err) != selected
-    {
-        return Err(commands::Failure::Input(format!(
-            "plan {plan_id} round {}: `--only` and `--limit` select other observers than the \
-             round's map phase did",
-            a.round
-        )));
-    }
-    let (set_id, set) = load_edits(&store, &a.edits).map_err(failure)?;
-    let mismatch = [
-        ("plan", set.plan != plan_id),
-        ("round", set.round != a.round),
-        ("transform", set.transform != transform_id),
-    ]
-    .into_iter()
-    .find(|(_, differs)| *differs);
-    if let Some((field, _)) = mismatch {
-        return Err(commands::Failure::Input(format!(
-            "edit set {set_id}: its {field} is not the round's (plan {plan_id}, round {}, \
-             transform {transform_id})",
-            a.round
-        )));
-    }
-    let declared = match (&a.declared, set.state) {
-        (Some(x), SetState::Accepted) => {
-            let given = load_declared(&store, x).map_err(failure)?;
-            given_within(&given.1, &set, &transform).map_err(failure)?;
-            Some(given)
+    // From here the round and its transform are known: an error publishes
+    // the record too, with no step (WP-076 decision 1).
+    let prepared = (|| -> commands::Result<_> {
+        if (!a.run.only.is_empty() || a.run.limit.is_some())
+            && selection(&plan, &a.run, err) != selected
+        {
+            return Err(commands::Failure::Input(format!(
+                "plan {plan_id} round {}: `--only` and `--limit` select other observers than the \
+                 round's map phase did",
+                a.round
+            )));
         }
-        (_, SetState::Accepted) => derived_declared(&store, &set, &transform).map_err(failure)?,
-        (_, SetState::Refused) => None,
+        let (set_id, set) = load_edits(&store, &a.edits).map_err(failure)?;
+        let mismatch = [
+            ("plan", set.plan != plan_id),
+            ("round", set.round != a.round),
+            ("transform", set.transform != transform_id),
+        ]
+        .into_iter()
+        .find(|(_, differs)| *differs);
+        if let Some((field, _)) = mismatch {
+            return Err(commands::Failure::Input(format!(
+                "edit set {set_id}: its {field} is not the round's (plan {plan_id}, round {}, \
+                 transform {transform_id})",
+                a.round
+            )));
+        }
+        let declared = match (&a.declared, set.state) {
+            (Some(x), SetState::Accepted) => {
+                let given = load_declared(&store, x).map_err(failure)?;
+                given_within(&given.1, &set, &transform).map_err(failure)?;
+                Some(given)
+            }
+            (_, SetState::Accepted) => {
+                derived_declared(&store, &set, &transform).map_err(failure)?
+            }
+            (_, SetState::Refused) => None,
+        };
+        let worker = commands::worker_command(&a.run)?;
+        Ok((set_id, set, declared, worker))
+    })();
+    let (set_id, set, declared, worker) = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = record.publish(&store, plan_id, a.round, transform_id);
+            drop(published);
+            return Err(e);
+        }
     };
 
     let _ = writeln!(out, "transform {transform_id}");
@@ -654,7 +670,6 @@ pub(crate) fn main(
     );
     let tokens = commands::token_pool(a.run.jobs);
     let options = commands::pool_options(&a.run, tokens.jobs(), err);
-    let worker = commands::worker_command(&a.run)?;
     record.edits = Some(set_id);
     let input = CheckInput {
         store: &store,

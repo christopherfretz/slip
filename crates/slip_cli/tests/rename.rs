@@ -806,6 +806,14 @@ fn s10_2_check_refuses_another_rounds_set() {
         let why = format!("its {field} is not the round's");
         assert!(out.stderr.contains(&why), "{why}: {out:?}");
     }
+    // Decision 1 (fix round, should-fix 5): each refusal published its
+    // record of the round, with no step.
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 4);
+    for r in &records[1..] {
+        assert!(r.steps.is_empty(), "{r:?}");
+        assert_eq!(r.result, None);
+    }
 }
 
 // §1 rule 3: `-j 1` and `-j 4` in fresh stores give the same five ids and
