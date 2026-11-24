@@ -48,7 +48,7 @@ struct Gated {
     /// The greatest run opened so far, and whether any.
     opened: Mutex<Option<usize>>,
     moved: Condvar,
-    gated: AtomicBool,
+    once: AtomicBool,
     /// The greatest run opened when the slow run was let go.
     seen_at_release: Mutex<Option<usize>>,
 }
@@ -62,7 +62,7 @@ impl Gated {
             at,
             opened: Mutex::new(None),
             moved: Condvar::new(),
-            gated: AtomicBool::new(false),
+            once: AtomicBool::new(false),
             seen_at_release: Mutex::new(None),
         }
     }
@@ -82,7 +82,7 @@ impl Shards for Gated {
         }
         if Some(run) == self.slow
             && index == run * FAN_IN
-            && !self.gated.swap(true, Ordering::SeqCst)
+            && !self.once.swap(true, Ordering::SeqCst)
         {
             let o = self.opened.lock().unwrap();
             let (o, _) = self
@@ -113,7 +113,7 @@ impl Shards for Gated {
 
 /// How a call ended within the time given.
 enum Ended {
-    Returned(Result<Reduced, ReduceError>),
+    Returned(Box<Result<Reduced, ReduceError>>),
     Panicked,
 }
 
@@ -128,8 +128,8 @@ fn within(store: &Arc<Gated>, threads: usize) -> Ended {
         assert_clean(&o.scratch);
         let _ = tx.send(r);
     });
-    match rx.recv_timeout(Duration::from_secs(60)) {
-        Ok(r) => Ended::Returned(r),
+    match rx.recv_timeout(Duration::from_mins(1)) {
+        Ok(r) => Ended::Returned(Box::new(r)),
         Err(RecvTimeoutError::Disconnected) => Ended::Panicked,
         Err(RecvTimeoutError::Timeout) => {
             panic!("reduce did not return within 60 s on {threads} threads: a deadlock")
@@ -139,7 +139,7 @@ fn within(store: &Arc<Gated>, threads: usize) -> Ended {
 
 fn returned(e: Ended) -> Result<Reduced, ReduceError> {
     match e {
-        Ended::Returned(r) => r,
+        Ended::Returned(r) => *r,
         Ended::Panicked => panic!("reduce panicked"),
     }
 }

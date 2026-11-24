@@ -91,15 +91,16 @@ fn peak_growth<T>(f: impl FnOnce() -> T) -> (T, Option<u64>) {
 }
 
 /// Shards made when opened, so that the store holds nothing: shard `i` of
-/// `make(i)`, or none (unparsed) where `make` gives none.
+/// `make(i)`, or none where `unparsed(i)`.
 struct Lazy {
     n: usize,
-    make: fn(usize) -> Option<Shard>,
+    make: fn(usize) -> Shard,
+    unparsed: fn(usize) -> bool,
 }
 
 impl Shards for Lazy {
     fn open(&self, index: usize) -> Result<Option<Vec<u8>>, String> {
-        Ok((self.make)(index).map(|s| s.to_bytes()))
+        Ok((!(self.unparsed)(index)).then(|| (self.make)(index).to_bytes()))
     }
     fn len(&self) -> usize {
         self.n
@@ -110,18 +111,20 @@ impl Shards for Lazy {
 }
 
 /// Every shard replaces one byte the same way.
-fn one_site(i: usize) -> Option<Shard> {
-    Some(
-        ShardB::new(i)
-            .claim(replace("/s/a.cc", 10, 11, vec![lit("g")]).notes(&["the rename"]))
-            .build(),
-    )
+fn one_site(i: usize) -> Shard {
+    ShardB::new(i).claim(replace("/s/a.cc", 10, 11, vec![lit("g")]).notes(&["the rename"])).build()
 }
 
-/// One call over `n` shards of `make`, `fan_in` 2, one thread; the edit
-/// set is checked as one site claimed by every `ok` shard.
-fn one_site_run(n: usize, make: fn(usize) -> Option<Shard>, ok: u64) -> Reduced {
-    let store = Lazy { n, make };
+/// No observer is unparsed.
+fn none(_: usize) -> bool {
+    false
+}
+
+/// One call over `n` shards of [`one_site`], none where `unparsed`,
+/// `fan_in` 2, one thread; the edit set is checked as one site claimed by
+/// every `ok` shard.
+fn one_site_run(n: usize, unparsed: fn(usize) -> bool, ok: u64) -> Reduced {
+    let store = Lazy { n, make: one_site, unparsed };
     let o = Options { fan_in: 2, threads: 1, scratch: scratch("one-site") };
     let start = Instant::now();
     let r = reduce(&script(), REQUEST, PLAN, 0, &store, &o).unwrap();
@@ -154,16 +157,16 @@ const ONE_SITE: Peak = Peak { sections: 1, files: 3, records: 4, waiting_runs: 1
 #[test]
 fn one_site_ten_thousand_shards_fan_in_two() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let small = one_site_run(1_000, one_site, 1_000).peak;
-    let large = one_site_run(10_000, one_site, 10_000).peak;
+    let small = one_site_run(1_000, none, 1_000).peak;
+    let large = one_site_run(10_000, none, 10_000).peak;
     assert_eq!(small, ONE_SITE, "1000 shards");
     assert_eq!(large, ONE_SITE, "10000 shards");
     assert!(large.sections <= 2 && large.files <= 3);
 }
 
 /// Every third observer has no shard.
-fn one_site_or_none(i: usize) -> Option<Shard> {
-    if i % 3 == 2 { None } else { one_site(i) }
+fn every_third(i: usize) -> bool {
+    i % 3 == 2
 }
 
 /// §5.6: the edit set lists the unparsed observers (§6), 32 bytes each:
@@ -172,7 +175,7 @@ fn one_site_or_none(i: usize) -> Option<Shard> {
 #[test]
 fn unparsed_observers_are_the_one_term_of_the_observers() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let r = one_site_run(3_000, one_site_or_none, 2_000);
+    let r = one_site_run(3_000, every_third, 2_000);
     assert_eq!(r.edits.unparsed.len(), 1_000);
     assert_eq!(counter(&r.edits, "reduce.unparsed"), 1_000);
     assert_eq!(r.peak, Peak { unparsed: 1_000, ..ONE_SITE });
@@ -190,8 +193,8 @@ fn one_site_ten_thousand_shards_resident() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // The first call of the process warms the allocator and the standard
     // library; it is not read.
-    one_site_run(1_000, one_site, 1_000);
-    let (_, growth) = peak_growth(|| one_site_run(10_000, one_site, 10_000));
+    one_site_run(1_000, none, 1_000);
+    let (_, growth) = peak_growth(|| one_site_run(10_000, none, 10_000));
     eprintln!("one site, 10000 shards: peak growth {growth:?} KiB");
     match growth {
         Some(g) => assert!(g <= 1024, "one site of 10000 shards grew the peak by {g} KiB"),
@@ -204,7 +207,7 @@ fn one_site_ten_thousand_shards_resident() {
 /// A rename-like run: every shard claims the same 8 sites of a shared
 /// header and 12 sites of a file of its own, with a group-free claim set
 /// (a native rename's). Not one site in common between two own files.
-fn rename_like(i: usize) -> Option<Shard> {
+fn rename_like(i: usize) -> Shard {
     let mut b = ShardB::new(i);
     for k in 0..8 {
         b = b.claim(replace("/s/include/shared.h", 100 * k, 100 * k + 3, vec![lit("new")]));
@@ -213,32 +216,33 @@ fn rename_like(i: usize) -> Option<Shard> {
     for k in 0..12 {
         b = b.claim(replace(&own, 50 * k, 50 * k + 3, vec![lit("new")]));
     }
-    Some(b.build())
+    b.build()
 }
 
 /// A rename-like run of `n` shards on `threads` threads; the resident
 /// reading only if `resident`.
 fn large_run(n: usize, threads: usize, resident: bool) {
-    let store = Lazy { n, make: rename_like };
-    let o = Options { fan_in: 64, threads, scratch: scratch("large") };
+    let store = Lazy { n, make: rename_like, unparsed: none };
+    let opts = Options { fan_in: 64, threads, scratch: scratch("large") };
     let start = Instant::now();
-    let call = || reduce(&script(), REQUEST, PLAN, 0, &store, &o).unwrap();
-    let (r, g) = if resident { peak_growth(call) } else { (call(), None) };
+    let call = || reduce(&script(), REQUEST, PLAN, 0, &store, &opts).unwrap();
+    let (out, growth) = if resident { peak_growth(call) } else { (call(), None) };
     let took = start.elapsed();
-    assert_clean(&o.scratch);
-    let set = r.edits;
+    assert_clean(&opts.scratch);
+    let set = out.edits;
     assert_eq!(set.state, SetState::Accepted);
     assert_eq!(set.edits.len(), 8 + 12 * n);
     assert_eq!(counter(&set, "reduce.edits.shared"), 8);
     // §5.6: one section per thread at a time, at most a window of runs'
     // states waiting, no unparsed observer.
-    let p = r.peak;
-    assert!(p.sections >= 1 && p.sections <= threads as u64, "{p:?}");
-    assert!(p.waiting_runs >= 1 && p.waiting_runs <= (WINDOW_PER_THREAD * threads) as u64, "{p:?}");
-    assert_eq!(p.unparsed, 0);
+    let peak = out.peak;
+    let window = (WINDOW_PER_THREAD * threads) as u64;
+    assert!(peak.sections >= 1 && peak.sections <= threads as u64, "{peak:?}");
+    assert!(peak.waiting_runs >= 1 && peak.waiting_runs <= window, "{peak:?}");
+    assert_eq!(peak.unparsed, 0);
     eprintln!(
-        "rename-like run, {n} shards, {} claims, {threads} threads: {took:?}, {p:?}, \
-         peak growth {g:?} KiB",
+        "rename-like run, {n} shards, {} claims, {threads} threads: {took:?}, {peak:?}, \
+         peak growth {growth:?} KiB",
         20 * n
     );
 }
