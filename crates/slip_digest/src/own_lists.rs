@@ -17,22 +17,35 @@
 //!   external) is contributed, aliases included (ruling 4),
 //! - is not a deduction guide of a dependency template
 //!
-//! is in **made** if it is owned and a rule made its key: its own key
-//! matched a rule, or its parent is a namespace and a level of its chain
-//! of namespaces in the owned view matched one (`rule_use::made_by`); and
-//! in **fixed** if it is a dependency entity (one by the per-inclusion rule
-//! alone included) and
+//! is in **made** if its key was formed as an owned entity's (under the
+//! rules: `OwnedState::keyed`, not `Walk::owned` asked again) and a rule
+//! made it: its own key matched a rule, or its parent is a namespace and a
+//! level of its chain of namespaces in the owned view matched one
+//! (`rule_use::made_by`). A made entry carries two keys: `key`, its own
+//! key (mapped: the pre-image's), and `post`, the key it would have were it
+//! a dependency's (its key formed with its namespace parents keyed in the
+//! dependency view, `Walk::compute_view_key` with `false`, no table: the
+//! post-image's spelling), `None` where that key cannot be formed.
 //!
-//! - **T**: a rule produces its own key (`RuleTable::produces`), or its
-//!   parent is a namespace and a level of its chain of namespaces, keyed
-//!   as the entity's own key keys it (the dependency view, unmapped), has
-//!   a key a rule produces; the entry's key is its own key;
-//! - **M**: the key it would have were it owned (its key formed with a
-//!   namespace parent keyed in the owned view, `Walk::compute_view_key`
-//!   with `true`, then the table on it) differs from its own key; the
-//!   entry's key is that key.
+//! It is in **fixed** if its key was formed as a dependency entity's (one
+//! by the per-inclusion rule alone included) and
 //!
-//! Both may hold of one entity: two entries. A class member, a
+//! - **T** (a split: one entity of the pre-image, two of the post-image):
+//!   a rule produces its own key (`RuleTable::produces`, on the key before
+//!   the table that the memo recorded), or its parent is a namespace and a
+//!   level of its chain of namespaces, keyed as the entity's own key keys
+//!   it (the dependency view, unmapped), has a key a rule produces;
+//! - **M** (a merge: two entities of the pre-image, one of the
+//!   post-image): the key it would have were it owned (its key formed with
+//!   a namespace parent keyed in the owned view, `Walk::compute_view_key`
+//!   with `true`, then the table on it) differs from its own key: a rule
+//!   would move it.
+//!
+//! Either entry's key is the entity's own key (unmapped). Both may hold of
+//! one entity: two entries. The join of stage 3 is `made.key == fixed.key`
+//! for T (the pre-image key) and `made.post == fixed.key` for M (the
+//! post-image key); a made entry with no `post` cannot be joined for M and
+//! is itself to be reported (fail closed). A class member, a
 //! specialisation, a member of an instantiation and an implicit member
 //! have a parent that is no namespace (the chain is not climbed through a
 //! class): they are in a list only where a rule names them.
@@ -63,10 +76,14 @@ const CHAIN_LIMIT: usize = 4096;
 /// An owned entity whose key a rule made (`Output::made`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Made {
-    /// Its mapped key's id.
+    /// Its mapped key's id (the pre-image key): the T join's.
     pub key: Digest,
     /// The rule, its index in `RuleTable::rules`.
     pub rule: u64,
+    /// The id of its key were it a dependency's (namespace parents in the
+    /// dependency view, no table: the post-image key), the M join's;
+    /// `None` where that key cannot be formed (past the depth limit).
+    pub post: Option<Digest>,
     /// The subject path, line and column of its first declaration.
     pub file: Vec<u8>,
     pub line: u64,
@@ -88,7 +105,7 @@ pub enum FixedAs {
 /// moved (`Output::fixed`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fixed {
-    /// T: its own key's id; M: the id of its key were it owned.
+    /// Its own key's id (unmapped).
     pub key: Digest,
     pub as_: FixedAs,
     /// The subject path, line and column of its first declaration that
@@ -128,23 +145,34 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
         if !candidate(w, e, kind) {
             continue;
         }
-        if w.owned(e) {
+        // The ownership and the key before the table that the memo
+        // recorded (`Walk::key_in`); every memoised key has them (the
+        // switch is set before the walk keys anything). One without them
+        // is read as a dependency entity's, keyed again: never made.
+        let recorded = w.owned_state.keyed.get(&e).cloned();
+        debug_assert!(recorded.is_some(), "a memoised key with no record");
+        if let Some((true, _)) = recorded {
             if let Some(rule) = crate::rule_use::made_by(c, e) {
                 let at = w.located(w.representative(e));
                 let (file, line, column) = place(w, at);
                 let name = name(w, e, kind);
-                made.push(Made { key: id, rule: rule as u64, file, line, column, name });
+                let post = post_key(w, e);
+                made.push(Made { key: id, rule: rule as u64, post, file, line, column, name });
             }
             continue;
         }
-        let as_t = own_key(w, e).is_some_and(|k| w.rules.produces(&k).is_some())
+        let own = match recorded {
+            Some((_, k)) => Some(k),
+            None => own_key(w, e),
+        };
+        let as_t = own.is_some_and(|k| w.rules.produces(&k).is_some())
             || w.owned_state
                 .ns_parents
                 .get(&e)
                 .copied()
                 .is_some_and(|ns| chain_produced(w, ns, &mut produced_chain));
-        let as_m = as_if_owned(w, e).filter(|&k| k != id);
-        if !as_t && as_m.is_none() {
+        let as_m = as_if_owned(w, e).is_some_and(|k| k != id);
+        if !as_t && !as_m {
             continue;
         }
         let at = first_read_only(w, e);
@@ -154,8 +182,8 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
             let (file, name) = (file.clone(), name.clone());
             fixed.push(Fixed { key: id, as_: FixedAs::T, file, line, column, name });
         }
-        if let Some(key) = as_m {
-            fixed.push(Fixed { key, as_: FixedAs::M, file, line, column, name });
+        if as_m {
+            fixed.push(Fixed { key: id, as_: FixedAs::M, file, line, column, name });
         }
     }
     w.bytes = bytes;
@@ -207,7 +235,7 @@ fn apart<R>(w: &mut Walk<'_>, f: impl FnOnce(&mut Walk<'_>) -> R) -> Option<R> {
 }
 
 /// Dependency entity `e`'s own key, unmapped (rule 1), as `Walk::key`
-/// formed it.
+/// formed it: only where the memo recorded none.
 fn own_key(w: &mut Walk<'_>, e: DeclId) -> Option<Key> {
     let rep = w.representative(e);
     apart(w, |w| w.compute_key(rep).ok().map(|(k, _)| k)).flatten()
@@ -219,6 +247,14 @@ fn as_if_owned(w: &mut Walk<'_>, e: DeclId) -> Option<Digest> {
     let rep = w.representative(e);
     let key = apart(w, |w| w.compute_view_key(rep, true).ok().map(|(k, _)| k)).flatten()?;
     Some(w.rules.map(key).id())
+}
+
+/// The id of owned entity `e`'s key were it a dependency's: formed with
+/// its namespace parents keyed in the dependency view, no table (`Made::post`).
+fn post_key(w: &mut Walk<'_>, e: DeclId) -> Option<Digest> {
+    let rep = w.representative(e);
+    let key = apart(w, |w| w.compute_view_key(rep, false).ok().map(|(k, _)| k)).flatten()?;
+    Some(key.id())
 }
 
 /// Whether namespace `ns`, keyed in the dependency view (unmapped), or a

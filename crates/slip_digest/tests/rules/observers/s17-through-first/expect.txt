@@ -1,6 +1,6 @@
 # WP-146 stage 1. S17: the owned header entered through the read-only dep.h first.
-fixed M fresh::UserData
 fixed T old::consume(fresh::UserData *)
+fixed M fresh::UserData
 removed user0(old::UserData *)
 removed old::consume(old::UserData *)
 removed old::UserData

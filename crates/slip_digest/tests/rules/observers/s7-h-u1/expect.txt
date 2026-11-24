@@ -1,3 +1,3 @@
 # WP-146 stage 1. S7, the H variant: spec.h includes the dependency's d.h; Mine moves, the specialisation stays the template's.
-fixed T old::box
 made fresh::Mine
+fixed T old::box

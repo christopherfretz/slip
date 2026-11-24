@@ -1,0 +1,2 @@
+rule namespace | root | id fresh | none | root | id old
+rule class | root | id D | none | pre old | id D

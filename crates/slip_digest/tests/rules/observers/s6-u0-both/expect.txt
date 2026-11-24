@@ -1,6 +1,6 @@
 # WP-146 stage 1. S6: the observer that includes d.h and the owned t.h (one observer's collision).
-fixed T old::twice(int)
 made fresh::twice(int)
+fixed T old::twice(int)
 collisions 1
 indeterminate fresh::twice(int)
 indeterminate old::twice(int)

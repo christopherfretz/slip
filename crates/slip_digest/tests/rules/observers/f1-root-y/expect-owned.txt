@@ -1,0 +1,8 @@
+# Every file owned: the dependency's fresh::D read as owned, and mapped.
+changed r
+removed fresh::D
+removed fresh::D::w
+removed fresh
+added fresh::D
+added fresh::D::w
+made fresh::D

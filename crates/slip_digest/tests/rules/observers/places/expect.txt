@@ -1,5 +1,5 @@
 # WP-146 stage 1: the places, rules and kinds of the lists (tests/rules.rs `wp146_list_places`).
-fixed T old::f()
-fixed T old::inner::Y
 made fresh::C
 made fresh::inner2::Z
+fixed T old::f()
+fixed T old::inner::Y

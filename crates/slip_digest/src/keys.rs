@@ -271,17 +271,28 @@ impl Walk<'_> {
         self.in_key -= 1;
         self.restore_types(types);
         self.unit = saved;
+        let mut keyed = None;
         let res = match computed {
             Ok((key, cause)) => {
                 let kind = key.kind;
+                // The lists of ownership (WP-146) read the key before the
+                // table and the ownership it was formed under.
+                let before =
+                    (view.is_none() && self.owned_state.record_parents).then(|| key.clone());
                 // An entity's own key is counted for rule use (WP-069),
                 // a dependency entity's unmapped (WP-110 rule 1); a
                 // namespace's key in a member's view is no entity's, but
                 // in the owned view it is a level of the chain a namespace
                 // rule's counts climb (WP-111).
                 let key = match view {
-                    None if self.rule_applies(e, None) => crate::rule_use::map(self, e, key),
-                    None => crate::rule_use::unmapped(self, e, key),
+                    None if self.rule_applies(e, None) => {
+                        keyed = before.map(|k| (true, k));
+                        crate::rule_use::map(self, e, key)
+                    }
+                    None => {
+                        keyed = before.map(|k| (false, k));
+                        crate::rule_use::unmapped(self, e, key)
+                    }
                     Some(true) => crate::rule_use::in_owned_view(self, e, key),
                     Some(false) => self.map_key(e, view, key),
                 };
@@ -300,6 +311,9 @@ impl Walk<'_> {
                 None => self.keys.insert(e, res),
                 Some(b) => self.owned_state.views.insert((e, b), res),
             };
+            if let Some(k) = keyed {
+                self.owned_state.keyed.insert(e, k);
+            }
         }
         res
     }

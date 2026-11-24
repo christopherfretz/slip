@@ -251,6 +251,8 @@ struct Shape<'a> {
 struct Ran {
     summary: String,
     verdict: RunVerdict,
+    /// The run's report as text (`Report::to_text`).
+    text: String,
 }
 
 fn run(shape: Shape<'_>) -> Ran {
@@ -305,7 +307,8 @@ fn run(shape: Shape<'_>) -> Ran {
         report.stale().len(),
         report.unused().len()
     );
-    Ran { summary, verdict }
+    let text = report.to_text();
+    Ran { summary, verdict, text }
 }
 
 /// Pins today's summary of `shape`.
@@ -314,11 +317,23 @@ fn pin(shape: Shape<'_>, want: &str) {
     assert_eq!(ran.summary, want, "\n{}", ran.summary);
 }
 
-/// The answer stage 3 must give a shape that is a wrong `verified`
-/// today: the run is not verified.
-fn not_verified(shape: Shape<'_>) {
+/// The answer stage 3 must give a shape whose lists join (the package's
+/// "Done when", WP-146 ruling 2 F4): the run is not verified, and its
+/// report has an `ownership` finding: one line of `Report::to_text` that
+/// says `ownership`, names the entity by `key` (its key as the report
+/// names a key: the entity's name) and names each of `files` (the files
+/// of the two entries, or where both are one file, that file and the two
+/// observers' main files). The text's format for it is stage 3's; this is
+/// its specification.
+fn ownership_finding(shape: Shape<'_>, key: &str, files: &[&str]) {
     let ran = run(shape);
     assert_eq!(ran.verdict, RunVerdict::NotVerified, "\n{}", ran.summary);
+    let found = ran.text.lines().any(|l| {
+        l.to_lowercase().contains("ownership")
+            && l.contains(key)
+            && files.iter().all(|f| l.contains(f))
+    });
+    assert!(found, "no ownership finding for {key} naming {files:?}:\n{}", ran.text);
 }
 
 const RO: &[&str] = &["dep"];
@@ -368,8 +383,9 @@ fn s1_hook_pair_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S1: an ownership finding, T, the run not verified)"]
 fn s1_hook_pair_stage3() {
-    not_verified(s1(U0_U1));
-    not_verified(s1(U1_U0));
+    for order in [U0_U1, U1_U0] {
+        ownership_finding(s1(order), "old::hook(int)", &["dep/d.h", "u1.cpp"]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,9 +444,9 @@ fn s10_mirror_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S10, the mirror: an ownership finding, M, the run not verified)"]
 fn s10_mirror_stage3() {
-    not_verified(s10(U0_U1, false));
-    not_verified(s10(U1_U0, false));
-    not_verified(s10(U0_U1, true));
+    for (order, own_key) in [(U0_U1, false), (U1_U0, false), (U0_U1, true)] {
+        ownership_finding(s10(order, own_key), "fresh::g(int)", &["dep/e.h", "u1.cpp"]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,25 +455,34 @@ fn s10_mirror_stage3() {
 // key the rule produces (`rule_use::unmapped`: direct), so u0 is stale and
 // the run is not verified today (H); stage 3 adds the finding.
 
-#[test]
-fn s23_own_key_rule_pair_today() {
+fn s23() -> Shape<'static> {
     // The namespaces stay: each keeps a member of its own.
     const U1: &str =
         "namespace old { int hook(int x) { return x; } int o; }\nnamespace fresh { int m; }\n";
     const U1_POST: &str =
         "namespace old { int o; }\nnamespace fresh { int m; int hook(int x) { return x; } }\n";
-    let shape = Shape {
+    Shape {
         pre: &[("dep/d.h", S1_D), ("u1.cpp", U1), ("u0.cpp", S1_U0)],
         post: &[("u1.cpp", U1_POST)],
         declared: Some(declared_text("relocate old::hook(int) => fresh :: =\n", U1, U1_POST)),
         ..s1(U0_U1)
-    };
+    }
+}
+
+#[test]
+fn s23_own_key_rule_pair_today() {
     pin(
-        shape,
+        s23(),
         "u0.cpp: Verified use 0 via 0 direct 1 kept_via 0\n\
          u1.cpp: Verified use 0 via 1 direct 0 kept_via 0\n\
          run: NotVerified stale 1 unused 0\n",
     );
+}
+
+#[test]
+#[ignore = "pending: WP-146 stage 3 (S23: not verified today; plus an ownership finding, T)"]
+fn s23_own_key_rule_pair_stage3() {
+    ownership_finding(s23(), "old::hook(int)", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +520,7 @@ fn s2_class_forward_declared_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S2: an ownership finding at old::W, the run not verified)"]
 fn s2_class_forward_declared_stage3() {
-    not_verified(s2());
+    ownership_finding(s2(), "old::W", &["dep/d.h", "own/w.h"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +554,7 @@ fn s3_extern_variable_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S3: an ownership finding, the run not verified)"]
 fn s3_extern_variable_stage3() {
-    not_verified(s3());
+    ownership_finding(s3(), "old::level", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +588,7 @@ fn s4_function_template_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S4: an ownership finding, the run not verified)"]
 fn s4_function_template_stage3() {
-    not_verified(s4());
+    ownership_finding(s4(), "old::conv", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -640,7 +665,7 @@ fn s6_inline_function_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S6: an ownership finding, the run not verified)"]
 fn s6_inline_function_stage3() {
-    not_verified(s6(false));
+    ownership_finding(s6(false), "old::twice(int)", &["dep/d.h", "own/t.h"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +745,7 @@ fn s7_specialisation_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S7: an ownership finding at old::box, the run not verified)"]
 fn s7_specialisation_stage3() {
-    not_verified(s7());
+    ownership_finding(s7(), "old::box", &["dep/d.h", "own/fwd.h"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +787,7 @@ fn s8_friend_of_dependency_class_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S8: an ownership finding at old::peek, the run not verified)"]
 fn s8_friend_of_dependency_class_stage3() {
-    not_verified(s8());
+    ownership_finding(s8(), "old::peek(const old::D &)", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -771,31 +796,43 @@ fn s8_friend_of_dependency_class_stage3() {
 // include-chain rule) and directly in u1. The entity moved: u0 is a
 // mismatch (H for the verdict); stage 3 adds the finding (M).
 
+fn s9() -> Shape<'static> {
+    Shape {
+        name: "s9",
+        pre: &[
+            ("dep/ro_inc.h", "#include \"../own/own.h\"\n"),
+            ("own/own.h", "namespace old { int g(int); }\n"),
+            ("u1.cpp", "#include \"own/own.h\"\nint a = old::g(1);\n"),
+            ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = old::g(1);\n"),
+        ],
+        post: &[
+            ("own/own.h", "namespace fresh { int g(int); }\n"),
+            ("u1.cpp", "#include \"own/own.h\"\nint a = fresh::g(1);\n"),
+            ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = fresh::g(1);\n"),
+        ],
+        declared: None,
+        readonly: RO,
+        observers: U0_U1,
+    }
+}
+
 #[test]
 fn s9_owned_header_both_ways_today() {
     pin(
-        Shape {
-            name: "s9",
-            pre: &[
-                ("dep/ro_inc.h", "#include \"../own/own.h\"\n"),
-                ("own/own.h", "namespace old { int g(int); }\n"),
-                ("u1.cpp", "#include \"own/own.h\"\nint a = old::g(1);\n"),
-                ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = old::g(1);\n"),
-            ],
-            post: &[
-                ("own/own.h", "namespace fresh { int g(int); }\n"),
-                ("u1.cpp", "#include \"own/own.h\"\nint a = fresh::g(1);\n"),
-                ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = fresh::g(1);\n"),
-            ],
-            declared: None,
-            readonly: RO,
-            observers: U0_U1,
-        },
+        s9(),
         "u0.cpp: Mismatch [Changed r] [Removed old] [Removed old::g(int)] [Added fresh] \
          [Added fresh::g(int)]\n\
          u1.cpp: Verified use 0 via 1 direct 0 kept_via 0\n\
          run: NotVerified stale 0 unused 0\n",
     );
+}
+
+#[test]
+#[ignore = "pending: WP-146 stage 3 (S9: not verified today; plus an ownership finding, M)"]
+fn s9_owned_header_both_ways_stage3() {
+    // Both entries are in own/own.h: the finding names it and the two
+    // observers.
+    ownership_finding(s9(), "fresh::g(int)", &["own/own.h", "u0.cpp", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +892,7 @@ fn s12_third_observer_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S12: as S1 with a third observer, the run not verified)"]
 fn s12_third_observer_stage3() {
-    not_verified(s12());
+    ownership_finding(s12(), "old::hook(int)", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,14 +1087,22 @@ fn s17_guard_skipped_inclusion_today() {
     );
 }
 
+#[test]
+#[ignore = "pending: WP-146 stage 3 (S17 through the dependency first: not verified today; \
+            plus an ownership finding, M)"]
+fn s17_through_dependency_first_stage3() {
+    // Both entries are in own/user_types.h: the finding names it and the
+    // two observers.
+    ownership_finding(s17(true), "fresh::UserData", &["own/user_types.h", "u0.cpp", "u1.cpp"]);
+}
+
 // ---------------------------------------------------------------------------
 // S18: a declaration whose name a dependency macro spells in u0 (-DUSE_DEP
 // includes dep/m.h) and an owned macro in u1 (own/m.h); the text of both
 // is `struct Thing {};`. In u0 Thing is the dependency's and moved: a
 // mismatch (H).
 
-#[test]
-fn s18_name_token_both_ways_today() {
+fn s18() -> Shape<'static> {
     let m = "#define THING struct Thing { int v; };\n";
     let u = |ns: &str| -> &'static str {
         Box::leak(
@@ -1068,21 +1113,32 @@ fn s18_name_token_both_ways_today() {
             .into_boxed_str(),
         )
     };
+    Shape {
+        name: "s18",
+        pre: Box::leak(Box::new([("dep/m.h", m), ("own/m.h", m), ("u.cpp", u("old"))])),
+        post: Box::leak(Box::new([("u.cpp", u("fresh"))])),
+        declared: None,
+        readonly: RO,
+        observers: &[("u.cpp", &["-DUSE_DEP"]), ("u.cpp", &[])],
+    }
+}
+
+#[test]
+fn s18_name_token_both_ways_today() {
     pin(
-        Shape {
-            name: "s18",
-            pre: &[("dep/m.h", m), ("own/m.h", m), ("u.cpp", u("old"))],
-            post: &[("u.cpp", u("fresh"))],
-            declared: None,
-            readonly: RO,
-            observers: &[("u.cpp", &["-DUSE_DEP"]), ("u.cpp", &[])],
-        },
+        s18(),
         "u.cpp: Mismatch [Changed a] [Removed old::Thing::v] [Removed old::Thing] \
          [Added fresh (the dependency's part of fresh)] [Added fresh::Thing::v] \
          [Added fresh::Thing] use 0 via 1 direct 0 kept_via 0\n\
          u.cpp: Verified use 0 via 1 direct 0 kept_via 0\n\
          run: NotVerified stale 0 unused 0\n",
     );
+}
+
+#[test]
+#[ignore = "pending: WP-146 stage 3 (S18: not verified today; plus an ownership finding, M)"]
+fn s18_name_token_both_ways_stage3() {
+    ownership_finding(s18(), "fresh::Thing", &["dep/m.h", "own/m.h"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1232,7 @@ fn s21_alias_today() {
 #[test]
 #[ignore = "pending: WP-146 stage 3 (S21: an ownership finding by ruling 4, the run not verified)"]
 fn s21_alias_stage3() {
-    not_verified(s21());
+    ownership_finding(s21(), "old::id_t", &["dep/d.h", "u1.cpp"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,29 +1242,40 @@ fn s21_alias_stage3() {
 // a finding after stage 3 only where an observer instantiates the class
 // and so declares the friend at namespace scope.
 
+fn s22() -> Shape<'static> {
+    const D: &str =
+        "namespace old { template <class T> struct D { friend int peek(D<int>&); T v; }; }\n";
+    Shape {
+        name: "s22",
+        pre: &[
+            ("dep/d.h", D),
+            (
+                "u1.cpp",
+                "#include \"dep/d.h\"\nnamespace old { int peek(D<int>& d) { return 0; } }\n",
+            ),
+            ("u0.cpp", "#include \"dep/d.h\"\nold::D<int> x;\nint r = peek(x);\n"),
+        ],
+        post: &[(
+            "u1.cpp",
+            "#include \"dep/d.h\"\nnamespace fresh { int peek(old::D<int>& d) { return 0; } }\n",
+        )],
+        declared: None,
+        readonly: RO,
+        observers: U0_U1,
+    }
+}
+
 #[test]
 fn s22_friend_of_class_template_today() {
-    let d = "namespace old { template <class T> struct D { friend int peek(D<int>&); T v; }; }\n";
     pin(
-        Shape {
-            name: "s22",
-            pre: &[
-                ("dep/d.h", d),
-                (
-                    "u1.cpp",
-                    "#include \"dep/d.h\"\nnamespace old { int peek(D<int>& d) { return 0; } }\n",
-                ),
-                ("u0.cpp", "#include \"dep/d.h\"\nold::D<int> x;\nint r = peek(x);\n"),
-            ],
-            post: &[(
-                "u1.cpp",
-                "#include \"dep/d.h\"\nnamespace fresh { int peek(old::D<int>& d) { return 0; } }\n",
-            )],
-            declared: None,
-            readonly: RO,
-            observers: U0_U1,
-        },
+        s22(),
         "u0.cpp: Verified\nu1.cpp: Verified use 0 via 1 direct 0 kept_via 0\n\
          run: Verified stale 0 unused 0\n",
     );
+}
+
+#[test]
+#[ignore = "pending: WP-146 stage 3 (S22: u0 instantiates old::D<int>, so the lists join, T)"]
+fn s22_friend_of_class_template_stage3() {
+    ownership_finding(s22(), "old::peek(old::D<int> &)", &["dep/d.h", "u1.cpp"]);
 }
