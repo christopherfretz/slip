@@ -2984,6 +2984,48 @@ fn s2_1_rule_on_a_dependency_entity_not_verified() {
     assert_eq!(exit_status(r.verdict()), 1);
 }
 
+// WP-140 row (e), §2.1, §9.2: a relocation of `old` into `fresh`, which a
+// read-only header also opens, over two observers: `u0` includes that
+// header itself, `u1` sees its opening of `fresh` only through another
+// read-only header. `fresh` has a unit in the owned view (keyed `old`, the
+// namespace's one digest), so each observer is `verified`, with the same
+// counts (`via` 1: the owned view's key matched the rule), and the run is
+// verified. Until WP-140 each was `mismatch` (`removed old`, `via` 0).
+#[test]
+fn wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/w.h\"\nnamespace old { inline int f1() { return 1; } }\nint u1() { return old::f1(); }\n";
+    let tree = Tree::new(
+        "wp140-two-observers",
+        &[
+            ("dep/d.h", "namespace fresh { struct D {}; }\n"),
+            ("dep/w.h", "#include \"d.h\"\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        let u = v.rule_use.as_ref().unwrap();
+        assert_eq!(
+            u.uses,
+            [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]
+        );
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
 // WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
 // owned member left in `old` counts `direct` unless its key is kept; kept,
 // it counts none and its key is seen. A job that passed no kept key would

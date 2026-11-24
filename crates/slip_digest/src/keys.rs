@@ -304,6 +304,23 @@ impl Walk<'_> {
         res
     }
 
+    /// The key of namespace `d` in the view `view` (`true`: owned), as a
+    /// member of that ownership keys it (`namespace_parent`): the key of
+    /// its unit in that view (`units::view_units`, WP-140).
+    pub(crate) fn view_key(&mut self, d: DeclId, view: bool) -> KeyRes {
+        self.key_in(d, Some(view))
+    }
+
+    /// [`Walk::compute_key`] of namespace `e` in the view `view`, for
+    /// `records` to check a view unit's key against its id.
+    pub(crate) fn compute_view_key(
+        &mut self,
+        e: DeclId,
+        view: bool,
+    ) -> Result<(Key, Option<Cause>), Option<Cause>> {
+        self.compute_key_in(e, Some(view))
+    }
+
     /// `key` of `d`'s entity under the rules if one may apply to it
     /// (rule 1: the entity is owned, or `view` says so), else as it is.
     /// Every place that applies the rules to an entity's key calls this.
@@ -817,7 +834,14 @@ impl Walk<'_> {
             let (e, n) = (self.entity(member), self.entity(ns));
             crate::rule_use::namespace_parent(self, e, n);
         }
-        let res = if b == self.owned(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
+        let res = if b == self.owned(ns) {
+            self.key(ns)
+        } else {
+            // The namespace has a member in view `b`: it has a unit under
+            // that view's key too (`units::view_units`, WP-140).
+            self.owned_state.member_views.insert((self.entity(ns), b));
+            self.key_in(ns, Some(b))
+        };
         match res {
             KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
             KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),

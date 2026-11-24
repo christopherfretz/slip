@@ -58,6 +58,10 @@ pub(crate) struct Written {
     /// Whether the unit's key is in a collision (§3.4), whatever cause
     /// `cause` keeps first.
     pub collided: bool,
+    /// For a namespace's unit in a view that is not its own ownership
+    /// ([`view_units`], WP-140), that view (`true`: owned); `None` for
+    /// every other unit.
+    pub view: Option<bool>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -640,6 +644,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         default_argument: None,
         owner: None,
         collided: false,
+        view: None,
     })
 }
 
@@ -688,6 +693,82 @@ fn fallback_key(
     Some((key.id(), kind, parent_cause))
 }
 
+/// The units of namespaces in a view that is not their own ownership
+/// (`spec/digest.md` §3.4 "Ownership", `spec/verify.md` §2.1 rule 2;
+/// WP-140), after every other unit is written and tainted.
+///
+/// A namespace `N` has a unit under the key of each view in which it has
+/// an opening or a member: the owned view (rules along the chain, `true`)
+/// if one of its declarations lies in an owned file
+/// (`Walk::in_owned_file`) or an owned entity is keyed with `N` as its
+/// namespace parent; the dependency view (no rule, `false`) if one lies
+/// in no owned file or a dependency entity is keyed under `N`. One of the
+/// two is `N`'s own ownership, whose key is `N`'s own key and whose unit
+/// is `N`'s own unit. For the other, a unit is written here when the view
+/// exists and its key differs from `N`'s own key (equal keys are one
+/// unit, and none is written: the dedup of `groups::build` is not relied
+/// on). Its digest is `N`'s own unit's, made of every opening (the inline
+/// bit and the attributes of the whole chain): the digest is not per
+/// view, or a fact one view's openings hold would be lost in the other's
+/// unit (`spec/landed/digest/WP-140.md`, option A). Its cause is the own
+/// unit's, merged with the view key's. A view whose key cannot be formed
+/// makes the own unit indeterminate with its cause.
+///
+/// A reference to `N` (an alias's target, a using-directive, a qualifier,
+/// a reflection) still writes `N`'s own key (`spec/verify.md` "Open
+/// questions"). Under the empty table nothing is written.
+pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
+    if w.rules.is_empty() {
+        return;
+    }
+    let mut views = Vec::new();
+    for (i, u) in written.iter().enumerate() {
+        if u.kind != KeyKind::Namespace
+            || u.view.is_some()
+            || u.resolved.is_some()
+            || u.default_argument.is_some()
+        {
+            continue;
+        }
+        let Some(e) = u.entity else { continue };
+        views.push((i, e));
+    }
+    for (i, e) in views {
+        let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
+        let view = !w.owned(e);
+        let by_member = w.owned_state.member_views.contains(&(e, view));
+        if !by_member {
+            let chain = w.chain(e);
+            let by_opening = chain.len() <= REDECL_LIMIT
+                && chain.into_iter().any(|d| w.in_owned_file(d) == view);
+            if !by_opening {
+                continue;
+            }
+        }
+        match w.view_key(e, view) {
+            KeyRes::Key { id, cause, .. } => {
+                if id == own {
+                    continue;
+                }
+                let mut u = written[i].clone();
+                u.key = id;
+                u.view = Some(view);
+                if let Some(c) = cause {
+                    u.cause = Some(merge(u.cause, c));
+                }
+                if view {
+                    crate::rule_use::view_unit(w, e);
+                }
+                written.push(u);
+            }
+            KeyRes::None(cause) => {
+                let c = cause.unwrap_or(Cause::Unaccounted("key/view"));
+                written[i].cause = Some(merge(written[i].cause, c));
+            }
+        }
+    }
+}
+
 /// Makes the unit around each declaration of a kind without a key kind
 /// indeterminate (`collect`); the order unit at the top level.
 pub(crate) fn apply_taints(w: &Walk<'_>, written: &mut [Written]) {
@@ -733,6 +814,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         file: Vec::new(),
         resolved: None,
         default_argument: None,
+        view: None,
     }
 }
 

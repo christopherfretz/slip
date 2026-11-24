@@ -1,0 +1,3 @@
+# Row (c) with the specialisation kept (kept.txt).
+# WP-140: the kept key is seen; the specialisation is no member a namespace rule counts: kept_via 0.
+use 1 via 1 direct 0

@@ -76,6 +76,13 @@
 //! other (`spec/landed/verify/WP-111.md` §1). A namespace entity's own
 //! `direct` trace is not counted (the merge of §2.1).
 //!
+//! **A namespace's unit in the owned view** (WP-140, `spec/digest.md`
+//! §3.4, `spec/verify.md` §9.2). A dependency namespace that has a unit in
+//! the owned view ([`view_unit`], from `units::view_units`, only when that
+//! unit is written: its key differs from the own key) counts its
+//! owned-view trace in `via`, once per namespace entity however many owned
+//! openings it has, as an owned namespace's own key does.
+//!
 //! **Kept keys seen.** Every entity, owned or not, whose mapped key is in
 //! `Declared.kept` gives that key's index to `Output`'s list of kept keys
 //! seen, so the run can report a `kept` key no observer has (§9.2).
@@ -131,6 +138,10 @@ pub(crate) struct Counting {
     /// An entity's namespace in the owned view: the parent its key was
     /// formed under, when that is a namespace.
     parents: HashMap<DeclId, DeclId>,
+    /// The dependency namespaces that have a unit of their own in the
+    /// owned view (`units::view_units`, WP-140): the rule that matched
+    /// that view's key counts `via` once for each.
+    view_units: BTreeSet<DeclId>,
     /// `Declared.kept`, ascending.
     kept: Vec<Digest>,
 }
@@ -254,6 +265,15 @@ pub(crate) fn in_owned_view(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     mapped
 }
 
+/// Dependency namespace `e` has a unit under its key in the owned view
+/// (`units::view_units`, WP-140): the trace of that key
+/// (`Counting::views`) counts as the namespace's own, once.
+pub(crate) fn view_unit(w: &mut Walk<'_>, e: DeclId) {
+    if let Some(c) = w.rule_use.as_mut() {
+        c.view_units.insert(e);
+    }
+}
+
 /// Entity `e`'s parent in the owned view is the namespace `ns`
 /// (`Walk::namespace_parent`).
 pub(crate) fn namespace_parent(w: &mut Walk<'_>, e: DeclId, ns: DeclId) {
@@ -298,7 +318,12 @@ pub(crate) fn finish(c: Option<Counting>) -> (Vec<Use>, Vec<u64>) {
     let Some(c) = c else { return (Vec::new(), Vec::new()) };
     let mut by_rule: BTreeMap<usize, Use> = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    for (e, entry) in &c.entries {
+    // A namespace with a unit in the owned view and no entry of its own
+    // (its own key, unmapped, traces nothing) is counted as one with an
+    // empty entry.
+    let empty = Entry::default();
+    let viewed = c.view_units.iter().filter(|e| !c.entries.contains_key(e)).map(|e| (e, &empty));
+    for (e, entry) in c.entries.iter().chain(viewed) {
         if let Some(k) = entry.kept {
             seen.insert(k as u64);
         }
@@ -324,6 +349,13 @@ pub(crate) fn finish(c: Option<Counting>) -> (Vec<Use>, Vec<u64>) {
             } else {
                 direct.extend(d);
             }
+        }
+        // A dependency namespace with a unit in the owned view (WP-140):
+        // the rule that matched that view's key is used by it, once.
+        if c.view_units.contains(e)
+            && let Some(Some(Trace::Via(r))) = c.views.get(e)
+        {
+            via.insert(*r);
         }
         for r in via {
             at(&mut by_rule, r).via += 1;

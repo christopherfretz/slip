@@ -1,0 +1,4 @@
+# Row (e), second observer: it sees dep.h's opening of acme only through another read-only header
+# (wrap.h, which includes dep.h).
+# WP-140: equal, via 1, as observer-direct.
+use 1 via 1 direct 0

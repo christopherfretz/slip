@@ -229,7 +229,7 @@ fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec
             Some(e) => match w.key(e) {
                 // No key at all: the unit was written under a fallback key.
                 KeyRes::None(_) => None,
-                KeyRes::Key { .. } => match key_again(w, e) {
+                KeyRes::Key { .. } => match key_again(w, e, u.view) {
                     // A resolved or `default_argument` unit is keyed
                     // under its entity's key (digest-kinds §11.1, §11.4).
                     Some(k) => Some(crate::demand::part_key(w, k.clone(), u).unwrap_or(k)),
@@ -302,7 +302,11 @@ fn name_of(w: &Walk<'_>, u: &Written, output: &Output) -> Result<String, String>
 /// unit's state put aside, `in_key`, and the entity's representative as
 /// the declaration read. `None` when it has none (or the depth guard
 /// refuses).
-fn key_again(w: &mut Walk<'_>, d: DeclId) -> Option<Key> {
+///
+/// A namespace's unit in a view that is not its own (`view`,
+/// `units::view_units`, WP-140) has the key of that view, computed again
+/// the same way.
+fn key_again(w: &mut Walk<'_>, d: DeclId, view: Option<bool>) -> Option<Key> {
     let e = w.entity(d);
     if !w.enter() {
         return None;
@@ -310,14 +314,18 @@ fn key_again(w: &mut Walk<'_>, d: DeclId) -> Option<Key> {
     let fresh = w.keys_in_progress.insert(e);
     let saved = w.take_unit();
     w.in_key += 1;
-    let computed = w.compute_key(w.representative(e));
+    let r = w.representative(e);
+    let computed = match view {
+        None => w.compute_key(r),
+        Some(owned_view) => w.compute_view_key(r, owned_view),
+    };
     w.in_key -= 1;
     w.unit = saved;
     if fresh {
         w.keys_in_progress.remove(&e);
     }
     w.leave();
-    computed.ok().map(|(key, _)| w.map_key(e, None, key))
+    computed.ok().map(|(key, _)| w.map_key(e, view, key))
 }
 
 #[cfg(test)]

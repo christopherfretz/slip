@@ -1,0 +1,3 @@
+# h stays in legacy on purpose (spec/verify.md §9.2).
+relocate legacy => :: acme
+kept legacy::h(int)

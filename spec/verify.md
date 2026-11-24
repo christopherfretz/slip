@@ -285,13 +285,30 @@ came from, and nothing about the rest:
   (pitfall row N34).
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped:
-  their keys agree. The namespace's own unit is not: the post-image's
-  `acme` is keyed as the dependency's namespace, so the pre-image's unit
-  `legacy` has no partner, the run reports `removed legacy`, and the rule
-  is used by no level (`via 0`). A correct move into a namespace that a
-  dependency opens therefore does not verify today: a stated limit,
-  `docs/wp/WP-140.md` ("Open questions"; fixtures
-  `stale/dependency-opens-target-moved` and `-kept-moved`).
+  their keys agree. The namespace's own unit is the dependency's (one
+  opening is read-only), keyed `acme`; and since owned code opens it too,
+  it also has a unit **in the owned view**, keyed `legacy` under the rule,
+  with the namespace's one digest (`digest.md` §3.4 "A namespace's unit
+  in each view", WP-140). That unit is the pre-image's `legacy`'s
+  partner, and the rule is used by it (`via`, §9.2). So a correct move
+  into a namespace that a dependency opens verifies
+  (`tests/rules/stale/dependency-opens-target-moved`, `tests/rules/views/`,
+  pitfall row N46), in every observer alike: one that does not include
+  the dependency has `acme` owned and mapped, the same unit
+  (`views/target-opened-observer-without-dependency`, and two observers
+  that reach the dependency's opening through different headers,
+  `views/observer-direct`, `observer-through-header` and
+  `crates/slip_cli/tests/verify_job.rs`
+  `wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers`).
+  The digest is the namespace's, over every opening, in both views: an
+  owned opening that adds `[[deprecated]]`, or a dependency's `inline`
+  that the pre-image's namespace did not have, is a difference
+  (`views/deprecated-owned-opening`, `deprecated-dependency-opening`,
+  `inline-reopened-plain`); so is an attribute that applies to its own
+  opening only (`visibility`), which fails closed
+  (`views/visibility-owned-opening`). A reference to the namespace
+  writes its own key, the dependency's: "Open questions", "References to
+  a namespace that two views key".
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -2492,7 +2509,22 @@ a difference). Pinned by `tests/rules/stale/tu-local-left`,
 
 **Unused rules.** A rule with every count 0 in every observer names
 an entity no observer has. It is reported with the run, like an exemption
-no observer needed (§2.2), and changes no verdict.
+no observer needed (§2.2), and changes no verdict: a rule that matches
+nothing changes no key (`digest.md` §3.4, "A rule that matches nothing
+changes nothing"), so it cannot make a comparison equal; what it can do
+is hide a typo, which the report's line shows (WP-140 item 3).
+
+**A namespace used through its owned view** (WP-140). A dependency
+namespace that owned code opens, or that has an owned member, has a unit
+in the owned view (`digest.md` §3.4); when that unit is written (its key
+differs from the namespace's own), the rule that matched its key counts
+`via` once for the namespace, however many owned openings it has
+(`tests/rules/views/two-owned-openings`). Before WP-140 that key was only
+a level of its members' chains and the rule had `via 0`, which read as
+unused in an observer whose every owned member of the namespace moved
+(`tests/rules/stale/dependency-opens-target-moved`: `via 1` now). Its
+members' `direct` and `kept_via` are as above: the owned view's key is
+the level their chain climbs.
 
 ### 9.3 What is added to the run (§7)
 
@@ -3066,14 +3098,63 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   translation unit only (a `kept` given per file, as above, or an entity
   of internal linkage told apart by its unit) would let it be declared
   with a namespace rule; until then it fails closed.
-- **A move into a namespace that a dependency opens** (§2.1, "So `acme`
-  mapped to `legacy`"; `docs/wp/WP-140.md`). Relocating `legacy` into
-  `acme` when a read-only header also opens `acme` maps every owned
-  member, but the post-image's `acme` is keyed as the dependency's
-  namespace, so the unit `legacy` has no partner: `removed legacy`, and
-  the rule's `via` is 0. The move is correct and does not verify; it
-  fails closed. The fixtures `rules/stale/dependency-opens-target-moved`
-  and `dependency-opens-target-kept-moved` hold today's answer.
+- **References to a namespace that two views key** (WP-140; §2.1,
+  "A dependency that itself opens `acme`"; `digest.md` §3.4). A
+  namespace with a unit in each view keeps **one** key wherever it is
+  written as a reference: its own, which for a namespace a dependency
+  opens is the dependency's, unmapped. Nothing in the post-image says
+  which pre-image namespace an owned reference meant, and a reference to
+  a dependency's namespace by the dependency's name is what rule 1
+  already promises. So after relocating `legacy` into `acme`, an owned
+  reference that named `legacy` and now names `acme` writes `acme`,
+  the pre-image wrote `legacy`, and the holding unit differs. The move is
+  correct and fails closed; the motivating migration meets this
+  wherever owned code aliases, `using namespace`s, or qualifies a
+  dependent name with the moved namespace. Where it is written (every
+  path that reaches `write_ref` or `write_canonical_nns` with a
+  namespace), with fixtures in `crates/slip_digest/tests/rules/views/`:
+
+  - an alias's target (`namespace L = legacy;`): held by the alias, own
+    key, one per unit; `changed L` (`alias-redirected`).
+  - a using-directive's target: held by the directive, keyed by content
+    (the target is the key), one per unit; `removed <using_directive
+    legacy>`, `added <using_directive acme>` (`directive-redirected`).
+  - a using-declaration's qualifier (`using legacy::g;`): held by the
+    using-declaration, keyed by content, one per unit; removed and added
+    (`using-declaration-redirected`).
+  - a qualifier written in a body, of a name not resolved at the
+    definition (a dependent call `legacy::h(t)` with more than one `h`,
+    a dependent-scope reference, a member-overload qualifier): held by
+    the function, own key, any number per unit; `changed f`
+    (`qualifier-dependent-overloaded`). Resolved at the definition (one
+    callee, `qualifier-dependent-redirected`; a non-dependent call,
+    `qualifier-non-dependent-in-template`), the callee is written, not
+    the qualifier, and it verifies; so does a qualifier whose next level
+    is a type (`dependent-type-redirected`, `member-qualifier-spelled`).
+  - a qualifier in a signature's profile (`decltype(legacy::h(t))`):
+    held by the function, whose key the profile is part of, any number
+    per key; removed and added (`profile-qualifier-overloaded`; with one
+    `h`, `profile-qualifier-redirected` verifies).
+  - a qualifier in a type (`typename legacy::X<T>::type`, a dependent
+    template name): held by whatever unit writes the type, own key or
+    content as that unit is; differs where the namespace level is
+    written, as above.
+  - a reflection (`^^legacy`): unsupported, indeterminate either way.
+  - a spelling (`spelled-nns`, the own spelling of a qualifier): writes
+    a named namespace's identifier, not its key, and nothing for a
+    namespace level of the own spelling; not affected.
+
+  What a user can declare today: `changed L` for the alias, and a
+  declared removal with `created` for a unit keyed by content
+  (`removed <using_directive legacy>`, `created <using_directive acme>`):
+  both verify, `crates/slip_cli/tests/verify.rs`
+  `wp140_redirected_references_declared`. A function whose body differs
+  is declared `changed` the same way; one whose profile differs needs a
+  removal and a `created` of its two signatures. Each declaration is per
+  unit, so the cost grows with the references, not the namespaces. A
+  key that names which pre-image namespace an owned reference meant
+  (the post-image cannot say, above) or a rule form that states it for
+  a set of files is open.
 - **Ownership differs between observers** (§2.1). An entity the
   dependency declares only in a header some observers do not include is
   owned in those and a dependency entity in the others. Each comparison
