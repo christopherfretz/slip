@@ -1901,7 +1901,8 @@ impl Tree for Folding {
     /// its folded spelling.
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let folded = p.to_ascii_lowercase();
-        let there = self.0.contains_key(&folded) || is_dir_of(&folded, self.0.keys().map(Vec::as_slice));
+        let there =
+            self.0.contains_key(&folded) || is_dir_of(&folded, self.0.keys().map(Vec::as_slice));
         Ok(there.then(|| (1, ino_of(&folded))))
     }
 }

@@ -171,7 +171,7 @@ impl Fake {
                 Answer::EveryOtherMisses => {
                     let mut n = self.folded_lookups.borrow_mut();
                     *n += 1;
-                    if *n % 2 == 0 {
+                    if n.is_multiple_of(2) {
                         return None;
                     }
                 }
@@ -221,7 +221,8 @@ fn ok(s: &Spelling<Fake>, p: &str) -> String {
 /// the answer is its own spelling.
 #[test]
 fn folding_volume_gives_the_listed_spelling() {
-    let s = Spelling::new(Fake::new().file("/r/src/a.cc", 1).folds("/").folds("/r").folds("/r/src"));
+    let s =
+        Spelling::new(Fake::new().file("/r/src/a.cc", 1).folds("/").folds("/r").folds("/r/src"));
     assert_eq!(ok(&s, "/R/Src/A.cc"), "/r/src/a.cc");
     assert_eq!(ok(&s, "/r/src/A.cc"), "/r/src/a.cc", "the last component");
     assert_eq!(ok(&s, "/r/src/a.cc"), "/r/src/a.cc", "idempotent");
@@ -284,7 +285,8 @@ fn an_overlay_device_is_listed() {
     );
     let dev = makedev(0, 68);
     assert!(!mounts.consistent(dev));
-    let mut fake = Fake::new().file("/r/foo.h", dev).folds("/r").answers(dev, Answer::EveryOtherMisses);
+    let mut fake =
+        Fake::new().file("/r/foo.h", dev).folds("/r").answers(dev, Answer::EveryOtherMisses);
     fake.entries.insert(b"/".to_vec(), Id { dev, ino: 1 });
     if mounts.consistent(dev) {
         fake = fake.consistent(dev);

@@ -745,7 +745,8 @@ fn collect_inputs(
 ) -> Result<(Vec<FileRef>, Buffers, u64), String> {
     let sm = fe.sm;
     let mut found: Vec<Candidate> = Vec::new();
-    let mut respelled_paths: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    let mut respelled_paths: std::collections::BTreeSet<Vec<u8>> =
+        std::collections::BTreeSet::new();
     for file in sm.file_ids() {
         let bytes = match sm.file_origin(file) {
             FileOrigin::Virtual => continue,

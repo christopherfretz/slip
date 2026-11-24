@@ -411,10 +411,8 @@ pub fn disk() -> &'static Spelling<Disk> {
 /// (`spec/edits.md` §2.1). The cache's lock is not held over the
 /// `canonicalize`, whose failure is `Io` with its own error.
 pub fn real_path(path: &Path) -> Result<PathBuf, SpellingError> {
-    let c = std::fs::canonicalize(path).map_err(|error| SpellingError::Io {
-        path: path.as_os_str().as_bytes().to_vec(),
-        error,
-    })?;
+    let c = std::fs::canonicalize(path)
+        .map_err(|error| SpellingError::Io { path: path.as_os_str().as_bytes().to_vec(), error })?;
     let spelled = disk().on_disk(c.as_os_str().as_bytes())?;
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&spelled)))
 }

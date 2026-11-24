@@ -175,11 +175,13 @@ fn what_disk_says_of_each_volume() {
     };
     let disk = Disk::default();
     let line_type = |mount: &str| {
-        text.lines().filter_map(|l| {
-            let f: Vec<&str> = l.split(' ').collect();
-            let dash = f.iter().skip(6).position(|x| *x == "-")?;
-            (f.get(4) == Some(&mount)).then(|| f[6 + dash + 1].to_owned())
-        }).last()
+        text.lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split(' ').collect();
+                let dash = f.iter().skip(6).position(|x| *x == "-")?;
+                (f.get(4) == Some(&mount)).then(|| f[6 + dash + 1].to_owned())
+            })
+            .next_back()
     };
     for p in ["/", "/tmp", "/dev/shm", env!("CARGO_TARGET_TMPDIR")] {
         let path = Path::new(p);
