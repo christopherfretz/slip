@@ -27,7 +27,6 @@ use std::fmt::Write as _;
 
 use slip_model::declared::Declared;
 use slip_model::json::Value;
-use slip_model::keys::KeyKind;
 use slip_model::names::NameNote;
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use slip_model::{Binding, Digest, Overlay, Phase, Shard, Status};
@@ -221,7 +220,8 @@ pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
 pub use slip_model::result::RunVerdict;
 
 /// A stale observer (§9.2): the rule's index in `Declared.rules`, the
-/// observer, and its `direct` count for the rule. The one type, as for
+/// observer, and its `direct` and `kept_via` counts for the rule (either
+/// not 0; `kept_via` is a namespace rule's). The one type, as for
 /// [`RunVerdict`]: the result (`spec/edits.md` §8.5) stores it.
 pub use slip_model::result::Stale;
 
@@ -336,11 +336,15 @@ struct OverlayRun {
 #[derive(Clone, Debug)]
 pub struct Report {
     header: Header,
-    /// Per rule of `Declared.rules`, by index: whether its kind is
-    /// `namespace` (§9.2: such a rule is never stale).
-    namespace: Vec<bool>,
+    /// The number of rules of `Declared.rules`.
+    rules: usize,
     /// Per rule: whether some `ok` shard of this run used it (§9.2).
     used_rules: Vec<bool>,
+    /// `Declared.kept`, and per key the observers whose read `rule_use`
+    /// says some entity has it (§9.2: a kept key no observer has is
+    /// reported like an exemption no observer needed).
+    kept: Vec<Digest>,
+    kept_seen: Vec<u64>,
     /// The round of the pre shards (§9.5 `pre_round`).
     pre: u64,
     overlay: Option<Box<OverlayRun>>,
@@ -393,12 +397,13 @@ impl Report {
             .chain(declared.removed())
             .map(|&k| (k, 0))
             .collect();
-        let namespace: Vec<bool> =
-            declared.rules().rules().iter().map(|r| r.kind == KeyKind::Namespace).collect();
+        let rules = declared.rules().rules().len();
         Report {
             header,
-            used_rules: vec![false; namespace.len()],
-            namespace,
+            rules,
+            used_rules: vec![false; rules],
+            kept: declared.kept().to_vec(),
+            kept_seen: vec![0; declared.kept().len()],
             pre: 0,
             overlay: None,
             stale: BTreeMap::new(),
@@ -469,7 +474,7 @@ impl Report {
 
     /// Whether the run has rules (`Declared.rules` not empty).
     fn has_rules(&self) -> bool {
-        !self.namespace.is_empty()
+        self.rules != 0
     }
 
     /// Whether the run's image is an overlay with at least one obligation.
@@ -530,7 +535,7 @@ impl Report {
                     return Err("the shard has a rule_use and the run has no rule".to_owned());
                 }
                 Some(u) => {
-                    let n = self.namespace.len() as u64;
+                    let n = self.rules as u64;
                     if u.rules != h.rules {
                         return Err(
                             "the shard's rule_use is under other rules than the run's".to_owned()
@@ -540,6 +545,12 @@ impl Report {
                         return Err(format!(
                             "the shard's rule_use names rule {}; the run has {n}",
                             x.rule
+                        ));
+                    }
+                    let kept = self.kept.len() as u64;
+                    if let Some(i) = u.kept.iter().find(|&&i| i >= kept) {
+                        return Err(format!(
+                            "the shard's rule_use names kept key {i}; the run has {kept}"
                         ));
                     }
                 }
@@ -595,8 +606,10 @@ impl Report {
     /// one when it has none), and one whose `spellings` the fold refuses;
     /// each with its reason as the message. The `rule_use` and `spellings` of an `ok` shard the state table
     /// accepts with a verdict (`verified`, `mismatch`, `unverifiable`) are
-    /// read: a stale pair for every `direct` not 0 of a rule whose kind is
-    /// not `namespace`; every rule with a use is used. The fold reads the
+    /// read: a stale pair for every `Use` with `direct` or `kept_via` not 0
+    /// (WP-111: for a namespace rule too; `kept_via` is never not 0 for
+    /// another kind, and would be stale if it were); every rule with a use
+    /// is used; every kept key it names is seen by one more observer. The fold reads the
     /// `spellings` of a `verified` or `mismatch` shard only; that of an
     /// `unverifiable` one is checked (a refusal makes it `failed`) but not
     /// folded (§10.6).
@@ -752,15 +765,26 @@ impl Report {
         if let Some(u) = &s.rule_use {
             for x in &u.uses {
                 let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
-                if x.via != 0 || x.direct != 0 {
+                if x.via != 0 || x.direct != 0 || x.kept_via != 0 {
                     self.used_rules[r] = true;
                 }
-                if x.direct != 0 && !self.namespace[r] {
-                    let pair = Stale { rule: x.rule, observer: *observer, direct: x.direct };
+                if x.direct != 0 || x.kept_via != 0 {
+                    let pair = Stale {
+                        rule: x.rule,
+                        observer: *observer,
+                        direct: x.direct,
+                        kept_via: x.kept_via,
+                    };
                     let at = StaleAt { stale: pair, main: main.to_vec() };
                     if self.stale.insert((x.rule, index), at).is_none() {
                         self.stale_count += 1;
                     }
+                }
+            }
+            for &k in &u.kept {
+                // Checked against the table by `ours` (A4).
+                if let Some(n) = usize::try_from(k).ok().and_then(|k| self.kept_seen.get_mut(k)) {
+                    *n += 1;
                 }
             }
         }
@@ -868,19 +892,6 @@ impl Report {
         (0u64..).zip(&self.used_rules).filter(|(_, u)| !**u).map(|(i, _)| i).collect()
     }
 
-    /// The namespace rules some `ok` shard of this run used (`via` or
-    /// `direct` not 0), ascending: whether the observers agree on them is
-    /// not checked until WP-111 (§9.2, §9.4). Not empty: the report says
-    /// so, and conclude permits no write (`spec/edits.md` §8.5); the
-    /// verdict is not changed by it.
-    pub fn unchecked(&self) -> Vec<u64> {
-        (0u64..)
-            .zip(self.namespace.iter().zip(&self.used_rules))
-            .filter(|(_, (n, u))| **n && **u)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
     /// The outcome of every obligation of the overlay (§10.3, §10.6), in
     /// its order; empty for a run without an overlay or obligations.
     pub fn spellings(&self) -> &[Outcome] {
@@ -923,7 +934,8 @@ impl Report {
     }
 
     /// The exemption entries: `(list, key, observers)` in the order
-    /// `changed`, `created`, `removed`, then by key.
+    /// `changed`, `created`, `removed`, then by key; then `kept` (§9.2,
+    /// WP-111), by key, `observers` being those that have the key.
     fn exemptions(&self) -> Vec<(&'static str, Digest, u64)> {
         let lists =
             [("changed", &self.changed), ("created", &self.created), ("removed", &self.removed)];
@@ -933,7 +945,16 @@ impl Report {
                 out.push((list, *k, self.used.get(k).copied().unwrap_or(0)));
             }
         }
+        for (k, n) in self.kept.iter().zip(&self.kept_seen) {
+            out.push(("kept", *k, *n));
+        }
         out
+    }
+
+    /// The keys of `Declared.kept` no read shard of this run has (§9.2),
+    /// ascending: reported like an exemption no observer needed.
+    pub fn unseen_kept(&self) -> Vec<Digest> {
+        self.kept.iter().zip(&self.kept_seen).filter(|(_, n)| **n == 0).map(|(k, _)| *k).collect()
     }
 
     /// The JSON document of §7.1.
@@ -1089,14 +1110,14 @@ impl Report {
                     ("observer", digest(&s.stale.observer)),
                     ("main", bytes(&s.main)),
                     ("direct", uv(s.stale.direct)),
+                    ("kept_via", uv(s.stale.kept_via)),
                 ])
             })
             .collect();
         obj(vec![
-            ("rules", uv(self.namespace.len() as u64)),
+            ("rules", uv(self.rules as u64)),
             ("stale", Value::Array(stale)),
             ("unused", Value::Array(self.unused().into_iter().map(uv).collect())),
-            ("unchecked", Value::Array(self.unchecked().into_iter().map(uv).collect())),
         ])
     }
 
@@ -1252,16 +1273,17 @@ impl Report {
             let _ = writeln!(
                 out,
                 "agreement rules {} stale {} unused {}",
-                self.namespace.len(),
+                self.rules,
                 self.stale_count,
                 unused.len()
             );
             for s in self.stale.values().take(TEXT_MAX) {
                 let _ = writeln!(
                     out,
-                    "stale rule {} direct {} {}",
+                    "stale rule {} direct {} kept_via {} {}",
                     s.stale.rule,
                     s.stale.direct,
+                    s.stale.kept_via,
                     path(&s.main)
                 );
             }
@@ -1271,12 +1293,6 @@ impl Report {
             }
             for r in unused {
                 let _ = writeln!(out, "unused rule {r}");
-            }
-            for r in self.unchecked() {
-                let _ = writeln!(
-                    out,
-                    "not checked: agreement between observers for namespace rule {r}"
-                );
             }
         }
     }

@@ -3,21 +3,23 @@
 //! names resolved to keys and `relocate` lines turned into rules
 //! ([`resolve`]), and the `Declared` ([`finish`]). Work package WP-055;
 //! [`main`], the command (`spec/exec.md` §8.8), and the in-process parses
-//! it shares with `slip units` are WP-053's.
+//! it shares with `slip units` are WP-053's; the `kept` line, the checks of
+//! a `relocate` line against the run's files and the later lines, and the
+//! rules of undefined friends are WP-111's.
 //!
 //! Every function is over records (`slip_digest::records`), not parses, so
 //! that the resolution is tested on records written by hand. A name
 //! resolves only when every unit of that name (and kind) has one `KeyId`:
 //! nothing is chosen among candidates.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use slip_digest::records::Record;
+use slip_digest::records::{Facts, Record};
 use slip_digest::{ReadOnly, ReadOnlyFiles};
 use slip_exec::store::{Access, Store};
 use slip_model::declared::Declared;
@@ -52,6 +54,9 @@ pub enum Line {
     Changed(Entity),
     Created(Entity),
     Removed(Entity),
+    /// `kept <entity>` (`spec/verify.md` §9.2): an owned entity that stays
+    /// in a relocated namespace.
+    Kept(Entity),
 }
 
 /// The errors of `spec/verify.md` §2.3.
@@ -66,6 +71,12 @@ pub enum ErrorKind {
     /// A `relocate` line whose rule `spec/verify.md` §2.1 refuses
     /// (`Rule::refusal`).
     Refused,
+    /// A `relocate` line whose entity is a dependency entity and not a
+    /// namespace (`spec/verify.md` §2.1: no rule renames it).
+    DependencyEntity,
+    /// A `relocate` line that relocates the new parent of a line above
+    /// it, or a namespace or class enclosing that parent.
+    Order,
 }
 
 impl ErrorKind {
@@ -79,6 +90,8 @@ impl ErrorKind {
             ErrorKind::NotRenamable => "not renamable",
             ErrorKind::Duplicate => "duplicate",
             ErrorKind::Refused => "refused",
+            ErrorKind::DependencyEntity => "dependency entity",
+            ErrorKind::Order => "order",
         }
     }
 }
@@ -164,6 +177,7 @@ fn line(text: &str) -> Result<Option<Line>, String> {
         "changed" => one(Line::Changed),
         "created" => one(Line::Created),
         "removed" => one(Line::Removed),
+        "kept" => one(Line::Kept),
         "relocate" => {
             if rest.is_empty() {
                 return Err("a missing entity after `relocate`".to_owned());
@@ -208,8 +222,8 @@ pub fn read(text: &str) -> Result<Vec<(u64, Line)>, LineError> {
 
 /// Which post-image parses the table of §2.3 asks for: `post`, the
 /// post-images' records with no rules (a `relocate` with a non-empty
-/// parent); `post_mapped`, under the rules the file gives (a `created`
-/// line).
+/// parent); `post_mapped`, under the rules the file gives (a `created` or
+/// `kept` line).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Needs {
     pub post: bool,
@@ -218,7 +232,7 @@ pub struct Needs {
 
 pub fn needs(lines: &[(u64, Line)]) -> Needs {
     let post = lines.iter().any(|(_, l)| matches!(l, Line::Relocate { parent: Some(_), .. }));
-    let post_mapped = lines.iter().any(|(_, l)| matches!(l, Line::Created(_)));
+    let post_mapped = lines.iter().any(|(_, l)| matches!(l, Line::Created(_) | Line::Kept(_)));
     Needs { post, post_mapped }
 }
 
@@ -232,6 +246,10 @@ pub struct Resolved {
     /// Sorted, no two equal.
     pub changed: Vec<Digest>,
     pub removed: Vec<Digest>,
+    /// The `relocate` lines, ascending, that are accepted and write no
+    /// rule: an entity with C language linkage moved without a new name,
+    /// which changes no key (`spec/verify.md` §2.3).
+    pub unwritten: Vec<u64>,
 }
 
 /// How many unit names a `NoUnit` message lists.
@@ -356,7 +374,11 @@ const PARENT_LIMIT: usize = 4096;
 /// of the result. A parent whose `Key` the records do not hold (no record
 /// of that id, or a fallback key), and everything above it, is kept as it
 /// is: a rule built on it does not match, which verification reports.
-fn map_parent(p: Parent, post: &Index<'_>, above: &RuleTable) -> Parent {
+///
+/// `probes` receives the key of each level as it is looked up in `above`
+/// (its own parent already mapped): a rule of a later line that matches
+/// one of them would have changed `m(p)` (`ErrorKind::Order`).
+fn map_parent(p: Parent, post: &Index<'_>, above: &RuleTable, probes: &mut Vec<Key>) -> Parent {
     // The chain of keys from `p` up to the first parent that is not a unit
     // with a known key.
     let mut chain: Vec<&Key> = Vec::new();
@@ -375,7 +397,9 @@ fn map_parent(p: Parent, post: &Index<'_>, above: &RuleTable) -> Parent {
     // Map from the top down.
     let mut mapped = top;
     for k in chain.into_iter().rev() {
-        let k = above.map(Key { parent: mapped, ..k.clone() });
+        let probe = Key { parent: mapped, ..k.clone() };
+        probes.push(probe.clone());
+        let k = above.map(probe);
         mapped = Parent::Unit(k.id());
     }
     mapped
@@ -402,22 +426,235 @@ fn exemption(
     Ok(())
 }
 
-/// The lines `relocate`, `changed` and `removed`, in file order: names
-/// resolved in `pre` (an entity) and `post` (a non-empty parent), both the
-/// records of the images with no rules, in any order. The first error in
-/// file order.
-///
-/// `RuleTable` has no insertion, so the table a `relocate` line's parent is
-/// mapped by is built again from the rules above it, and only when that
-/// line has a parent and a rule was added since.
+/// [`resolve_with`] with no [`Facts`]: no entity is known to be a
+/// dependency entity, and no friend declaration to be undefined. For
+/// records written by hand; the command gives the facts of its images.
 pub fn resolve(
     lines: &[(u64, Line)],
     pre: &[Record],
     post: &[Record],
 ) -> Result<Resolved, LineError> {
+    resolve_with(lines, pre, post, &Facts::default())
+}
+
+/// The friend declarations of the pre-images that the function of `r`
+/// (key `k`) needs a second rule for (`docs/wp/WP-071.md` "Added after the
+/// review of WP-103"): undefined friend declarations ([`Facts`]) of the
+/// same kind and name, in a class whose nearest enclosing namespace is the
+/// function's parent, whose name is that class's `::friend ` and the
+/// function's name as its record gives it, qualified (`n::A::friend
+/// n::f(int)`; before WP-111's review the unqualified name was matched, so
+/// a function in a namespace got no friend rule). Sorted by id, each once.
+fn undefined_friends<'r>(r: &Record, k: &Key, pre: &Index<'r>, facts: &Facts) -> Vec<&'r Record> {
+    if facts.undefined_friends.is_empty() {
+        return Vec::new();
+    }
+    let suffix = format!("::friend {}", r.name);
+    let mut out: Vec<&Record> = pre
+        .all
+        .iter()
+        .filter(|f| facts.undefined_friends.contains(&f.id) && f.name.ends_with(&suffix))
+        .filter(|f| {
+            let Some(fk) = &f.key else { return false };
+            if fk.kind != k.kind || fk.name != k.name || fk.parent == k.parent {
+                return false;
+            }
+            // Up the classes around the friend to the first parent that is
+            // no class.
+            let mut p = fk.parent;
+            for _ in 0..PARENT_LIMIT {
+                if p == k.parent {
+                    return true;
+                }
+                let Parent::Unit(id) = p else { return false };
+                let Some(c) = pre.keys.get(&id) else { return false };
+                if c.kind == KeyKind::Namespace {
+                    return false;
+                }
+                p = c.parent;
+            }
+            false
+        })
+        .collect();
+    out.sort_by_key(|f| f.id);
+    out.dedup_by_key(|f| f.id);
+    out
+}
+
+/// A `relocate` line's checks of its entity (`r`, with `Key` `k`) and its
+/// new name: `DependencyEntity` (§2.1 rule 1: no rule renames a dependency
+/// entity; a namespace's rule applies in the owned view) and
+/// `NotRenamable`.
+fn relocated_name(
+    n: u64,
+    entity: &Entity,
+    name: Option<&str>,
+    id: Digest,
+    k: &Key,
+    facts: &Facts,
+) -> Result<Name, LineError> {
+    if k.kind != KeyKind::Namespace && facts.dependency.contains(&id) {
+        return Err(error(
+            n,
+            ErrorKind::DependencyEntity,
+            format!(
+                "`{}` is a dependency entity (a declaration of it is in a read-only file, or it is a specialisation or an implicit member of one): no rule renames it",
+                entity.text
+            ),
+        ));
+    }
+    match name {
+        None => Ok(k.name.clone()),
+        Some(_) if !matches!(k.name, Name::Identifier(_)) => Err(error(
+            n,
+            ErrorKind::NotRenamable,
+            format!(
+                "`{}` has a name of the form `{}`, not an identifier: it can be relocated with `=` only",
+                entity.text,
+                k.name.form()
+            ),
+        )),
+        Some(id) => Ok(Name::Identifier(id.as_bytes().to_vec())),
+    }
+}
+
+/// The checks of one rule a `relocate` line gives (`of` names it in the
+/// message): `NotRenamable` for a name no reader accepts (it comes from no
+/// walk, but is an error, not a panic); `Refused` for a rule §2.1 refuses
+/// (the walk keys nothing under a table that holds one); `Order` when it
+/// matches a probe of a line above (`looked`).
+fn rule_checks(
+    n: u64,
+    rule: &Rule,
+    of: &str,
+    looked: &[(u64, String, Vec<Key>)],
+) -> Result<(), LineError> {
+    if let Err(what) = rule.name.validate().and_then(|()| rule.to_name.validate()) {
+        return Err(error(
+            n,
+            ErrorKind::NotRenamable,
+            format!("the rule of {of} cannot be in a rule table: {what}"),
+        ));
+    }
+    if let Some(what) = rule.refusal() {
+        return Err(error(n, ErrorKind::Refused, format!("the rule of {of} is refused: {what}")));
+    }
+    let hit = |q: &Key| {
+        (q.parent, q.kind, &q.name, q.disc) == (rule.parent, rule.kind, &rule.name, rule.disc)
+    };
+    if let Some((above, text, _)) = looked.iter().find(|(_, _, levels)| levels.iter().any(hit)) {
+        return Err(error(
+            n,
+            ErrorKind::Order,
+            format!(
+                "the rule of {of} relocates {text}, or a namespace or class around it, which line {above} resolved as a new parent without it: this line must come before line {above}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A line's rule `main` and, when it renames, one for each undefined friend
+/// declaration of the function (`friends`), which keeps its class: the
+/// class's chain is mapped as a new parent is, its levels added to
+/// `probes`.
+fn with_friends(
+    main: Rule,
+    friends: &[&Record],
+    post: &Index<'_>,
+    table: &RuleTable,
+    probes: &mut Vec<Key>,
+) -> Vec<Rule> {
+    let mut given = Vec::new();
+    if main.name != main.to_name {
+        for f in friends {
+            let Some(fk) = &f.key else { continue };
+            given.push(Rule {
+                parent: map_parent(fk.parent, post, table, probes),
+                kind: fk.kind,
+                name: main.name.clone(),
+                disc: fk.disc,
+                to_parent: fk.parent,
+                to_name: fk.name.clone(),
+            });
+        }
+    }
+    given.insert(0, main);
+    given
+}
+
+/// The lines `relocate`, `changed` and `removed`, in file order: names
+/// resolved in `pre` (an entity) and `post` (a non-empty parent), both the
+/// records of the images with no rules, in any order; `facts`, those of the
+/// pre-images under the run's files. The first error in file order.
+///
+/// A `relocate` line whose entity is a dependency entity (not a
+/// namespace) is `DependencyEntity`; one whose rule matches a level of the
+/// new parent of a line above it, as that line looked it up, is `Order`.
+/// An entity with C language linkage keeps the parent `c_linkage` in its
+/// rule, whatever the line's parent, which is resolved like any other. A line
+/// whose entity is a function with undefined friend declarations in class
+/// templates (`facts`) gives, beside its rule, a rule for each of them when
+/// the name changes; a later line that gives one of these rules again is
+/// accepted, and one that gives another rule with its match is `Duplicate`.
+///
+/// The `Duplicate` checks of §2.3 for `rule`, of line `n` (`friend`: a
+/// friend declaration's): `false` for a friend's rule given already, an
+/// error for one whose match another rule has or whose produced key
+/// another rule produces (`spec/verify.md` §2.1 "One way to each key");
+/// otherwise its match and key are recorded.
+fn admitted(
+    n: u64,
+    rule: &Rule,
+    friend: bool,
+    of: &str,
+    rules: &[Rule],
+    matches: &mut BTreeSet<(Parent, KeyKind, Name, Option<Digest>)>,
+    produced: &mut BTreeMap<(Parent, KeyKind, Name, Option<Digest>), u64>,
+) -> Result<bool, LineError> {
+    if !matches.insert((rule.parent, rule.kind, rule.name.clone(), rule.disc)) {
+        if friend && rules.contains(rule) {
+            return Ok(false);
+        }
+        return Err(error(
+            n,
+            ErrorKind::Duplicate,
+            format!("the rule of {of} matches what the rule of an earlier `relocate` line matches"),
+        ));
+    }
+    let to = (rule.to_parent, rule.kind, rule.to_name.clone(), rule.disc);
+    if let Some(&m) = produced.get(&to) {
+        return Err(error(
+            n,
+            ErrorKind::Duplicate,
+            format!(
+                "the rule of {of} produces the key the rule of line {m} produces: two entities of the post-image cannot both be this one of the pre-image (a namespace split in two is declared per member or per nested namespace)"
+            ),
+        ));
+    }
+    produced.insert(to, n);
+    Ok(true)
+}
+
+/// `RuleTable` has no insertion, so the table a `relocate` line's parent is
+/// mapped by is built again from the rules above it, and only when that
+/// line has a parent and a rule was added since.
+pub fn resolve_with(
+    lines: &[(u64, Line)],
+    pre: &[Record],
+    post: &[Record],
+    facts: &Facts,
+) -> Result<Resolved, LineError> {
     let (pre, post) = (Index::new(pre), Index::new(post));
     let mut rules: Vec<Rule> = Vec::new();
     let mut matches: BTreeSet<(Parent, KeyKind, Name, Option<Digest>)> = BTreeSet::new();
+    // The key each rule produces, and the line that gave it.
+    let mut produced: BTreeMap<(Parent, KeyKind, Name, Option<Digest>), u64> = BTreeMap::new();
+    let mut unwritten = Vec::new();
+    // The rules a line gave for an undefined friend.
+    let mut friend_rules: HashSet<Rule> = HashSet::new();
+    // Each line's new parent as it looked it up: (line, text, levels).
+    let mut looked: Vec<(u64, String, Vec<Key>)> = Vec::new();
     let mut table = RuleTable::empty();
     let mut stale = false;
     let (mut changed, mut removed) = (BTreeSet::new(), BTreeSet::new());
@@ -435,78 +672,70 @@ pub fn resolve(
                 let Some(k) = r.key.clone() else {
                     unreachable!("resolve_in gives a record with a Key")
                 };
-                let new_name = match name {
-                    None => k.name.clone(),
-                    Some(id) => {
-                        if !matches!(k.name, Name::Identifier(_)) {
-                            return Err(error(
-                                n,
-                                ErrorKind::NotRenamable,
-                                format!(
-                                    "`{}` has a name of the form `{}`, not an identifier: it can be relocated with `=` only",
-                                    entity.text,
-                                    k.name.form()
-                                ),
-                            ));
-                        }
-                        Name::Identifier(id.as_bytes().to_vec())
-                    }
-                };
-                let new_parent = match parent {
+                let new_name = relocated_name(n, entity, name.as_deref(), r.id, &k, facts)?;
+                let friends = undefined_friends(r, &k, &pre, facts);
+                // The rule of this line is pushed below, so the table is
+                // stale again after it.
+                if stale && (parent.is_some() || (!friends.is_empty() && new_name != k.name)) {
+                    table = built(&rules, n)?;
+                    stale = false;
+                }
+                let mut probes = Vec::new();
+                // §2.3: a C function's rule keeps `c_linkage`; its line's
+                // parent is resolved, and looks nothing up.
+                let c_linkage = k.parent == Parent::CLinkage;
+                let p = parent.as_ref().map(|p| resolve_in(p, &post, "post-images"));
+                let new_parent = match p.transpose().map_err(|(k, d)| error(n, k, d))? {
+                    _ if c_linkage => Parent::CLinkage,
                     None => Parent::Root,
-                    Some(p) => {
-                        let r =
-                            resolve_in(p, &post, "post-images").map_err(|(k, d)| error(n, k, d))?;
-                        // The rule of this line is pushed below, so the
-                        // table is stale again after it.
-                        if stale {
-                            table = built(&rules, n)?;
-                        }
-                        map_parent(Parent::Unit(r.id), &post, &table)
-                    }
+                    Some(r) => map_parent(Parent::Unit(r.id), &post, &table, &mut probes),
                 };
-                let rule = Rule {
+                let main = Rule {
                     parent: new_parent,
                     kind: k.kind,
                     name: new_name,
                     disc: k.disc,
                     to_parent: k.parent,
-                    to_name: k.name,
+                    to_name: k.name.clone(),
                 };
-                // A name no reader accepts comes from no walk, but is an
-                // error, not a panic.
-                if let Err(what) = rule.name.validate().and_then(|()| rule.to_name.validate()) {
-                    return Err(error(
-                        n,
-                        ErrorKind::NotRenamable,
-                        format!("the rule of `{}` cannot be in a rule table: {what}", entity.text),
-                    ));
+                if c_linkage && main.name == main.to_name {
+                    // §2.3: the move changes no key; the line writes none
+                    // (and, keeping the name, no friend's).
+                    unwritten.push(n);
+                    continue;
                 }
-                // A rule §2.1 refuses: the walk keys nothing under a table
-                // that holds one, so it is refused here, with its reason.
-                if let Some(what) = rule.refusal() {
-                    return Err(error(
-                        n,
-                        ErrorKind::Refused,
-                        format!("the rule of `{}` is refused: {what}", entity.text),
-                    ));
+                let given = with_friends(main, &friends, &post, &table, &mut probes);
+                for (i, rule) in given.into_iter().enumerate() {
+                    let of = if i == 0 {
+                        format!("`{}`", entity.text)
+                    } else {
+                        format!("`{}`'s undefined friend declaration", entity.text)
+                    };
+                    rule_checks(n, &rule, &of, &looked)?;
+                    if friend_rules.contains(&rule) {
+                        // Given already for a friend: the same rule again.
+                        continue;
+                    }
+                    if !admitted(n, &rule, i > 0, &of, &rules, &mut matches, &mut produced)? {
+                        continue;
+                    }
+                    if i > 0 {
+                        friend_rules.insert(rule.clone());
+                    }
+                    rules.push(rule);
+                    stale = true;
                 }
-                if !matches.insert((rule.parent, rule.kind, rule.name.clone(), rule.disc)) {
-                    return Err(error(
-                        n,
-                        ErrorKind::Duplicate,
-                        format!(
-                            "the rule of `{}` matches what the rule of an earlier `relocate` line matches",
-                            entity.text
-                        ),
-                    ));
+                if !probes.is_empty() {
+                    let what = match parent {
+                        Some(p) => format!("`{}`", p.text),
+                        None => format!("the class of a friend declaration of `{}`", entity.text),
+                    };
+                    looked.push((n, what, probes));
                 }
-                rules.push(rule);
-                stale = true;
             }
             Line::Changed(e) => exemption(n, e, &pre, "pre-images", &mut changed, "changed")?,
             Line::Removed(e) => exemption(n, e, &pre, "pre-images", &mut removed, "removed")?,
-            Line::Created(_) => {}
+            Line::Created(_) | Line::Kept(_) => {}
         }
     }
     if stale {
@@ -517,28 +746,33 @@ pub fn resolve(
         rules: table,
         changed: changed.into_iter().collect(),
         removed: removed.into_iter().collect(),
+        unwritten,
     })
 }
 
 /// `post_mapped`: the post-images' records under `resolved.rules`, in any
 /// order.
 ///
-/// The `created` lines, in file order, resolved in `post_mapped`, and the
-/// `Declared` of the file.
+/// The `created` and `kept` lines, in file order, resolved in
+/// `post_mapped`, and the `Declared` of the file.
 pub fn finish(
     lines: &[(u64, Line)],
     resolved: Resolved,
     post_mapped: &[Record],
 ) -> Result<Declared, LineError> {
     let index = Index::new(post_mapped);
-    let mut created = BTreeSet::new();
+    let (mut created, mut kept) = (BTreeSet::new(), BTreeSet::new());
     for (n, l) in lines {
-        if let Line::Created(e) = l {
-            exemption(*n, e, &index, "post-images", &mut created, "created")?;
+        match l {
+            Line::Created(e) => exemption(*n, e, &index, "post-images", &mut created, "created")?,
+            Line::Kept(e) => exemption(*n, e, &index, "post-images", &mut kept, "kept")?,
+            _ => {}
         }
     }
-    let Resolved { rules, changed, removed } = resolved;
-    match Declared::new(rules.rules().to_vec(), changed, created.into_iter().collect(), removed) {
+    let Resolved { rules, changed, removed, .. } = resolved;
+    match Declared::new(rules.rules().to_vec(), changed, created.into_iter().collect(), removed)
+        .and_then(|d| d.with_kept(kept.into_iter().collect()))
+    {
         Ok(d) => Ok(d),
         Err(e) => {
             unreachable!("the lists of resolved lines are sorted and without duplicates: {e}")
@@ -611,8 +845,6 @@ impl InProcess {
         files: Option<&Ownership>,
         err: &mut dyn Write,
     ) -> commands::Result<Option<Vec<Record>>> {
-        let main = String::from_utf8_lossy(&o.main.path).into_owned();
-        let fail = |e: String| Failure::Input(format!("{command}: {main}: {e}"));
         let walk = |input: &slip_digest::Input<'_>| {
             if rules.rules().is_empty() {
                 return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
@@ -620,6 +852,22 @@ impl InProcess {
             let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
             slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
         };
+        self.walk(command, o, side, walk, err)
+    }
+
+    /// What `walk` gives for `side` of `o`, parsed and guarded as
+    /// [`InProcess::records`] says; `None`, after the warning, when the
+    /// image does not parse `ok`.
+    pub(crate) fn walk<T: Send>(
+        &self,
+        command: &str,
+        o: &Observer,
+        side: Side,
+        walk: impl FnOnce(&slip_digest::Input<'_>) -> Result<T, String> + Send,
+        err: &mut dyn Write,
+    ) -> commands::Result<Option<T>> {
+        let main = String::from_utf8_lossy(&o.main.path).into_owned();
+        let fail = |e: String| Failure::Input(format!("{command}: {main}: {e}"));
         // The guards of the post-image parse (`spec/verify.md` §5.3: G1,
         // L1, G4, G5, G6) on a post-image of the tree form, as the verify
         // job checks them: without them the parse need not be the real
@@ -694,6 +942,23 @@ pub fn main(args: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> Exi
     commands::finish(result, out, err)
 }
 
+/// §8.8's note for a `relocate` line that writes no rule (§2.3, an entity
+/// with C language linkage moved and not renamed).
+const UNWRITTEN: &str = "the entity has C language linkage and keeps its name: the move changes no key, and the line writes no rule";
+
+/// WP-053 review F2: an `--owned` entry that covers no file a pre-image
+/// read (`--owned <post tree>`, say) makes no file owned through it: a
+/// warning per entry.
+fn warn_uncovered(files: &Ownership, read: &BTreeSet<Vec<u8>>, err: &mut dyn Write) {
+    for entry in &files.owned {
+        if !read.iter().any(|p| slip_model::transform::covers(entry, p)) {
+            let _ = write!(err, "slip: warning: declare: --owned ");
+            let _ = err.write_all(entry);
+            let _ = writeln!(err, " covers no file the selected observers' pre-images read");
+        }
+    }
+}
+
 fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::Result<u8> {
     let from = absolute(&a.from)?;
     let target = absolute(&a.out)?;
@@ -728,9 +993,32 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     let none = RuleTable::empty();
     let (mut pre, mut post) = (Merged::default(), Merged::default());
     let mut post_ok = vec![false; run.observers.len()];
+    // With a `relocate` line, the pre-images' facts under the run's files
+    // (`DependencyEntity`, the rules of undefined friends); with the run's
+    // files, the subject paths every pre-image read (the warning below).
+    let relocates = lines.iter().any(|(_, l)| matches!(l, Line::Relocate { .. }));
+    let mut facts = Facts::default();
+    let mut read: BTreeSet<Vec<u8>> = BTreeSet::new();
     for (i, o) in run.observers.iter().enumerate() {
-        if let Some(r) = run.records("declare", o, Side::Pre, &none, None, err)? {
+        let walk = |input: &slip_digest::Input<'_>| {
+            let records = slip_digest::records::records(input, &none, ReadOnly::EVERY_FILE)?;
+            let mut paths = Vec::new();
+            let mut facts = None;
+            if let Some(files) = files.as_ref() {
+                paths = input.sm.file_ids().map(|f| (input.subject_path)(f)).collect();
+                if relocates {
+                    let ro = ReadOnlyFiles::new(Some(files), input.sm, input.subject_path);
+                    facts = Some(slip_digest::records::facts(input, ReadOnly::files(&ro)));
+                }
+            }
+            Ok((records, paths, facts))
+        };
+        if let Some((r, paths, f)) = run.walk("declare", o, Side::Pre, walk, err)? {
             pre.add(r);
+            read.extend(paths.into_iter().filter(|p| !p.is_empty()));
+            if let Some(f) = f {
+                facts.merge(f);
+            }
         }
         if need.post
             && let Some(r) = run.records("declare", o, Side::Post, &none, None, err)?
@@ -739,12 +1027,19 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
             post_ok[i] = true;
         }
     }
-    let resolved = match resolve(&lines, &pre.records, &post.records) {
+    if let Some(files) = files.as_ref() {
+        warn_uncovered(files, &read, err);
+    }
+    let resolved = match resolve_with(&lines, &pre.records, &post.records, &facts) {
         Ok(r) => r,
         Err(e) => return Ok(line_error(&e, err)),
     };
+    for n in &resolved.unwritten {
+        let _ = writeln!(err, "slip: note: {}:{n}: {UNWRITTEN}", a.from.display());
+    }
 
-    // The post-images under the rules the file gives, for `created` lines.
+    // The post-images under the rules the file gives, for `created` and
+    // `kept` lines.
     let mut mapped = Merged::default();
     if need.post_mapped {
         for (i, o) in run.observers.iter().enumerate() {
@@ -779,6 +1074,7 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     let _ = writeln!(out, "changed {}", declared.changed().len());
     let _ = writeln!(out, "created {}", declared.created().len());
     let _ = writeln!(out, "removed {}", declared.removed().len());
+    let _ = writeln!(out, "kept {}", declared.kept().len());
     Ok(status::OK)
 }
 

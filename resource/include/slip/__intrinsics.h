@@ -64,6 +64,7 @@ enum : unsigned {
   __op_parameters_of = 21,
   __op_declarations_of = 22,
   __op_entity_of = 23,
+  __op_lookup_in = 24,
 
   __op_references_to = 32,
   __op_referent_of = 33,
@@ -81,6 +82,7 @@ enum : unsigned {
   __op_code_spell = 65,
   __op_code_copy = 66,
   __op_code_cat = 67,
+  __op_code_identifier = 68,
 
   __op_replace = 80,
   __op_new_group = 81,

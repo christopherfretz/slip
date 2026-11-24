@@ -21,7 +21,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest};
+use slip_digest::{Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest, digest_kept};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
@@ -230,6 +230,7 @@ fn post_walk(
     detail: Detail<'_>,
 ) -> Result<(Shard, Option<(Output, Lookups)>), String> {
     let (rules, files) = (params.declared.rules(), params.declared.files());
+    let kept = params.declared.kept();
     params
         .image
         .parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
@@ -241,7 +242,9 @@ fn post_walk(
                 names: false,
                 rule_use: !rules.is_empty(),
             };
-            digest(input, &options)
+            // `Declared.kept` decides a namespace rule's `direct` and
+            // `kept_via` (§9.2, WP-111).
+            digest_kept(input, &options, kept)
         })
         .map(|(mut shard, output)| {
             if !rules.is_empty() && shard.outcome.status != Status::Failed {
@@ -361,7 +364,11 @@ impl Post {
         counters.extend(walk_counters(&output));
         Post {
             counters,
-            rule_use: counted.then_some(RuleUse { rules: rules_id, uses: output.rule_use }),
+            rule_use: counted.then_some(RuleUse {
+                rules: rules_id,
+                uses: output.rule_use,
+                kept: output.kept,
+            }),
             digests: output.digests,
             differing: 0,
             reparsed: 0,

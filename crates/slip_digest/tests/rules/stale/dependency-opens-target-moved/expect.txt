@@ -1,0 +1,3 @@
+# Today's answer (WP-140): removed legacy, and the rule used by no level.
+removed legacy
+use 5 via 0 direct 0

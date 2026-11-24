@@ -17,8 +17,9 @@
 
 #include <slip/meta.h>
 
-#if !defined(__slip_lib_meta_edits)
-#error "this transform needs the edits of <slip/meta.h>"
+#if !defined(__slip_lib_meta_edits) || !defined(__slip_lib_meta_identifier) || \
+    !defined(__slip_lib_meta_scope_lookup)
+#error "this transform needs the edits, identifier pieces and lookup in a scope of <slip/meta.h>"
 #endif
 
 #ifndef RENAME_FROM
@@ -34,16 +35,6 @@ namespace {
 
 constexpr std::string_view from = RENAME_FROM;
 constexpr std::string_view to = RENAME_TO;
-
-// The qualified name the function will have: `from` with its last component
-// replaced by `to`.
-consteval std::string renamed() {
-  std::string s(from);
-  auto at = s.rfind("::");
-  s.resize(at == std::string::npos ? 0 : at + 2);
-  s += to;
-  return s;
-}
 
 // Replaces the name written at a declaration or a reference.
 consteval void rename_at(info place, code new_name) {
@@ -70,12 +61,15 @@ consteval void transform() {
       return;
     }
 
-  for (info other : lookup(renamed())) {
-    report(other, severity::error, "not renamed: the new name is already declared here");
-    return;
-  }
+  // The new name, in the scope each function is declared in.
+  for (info f : functions)
+    for (info other : lookup(parent_of(f), to)) {
+      report(other, severity::error, "not renamed: the new name is already declared here");
+      return;
+    }
 
-  code new_name = text(to);
+  // The new name enters the code as an identifier, never as text.
+  code new_name = identifier(to);
   for (info f : functions) {
     expect_renamed(f, to);
     for (info d : declarations_of(f)) rename_at(d, new_name);

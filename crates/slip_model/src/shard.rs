@@ -71,7 +71,7 @@ pub struct Shard {
     /// Section 24: what a verify shard was made with (`spec/verify.md`
     /// §9.1); only for phase `Verify` and a status other than `Failed`.
     pub binding: Option<Binding>,
-    /// Section 25: how the walk used each rule (`spec/verify.md` §9.1);
+    /// Section 29 (25 is retired, WP-111): how the walk used each rule (`spec/verify.md` §9.1);
     /// only for phase `Verify` and status `Ok`.
     pub rule_use: Option<RuleUse>,
     /// Section 26: the spelled-entity checks (`spec/verify.md` §10.4); only

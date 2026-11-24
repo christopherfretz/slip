@@ -236,14 +236,14 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         e.digest(&b.declared).uv(b.pre);
         out.push((24, e.into_bytes()));
     }
-    if let Some(r) = &s.rule_use {
-        out.push((25, raw_rule_use(r).0));
-    }
     if let Some(x) = &s.spellings {
         out.push((26, raw_spellings(x).0));
     }
     if let Some(x) = &s.names {
         out.push((27, raw_names(x).0));
+    }
+    if let Some(r) = &s.rule_use {
+        out.push((29, raw_rule_use(r).0));
     }
     out
 }
@@ -268,16 +268,23 @@ fn raw_names(x: &Names) -> (Vec<u8>, Vec<usize>, Vec<usize>, Vec<usize>) {
     (e.into_bytes(), units, notes, names)
 }
 
-/// The payload of a `rule_use` section, and the offset in it of each use.
-fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>) {
+/// The payload of a `rule_use` section, the offset in it of each use, and
+/// of each element of `kept`.
+fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>, Vec<usize>) {
     let mut e = Encoder::new();
     e.digest(&r.rules).count(r.uses.len());
     let mut at = Vec::new();
     for u in &r.uses {
         at.push(e.as_bytes().len());
-        e.uv(u.rule).uv(u.via).uv(u.direct);
+        e.uv(u.rule).uv(u.via).uv(u.direct).uv(u.kept_via);
     }
-    (e.into_bytes(), at)
+    e.count(r.kept.len());
+    let mut kept = Vec::new();
+    for &k in &r.kept {
+        kept.push(e.as_bytes().len());
+        e.uv(k);
+    }
+    (e.into_bytes(), at, kept)
 }
 
 /// The payload of a spellings section, and the offsets in it of each
@@ -1538,11 +1545,11 @@ fn json_members() {
 }
 
 // spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 17, 24,
-// 25 and 26: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
-// reserved, UnknownSection.
+// 26 and 29: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
+// reserved, and 25 (`rule_use` before WP-111) is retired: UnknownSection.
 #[test]
 fn reserved_ids_still_unknown() {
-    for id in [16u64, 18, 20] {
+    for id in [16u64, 18, 20, 25] {
         let mut sections = raw_sections(&map_shard());
         sections.push((id, Vec::new()));
         sections.sort_by_key(|s| s.0);
@@ -1555,8 +1562,8 @@ fn reserved_ids_still_unknown() {
 }
 
 // ---------------------------------------------------------------------------
-// The sections of M2 in a verify shard: binding (24), rule_use (25) and
-// spellings (26) (spec/model.md §8, spec/verify.md §9.1, §10.4; WP-060).
+// The sections of M2 in a verify shard: binding (24), spellings (26) and
+// rule_use (29; 25 retired, WP-111) (spec/model.md §8, spec/verify.md §9.1, §10.4; WP-060).
 
 fn binding() -> Binding {
     Binding { overlay: Some(d(0x81)), declared: d(0x82), pre: 3 }
@@ -1566,10 +1573,12 @@ fn rule_use() -> RuleUse {
     RuleUse {
         rules: d(0x83),
         uses: vec![
-            Use { rule: 0, via: 2, direct: 0 },
-            Use { rule: 1, via: 0, direct: 1 },
-            Use { rule: 300, via: 1 << 60, direct: 1 << 53 },
+            Use { rule: 0, via: 2, direct: 0, kept_via: 0 },
+            Use { rule: 1, via: 0, direct: 1, kept_via: 0 },
+            Use { rule: 7, via: 0, direct: 0, kept_via: 3 },
+            Use { rule: 300, via: 1 << 60, direct: 1 << 53, kept_via: 1 << 40 },
         ],
+        kept: vec![0, 2, 1 << 33],
     }
 }
 
@@ -1651,15 +1660,15 @@ fn m2_sections_round_trip() {
             "digests",
             "verdict",
             "binding",
-            "rule_use",
             "spellings",
-            "names"
+            "names",
+            "rule_use"
         ]
     );
     assert_eq!(names(sections.get("binding").unwrap()), ["overlay", "declared", "pre"]);
-    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses"]);
-    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[2];
-    assert_eq!(names(u), ["rule", "via", "direct"]);
+    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses", "kept"]);
+    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[3];
+    assert_eq!(names(u), ["rule", "via", "direct", "kept_via"]);
     assert_eq!(u.get("via").unwrap().as_str(), Some("1152921504606846976"));
     let sp = sections.get("spellings").unwrap();
     assert_eq!(names(sp), ["seen", "held", "failed"]);
@@ -1688,12 +1697,12 @@ fn m2_sections_round_trip() {
     }
 }
 
-// spec/model.md §5 rule 2, §8: 17, 24, 25 and 26 are known sections; their
+// spec/model.md §5 rule 2, §8: 17, 24, 26 and 29 are known sections; their
 // opt tags are Malformed at their first byte.
 #[test]
 fn known_sections_of_m2() {
     let bytes = m2_shard().to_bytes();
-    for id in [24, 25, 26] {
+    for id in [24, 26, 29] {
         payload_at(&bytes, id);
     }
     let b = payload_at(&bytes, 24);
@@ -1730,7 +1739,7 @@ fn m2_sections_phase_and_status() {
     };
     for (s, path, id) in [
         (only(true, false, false), "sections.binding", 24),
-        (only(false, true, false), "sections.rule_use", 25),
+        (only(false, true, false), "sections.rule_use", 29),
         (only(false, false, true), "sections.spellings", 26),
     ] {
         // A map shard.
@@ -1767,15 +1776,19 @@ fn m2_sections_phase_and_status() {
     // In id order: the binding's phase before the rule_use's.
     let s = Shard { phase: Phase::Map, verdict: None, ..m2_shard() };
     rejected_at(&s, "sections.binding", 24, 0);
+    // The spellings' (26) before the rule_use's (29, WP-111).
+    let s = Shard { phase: Phase::Map, verdict: None, binding: None, ..m2_shard() };
+    rejected_at(&s, "sections.spellings", 26, 0);
 }
 
-// spec/verify.md §9.1: uses strictly ascending by rule; no use with via
-// and direct both 0. Each rule over the whole list.
+// spec/verify.md §9.1, §9.2: uses strictly ascending by rule; no use with
+// all three counts 0; kept strictly ascending. Each rule over the whole
+// list.
 #[test]
 fn rule_use_invariants() {
     let with =
         |uses: Vec<Use>| Shard { rule_use: Some(RuleUse { uses, ..rule_use() }), ..m2_shard() };
-    let u = |rule, via, direct| Use { rule, via, direct };
+    let u = |rule, via, direct| Use { rule, via, direct, kept_via: 0 };
     for uses in [
         vec![u(1, 1, 0), u(0, 1, 0)],
         vec![u(1, 1, 0), u(1, 0, 1)],
@@ -1785,16 +1798,26 @@ fn rule_use_invariants() {
         let s = with(uses);
         let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[n];
         assert!(
-            rejected_at(&s, &format!("sections.rule_use.uses[{n}]"), 25, rel).contains("ascending")
+            rejected_at(&s, &format!("sections.rule_use.uses[{n}]"), 29, rel).contains("ascending")
         );
     }
     let s = with(vec![u(0, 1, 0), u(1, 0, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[1];
-    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 25, rel).contains("both 0"));
+    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 29, rel).contains("all 0"));
+    // kept_via alone is a use (WP-111).
+    let s = with(vec![u(0, 1, 0), Use { kept_via: 1, ..u(1, 0, 0) }]);
+    assert_eq!(Shard::from_bytes(&s.to_bytes()).unwrap(), s);
+    for kept in [vec![1, 0], vec![2, 2], vec![0, 4, 3]] {
+        let n = kept.len() - 1;
+        let s = Shard { rule_use: Some(RuleUse { kept, ..rule_use() }), ..m2_shard() };
+        let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).2[n];
+        let got = rejected_at(&s, &format!("sections.rule_use.kept[{n}]"), 29, rel);
+        assert!(got.contains("kept is not strictly ascending"), "{got}");
+    }
     // The order rule over the whole list first.
     let s = with(vec![u(0, 0, 0), u(2, 1, 0), u(1, 1, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[2];
-    rejected_at(&s, "sections.rule_use.uses[2]", 25, rel);
+    rejected_at(&s, "sections.rule_use.uses[2]", 29, rel);
 }
 
 // spec/verify.md §10.4: no span of count 0 or running past 2^64 - 1;

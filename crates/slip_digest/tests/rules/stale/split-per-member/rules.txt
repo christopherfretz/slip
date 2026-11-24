@@ -1,0 +1,3 @@
+# WP-111 review F1: the split of split-namespace, declared per member (spec/verify.md §2.3).
+relocate legacy::a => acme :: =
+relocate legacy::b => acme2 :: =

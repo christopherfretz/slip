@@ -411,7 +411,12 @@ Three kinds of key take another entity's name as the rules map it
   checks above are not made. A rule whose name is a conversion name comes
   from one declared change, a `relocate` of a conversion function with
   `=` (`slip declare` gives a new name only to an identifier): it moves
-  that conversion function, and matches its key, as for any entity;
+  that conversion function, and matches its key, as for any entity. A
+  declared relocation of a conversion function with `=` inside its own
+  class is an identity line, which `slip declare` refuses (`verify.md`
+  §2.1, "One way to each key"; the fixture
+  `rules/inert/conversion-rule-on-instantiated-member` shows the
+  refusal);
 - a decomposition is named by its first binding (digest-kinds §5.2),
   as the rules map the binding.
 

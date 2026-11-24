@@ -1,0 +1,4 @@
+# Moving g into acme, which read-only dep.h opens, keys acme's owned view apart: the comparison
+# finds it too. The counts are the case (mutant D2).
+removed legacy
+use 4 via 0 direct 0 kept_via 1

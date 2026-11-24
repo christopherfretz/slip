@@ -320,10 +320,10 @@ pub fn judge_mutation(m: &Mutation, check: &Ran, store: &Path) -> Result<(), Str
         (_, _) if refused_set => false,
         (Kind::Dropped { .. } | Kind::Added { .. }, State::NotVerified) => true,
         (Kind::Key { edit, piece }, State::NotVerified) => {
-            let Some(Piece::Spelled { key, .. }) =
+            let Some(Piece::Spelled { key, .. } | Piece::Identifier { key: Some(key), .. }) =
                 m.set.edits.get(*edit).and_then(|e| e.pieces.get(*piece))
             else {
-                return Err("the mutated piece is not a spelled piece".into());
+                return Err("the mutated piece is not a spelled piece or a keyed identifier".into());
             };
             let Some(o) = result.overlay else {
                 return Err("not_verified, but the result names no overlay".into());

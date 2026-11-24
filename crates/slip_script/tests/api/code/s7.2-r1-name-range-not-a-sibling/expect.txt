@@ -1,0 +1,5 @@
+transform <id>
+edit 0 t.cpp:8:9-8:13 tiers 0 = spell("m::g(int)" "::m::g")
+report - note "other scope at the extent: returned"
+report - note "other scope at the name: invalid_argument"
+report - note "two pieces at the name: invalid_argument"

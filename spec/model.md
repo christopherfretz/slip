@@ -559,10 +559,11 @@ the same bytes.
 | 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (17) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
-| 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
+| 25 | — | — | retired (WP-111): `rule_use` before `kept_via` and `kept`; no writer writes it |
 | 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
 | 27 | names | with `digests` | `Names` (§8.7): the names digest of each key that has one, and the notes of a verify shard (`verify.md` §4.4); phases `map` and `verify` |
 | 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
+| 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -591,13 +592,17 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`. Ids 22 and 23 are not assigned. Sections 17,
-24, 25 and 26 were added by M2, and 28 by work package WP-117, without a
-change of the shard's version: a reader that predates them refuses a
-shard that has one (the ids are critical), and a shard without them reads
+A reserved id (16, 18, 20) or a retired one (25) is a critical id no
+reader knows: a file with one is `UnknownSection`. Ids 22 and 23 are not
+assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work package
+WP-117 and 29 by WP-111, without a change of the shard's version: a reader
+that predates one refuses a shard that has it (the ids are critical), and a
+shard without them reads
 as before (a map shard without `negatives` is then refused by the verify
-task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). An `edits` section
+task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). A
+section whose payload changes takes a new id and the old one is retired,
+so that a reader never meets a payload it does not know under an id it
+knows (WP-111: 25 to 29). An `edits` section
 in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
 section in a shard of phase `map`, is `Malformed` at the first byte of
 the section's payload, JSON path `sections.<name>`. So are `edits`,
@@ -610,12 +615,15 @@ order of the section ids, each section's phase and status first.
 
 Section 27 (`names`, WP-112) changed the version to 2 (above): every
 shard a reader of version 2 reads, of either phase, is one that could
-have both 27 and 28, and a version-1 shard, which predates `names`, is
-refused whatever its sections. It is present **exactly when** `digests`
+have 27, 28 and 29, and a version-1 shard, which predates `names`, is
+refused whatever its sections (a version-1 shard with 25 or 29 included).
+`names` and `rule_use` (29) are independent: a verify shard may have
+either, both or neither, and neither's rows refer to the other's. It is present **exactly when** `digests`
 is: a shard with `digests` and without `names` is `Malformed` at the
 first byte of the `digests` payload, JSON path `sections.names` (a pre
 shard of an older build fails closed, not as "no note"); its own rows
-(§8.7) are checked after those of `spellings`, before `negatives`'s.
+(§8.7) are checked after those of `spellings`, before `rule_use`'s and
+`negatives`'s.
 
 ### 8.1 Invariants
 
