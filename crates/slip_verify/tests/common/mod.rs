@@ -20,7 +20,7 @@ use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
 use slip_model::{Counter, Digest, FileRef, Outcome, Overlay, Phase, Shard, Status};
 use slip_verify::conclude::Concluded;
-use slip_verify::run::{Header, Report};
+use slip_verify::run::{Header, MapShard, Report};
 
 pub fn d(n: u8) -> Digest {
     Digest([n; 32])
@@ -40,6 +40,15 @@ pub const PLAN: u8 = 0x01;
 pub const ROUND: u64 = 3;
 pub const DECLARED: u8 = 0x02;
 pub const OVERLAY: u8 = 0x07;
+
+/// The map shard every verdict of [`Run::verdict`] names as its `pre`,
+/// with `status` (`spec/verify.md` §9.3, WP-114).
+pub const fn map_of(status: Status) -> MapShard {
+    MapShard::Read { status, id: Digest([0x70; 32]) }
+}
+
+/// An `ok` map shard, the one the verdicts name.
+pub const MAP_OK: Option<MapShard> = Some(map_of(Status::Ok));
 
 /// The six counters of `spec/verify.md` §7.2 by kind and
 /// `verify.findings`, sorted.

@@ -291,14 +291,14 @@ fn s10_4_fold_refusal_through_report_add() {
     s.spellings =
         Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
     s.validate().unwrap();
-    r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a0.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.states()[6], 1, "failed");
     assert!(r.stale().is_empty());
     assert_eq!(r.unused(), [0]);
     assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);
     let mut s = run.ok(0xa1, v, &[0], &[]);
     s.spellings = Some(section(&o, &i, &[0, 1], &[]));
-    r.add(&s.observer, b"/m/a1.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a1.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.states()[0], 1, "verified");
     assert_eq!(
         r.spellings(),
@@ -322,9 +322,9 @@ fn s10_3_which_shards_are_folded() {
     let mut r = run.report();
     let mut s = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[0], &[]);
     s.spellings = Some(section(&o, &i, &[0, 1], &[]));
-    r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(Status::Failed));
+    r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(common::map_of(Status::Failed)));
     let u = run.unparsed(0xa1, Status::Diagnosed, "e");
-    r.add(&u.observer, b"/m/a1.cc", Some(&u), Some(Status::Ok));
+    r.add(&u.observer, b"/m/a1.cc", Some(&u), common::MAP_OK);
     assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);
     let at = |st: State| State::ALL.iter().position(|&x| x == st).unwrap();
     // Held and failed by an unverifiable observer: not counted.
@@ -332,7 +332,7 @@ fn s10_3_which_shards_are_folded() {
     s.inputs = Some(i.clone());
     s.spellings = Some(section(&o, &i, &[0], &[(1, 9)]));
     s.validate().unwrap();
-    r.add(&s.observer, b"/m/a2.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a2.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.spellings(), [Outcome::Unseen, Outcome::Unseen, Outcome::Unseen]);
     assert_eq!(r.states()[at(State::Unverifiable)], 1);
     // Checked all the same: obligation 2 is of /s/b.h, which it did not
@@ -342,7 +342,7 @@ fn s10_3_which_shards_are_folded() {
     s.spellings =
         Some(Spellings { seen: 2, held: vec![Span { first: 2, count: 1 }], failed: vec![] });
     s.validate().unwrap();
-    r.add(&s.observer, b"/m/a3.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a3.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.states()[at(State::Unverifiable)], 1);
     assert_eq!(r.states()[at(State::Failed)], 2, "a0 (its map shard) and a3");
     // A mismatch folds.
@@ -350,7 +350,7 @@ fn s10_3_which_shards_are_folded() {
     s.inputs = Some(i.clone());
     s.spellings = Some(section(&o, &i, &[0], &[(1, 9)]));
     s.validate().unwrap();
-    r.add(&s.observer, b"/m/a4.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a4.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.spellings(), [Outcome::Passed { not_seen: 0 }, other(1, 4, 9), Outcome::Unseen]);
     let j = slip_model::json::write_compact(&r.to_json()).unwrap();
     assert!(j.contains(r#""first":"/m/a4.cc""#), "{j}");
@@ -369,11 +369,11 @@ fn s10_3_verdict_needs_every_obligation_passed() {
     let mut r = run.report();
     let mut s = run.ok(0xa0, v.clone(), &[0, 1], &[]);
     s.spellings = Some(section(&o, &all, &[0, 1], &[]));
-    r.add(&s.observer, b"/m/a0.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a0.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::NotVerified, "obligation 2 unseen");
     let mut s = run.ok(0xa1, v, &[1], &[]);
     s.spellings = Some(section(&o, &inputs(&[1]), &[2], &[]));
-    r.add(&s.observer, b"/m/a1.cc", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m/a1.cc", Some(&s), common::MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::Verified);
     assert!(r.spellings().iter().all(Outcome::passed));
     let t = r.to_text();
