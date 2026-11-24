@@ -393,6 +393,19 @@ fn post_side(
             if first.kept != (0..kept.len() as u64).collect::<Vec<_>>() {
                 return Err(format!("kept: {} keys, the walk saw {:?}", kept.len(), first.kept));
             }
+            if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
+                // WP-146's inertness check: every field the walk gave
+                // before its lists, in full (not the lists themselves).
+                let o = &first;
+                eprintln!("=== {} post {own:?}", common::rel(dir));
+                eprintln!("  digests {:?}", o.digests);
+                eprintln!("  counters {:?}", o.counters);
+                eprintln!("  causes {:?}", o.causes);
+                eprintln!("  names {:?}", o.names);
+                eprintln!("  rule_use {:?}", o.rule_use);
+                eprintln!("  kept {:?}", o.kept);
+                eprintln!("  name_strings {:?}", o.name_strings);
+            }
             let off = digest_under(input, &t.table, ro);
             let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..first.clone() };
             if !off.rule_use.is_empty() || !off.kept.is_empty() || cleared != off {
