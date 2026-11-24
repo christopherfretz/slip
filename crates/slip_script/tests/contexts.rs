@@ -243,39 +243,15 @@ const KN2: &str = "template <unsigned long N> struct K {};\n\
                      slip::report(slip::severity::note, has<int>() ? \"yes\" : \"no\");\n\
                    }";
 
-/// The text of a completed run's one report.
-fn report_text(o: &Outcome) -> String {
-    match o {
-        Outcome::Completed(out) => out
-            .reports
-            .iter()
-            .map(|r| String::from_utf8_lossy(&r.message).into_owned())
-            .collect::<Vec<_>>()
-            .join(","),
-        Outcome::Failed(f) => panic!("failed: {}", f.message),
-    }
-}
-
-// KN2, confirmed: §2.6 rule 3's context "a constraint" includes a
-// requires-expression, and there the host call is not diagnosed: the
-// requirement is silently unsatisfied, `has<int>()` is false, the
-// transform loads and the run completes. Not a diagnosed failure, which
-// §2.6 promises (Kiln finding KN2).
+// KN2, fixed by Kiln WP-2501 (in the pin since WP-066): §2.6 rule 3's
+// context "a constraint" includes a requires-expression, and there the
+// host call is diagnosed: a `transform-compile` failure (the entry is not
+// a template, so `has<int>` is instantiated when the unit is compiled, as
+// for the other contexts). Before, the requirement was silently
+// unsatisfied and the run completed with `no`.
 #[test]
-fn kn2_a_host_call_in_a_requires_expression_is_silently_false() {
-    with("kn2", &with_meta(KN2), &[], |l| {
-        let (o, _) = run(l, &subject()).unwrap();
-        assert_eq!(report_text(&o), "no");
-    });
-}
-
-// The outcome KN2 waits for: a diagnosed failure, `transform-compile` (the
-// entry is not a template, so `has<int>` is instantiated when the unit is
-// compiled, as for the other contexts).
-#[test]
-#[ignore = "needs: Kiln KN2 (a host call in a requires-expression is diagnosed)"]
-fn kn2_pending_a_host_call_in_a_requires_expression_is_diagnosed() {
-    let e = load("kn2_pending", &with_meta(KN2), &[]).unwrap_err();
+fn kn2_a_host_call_in_a_requires_expression_is_diagnosed() {
+    let e = load("kn2", &with_meta(KN2), &[]).unwrap_err();
     assert_eq!(e.name(), "transform-compile", "{e}");
 }
 

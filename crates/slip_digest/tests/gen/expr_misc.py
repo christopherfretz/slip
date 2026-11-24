@@ -487,6 +487,21 @@ differ("ColdExprData", "offsetof_layout", OF.format("S, x[a]"), OF.format("S, y[
 differ("ColdExprData", "offsetof_pattern-components", tmpl(TOF.format("n")),
        tmpl(TOF.format("m")), ["changed A::w"],
        note="written by `expr_misc::offsetof_components`")
+# WP-066 (Kiln WP-2360): the operand type and the resolved designator of a
+# non-dependent `offsetof`.
+differ("ColdExprData", "offsetof_designator-type", OF.format("D, x"), OF.format("D2, x"),
+       pre="struct Bs { int x; }; struct D : Bs {}; struct D2 : Bs {};",
+       note="the operand type alone differs: one base, one member, one offset")
+UNION = "union U { int a; int b; };"
+differ("ColdExprData", "offsetof_designator-nodes", OF.format("U, a"), OF.format("U, b"),
+       pre=UNION, note="two members of a union: one type, one offset")
+differ("OffsetofNode", "Field.field", OF.format("U, a"), OF.format("U, b"), pre=UNION)
+differ("OffsetofNode", "Base", "struct D : A {};\n" + OF.format("D, x"),
+       "struct D { A a; };\n" + OF.format("D, a.x"), ["changed D", "added D::a", "changed v"],
+       pre="struct A { int x; };", note="a base stepped through against a member named")
+differ("OffsetofNode", "Base.class", "struct D : B1 {};", "struct D : B2 {};",
+       ["changed D", "changed v"], pre="struct A { int x; }; struct B1 : A {}; struct B2 : A {};",
+       post=OF.format("D, x"), note="one member reached through another base, at one offset")
 equal("ColdExprData", "source_loc", "int v = __builtin_LINE();", "\nint v = __builtin_LINE();",
       note="the values of `SourceLocValues` (expr_misc.rs)")
 
@@ -498,11 +513,10 @@ equal("ColdExprData", "source_loc", "int v = __builtin_LINE();", "\nint v = __bu
 # The order of a trait's type arguments is a fact.
 differ("_", "type-trait-argument-order", "bool v = __is_constructible(T, int, long);",
        "bool v = __is_constructible(T, long, int);", pre="struct T { T(int, long); };")
-# Hazard: a non-dependent `offsetof` keeps only its indices and the folded
-# offset (`kiln_ast` builder.rs:3525-3550), so another class of the same
-# layout digests equal until Kiln stores the operand type and the member path.
+# A non-dependent `offsetof` of another class of the same layout: the
+# operand type and the members differ (Kiln WP-2360, the hazard it closed).
 differ("_", "offsetof-other-class-same-layout", "unsigned long v = __builtin_offsetof(A, y);",
-       "unsigned long v = __builtin_offsetof(Bq, q);", needs="kiln",
+       "unsigned long v = __builtin_offsetof(Bq, q);",
        pre="struct A { int x; int y; }; struct Bq { int p; int q; };")
 # Demand independence: an instantiation a trait or `noexcept` triggers,
 # made earlier on side B by another use (a function, so that the order

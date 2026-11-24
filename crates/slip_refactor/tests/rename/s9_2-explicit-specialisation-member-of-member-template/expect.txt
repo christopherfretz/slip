@@ -1,8 +1,8 @@
 subjects:
-  01b142ac seed - rule=yes n::S::M::f()
-  9b904ff1 follower - rule=yes n::S<int>::M<long>::f() of=01b142ac
+  2d171e53 seed - rule=yes n::S::M::f()
+  8e345ba0 follower - rule=yes n::S<int>::M<long>::f() of=2d171e53
 links:
 claims:
-  main.cpp:1:80+1 replace "g" t0 votes=1 none [01b142ac]
-  main.cpp:2:47+1 replace "g" t0 votes=1 none [01b142ac]
+  main.cpp:1:80+1 replace "g" t0 votes=1 none [2d171e53]
+  main.cpp:2:47+1 replace "g" t0 votes=1 none [2d171e53]
 changed:

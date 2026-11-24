@@ -205,9 +205,10 @@ impl Names {
     /// documentation).
     fn add_references(&mut self, s: &KilnSubject<'_>, unit: &Unit<'_>) {
         let sm = unit.sm();
-        let declarative = Declarative::build(unit);
+        let refs = written::written_refs(unit);
+        let declarative = Declarative::build(unit, &refs);
         let mut keys: HashMap<Key, u32> = HashMap::new();
-        for (j, r) in written::written_refs(unit).into_iter().enumerate() {
+        for (j, r) in refs.into_iter().enumerate() {
             let j = j as u32;
             if !returned_role(r.role) || declarative.holds(&r) {
                 continue;
@@ -361,10 +362,10 @@ fn identifier_at(unit: &Unit<'_>, at: Loc) -> Option<Vec<u8>> {
 /// qualifier chain, and every component of a chain has the chain's first
 /// token as its `first` (`slip_kiln::written`), so a context is that first
 /// token: the row's `qual` (a using-enum-declaration's `name` when it has
-/// none). Kiln records no entry yet in the roles of rule 4 that would
-/// give one (stage 3: using-declarations, -directives, namespace aliases,
-/// elaborated specifiers, specialisation targets); a row gives each of
-/// those chains' first token today. A name inside
+/// none). Since Kiln WP-1932 (stage 3) the names of rule 4 have entries
+/// of rule 4's roles, which are not returned; their qualifiers are still
+/// of rule 3's roles, so a row gives each chain's first token, and an
+/// `Elaborated` entry gives a friend's elaborated specifier's. A name inside
 /// the chain that is not a component of it (a template argument,
 /// `n::W<n::A>::k`'s `n::A`) has a `first` of its own, and is returned.
 /// A namespace alias's target has no row `qual` and no entry of its own
@@ -380,10 +381,16 @@ struct Declarative {
 }
 
 impl Declarative {
-    fn build(unit: &Unit<'_>) -> Declarative {
+    fn build(unit: &Unit<'_>, refs: &[WrittenRef]) -> Declarative {
         let ast = unit.ast();
         let sm = unit.sm();
         let mut starts = HashSet::new();
+        // An elaborated reference (a friend's `friend struct a::S;`, a
+        // declaration `class X;`) is rule 4's, and so is its qualifier
+        // chain: Kiln records it since its WP-1932 (role `Elaborated`),
+        // and a friend naming a class declared before it no longer
+        // overwrites the class's row (the K3 path below).
+        starts.extend(refs.iter().filter(|r| r.role == Role::Elaborated).map(|r| r.first.to_raw()));
         let mut whole = Vec::new();
         // A friend's elaborated specifier (`friend struct a::S;`) records
         // no entry, and overwrites the class's row (Kiln K3): its

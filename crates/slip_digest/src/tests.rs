@@ -410,7 +410,7 @@ fn record_row_names_guard_the_flag_words() {
             "0-access",
             "0-friend",
             "0-local-extern",
-            "0-module-ownership",
+            "0-reserved",
             "0-name-independent",
             "0-linkage-cache",
             "0-visibility-cache",

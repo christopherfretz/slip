@@ -1,6 +1,6 @@
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
+  089ac656 seed - rule=yes n::S::f()
 links:
 claims:
-  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [089ac656]
 changed:

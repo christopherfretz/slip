@@ -54,10 +54,11 @@ pub const ENTRY: &str = "transform";
 pub const RESERVED: [&str; 3] = ["reduce", "prepare", "repair"];
 
 /// The type of the exception every function of `<slip/meta.h>` throws
-/// (`slip::v0::error`), as Kiln names the type of an uncaught exception at
-/// this pin: as written, unqualified
-/// (`kiln/crates/kiln_oven/src/notes.rs:237`).
-pub const ERROR_TYPE: &str = "error";
+/// (`slip::v0::error`), as Kiln names the type of an uncaught exception
+/// since its WP-2480: fully qualified, as `display_string_of` spells it
+/// (`kiln/crates/kiln_sema/src/session.rs:276-280`). Before, it was the
+/// type as written, unqualified (`error`).
+pub const ERROR_TYPE: &str = "slip::v0::error";
 
 /// The stack the thread that loads a transform must have, in bytes
 /// (`spec/api.md` §2.5 rule 5): reserved address space, touched only as
@@ -826,8 +827,10 @@ fn classify(
             cause("the depth limit is reached"),
             rendered,
         )),
-        // Kiln names the type as written, unqualified (`error`), so a
-        // class of the transform's own named `error` has the same name.
+        // Kiln names the type fully qualified since its WP-2480, so a
+        // class of the transform's own named `error` no longer has the
+        // name of `slip::error`; a rethrown older `slip::error` and a class
+        // derived from it are still as §2.8 rule 3 says (WP-138).
         // The refusal is reported only when the run has one, and it is the
         // most recent (decision 4 of the landed file; §2.8 rule 3 says when
         // that is wrong).

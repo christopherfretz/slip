@@ -735,8 +735,15 @@ fn with_embed<R: Send>(
             .map(|e| ast.begin_loc(e))
             .filter(|l| l.is_valid())
             .collect();
-        let mut embedded: Vec<_> =
-            firsts.iter().copied().filter(|&l| sm.is_written_in_scratch_space(l)).collect();
+        // Kiln WP-2544: the bytes are an expansion entry of kind `Embed`.
+        let mut embedded: Vec<_> = firsts
+            .iter()
+            .copied()
+            .filter(|&l| {
+                sm.expansion_info(l)
+                    .is_some_and(|e| e.kind == slip_kiln::kiln::source::ExpansionKind::Embed)
+            })
+            .collect();
         // A literal and its implicit conversion begin at one location.
         embedded.sort();
         embedded.dedup();
@@ -752,46 +759,59 @@ fn with_embed<R: Send>(
     seen.expect("the closure ran")
 }
 
-// `spec/landed/api/WP-084.md`: the tokens of `#embed` are file locations
-// in a fresh `<scratch space>` buffer, which the unit did not enter. They
-// get no range, and unit order ranks that buffer as it ranks every root
-// that is neither `<built-in>` nor invalid: by raw order, after the main
-// file. So they come after the `9` that follows them (wrong, and
-// pinned; the right order is the ignored test below).
+// `spec/landed/api/WP-084.md`: the tokens of `#embed` are spelled in a
+// `<scratch space>` buffer. Since Kiln WP-2544 they are locations of an
+// expansion entry of kind `Embed` whose expansion is the directive's `#`,
+// so unit order ranks them where the directive is: before the `9` that
+// follows (they ranked after the main file before). They get no range.
 #[test]
-fn s1_embed_tokens_have_no_range_and_rank_after_the_main_file() {
+fn s1_embed_tokens_have_no_range_and_rank_where_the_directive_is() {
     use slip_kiln::ranges::{file_range, unit_order};
     use std::cmp::Ordering;
-    let (n, ranges, after_nine, after_main) = with_embed(|unit, embedded, nine| {
+    let (n, ranges, before_nine) = with_embed(|unit, embedded, nine| {
         let sm = unit.sm();
-        let main = unit.main_file().expect("a main file");
-        let len = u32::try_from(sm.text(main).len()).unwrap();
         let ranges = embedded.iter().filter(|&&l| file_range(unit, l, l).is_some()).count();
-        let after_nine =
-            embedded.iter().filter(|&&l| unit_order(sm, l, nine) == Ordering::Greater).count();
-        let after_main = embedded
-            .iter()
-            .filter(|&&l| (0..=len).all(|o| unit_order(sm, sm.loc(main, o), l) == Ordering::Less))
-            .count();
-        (embedded.len(), ranges, after_nine, after_main)
+        let before_nine =
+            embedded.iter().filter(|&&l| unit_order(sm, l, nine) == Ordering::Less).count();
+        (embedded.len(), ranges, before_nine)
     });
     assert_eq!(n, 2, "two embedded literals");
     assert_eq!(ranges, 0, "no range for an embedded literal");
-    assert_eq!((after_nine, after_main), (2, 2), "the documented rank: after the main file");
+    assert_eq!(before_nine, 2, "before what follows the directive");
 }
 
-// The right order of `#embed`'s tokens: before the `9` after the
-// directive. Pending a parent location for Kiln's `<scratch space>`
-// buffers of `#embed` (`spec/landed/api/WP-084.md` "Until Kiln answers").
+// An edit inside `#embed`'s bytes, or across them, has no range
+// (`spec/edits.md` §2.3): one embedded literal is in no file the unit
+// entered, and a span from the `{` before the directive to the `9` after
+// it holds the directive line.
 #[test]
-#[ignore = "pending Kiln: an `#embed` buffer has no parent location (spec/landed/api/WP-084.md)"]
-fn s1_pending_embed_tokens_order_before_what_follows_the_directive() {
-    use slip_kiln::ranges::unit_order;
-    use std::cmp::Ordering;
-    let wrong = with_embed(|unit, embedded, nine| {
-        embedded.iter().filter(|&&l| unit_order(unit.sm(), l, nine) != Ordering::Less).count()
+fn s1_an_edit_inside_or_across_embed_bytes_has_no_range() {
+    use slip_kiln::kiln::source::Span;
+    use slip_kiln::ranges::{NoRange, file_range_or_why};
+    let (inside, across) = with_embed(|unit, embedded, nine| {
+        let sm = unit.sm();
+        let main = unit.main_file().expect("a main file");
+        let open = u32::try_from(sm.text(main).find('{').expect("the brace")).unwrap();
+        let inside: Vec<_> = embedded
+            .iter()
+            .map(|&l| file_range_or_why(sm, Span::new(l, unit.token_end(l).expect("an end"))))
+            .collect();
+        let end = unit.token_end(nine).expect("the end of the 9");
+        let across = [
+            file_range_or_why(sm, Span::new(sm.loc(main, open), end)),
+            file_range_or_why(sm, Span::new(embedded[0], end)),
+        ];
+        (inside, across)
     });
-    assert_eq!(wrong, 0);
+    println!("inside {inside:?}, across {across:?}");
+    assert!(
+        inside.iter().all(|r| matches!(r, Err(NoRange::Scratch | NoRange::Kiln))),
+        "{inside:?}"
+    );
+    assert!(
+        across.iter().all(|r| matches!(r, Err(NoRange::Directive | NoRange::Kiln))),
+        "{across:?}"
+    );
 }
 
 // §8.4 `parse_observer_with`: the closure runs for a `diagnosed` unit and
@@ -959,8 +979,8 @@ fn s8_4_outcome_kd1_kd2_reproducers_are_ok() {
 }
 
 // §8.4 the run (WP-044): the entry leaves Kiln's written-reference and
-// declaration-extent tables off (`spec/ast.md` §18, §19 at Kiln
-// `83566cc47`), so a unit full of uses has both empty.
+// declaration-extent tables off (`spec/ast.md` §18, §19, so at Kiln
+// `83566cc47` and still at `4a83f6e3c`), so a unit full of uses has both empty.
 #[test]
 fn s8_4_run_written_refs_and_decl_extents_are_off() {
     let f = Fixture::new("written-refs-off");

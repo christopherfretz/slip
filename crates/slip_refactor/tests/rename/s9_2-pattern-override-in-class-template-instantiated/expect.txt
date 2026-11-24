@@ -1,13 +1,13 @@
 subjects:
-  239e8059 follower - rule=yes n::E<int>::f() of=94b9f15e
-  7bd4cffe follower - rule=yes n::E<long>::f() of=94b9f15e
-  94b9f15e candidate - rule=yes n::E::f()
+  2c88f435 candidate - rule=yes n::E::f()
+  2e38088f follower - rule=yes n::E<long>::f() of=2c88f435
+  b3c85f8a follower - rule=yes n::E<int>::f() of=2c88f435
   bceee8a5 seed - rule=yes n::Base::f()
 links:
-  94b9f15e bceee8a5
+  2c88f435 bceee8a5
 claims:
   main.cpp:2:28+1 replace "g" t0 votes=1 none [bceee8a5]
-  main.cpp:3:43+1 replace "g" t0 votes=1 none [94b9f15e]
-  main.cpp:5:41+1 replace spell(94b9f15e, "g") t0 votes=1 none [94b9f15e]
-  main.cpp:5:48+1 replace spell(94b9f15e, "g") t0 votes=1 none [94b9f15e]
+  main.cpp:3:43+1 replace "g" t0 votes=1 none [2c88f435]
+  main.cpp:5:41+1 replace spell(2c88f435, "g") t0 votes=1 none [2c88f435]
+  main.cpp:5:48+1 replace spell(2c88f435, "g") t0 votes=1 none [2c88f435]
 changed:

@@ -939,7 +939,8 @@ fn producer_loc(sm: &SourceManager, mut loc: Loc) -> Option<Loc> {
         let e = sm.expansion_info(loc)?;
         loc = match e.kind {
             ExpansionKind::MacroArg => sm.immediate_spelling_loc(loc),
-            ExpansionKind::Macro { .. } => e.expansion.lo,
+            // An `#embed`'s bytes (Kiln WP-2544): produced by the directive.
+            ExpansionKind::Macro { .. } | ExpansionKind::Embed => e.expansion.lo,
         };
     }
     None
@@ -956,6 +957,8 @@ fn use_key(sm: &SourceManager, mut loc: Loc) -> Option<Loc> {
         match e.kind {
             ExpansionKind::MacroArg => return Some(e.expansion.lo),
             ExpansionKind::Macro { .. } => loc = e.expansion.lo,
+            // An `#embed`'s bytes are no argument of any macro.
+            ExpansionKind::Embed => return None,
         }
     }
     None
@@ -1440,7 +1443,10 @@ fn s5_4_test4_property_on_macro_snippets() {
         [6, 24, 30, 6],
         [8, 2, 2, 4],
         [7, 0, 3, 4],
-        [21, 0, 12, 15],
+        // Kiln WP-2543 (a user-defined literal's call begins at its
+        // literal) and WP-2542 (split `>` on the Ast): two spans fewer,
+        // two more ranges (it was [21, 0, 12, 15]).
+        [23, 0, 8, 15],
         [8, 8, 0, 3],
     ];
     assert_eq!(counts, want, "[tier 0, tier 1, no range, names] per source\n{}", tally.report());

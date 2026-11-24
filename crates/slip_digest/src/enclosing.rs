@@ -13,10 +13,14 @@
 //!   namespace, module linkage inside a named module unless exported;
 //!   what reflection's `has_*_linkage` reads;
 //! - whether an unnamed namespace encloses it (`Ast::in_anonymous_namespace`),
-//!   which Kiln's mangler and code generation read for the symbol's
-//!   linkage (`kiln_abi::mangle::has_internal_linkage`) where it differs
-//!   from `Ast::linkage` (a block-scope `extern` declaration in a function
-//!   of an unnamed namespace);
+//!   which Kiln's mangler and code generation read with it
+//!   (`kiln_abi::mangle::has_internal_linkage`);
+//!   it parts from `Ast::linkage` for a function or variable first
+//!   declared in an `extern "C"` context of an unnamed namespace, which
+//!   keeps external linkage as in clang (Kiln WP-2623/2624,
+//!   `Ast::extern_c_escapes_unnamed_namespace`; at `913a490bb` it was a
+//!   block-scope `extern` declaration in a function of an unnamed
+//!   namespace, now internal);
 //! - the visibility that the nearest enclosing namespace opening with a
 //!   `visibility` (or, for a type's visibility, a `type_visibility`)
 //!   attribute gives each declaration, found as clang finds it: from the
@@ -412,4 +416,71 @@ fn attr_of(w: &Walk<'_>, x: DeclId, kind: AttrKind) -> Option<u32> {
         .map(|a| ast.attrs.get(a))
         .find(|a| a.kind == kind)
         .map(AttrNode::visibility)
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_kiln::kiln::ast::decl::DeclKind;
+
+    use crate::decl_func::tests::{named, with_walk};
+    use crate::stream::Stream;
+    use crate::tables::{Row, linkage, walk_row};
+
+    /// The row's head: its tag, the linkage and whether an unnamed
+    /// namespace encloses the entity.
+    fn head(link: Row, unnamed: bool) -> Vec<u8> {
+        let mut s = Stream::new();
+        s.uv(u64::from(walk_row::ENCLOSING)).tag(link).bool(unnamed);
+        s.as_bytes().to_vec()
+    }
+
+    /// The row written for the last declaration named `name` of `kind`.
+    fn row(src: &str, name: &str, kind: DeclKind) -> Vec<u8> {
+        with_walk(src, |w| {
+            let d = *named(w, name, kind).last().expect("the declaration");
+            let mut s = Stream::new();
+            super::write(w, &mut s, d);
+            s.as_bytes().to_vec()
+        })
+    }
+
+    /// Kiln WP-2623/2624 (`kiln_ast/src/linkage.rs`
+    /// `extern_c_escapes_unnamed_namespace`): a function or variable first
+    /// declared in an `extern "C"` context keeps external linkage in an
+    /// unnamed namespace, as in clang (internal at `913a490bb`), and so
+    /// the row is the one place `Ast::linkage` and the unnamed namespace
+    /// part; a block-scope `extern` declaration in a function of an
+    /// unnamed namespace is internal (external at `913a490bb`).
+    #[test]
+    fn wp066_linkage_of_unnamed_namespace_members() {
+        let cases: [(&str, &str, DeclKind, Row, bool); 5] = [
+            (
+                "namespace { extern \"C\" int f(); }",
+                "f",
+                DeclKind::Function,
+                linkage::EXTERNAL,
+                true,
+            ),
+            ("namespace { extern \"C\" int v; }", "v", DeclKind::Var, linkage::EXTERNAL, true),
+            ("namespace { int f(); }", "f", DeclKind::Function, linkage::INTERNAL, true),
+            (
+                "namespace { void g() { extern int v; } }",
+                "v",
+                DeclKind::Var,
+                linkage::INTERNAL,
+                true,
+            ),
+            (
+                "namespace n { void g() { extern int v; } }",
+                "v",
+                DeclKind::Var,
+                linkage::EXTERNAL,
+                false,
+            ),
+        ];
+        for (src, name, kind, link, unnamed) in cases {
+            let got = row(src, name, kind);
+            assert!(got.starts_with(&head(link, unnamed)), "{src}: {got:?}");
+        }
+    }
 }

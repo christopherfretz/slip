@@ -1,9 +1,9 @@
 subjects:
-  2a0d4b3e follower - rule=yes n::f(int) of=9f28e21c
+  629c330b follower - rule=yes n::f(int) of=9f28e21c
   9f28e21c seed - rule=yes n::f(int)
 links:
 claims:
   main.cpp:2:6+1 replace "g" t0 votes=1 none [9f28e21c]
-  main.cpp:3:42+1 replace "g" t0 votes=1 none [2a0d4b3e]
-  main.cpp:6:15+1 replace spell(2a0d4b3e, "g") t0 votes=1 none [2a0d4b3e]
+  main.cpp:3:42+1 replace "g" t0 votes=1 none [629c330b]
+  main.cpp:6:15+1 replace spell(629c330b, "g") t0 votes=1 none [629c330b]
 changed:

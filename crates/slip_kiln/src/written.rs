@@ -287,9 +287,11 @@ fn decl_names_in(unit: &Unit<'_>, order: Order) -> Vec<DeclName> {
         ) {
             continue;
         }
-        // The pattern of a template shares the template's row.
+        // The pattern of a template shares the template's rows (all of
+        // them: since Kiln WP-2470 `iter` gives every row of a declaration
+        // written more than once under one id, and `get` only the last).
         if let Some(t) = ast.described_template(d)
-            && extents.get(t).is_some_and(|row| std::ptr::eq(row, e))
+            && extents.shares(d, t)
         {
             continue;
         }
@@ -560,10 +562,10 @@ fn span_key(s: Span) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kiln::ast::written_refs::{REF_DEPENDENT, RefQualifier};
+    use crate::kiln::ast::written_refs::{REF_DEPENDENT, RefLookup, RefQualifier};
 
     fn entry(lo: u32, entity: Option<u32>, role: Role, qualifier: RefQualifier) -> Entry {
-        Entry {
+        let mut e = Entry {
             range: Span::new(Loc::from_raw(lo), Loc::from_raw(lo + 1)),
             entity: entity.map(DeclId::new),
             found: None,
@@ -571,7 +573,11 @@ mod tests {
             qualifier,
             role,
             flags: if entity.is_some() { 0 } else { REF_DEPENDENT },
-        }
+            // Kiln WP-2130 (lookup provenance): what the other fields imply.
+            how: RefLookup::None,
+        };
+        e.how = e.default_how();
+        e
     }
 
     fn table(entries: &[Entry]) -> WrittenRefs {

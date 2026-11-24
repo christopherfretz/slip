@@ -9,5 +9,6 @@ claims:
   main.cpp:5:9+1 keep t0 votes=1 none
   main.cpp:5:22+1 keep t0 votes=1 none
   main.cpp:7:11+1 keep t0 votes=1 none
+  main.cpp:8:1+1 keep t0 votes=1 none
   main.cpp:10:6+1 replace spell(9f28e21c, "g") t0 votes=1 none [9f28e21c]
 changed:
