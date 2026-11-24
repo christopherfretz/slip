@@ -1,7 +1,7 @@
 verified
 {
   "kind": "SHRD",
-  "version": 1,
+  "version": 2,
   "sections": {
     "header": {
       "observer": "<observer>",
@@ -88,7 +88,7 @@ verified
 mismatch
 {
   "kind": "SHRD",
-  "version": 1,
+  "version": 2,
   "sections": {
     "header": {
       "observer": "<observer>",
@@ -200,7 +200,7 @@ mismatch
 diagnosed
 {
   "kind": "SHRD",
-  "version": 1,
+  "version": 2,
   "sections": {
     "header": {
       "observer": "<observer>",
@@ -227,7 +227,7 @@ diagnosed
 unverifiable
 {
   "kind": "SHRD",
-  "version": 1,
+  "version": 2,
   "sections": {
     "header": {
       "observer": "<observer>",

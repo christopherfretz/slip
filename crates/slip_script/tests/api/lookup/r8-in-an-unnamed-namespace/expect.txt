@@ -1,0 +1,6 @@
+transform <id>
+report - note "n's x: 0"
+report - note "n's z: 1"
+report - note "x: 1"
+report - note "y: 1"
+report - note "z: 0"

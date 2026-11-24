@@ -70,6 +70,10 @@ pub(super) struct Names {
     sorted: Mutex<HashMap<u32, Arc<[Reference]>>>,
     /// Extent → the references that have it.
     by_extent: OnceLock<HashMap<Range, Vec<Reference>>>,
+    /// Name range → the references that have it.
+    by_name: OnceLock<HashMap<Range, Vec<Reference>>>,
+    /// Name range → the declarations (by number) that have it, ascending.
+    decls_by_name: OnceLock<HashMap<Range, Vec<u32>>>,
     /// The entries (indexes in `KilnSubject::refs`) joined into a
     /// reference after its first ([`Ref::entry`]), by reference (WP-095:
     /// the holder of a reference is that of all its entries).
@@ -716,6 +720,49 @@ impl KilnSubject<'_> {
                         .then_with(|| super::unit_order(self.sm, y.end, x.end))
                         .then(a.0.cmp(&b.0))
                 });
+            }
+            map
+        });
+        map.get(&r).cloned().unwrap_or_default()
+    }
+
+    /// §7.2 rule 1 at a name range: the references whose name range is
+    /// `r`, in unit order.
+    pub(super) fn references_with_name(&self, r: Range) -> Vec<Reference> {
+        let names = self.names();
+        let map = names.by_name.get_or_init(|| {
+            let mut map: HashMap<Range, Vec<Reference>> = HashMap::new();
+            for (i, x) in names.refs.iter().enumerate() {
+                if let Some(g) = x.name {
+                    map.entry(g.0).or_default().push(Reference(i as u32));
+                }
+            }
+            for v in map.values_mut() {
+                v.sort_by(|a, b| {
+                    let (x, y) = (&names.refs[a.0 as usize], &names.refs[b.0 as usize]);
+                    super::unit_order(self.sm, x.first, y.first)
+                        .then_with(|| super::unit_order(self.sm, y.end, x.end))
+                        .then(a.0.cmp(&b.0))
+                });
+            }
+            map
+        });
+        map.get(&r).cloned().unwrap_or_default()
+    }
+
+    /// §7.2 rule 1 at a declaration's name: the declarations (by number,
+    /// ascending) whose name range is `r`, live or not.
+    pub(super) fn declarations_with_name(&self, r: Range) -> Vec<u32> {
+        let names = self.names();
+        let map = names.decls_by_name.get_or_init(|| {
+            let mut map: HashMap<Range, Vec<u32>> = HashMap::new();
+            for (&d, p) in &names.decls {
+                if let Some(g) = p.name {
+                    map.entry(g.0).or_default().push(d);
+                }
+            }
+            for v in map.values_mut() {
+                v.sort_unstable();
             }
             map
         });

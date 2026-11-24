@@ -1,0 +1,4 @@
+# WP-111 review, mutant D2 (the reviewer's zz-dep-acme-kept-moved): acme, the target, is opened
+# by read-only dep.h, so it is a dependency namespace and the owned view of it is a level kept
+# apart (Counting::views); g, owned, moved and kept, counts kept_via through that level.
+relocate legacy => :: acme

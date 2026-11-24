@@ -1,0 +1,6 @@
+# WP-111 review F1 (the reviewer's zz-identity-ns-b, two-headers-unedited with one more line):
+# beside `legacy => :: acme`, a rule that maps legacy to itself would make legacy::f, left
+# behind, `via` of it and never `direct` of the first rule. A rule that produces the key it
+# matches is refused (Rule::refusal, spec/verify.md §2.1).
+relocate legacy => :: acme
+relocate legacy => :: =

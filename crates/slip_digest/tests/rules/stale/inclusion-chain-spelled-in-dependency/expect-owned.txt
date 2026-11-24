@@ -1,0 +1,2 @@
+# Every file owned: fixed is an owned member left in legacy, so the rule is stale.
+use 5 via 1 direct 1

@@ -1,0 +1,10 @@
+transform <id>
+report - note "digit: invalid_argument"
+report - note "dollar: unsupported"
+report - note "empty: invalid_argument"
+report - note "global: invalid_argument"
+report - note "keyword: invalid_argument"
+report - note "n: 1"
+report - note "not UTF-8: invalid_argument"
+report - note "qualified: invalid_argument"
+report - note "two tokens: invalid_argument"

@@ -1,0 +1,6 @@
+# WP-111 review F4 (the reviewer's zz-guide-wrong-scope): a deduction guide of an owned template,
+# left in legacy while W moved to acme. Kiln accepts it; clang 19 rejects it ("deduction guide
+# must be declared in the same scope as template"): spec/landed/verify/WP-111.md, For Kiln. A
+# guide is exempt only when its template is a dependency entity; this one is counted like any
+# owned member: left behind, direct.
+relocate legacy => :: acme

@@ -26,8 +26,15 @@ use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::names::DeclNameView;
 
+use slip_kiln::kiln::ast::templates::SpecKind;
+
 use super::KilnSubject;
 use super::entities::value_kind;
+
+/// Steps [`KilnSubject::written_scope`] takes at most: each leaves an
+/// instantiation for what it was made from, as `slip_kiln::written`'s
+/// `origin` does.
+const WRITTEN_LIMIT: u32 = 256;
 
 /// The name index of one scope.
 #[derive(Debug, Default)]
@@ -77,6 +84,81 @@ impl KilnSubject<'_> {
         }
         found.sort_by(|&a, &b| self.entity_order(a, b));
         found
+    }
+
+    /// `lookup(scope, identifier)` (§6.1, `spec/landed/api/WP-132.md`):
+    /// the entities `identifier` names as members of `scope`, as the last
+    /// component of a qualified name that reached `scope` names them, in
+    /// unit order of their first declarations. A scope is what rule 4
+    /// walks into (a namespace, the global one included, a class, a class
+    /// template, an enumeration), a specialisation of a class template
+    /// (the members written in its definition), or a typedef name for
+    /// linkage purposes (the class it names). `None` for anything else.
+    pub(super) fn lookup_in_scope(&self, scope: DeclId, identifier: &[u8]) -> Option<Vec<DeclId>> {
+        let ast = self.ast();
+        let scope =
+            if self.is_scope(scope) || self.kind(scope) == DeclKind::ClassTemplateSpecialization {
+                scope
+            } else {
+                // Rule 4: the typedef names its unnamed class as a scope; the
+                // index of the scope that declares the typedef knows which.
+                let parent = self.parent_decl(scope)?;
+                let class = self.index(parent).linkage.get(&scope.index()).copied()?;
+                DeclId::new(class)
+            };
+        // A specialisation has the members written in the definition it
+        // comes from; one with no definition has none.
+        let Some(scope) = self.written_scope(scope) else { return Some(Vec::new()) };
+        let Some(sym) = std::str::from_utf8(identifier).ok().and_then(|s| ast.symbols().get(s))
+        else {
+            return Some(Vec::new());
+        };
+        let mut found: Vec<DeclId> = self
+            .index(scope)
+            .names
+            .get(&sym.index())
+            .map(|es| es.iter().map(|&n| DeclId::new(n)).collect())
+            .unwrap_or_default();
+        found.sort_by(|&a, &b| self.entity_order(a, b));
+        Some(found)
+    }
+
+    /// §6.1 rule 8: the declaration whose written definition holds the
+    /// members of `scope` as a scope. An explicit specialisation, a partial
+    /// specialisation and anything that is no specialisation: itself. An
+    /// instantiation of a class template (implicit, or an explicit
+    /// instantiation declaration or definition): the definition it was
+    /// instantiated from, the primary template's pattern or a partial
+    /// specialisation (Kiln's `SpecInfo::from`); none when it was named and
+    /// never instantiated (`from` is still the template). A member class
+    /// of an instantiated class: the member of the template it was
+    /// instantiated from (`MemberSpecInfo::instantiated_from`). Repeated
+    /// until none applies, as `slip_kiln::written::origin` is, so that a
+    /// member class of a member class of a template comes from the
+    /// template's.
+    fn written_scope(&self, scope: DeclId) -> Option<DeclId> {
+        let ast = self.ast();
+        let mut d = scope;
+        for _ in 0..WRITTEN_LIMIT {
+            let next = match (ast.spec_info(d), ast.member_spec_info(d)) {
+                (Some((_, s)), _) => match s.kind {
+                    SpecKind::ExplicitSpecialization => None,
+                    _ if self.kind(s.from) == DeclKind::ClassTemplate => return None,
+                    _ => Some(s.from),
+                },
+                (None, Some((_, m))) if m.kind != SpecKind::ExplicitSpecialization => {
+                    Some(m.instantiated_from)
+                }
+                _ => None,
+            };
+            match next {
+                Some(n) if n != d => d = n,
+                // The entity of the definition: a template's pattern is
+                // its template (the scope its members are indexed under).
+                _ => return Some(self.entity(d)),
+            }
+        }
+        None
     }
 
     /// The index of `scope`, built on first use.

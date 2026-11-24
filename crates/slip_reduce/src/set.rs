@@ -28,6 +28,7 @@ pub(crate) enum P2 {
     Literal(Vec<u8>),
     Copy(u32, u64, u64),
     Spelled { key: Digest, text: Vec<u8> },
+    Identifier { text: Vec<u8>, key: Option<Digest> },
 }
 
 /// Why a live site was rejected after the table.
@@ -281,6 +282,7 @@ impl Builder {
                         KPiece::Literal(b) => P2::Literal(b),
                         KPiece::Copy(c) => P2::Copy(self.pid(&c.path)?, c.lo, c.hi),
                         KPiece::Spelled { key, text } => P2::Spelled { key, text },
+                        KPiece::Identifier { text, key } => P2::Identifier { text, key },
                     });
                 }
                 self.sites_live += 1;
@@ -647,6 +649,9 @@ impl Builder {
                         P2::Copy(pid, lo, hi) => Piece::Copy(pl((*pid, *lo, *hi))),
                         P2::Spelled { key, text } => {
                             Piece::Spelled { key: *key, text: text.clone() }
+                        }
+                        P2::Identifier { text, key } => {
+                            Piece::Identifier { text: text.clone(), key: *key }
                         }
                     })
                     .collect(),

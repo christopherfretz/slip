@@ -1,0 +1,2 @@
+# Every file owned: legacy::D is then owned too, and left behind: direct 1.
+use 2 via 1 direct 1 kept_via 0

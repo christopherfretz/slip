@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 
 use slip_model::declared::Declared;
 use slip_model::json::Value;
-use slip_model::keys::KeyKind;
+use slip_model::names::NameNote;
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use slip_model::{Binding, Digest, Overlay, Phase, Shard, Status};
 
@@ -38,6 +38,10 @@ const REPORT: &str = "slip.verify.v1";
 
 /// How many finding groups and `not_verified` lines the text shows (§7.1).
 const TEXT_MAX: usize = 100;
+
+/// The report member, and the finding kind under `--strict-names`, of a
+/// note (§7.1, WP-112).
+const NAMES_CHANGED: &str = "names_changed";
 
 /// The state of one selected observer (§7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -216,7 +220,8 @@ pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
 pub use slip_model::result::RunVerdict;
 
 /// A stale observer (§9.2): the rule's index in `Declared.rules`, the
-/// observer, and its `direct` count for the rule. The one type, as for
+/// observer, and its `direct` and `kept_via` counts for the rule (either
+/// not 0; `kept_via` is a namespace rule's). The one type, as for
 /// [`RunVerdict`]: the result (`spec/edits.md` §8.5) stores it.
 pub use slip_model::result::Stale;
 
@@ -286,6 +291,20 @@ struct FindingGroup {
     shown_at: u64,
 }
 
+/// A key noted `names_changed` by at least one observer (§7.1, WP-112).
+#[derive(Clone, Debug)]
+struct NameGroup {
+    /// How many observers noted it.
+    observers: u64,
+    /// The main file of the first observer in plan order that noted it,
+    /// and that observer's plan position.
+    first: Vec<u8>,
+    first_at: u64,
+    /// The note shown: the first observer's in plan order.
+    name: String,
+    file: Vec<u8>,
+}
+
 /// An entry of `not_verified` (§7.1).
 #[derive(Clone, Debug)]
 struct NotVerified {
@@ -317,11 +336,15 @@ struct OverlayRun {
 #[derive(Clone, Debug)]
 pub struct Report {
     header: Header,
-    /// Per rule of `Declared.rules`, by index: whether its kind is
-    /// `namespace` (§9.2: such a rule is never stale).
-    namespace: Vec<bool>,
+    /// The number of rules of `Declared.rules`.
+    rules: usize,
     /// Per rule: whether some `ok` shard of this run used it (§9.2).
     used_rules: Vec<bool>,
+    /// `Declared.kept`, and per key the observers whose read `rule_use`
+    /// says some entity has it (§9.2: a kept key no observer has is
+    /// reported like an exemption no observer needed).
+    kept: Vec<Digest>,
+    kept_seen: Vec<u64>,
     /// The round of the pre shards (§9.5 `pre_round`).
     pre: u64,
     overlay: Option<Box<OverlayRun>>,
@@ -358,6 +381,11 @@ pub struct Report {
     /// it without keeping the states.
     any_bad: bool,
     all_good: bool,
+    /// `--strict-names` (§7.1, WP-112): each note is a finding.
+    strict_names: bool,
+    /// The notes `names_changed` of the `verified` and `mismatch` shards,
+    /// by key.
+    names: BTreeMap<Digest, NameGroup>,
 }
 
 impl Report {
@@ -369,12 +397,13 @@ impl Report {
             .chain(declared.removed())
             .map(|&k| (k, 0))
             .collect();
-        let namespace: Vec<bool> =
-            declared.rules().rules().iter().map(|r| r.kind == KeyKind::Namespace).collect();
+        let rules = declared.rules().rules().len();
         Report {
             header,
-            used_rules: vec![false; namespace.len()],
-            namespace,
+            rules,
+            used_rules: vec![false; rules],
+            kept: declared.kept().to_vec(),
+            kept_seen: vec![0; declared.kept().len()],
             pre: 0,
             overlay: None,
             stale: BTreeMap::new(),
@@ -397,7 +426,22 @@ impl Report {
             used,
             any_bad: false,
             all_good: true,
+            strict_names: false,
+            names: BTreeMap::new(),
         }
+    }
+
+    /// Before the first `add`: `--strict-names` (§7.1, WP-112). Each note
+    /// `names_changed` of a `verified` or `mismatch` shard is then a
+    /// finding of kind `names_changed`, which no exemption prevents: an
+    /// observer with one is `mismatch`.
+    ///
+    /// # Panics
+    ///
+    /// If called after an `add`: a defect of the caller.
+    pub fn strict_names(&mut self) {
+        assert!(self.selected == 0, "Report::strict_names after Report::add");
+        self.strict_names = true;
     }
 
     /// Before the first `add`, for a run whose image is an overlay (§9.5):
@@ -430,7 +474,7 @@ impl Report {
 
     /// Whether the run has rules (`Declared.rules` not empty).
     fn has_rules(&self) -> bool {
-        !self.namespace.is_empty()
+        self.rules != 0
     }
 
     /// Whether the run's image is an overlay with at least one obligation.
@@ -491,7 +535,7 @@ impl Report {
                     return Err("the shard has a rule_use and the run has no rule".to_owned());
                 }
                 Some(u) => {
-                    let n = self.namespace.len() as u64;
+                    let n = self.rules as u64;
                     if u.rules != h.rules {
                         return Err(
                             "the shard's rule_use is under other rules than the run's".to_owned()
@@ -501,6 +545,12 @@ impl Report {
                         return Err(format!(
                             "the shard's rule_use names rule {}; the run has {n}",
                             x.rule
+                        ));
+                    }
+                    let kept = self.kept.len() as u64;
+                    if let Some(i) = u.kept.iter().find(|&&i| i >= kept) {
+                        return Err(format!(
+                            "the shard's rule_use names kept key {i}; the run has {kept}"
                         ));
                     }
                 }
@@ -556,8 +606,10 @@ impl Report {
     /// one when it has none), and one whose `spellings` the fold refuses;
     /// each with its reason as the message. The `rule_use` and `spellings` of an `ok` shard the state table
     /// accepts with a verdict (`verified`, `mismatch`, `unverifiable`) are
-    /// read: a stale pair for every `direct` not 0 of a rule whose kind is
-    /// not `namespace`; every rule with a use is used. The fold reads the
+    /// read: a stale pair for every `Use` with `direct` or `kept_via` not 0
+    /// (WP-111: for a namespace rule too; `kept_via` is never not 0 for
+    /// another kind, and would be stale if it were); every rule with a use
+    /// is used; every kept key it names is seen by one more observer. The fold reads the
     /// `spellings` of a `verified` or `mismatch` shard only; that of an
     /// `unverifiable` one is checked (a refusal makes it `failed`) but not
     /// folded (§10.6).
@@ -612,7 +664,19 @@ impl Report {
             judged = Judged { state: State::Failed, verdict: None };
             refused = Some(e);
         }
-        let state = judged.state;
+        // The notes of a shard that was compared (§4.4): read whatever the
+        // option; under it, each is a finding.
+        let notes: &[NameNote] = match (ours, judged.state) {
+            (Some(s), State::Verified | State::Mismatch) => {
+                s.names.as_ref().map_or(&[][..], |n| n.notes.as_slice())
+            }
+            _ => &[],
+        };
+        for n in notes {
+            self.note(index, main, n);
+        }
+        let strict = if self.strict_names { notes.len() as u64 } else { 0 };
+        let state = if strict > 0 { State::Mismatch } else { judged.state };
         self.states[state.index()] += 1;
         self.any_bad |= matches!(state, State::Mismatch | State::NotParsed);
         self.all_good &= matches!(state, State::Verified | State::Unchanged);
@@ -627,10 +691,10 @@ impl Report {
                 }
             }
             if state == State::Mismatch {
-                findings = verdict.total;
+                findings = verdict.total.saturating_add(strict);
                 indeterminate = counts[kind_index(FindingKind::Indeterminate)]
                     + counts[kind_index(FindingKind::DerivedIndeterminate)];
-                listed = verdict.findings.len() as u64;
+                listed = verdict.findings.len() as u64 + strict;
                 if findings == indeterminate {
                     self.indeterminate_only += 1;
                 }
@@ -701,19 +765,69 @@ impl Report {
         if let Some(u) = &s.rule_use {
             for x in &u.uses {
                 let r = usize::try_from(x.rule).unwrap_or(usize::MAX);
-                if x.via != 0 || x.direct != 0 {
+                if x.via != 0 || x.direct != 0 || x.kept_via != 0 {
                     self.used_rules[r] = true;
                 }
-                if x.direct != 0 && !self.namespace[r] {
-                    let pair = Stale { rule: x.rule, observer: *observer, direct: x.direct };
+                if x.direct != 0 || x.kept_via != 0 {
+                    let pair = Stale {
+                        rule: x.rule,
+                        observer: *observer,
+                        direct: x.direct,
+                        kept_via: x.kept_via,
+                    };
                     let at = StaleAt { stale: pair, main: main.to_vec() };
                     if self.stale.insert((x.rule, index), at).is_none() {
                         self.stale_count += 1;
                     }
                 }
             }
+            for &k in &u.kept {
+                // Checked against the table by `ours` (A4).
+                if let Some(n) = usize::try_from(k).ok().and_then(|k| self.kept_seen.get_mut(k)) {
+                    *n += 1;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Folds one note of the observer at plan position `index` into the
+    /// run's notes (each key once).
+    fn note(&mut self, index: u64, main: &[u8], n: &NameNote) {
+        match self.names.get_mut(&n.key) {
+            None => {
+                let g = NameGroup {
+                    observers: 1,
+                    first: main.to_vec(),
+                    first_at: index,
+                    name: n.name.clone(),
+                    file: n.file.clone(),
+                };
+                self.names.insert(n.key, g);
+            }
+            Some(g) => {
+                g.observers += 1;
+                if index < g.first_at {
+                    g.first_at = index;
+                    main.clone_into(&mut g.first);
+                    n.name.clone_into(&mut g.name);
+                    n.file.clone_into(&mut g.file);
+                }
+            }
+        }
+    }
+
+    /// The run's notes in the report's order: by name, then key.
+    fn sorted_names(&self) -> Vec<(&Digest, &NameGroup)> {
+        let mut v: Vec<_> = self.names.iter().collect();
+        v.sort_by(|a, b| (&a.1.name, a.0).cmp(&(&b.1.name, b.0)));
+        v
+    }
+
+    /// How many keys were noted `names_changed` in this run (each once,
+    /// whatever the number of observers that noted it).
+    pub fn names_changed(&self) -> usize {
+        self.names.len()
     }
 
     /// Folds one listed finding of the observer at plan position `index`
@@ -778,19 +892,6 @@ impl Report {
         (0u64..).zip(&self.used_rules).filter(|(_, u)| !**u).map(|(i, _)| i).collect()
     }
 
-    /// The namespace rules some `ok` shard of this run used (`via` or
-    /// `direct` not 0), ascending: whether the observers agree on them is
-    /// not checked until WP-111 (§9.2, §9.4). Not empty: the report says
-    /// so, and conclude permits no write (`spec/edits.md` §8.5); the
-    /// verdict is not changed by it.
-    pub fn unchecked(&self) -> Vec<u64> {
-        (0u64..)
-            .zip(self.namespace.iter().zip(&self.used_rules))
-            .filter(|(_, (n, u))| **n && **u)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
     /// The outcome of every obligation of the overlay (§10.3, §10.6), in
     /// its order; empty for a run without an overlay or obligations.
     pub fn spellings(&self) -> &[Outcome] {
@@ -833,7 +934,8 @@ impl Report {
     }
 
     /// The exemption entries: `(list, key, observers)` in the order
-    /// `changed`, `created`, `removed`, then by key.
+    /// `changed`, `created`, `removed`, then by key; then `kept` (§9.2,
+    /// WP-111), by key, `observers` being those that have the key.
     fn exemptions(&self) -> Vec<(&'static str, Digest, u64)> {
         let lists =
             [("changed", &self.changed), ("created", &self.created), ("removed", &self.removed)];
@@ -843,7 +945,16 @@ impl Report {
                 out.push((list, *k, self.used.get(k).copied().unwrap_or(0)));
             }
         }
+        for (k, n) in self.kept.iter().zip(&self.kept_seen) {
+            out.push(("kept", *k, *n));
+        }
         out
+    }
+
+    /// The keys of `Declared.kept` no read shard of this run has (§9.2),
+    /// ascending: reported like an exemption no observer needed.
+    pub fn unseen_kept(&self) -> Vec<Digest> {
+        self.kept.iter().zip(&self.kept_seen).filter(|(_, n)| **n == 0).map(|(k, _)| *k).collect()
     }
 
     /// The JSON document of §7.1.
@@ -859,7 +970,7 @@ impl Report {
             observers.push((s.name(), uv(self.states[s.index()])));
         }
         observers.push(("indeterminate_only", uv(self.indeterminate_only)));
-        let groups = self
+        let mut groups: Vec<Value> = self
             .sorted_groups()
             .into_iter()
             .map(|g| {
@@ -877,6 +988,7 @@ impl Report {
                 ])
             })
             .collect();
+        groups.extend(self.strict_names_groups());
         let not_verified = self
             .not_verified
             .values()
@@ -930,6 +1042,9 @@ impl Report {
             ("not_verified", Value::Array(not_verified)),
             ("exemptions", Value::Array(exemptions)),
         ]);
+        if !self.names.is_empty() {
+            members.push((NAMES_CHANGED, self.names_json()));
+        }
         if self.has_rules() {
             members.push(("agreement", self.agreement_json()));
         }
@@ -938,6 +1053,50 @@ impl Report {
         }
         members.push(("run", bytes(&h.run)));
         obj(members)
+    }
+
+    /// Under `--strict-names`, each noted key is a finding group of kind
+    /// `names_changed`, after every other kind; without it, none.
+    fn strict_names_groups(&self) -> Vec<Value> {
+        if !self.strict_names {
+            return Vec::new();
+        }
+        self.sorted_names()
+            .into_iter()
+            .map(|(k, g)| {
+                obj(vec![
+                    ("kind", Value::Str(NAMES_CHANGED.to_owned())),
+                    ("key", digest(k)),
+                    ("name", Value::Str(g.name.clone())),
+                    ("observers", uv(g.observers)),
+                    ("first", bytes(&g.first)),
+                    ("file", bytes(&g.file)),
+                    ("pre", Value::Null),
+                    ("post", Value::Null),
+                    ("where", Value::Null),
+                ])
+            })
+            .collect()
+    }
+
+    /// §7.1 `names_changed` (WP-112): the count of keys and the first
+    /// [`TEXT_MAX`] in the report's order.
+    fn names_json(&self) -> Value {
+        let listed = self
+            .sorted_names()
+            .into_iter()
+            .take(TEXT_MAX)
+            .map(|(k, g)| {
+                obj(vec![
+                    ("key", digest(k)),
+                    ("name", Value::Str(g.name.clone())),
+                    ("file", bytes(&g.file)),
+                    ("observers", uv(g.observers)),
+                    ("first", bytes(&g.first)),
+                ])
+            })
+            .collect();
+        obj(vec![("total", uv(self.names.len() as u64)), ("listed", Value::Array(listed))])
     }
 
     /// §9.4 `agreement`.
@@ -951,14 +1110,14 @@ impl Report {
                     ("observer", digest(&s.stale.observer)),
                     ("main", bytes(&s.main)),
                     ("direct", uv(s.stale.direct)),
+                    ("kept_via", uv(s.stale.kept_via)),
                 ])
             })
             .collect();
         obj(vec![
-            ("rules", uv(self.namespace.len() as u64)),
+            ("rules", uv(self.rules as u64)),
             ("stale", Value::Array(stale)),
             ("unused", Value::Array(self.unused().into_iter().map(uv).collect())),
-            ("unchecked", Value::Array(self.unchecked().into_iter().map(uv).collect())),
         ])
     }
 
@@ -1051,6 +1210,7 @@ impl Report {
         }
         let _ = writeln!(out, "mismatch indeterminate_only {}", self.indeterminate_only);
         let groups = self.sorted_groups();
+        let strict_names = if self.strict_names { self.sorted_names() } else { Vec::new() };
         for g in groups.iter().take(TEXT_MAX) {
             let f = &g.shown;
             let key = f.key.map_or_else(|| "-".to_owned(), |k| short(&k));
@@ -1065,19 +1225,45 @@ impl Report {
                 site_line(&mut out, "  post ", &w.post);
             }
         }
+        for (k, g) in strict_names.iter().take(TEXT_MAX.saturating_sub(groups.len())) {
+            line(
+                &mut out,
+                &format!("finding {NAMES_CHANGED} {} observers {}", short(k), g.observers),
+                &[&text(&g.name)],
+            );
+            let _ = writeln!(out, "  first {}", path(&g.first));
+        }
         let _ = writeln!(
             out,
             "findings {} total, {} listed, {} group(s)",
             self.total,
             self.listed,
-            groups.len()
+            groups.len() + strict_names.len()
         );
         for (list, key, n) in self.exemptions() {
             let _ = writeln!(out, "exemption {list} {} observers {n}", short(&key));
         }
+        self.names_text(&mut out);
         self.agreement_text(&mut out);
         self.spellings_text(&mut out);
         out
+    }
+
+    /// The lines of §7.1 `names_changed`, when the run has a note: one per
+    /// key, at most [`TEXT_MAX`], then how many more.
+    fn names_text(&self, out: &mut String) {
+        let names = self.sorted_names();
+        for (_, g) in names.iter().take(TEXT_MAX) {
+            let _ = writeln!(
+                out,
+                "note: name-derived string changed: {} @ {}",
+                text(&g.name),
+                path(&g.file)
+            );
+        }
+        if names.len() > TEXT_MAX {
+            let _ = writeln!(out, "note: {} more (see the report)", names.len() - TEXT_MAX);
+        }
     }
 
     /// The lines of §9.4, when the run has rules.
@@ -1087,16 +1273,17 @@ impl Report {
             let _ = writeln!(
                 out,
                 "agreement rules {} stale {} unused {}",
-                self.namespace.len(),
+                self.rules,
                 self.stale_count,
                 unused.len()
             );
             for s in self.stale.values().take(TEXT_MAX) {
                 let _ = writeln!(
                     out,
-                    "stale rule {} direct {} {}",
+                    "stale rule {} direct {} kept_via {} {}",
                     s.stale.rule,
                     s.stale.direct,
+                    s.stale.kept_via,
                     path(&s.main)
                 );
             }
@@ -1106,12 +1293,6 @@ impl Report {
             }
             for r in unused {
                 let _ = writeln!(out, "unused rule {r}");
-            }
-            for r in self.unchecked() {
-                let _ = writeln!(
-                    out,
-                    "not checked: agreement between observers for namespace rule {r}"
-                );
             }
         }
     }

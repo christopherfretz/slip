@@ -253,7 +253,7 @@ impl Walk<'_> {
             return KeyRes::None(Some(KEY_CYCLE));
         }
         if !self.enter() {
-            crate::rule_use::forget(self, e);
+            crate::rule_use::forget(self, e, view);
             return KeyRes::None(Some(TOO_DEEP));
         }
         let aborts = self.aborts;
@@ -276,17 +276,20 @@ impl Walk<'_> {
                 let kind = key.kind;
                 // An entity's own key is counted for rule use (WP-069),
                 // a dependency entity's unmapped (WP-110 rule 1); a
-                // namespace's key in a member's view is no entity's.
+                // namespace's key in a member's view is no entity's, but
+                // in the owned view it is a level of the chain a namespace
+                // rule's counts climb (WP-111).
                 let key = match view {
                     None if self.rule_applies(e, None) => crate::rule_use::map(self, e, key),
                     None => crate::rule_use::unmapped(self, e, key),
-                    Some(_) => self.map_key(e, view, key),
+                    Some(true) => crate::rule_use::in_owned_view(self, e, key),
+                    Some(false) => self.map_key(e, view, key),
                 };
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
             }
             Err(cause) => {
-                crate::rule_use::forget(self, e);
+                crate::rule_use::forget(self, e, view);
                 KeyRes::None(cause)
             }
         };
@@ -806,6 +809,14 @@ impl Walk<'_> {
             Some(b) => b,
             None => self.owned(member),
         };
+        // The chain a namespace rule's counts climb (WP-111): of an owned
+        // member, and of one a dependency entity by the per-inclusion rule
+        // alone (WP-111 review F2), whose parent is then keyed in its own,
+        // dependency, view.
+        if b || (self.rule_use.is_some() && self.only_by_inclusion(member)) {
+            let (e, n) = (self.entity(member), self.entity(ns));
+            crate::rule_use::namespace_parent(self, e, n);
+        }
         let res = if b == self.owned(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
         match res {
             KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),

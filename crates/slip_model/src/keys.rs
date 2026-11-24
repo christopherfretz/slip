@@ -275,6 +275,9 @@ pub const RULE_UNNAMED_NAMESPACE: &str =
 /// (`spec/verify.md` §2.1).
 pub const RULE_ON_PART: &str =
     "a rule may not match a resolved or default argument unit: its key follows its owner's";
+/// The `what` of a rule whose matched key is the key it produces
+/// (`spec/verify.md` §2.1).
+pub const RULE_IDENTITY: &str = "a rule may not produce the key it matches: it changes nothing";
 
 impl Name {
     /// Its number in digest-kinds §3.2.
@@ -547,7 +550,11 @@ impl Rule {
     /// in being the unnamed namespace's (the linkage of every member would
     /// change; each member's row `enclosing` would then differ, and the
     /// refusal says so when the rule is declared rather than after a run,
-    /// `spec/landed/digest/WP-113.md`, item 6).
+    /// `spec/landed/digest/WP-113.md`, item 6); an identity rule, whose
+    /// matched key is the key it produces (`parent == to_parent`, `name ==
+    /// to_name`): it changes nothing, and beside a rule that does produce
+    /// that key it would hide which of the two an entity reached it by
+    /// (`spec/verify.md` §9.1).
     ///
     /// Not a check of the encoding: a container may hold such a rule
     /// (`spec/landed/model/WP-022.md`'s golden has every kind). It is
@@ -567,6 +574,9 @@ impl Rule {
         {
             return Some(RULE_UNNAMED_NAMESPACE);
         }
+        if self.parent == self.to_parent && self.name == self.to_name {
+            return Some(RULE_IDENTITY);
+        }
         None
     }
 }
@@ -582,6 +592,10 @@ pub enum RuleError {
     /// Rules `first` and `second` (indices as given, `first < second`)
     /// have the same `(parent, kind, name, disc)`.
     Duplicate { first: usize, second: usize },
+    /// Rules `first` and `second` (indices as given, `first < second`)
+    /// produce the same key, `(to_parent, kind, to_name, disc)`
+    /// (`spec/verify.md` §2.1).
+    SameProduced { first: usize, second: usize },
     /// Rule `index` has a name no reader accepts ([`Name::validate`]).
     InvalidName { index: usize, what: &'static str },
 }
@@ -592,6 +606,9 @@ impl fmt::Display for RuleError {
             RuleError::Duplicate { first, second } => {
                 write!(f, "rules {first} and {second} have the same (parent, kind, name, disc)")
             }
+            RuleError::SameProduced { first, second } => {
+                write!(f, "rules {first} and {second} produce the same (parent, kind, name, disc)")
+            }
             RuleError::InvalidName { index, what } => write!(f, "rule {index}: {what}"),
         }
     }
@@ -600,7 +617,8 @@ impl fmt::Display for RuleError {
 impl std::error::Error for RuleError {}
 
 /// A rule table ready to apply (`spec/digest.md` §3.4): rules sorted by
-/// the bytes of their match, no two with one match.
+/// the bytes of their match, no two with one match and no two that
+/// produce one key (`spec/verify.md` §2.1).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct RuleTable {
     rules: Vec<Rule>,
@@ -609,20 +627,28 @@ pub struct RuleTable {
     /// The first rule, in this order, that `Rule::refusal` refuses.
     refused: Option<(usize, &'static str)>,
     /// For each rule, the match bytes of the key it produces,
-    /// `(to_parent, kind, to_name, disc)`, with its index: ascending by
-    /// bytes, then index (`RuleTable::producers`).
-    produced: Vec<(Vec<u8>, usize)>,
+    /// `(to_parent, kind, to_name, disc)`, with its index: strictly
+    /// ascending by bytes (`RuleTable::produces`).
+    produced: Produced,
 }
 
-/// [`RuleTable::produced`] of `rules`.
-fn produced_index(rules: &[Rule]) -> Vec<(Vec<u8>, usize)> {
+/// `RuleTable::produced`: each rule's produced key, as bytes, and its index.
+type Produced = Vec<(Vec<u8>, usize)>;
+
+/// [`RuleTable::produced`] of `rules`, ascending by bytes, then index;
+/// `Err((first, second))`, `first < second`, when two rules produce one
+/// key (the pair whose key is least).
+fn produced_index(rules: &[Rule]) -> Result<Produced, (usize, usize)> {
     let mut out: Vec<(Vec<u8>, usize)> = rules
         .iter()
         .enumerate()
         .map(|(i, r)| (match_bytes(&r.to_parent, r.kind, &r.to_name, r.disc.as_ref()), i))
         .collect();
     out.sort();
-    out
+    if let Some(w) = out.windows(2).find(|w| w[0].0 == w[1].0) {
+        return Err((w[0].1, w[1].1));
+    }
+    Ok(out)
 }
 
 impl RuleTable {
@@ -631,28 +657,36 @@ impl RuleTable {
         RuleTable::default()
     }
 
-    /// The table of `rules`, given in any order. `Err`: a rule with a name
-    /// no reader accepts, or two rules with the same `(parent, kind, name,
-    /// disc)`.
+    /// The table of `rules`, given in any order. `Err`, checked in this
+    /// order: a rule with a name no reader accepts; two rules with the same
+    /// `(parent, kind, name, disc)`; two rules that produce one key
+    /// (`spec/verify.md` §2.1: a table holds at most one way to reach a
+    /// key, whether it comes from `slip declare` or from a transform's
+    /// `expect_renamed`).
     pub fn new(rules: Vec<Rule>) -> Result<RuleTable, RuleError> {
         for (index, rule) in rules.iter().enumerate() {
             rule.validate().map_err(|what| RuleError::InvalidName { index, what })?;
         }
+        let same_produced = produced_index(&rules).err();
         let mut order: Vec<(Vec<u8>, usize, Rule)> =
             rules.into_iter().enumerate().map(|(i, r)| (r.match_bytes(), i, r)).collect();
         order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         if let Some(w) = order.windows(2).find(|w| w[0].0 == w[1].0) {
             return Err(RuleError::Duplicate { first: w[0].1, second: w[1].1 });
         }
-        // Valid, ascending and without a duplicate: `from_sorted`, the one
-        // builder of the index, accepts it.
+        if let Some((first, second)) = same_produced {
+            return Err(RuleError::SameProduced { first, second });
+        }
+        // Valid, ascending, without a duplicate and without two producers
+        // of one key: `from_sorted`, the one builder of the index, accepts it.
         let rules: Vec<Rule> = order.into_iter().map(|(_, _, r)| r).collect();
         Ok(RuleTable::from_sorted(rules).expect("valid names, sorted, no duplicate"))
     }
 
-    /// The table of `rules` already in order, with valid names and no two
-    /// with one match: `Err((index, what))` names the first rule that is
-    /// not, with the message a reader gives.
+    /// The table of `rules` already in order, with valid names, no two
+    /// with one match and no two that produce one key: `Err((index, what))`
+    /// names the first rule that is not, with the message a reader gives
+    /// (for two producers, the later of the pair whose key is least).
     pub(crate) fn from_sorted(rules: Vec<Rule>) -> Result<RuleTable, (usize, SortError)> {
         let mut matches: Vec<Vec<u8>> = Vec::with_capacity(rules.len());
         for (i, rule) in rules.iter().enumerate() {
@@ -668,7 +702,8 @@ impl RuleTable {
             matches.push(m);
         }
         let refused = first_refused(&rules);
-        let produced = produced_index(&rules);
+        let produced = produced_index(&rules)
+            .map_err(|(first, second)| (second, SortError::SameProduced { first }))?;
         Ok(RuleTable { rules, matches, refused, produced })
     }
 
@@ -716,24 +751,19 @@ impl RuleTable {
         }
     }
 
-    /// The index of the first rule that produces `key`: `(r.to_parent,
-    /// r.kind, r.to_name, r.disc)` is `key`'s four fields
-    /// (`spec/verify.md` §9.1 `direct`). [`RuleTable::producers`] gives
-    /// every such rule: two may produce one key (two namespaces merged
-    /// onto a third).
+    /// The index of the rule that produces `key`, if one does: `(r.to_parent,
+    /// r.kind, r.to_name, r.disc)` is `key`'s four fields (`spec/verify.md`
+    /// §9.1 `direct`). At most one does: a table holds no two that produce
+    /// one key (§2.1).
     pub fn produces(&self, key: &Key) -> Option<usize> {
-        self.producers(key).next()
-    }
-
-    /// The indices of every rule that produces `key`, ascending.
-    pub fn producers(&self, key: &Key) -> impl Iterator<Item = usize> + '_ {
-        let probe = if self.rules.is_empty() {
-            Vec::new()
-        } else {
-            match_bytes(&key.parent, key.kind, &key.name, key.disc.as_ref())
-        };
-        let start = self.produced.partition_point(|(m, _)| m.as_slice() < probe.as_slice());
-        self.produced[start..].iter().take_while(move |(m, _)| *m == probe).map(|&(_, i)| i)
+        if self.rules.is_empty() {
+            return None;
+        }
+        let probe = match_bytes(&key.parent, key.kind, &key.name, key.disc.as_ref());
+        self.produced
+            .binary_search_by(|(m, _)| m.as_slice().cmp(&probe))
+            .ok()
+            .map(|j| self.produced[j].1)
     }
 
     /// `H("slip.rules.v1", list<Rule>)` over the sorted rules: the table's
@@ -757,12 +787,16 @@ pub(crate) enum SortError {
     Duplicate,
     /// A match below the rule before's.
     Unsorted,
+    /// The key rule `first`, before it, produces (`spec/verify.md` §2.1).
+    SameProduced { first: usize },
 }
 
 /// The `what` of two rules with one match.
 pub(crate) const DUPLICATE_RULE: &str = "two rules with one (parent, kind, name, disc)";
 /// The `what` of rules out of order.
 pub(crate) const UNSORTED_RULES: &str = "rules are not strictly ascending";
+/// The `what` of two rules that produce one key.
+pub(crate) const SAME_PRODUCED_RULE: &str = "two rules produce one (parent, kind, name, disc)";
 
 #[cfg(test)]
 mod tests {
@@ -799,6 +833,10 @@ mod tests {
             (rule(KeyKind::Namespace, Name::Anonymous, id("detail")), RULE_UNNAMED_NAMESPACE),
             (rule(KeyKind::DefaultArgument, Name::Parameter(0), Name::Parameter(0)), RULE_ON_PART),
             (rule(KeyKind::Resolved, Name::Property(1), Name::Property(1)), RULE_ON_PART),
+            // WP-111 review, F1: a rule that changes nothing.
+            (rule(KeyKind::Namespace, Name::Anonymous, Name::Anonymous), RULE_IDENTITY),
+            (rule(KeyKind::Class, id("Impl"), id("Impl")), RULE_IDENTITY),
+            (rule(KeyKind::Function, id("f"), id("f")), RULE_IDENTITY),
         ];
         for (r, what) in refused {
             assert_eq!(r.refusal(), Some(what), "{r:?}");
@@ -807,10 +845,10 @@ mod tests {
         }
         assert_eq!(RuleTable::empty().refused(), None);
         for ok in [
-            rule(KeyKind::Namespace, Name::Anonymous, Name::Anonymous),
             rule(KeyKind::Namespace, id("acme"), id("legacy")),
             rule(KeyKind::ClassTemplate, id("W2"), id("W1")),
-            rule(KeyKind::Class, id("Impl"), id("Impl")),
+            // The same name under another parent is a move, not an identity.
+            Rule { to_parent: Parent::CLinkage, ..rule(KeyKind::Class, id("Impl"), id("Impl")) },
         ] {
             assert_eq!(RuleTable::new(vec![ok.clone()]).unwrap().refused(), None, "{ok:?}");
         }

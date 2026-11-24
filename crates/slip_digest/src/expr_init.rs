@@ -421,6 +421,7 @@ fn inherited_ctor_init_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, o
 /// (§7 "Shared nodes"); `b`, the context of the use, is `out`.
 pub(crate) fn cxx_default_arg_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, default_arg_rows);
+    crate::expr_misc::default_use_names(w, s, e);
 }
 
 fn default_arg_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {
@@ -440,6 +441,7 @@ fn default_arg_rows(w: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut
 /// use) are `out`. `ColdExprData` `default_imm` is `demand`.
 pub(crate) fn cxx_default_init_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     run(w, s, e, default_init_rows);
+    crate::expr_misc::default_use_names(w, s, e);
 }
 
 fn default_init_rows(_: &Walk<'_>, s: &mut Stream, _: ExprId, n: &Node, out: &mut Vec<R>) {

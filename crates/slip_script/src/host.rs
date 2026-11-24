@@ -19,7 +19,7 @@ use std::fmt;
 use slip_model::{Counter, Digest};
 
 use crate::effects::{Effect, Effects};
-use crate::output::{Changed, Edit, Report, RunOutput};
+use crate::output::{Changed, Edit, Piece, Report, RunOutput};
 use crate::subject::{Entity, File, PlaceOf, Range, Subject, Value};
 use crate::wire::{self, Errc, Operation};
 
@@ -317,7 +317,23 @@ impl<'s> Host<'s> {
     /// `api.peak_bytes` are the evaluator's and are added by the driver.
     /// The host is the only writer of counters, so no name occurs twice.
     pub fn finish(self) -> RunOutput {
-        let Record { edits, groups, reports, changed, renamed } = self.effects.record;
+        let Record { mut edits, groups, reports, changed, renamed } = self.effects.record;
+        // §7.2 rule 6: an identifier piece that is the whole replacement of
+        // the name range of references takes their referent's key when
+        // every one has the same origin's key and that origin is declared
+        // renamed to exactly the piece's identifier. Decided here, from
+        // every declaration of the run, so that order does not matter.
+        for (i, named) in &self.effects.named {
+            if let [Piece::Identifier { text, key }] = edits[*i].pieces.as_mut_slice() {
+                let first = named.first().and_then(|n| n.1);
+                let agree = named.iter().all(|(origin, k)| {
+                    *k == first && self.effects.renamed.get(origin) == Some(&*text)
+                });
+                if first.is_some() && agree {
+                    *key = first;
+                }
+            }
+        }
         let mut out = RunOutput {
             transform: self.transform,
             edits,
@@ -420,6 +436,32 @@ impl<'s> Host<'s> {
         match self.value_arg(h)? {
             Value::Entity(e) => Ok(e),
             v => Err(self.wrong_kind(v, "an entity")),
+        }
+    }
+
+    /// Text that must be one identifier (§6.1 rule 1, "What version 0
+    /// takes for an identifier"): at most [`Limits::name_bytes`] bytes
+    /// (§7.7), then [`check_identifier`]: `invalid_argument` for what is
+    /// certainly not one, `unsupported` for a `$` or a code point outside
+    /// ASCII. `what` names the argument in the message.
+    pub(crate) fn identifier_arg(&self, text: &[u8], what: &str) -> Step<()> {
+        if text.len() as u64 > self.limits.name_bytes {
+            return refuse(
+                Errc::LimitExceeded,
+                format!(
+                    "{what} of {} bytes: the limit of a run is {} (§7.7)",
+                    text.len(),
+                    self.limits.name_bytes
+                ),
+            );
+        }
+        match check_identifier(text) {
+            Ok(()) => Ok(()),
+            Err(Errc::Unsupported) => refuse(
+                Errc::Unsupported,
+                format!("{what} with `$` or outside the basic character set (§6.1 rule 1)"),
+            ),
+            Err(errc) => refuse(errc, format!("{what}: not one identifier (§6.1 rule 1)")),
         }
     }
 
@@ -565,6 +607,20 @@ impl<'s> Host<'s> {
                 Value::Declaration(d) => Answer::Info(Some(Value::Entity(s.entity_of(d)))),
                 v => return Err(self.wrong_kind(v, "a declaration")),
             },
+            wire::OP_LOOKUP_IN => {
+                let e = self.entity_arg(ints[0])?;
+                self.identifier_arg(bytes, "an identifier (§6.1)")?;
+                match s.lookup_in(e, bytes) {
+                    Some(found) => Answer::Values(found.into_iter().map(Value::Entity).collect()),
+                    None => {
+                        return Err(self.wrong_kind(
+                            Value::Entity(e),
+                            "a namespace, a class, a class template, a specialisation of one or \
+                             an enumeration",
+                        ));
+                    }
+                }
+            }
             wire::OP_REFERENCES_TO => {
                 let e = self.entity_arg(ints[0])?;
                 Answer::Values(s.references_to(e).into_iter().map(Value::Reference).collect())

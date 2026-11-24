@@ -1,0 +1,10 @@
+transform <id>
+edit 0 t.cpp:1:5-1:6 tiers 0 = identifier("g")
+report - note "dollar: identifier unsupported, expect_renamed unsupported"
+report - note "empty: identifier invalid_argument, expect_renamed invalid_argument"
+report - note "keyword: identifier invalid_argument, expect_renamed invalid_argument"
+report - note "not UTF-8: identifier invalid_argument, expect_renamed invalid_argument"
+report - note "plain: identifier returned, expect_renamed returned"
+report - note "qualified: identifier invalid_argument, expect_renamed invalid_argument"
+report - note "two tokens: identifier invalid_argument, expect_renamed invalid_argument"
+renamed function root "g" disc cb62fd8c624024a58df53a3d40209e222718a3038556e7b05e4e50c3346379e3 -> root "f"

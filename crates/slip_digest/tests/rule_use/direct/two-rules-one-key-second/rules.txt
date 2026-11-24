@@ -1,4 +1,0 @@
-# WP-069: as two-rules-one-key, with the entity of the second rule (by the table's order) renamed:
-# g2 is via the rule that matched it, not the first rule that produces h; h is direct for both.
-relocate h() => :: f2
-relocate h() => :: g2

@@ -1,3 +1,6 @@
-# Item 9 attempt: two namespaces of B, x and an empty y, both mapped onto a: they merge. Equal. Not a bijection of entities, which §2.1 allows for namespaces alone; the program differs by the declaration of an empty namespace, which changes no reference.
+# Item 9 attempt: two namespaces of B, x and an empty y, both mapped onto a. Before WP-111's review
+# (F1) they merged and the case was equal. Both rules produce a's key, which says two namespaces of
+# the post-image are both the pre-image's a: such a table is refused (spec/verify.md §2.1 "One way
+# to each key"). The edit stays declarable: empty-namespace-merged-one-rule.
 relocate a => :: x
 relocate a => :: y

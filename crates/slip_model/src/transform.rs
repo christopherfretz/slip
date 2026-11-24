@@ -236,6 +236,12 @@ pub(crate) fn is_keyword(name: &[u8]) -> bool {
     KEYWORDS.iter().any(|k| k.as_bytes() == name)
 }
 
+/// `name` is one plain identifier (`spec/api.md` §6.1 rule 1): it matches
+/// `[A-Za-z_][A-Za-z0-9_]*` and is not one of [`KEYWORDS`].
+pub(crate) fn is_plain(name: &[u8]) -> bool {
+    is_identifier(name) && !is_keyword(name)
+}
+
 /// `name` matches `[A-Za-z_][A-Za-z0-9_]*` (`spec/edits.md` §3).
 pub(crate) fn is_identifier(name: &[u8]) -> bool {
     match name.split_first() {

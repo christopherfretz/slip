@@ -32,6 +32,8 @@
 #define __slip_lib_meta_calls 202611L     // call expressions (provisional names)
 #define __slip_lib_meta_code 202611L      // code values (provisional names)
 #define __slip_lib_meta_edits 202611L     // replace, groups, reports, declared changes
+#define __slip_lib_meta_scope_lookup 202611L  // lookup(info scope, identifier)
+#define __slip_lib_meta_identifier 202611L    // identifier(name), a piece of code
 
 namespace slip {
 inline namespace v0 {
@@ -147,6 +149,12 @@ consteval bool is_call(info __expression);
 // using-declaration, using-directive or alias is followed. Empty if none.
 consteval std::vector<info> lookup(std::string_view __qualified_name);
 
+// The entities declared with this identifier as members of a scope (a
+// namespace, a class, an enumeration), as lookup of the scope's qualified
+// name and the identifier finds them; also for a scope with no qualified
+// name (an unnamed namespace, a specialisation). Empty if none.
+consteval std::vector<info> lookup(info __scope, std::string_view __identifier);
+
 // The identifier an entity is declared with, or that a reference is written
 // with. Empty for an entity with no identifier (an operator, a constructor,
 // an unnamed entity).
@@ -223,6 +231,10 @@ consteval code text(std::string_view);
 // A name that denotes this entity at the place the code is put. Slip chooses
 // the spelling, and verification checks that it denotes this entity.
 consteval code spell(info __entity);
+
+// One identifier, given as data (the new name of a rename): checked to be one
+// identifier and recorded as a name, not as text.
+consteval code identifier(std::string_view __name);
 
 // The text of a range, with every edit that lies inside the range applied.
 consteval code copy(range);
@@ -425,6 +437,11 @@ consteval std::vector<info> lookup(std::string_view __qualified_name) {
   return __impl::__infos(__l0::__op_lookup, nullptr, 0, __qualified_name);
 }
 
+consteval std::vector<info> lookup(info __scope, std::string_view __identifier) {
+  __l0::__u64 __in[1] = {__access::__raw(__scope)};
+  return __impl::__infos(__l0::__op_lookup_in, __in, 1, __identifier);
+}
+
 consteval std::string identifier_of(info __i) {
   __l0::__u64 __in[1] = {__access::__raw(__i)};
   return __impl::__string(__l0::__op_identifier_of, __in, 1);
@@ -496,6 +513,10 @@ consteval code text(std::string_view __s) {
 
 consteval code spell(info __entity) {
   return __access::__code(__impl::__v1(__l0::__op_code_spell, __access::__raw(__entity)));
+}
+
+consteval code identifier(std::string_view __name) {
+  return __access::__code(__impl::__v(__l0::__op_code_identifier, nullptr, 0, __name));
 }
 
 consteval code copy(range __r) {

@@ -333,6 +333,8 @@ Stance := replace = 0        these bytes become the text of `pieces`
 Piece := literal = 0: bytes                         not empty
        | copy    = 1: Place                         lo < hi
        | spelled = 2: (key: KeyId, text: bytes)     `text` not empty
+       | identifier = 3: (text: bytes, key: opt<KeyId>)
+                                                    `text` one plain identifier (WP-132)
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
@@ -350,6 +352,19 @@ MacroSite := name_start: uv          offset, in the claim's file, of the name to
 | literal | its bytes |
 | copy | the text of the range in the result of the run: its bytes with every accepted edit that lies properly inside the range applied (§5.4, §7.1). Copy is by reference, not by value |
 | spelled | `text`, written as a name that is meant to denote the entity `key`. Verification checks that it does (`verify.md` §10); nothing else in this file reads `key` |
+| identifier | `text`, written as a name (`api.md` §7.1 rule 7). Without `key` it claims nothing about what the name denotes; with `key` it means what a spelled piece means and is checked as one (`api.md` §7.2 rule 6) |
+
+An identifier piece's `text` is not empty and is one *plain* identifier
+(`api.md` §6.1 rule 1: ASCII letters, digits and `_`, not starting with a
+digit, not a keyword or an alternative token); a reader refuses one that
+is not as Malformed (§4.7). Its JSON form is `{"identifier": bytes}`, with
+a second member `"key": id` after it only when the key is present.
+Identifier pieces were added by WP-132 without a change of format
+version (the scheme stays 1, the shard's version stays): a reader of
+before them lists tags 0 to 2 and refuses a shard with an identifier
+piece as Malformed at the unlisted tag (`spec/model.md` §2), rather than
+misreading it. The refusal of an unlisted tag is shown by
+`crates/slip_model/tests/edits.rs` `identifier_piece_unlisted_tag_is_refused`.
 
 No two literal pieces are adjacent. A `replace` with no piece deletes the
 bytes. A `KeyId` in a piece is in the key space of the pre-image
@@ -518,7 +533,7 @@ the job.
 | flag bits above 3 are 0 | the `flags` field | `sections.edits.subjects[i].flags` |
 | `links` strictly ascending; `a < b` | that link's first byte | `sections.edits.links[i]` |
 | a claim's `file` is an index of `files`; `lo <= hi <= size`; `lo < hi` for `replace` | the claim's first byte | `sections.edits.claims[i]` |
-| `pieces` empty unless `replace`; no empty literal or spelled text; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
+| `pieces` empty unless `replace`; no empty literal or spelled text; an identifier piece's text one plain identifier; no two literals adjacent; a copy's place is within its file and not empty | that piece's first byte, or the `pieces` field | `sections.edits.claims[i].pieces[j]` |
 | `reason` is `none` iff the stance is not `refuse` | the `reason` field | `sections.edits.claims[i].reason` |
 | `subjects` and `notes` strictly ascending | the field | `sections.edits.claims[i].subjects`, `sections.edits.claims[i].notes` |
 | `tiers` not 0, bits above 4 are 0, bits 2 to 4 only for `refuse`; `macro` absent if `tiers` is 1 | the `tiers` field | `sections.edits.claims[i].tiers` |
@@ -532,8 +547,10 @@ the job.
 Checked in this order, the claim rules for each claim in turn. That a
 subject of a claim or a link names a subject of the shard, that a
 subject's `id` and `rule` belong together, that `files` agrees with
-`inputs`, and that a `replace` is in an owned file, are checked by reduce
-(§5.1), which reports them as `Input` errors naming the shard.
+`inputs`, that a `replace` is in an owned file, and that no rule of
+`renamed` or of a subject is one that no rule table may hold, are
+checked by reduce (§5.1), which reports them as `Input` errors naming
+the shard.
 
 ### 4.8 From a run output
 
@@ -581,7 +598,11 @@ an observer is its position in the plan.
 - Every `ok` shard must have an `edits` section with `scheme` 1 and
   `transform` the request's id. Otherwise reduce fails with an `Input`
   error naming the shard. A shard that breaks a rule of §4.7's last
-  paragraph fails the same way.
+  paragraph fails the same way, and so does one whose `renamed`, or the
+  `rule` of one of its subjects, holds a rule that no rule table may hold
+  (`verify.md` §2.1: an identity rule, a rule on a specialisation or a
+  part, a namespace rule between a named and an unnamed namespace;
+  `Rule::refusal`).
 - An `ok` shard with a `failure` is a **failed run**. Reduce records the
   failure (§6) and takes nothing else from the shard.
 - If no shard is `ok` and without a failure, the edit set is refused with
@@ -1006,11 +1027,16 @@ refused one has none.
     which are also the set's `rules`; and
   - the `rule` of every selected subject and follower that has one.
 
-  Two rules with one `(parent, kind, name, disc)` and different targets,
-  or two rules of a kind other than `namespace` with one target
-  `(to_parent, kind, to_name, disc)` and different `(parent, name)`,
+  Two rules with one `(parent, kind, name, disc)` and different targets
   refuse the edit set with `rule_conflict`: two observers disagree about
-  what an entity is renamed to. (Namespaces may merge, `verify.md` §2.1.)
+  what an entity is called in the pre-image. So do two rules, of any
+  kind, with one target `(to_parent, kind, to_name, disc)` and different
+  `(parent, name)`: two entities of the post-image are called one key of
+  the pre-image, which no rule table holds (`verify.md` §2.1, "One way to
+  each key"). What `verify.md` §2.1 calls "Namespaces merge" is one rule
+  whose target is also the key of a namespace that the post-image still
+  has unmapped, never two rules; a namespace split in two is declared per
+  member or per nested namespace (`verify.md` §2.3).
 - **`changed`**: the keys of the `changed` entries that are in force: an
   edit of the set shares a byte with the entry's place.
 - **`created`, `removed`**: empty.
@@ -1102,11 +1128,13 @@ own place: it appears wherever a copy carries it.
    no recursion on the call stack.
 4. Each post-image is published as a **blob**: a file of exactly those
    bytes, named by their content digest (§10.4).
-5. **Obligations.** Each time the text of a spelled piece is written into
-   a post-image, at its edit's own place or in a copy that carries the
-   edit, that is one obligation: the file, the byte range of the text in
-   the post-image, and the piece's `key` (`api.md` §7.6 rule 4). The same
-   piece carried to three places gives three.
+5. **Obligations.** Each time the text of a spelled piece, or of an
+   identifier piece with a key, is written into a post-image, at its
+   edit's own place or in a copy that carries the edit, that is one
+   obligation: the file, the byte range of the text in the post-image,
+   and the piece's `key` (`api.md` §7.6 rule 4). The same piece carried
+   to three places gives three. An identifier piece without a key gives
+   none.
 
 ```
 Overlay := edits:     digest                  the edit set id
@@ -1493,8 +1521,11 @@ rule 6), which the edit set sums (§6.3).
 
 ### 8.5 The result
 
-Kind `RSLT`, version 1, deterministic. One required section `result`
-(id 1). The **result id** is the content id.
+Kind `RSLT`, version 2, deterministic. One required section `result`
+(id 1). The **result id** is the content id. Version 2 (WP-111) added
+`kept_via` to a stale pair and dropped `unchecked`; version 1 is refused,
+`UnsupportedVersion` at offset 12 (JSON: `version`), as a version newer
+than the reader's is: no reader of version 1 is kept before a release.
 
 ```
 Result := scheme:    uv               1
@@ -1512,7 +1543,6 @@ Result := scheme:    uv               1
           tally:     Tally
           agreement: list<Stale>      verify.md §9.2; sorted by (rule, observer)
           unused:    list<uv>         indices of rules no observer reached an entity through
-          unchecked: list<uv>         namespace rules an observer used (verify.md §9.2); until WP-111
           spellings: Spellings        verify.md §10.3
           residue:   list<Residue>
           exempt:    list<KeyId>      Declared.changed, repeated here for the report
@@ -1523,7 +1553,7 @@ Tally := selected: uv, unparsed: uv, failed_runs: uv, error_reports: uv,
 
 RunVerdict := verified = 0 | not_verified = 1 | incomplete = 2
 
-Stale := rule: uv, observer: digest, direct: uv
+Stale := rule: uv, observer: digest, direct: uv, kept_via: uv     kept_via: WP-111 (verify.md §9.2)
 
 Spellings := obligations: uv, passed: uv
              failed: list<FailedSpelling>     in the obligations' order
@@ -1541,13 +1571,13 @@ The seven states of `Tally` are those of `verify.md` §7, over the
 observers the verify phase selected (§8.2); they add up to `selected`
 less `unparsed`. `failed_runs` and `error_reports` are the counts of
 `ok` shards with a failure and of joined reports of severity `error`
-(§6). `verdict`, `agreement`, `unused`, `unchecked` and `spellings` are
+(§6). `verdict`, `agreement`, `unused` and `spellings` are
 what the trusted run report computed (`slip_verify::run::Report`, `verify.md`
 §9.5, §10.6); conclude copies them and decides none.
 
 Invariants, checked in this order: `scheme` is 1; `agreement` strictly
 ascending by `(rule, observer)`;
-`unused`, `unchecked` and `exempt` strictly ascending; `spellings.failed` strictly
+`unused` and `exempt` strictly ascending; `spellings.failed` strictly
 ascending by `obligation`, and `passed` plus its length is `obligations`;
 for each failed spelling, `observers` is 0 and `first` and `found` are
 absent if it is `unseen`, and `observers` is not 0 and `first` is
@@ -1559,15 +1589,15 @@ tally of 0 in every field but `selected`, `unparsed`, `failed_runs` and
 `error_reports`; `unparsed` at most `selected`; with a `verdict`, the
 seven states add up to `selected` less `unparsed`, and without one each
 of them is 0 (no verify phase finished, so no observer has a state);
-every `agreement` entry's `direct` not 0 (a stale pair, `verify.md`
-§9.2); with the verdict `verified`, `agreement` and `spellings.failed`
-empty (`verify.md` §9.3), and without a verdict `unchecked` empty; the
+every `agreement` entry's `direct` or `kept_via` not 0 (a stale pair,
+`verify.md` §9.2); with the verdict `verified`, `agreement` and
+`spellings.failed` empty (`verify.md` §9.3); the
 state the one rows 2 to 5 below give as far as the file decides them:
-`verified` and `verified_with_residue` only with the verdict `verified`,
-`unchecked` empty and `unparsed` 0 or `allow_unparsed`; `not_verified`
-only with the verdict `not_verified`; `incomplete` never with it, and
-with the verdict `verified` only when `unchecked` is not empty or
-`unparsed` is not 0 without `allow_unparsed`; and a `verified` result
+`verified` and `verified_with_residue` only with the verdict `verified`
+and `unparsed` 0 or `allow_unparsed`; `not_verified` only with the
+verdict `not_verified`; `incomplete` never with it, and with the verdict
+`verified` only when `unparsed` is not 0 without `allow_unparsed`; and a
+`verified` result
 with no residue entry that is not a `mention` and `failed_runs` and
 `error_reports` 0. The format checks nothing else: not a residue's range
 against its file, nor whether a `verified_with_residue` has a reason (a
@@ -1584,9 +1614,9 @@ The state is the first that applies:
    obligation failed or was seen by no observer (`verify.md` §9.3).
 3. `incomplete`: the verdict is `incomplete` or absent (the run was
    cancelled); or `unparsed` is not 0 and the run was not given
-   `--allow-unparsed`; or (temporary, until WP-111 removes it) the run
-   has an unchecked namespace rule (`unchecked` not empty, `verify.md`
-   §9.2), whatever `--allow-*` is given.
+   `--allow-unparsed`. (The temporary condition on unchecked namespace
+   rules was removed by WP-111: a namespace rule is checked by §9.2's
+   counts.)
 4. `verified_with_residue`: everything that was applied is verified, and
    something that was asked or found was not done: the residue has an
    entry that is not a `mention`; or the edit set has a refusal (a group
@@ -1613,7 +1643,7 @@ verification. They
 never act on a `partial` result unless `--allow-partial` is given, nor
 on a result its edit set contradicts: its `edits`, `plan`, `round` and
 `transform` must be the set's, its verdict `verified` with no stale
-pair, failed spelling or unchecked rule, and its counts the set's
+pair or failed spelling, and its counts the set's
 (`slip_verify::conclude::permits`, `spec/landed/verify/WP-070.md` §5). Under
 `--allow-unparsed` the main file of every unparsed observer is scanned as
 a file no observer read.
@@ -2264,7 +2294,8 @@ and nothing under it.
   disagreement in `files`, in `inputs` and in a copied file; unparsed
   observers; a failed run; the declared changes of §6.2, with a `changed`
   entry in force and one whose edit was rejected; `rule_conflict` both
-  ways and the namespace exception; `no_edit`.
+  ways, for namespaces too (two namespace rules of one target refused,
+  one accepted); an identity rule as an `Input` error; `no_edit`.
 - `crates/slip_reduce/tests/pieces.rs` — §5.3, §5.4, §5.5: strict
   identity (the same text as a literal, as a spelled piece, with another
   key: `divergent`); crossing edits; an edit crossing a copied range; an

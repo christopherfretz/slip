@@ -354,6 +354,87 @@ fn s5_2_mismatch_on_a_changed_callee() {
     assert!(f.location.is_some());
 }
 
+const NOTE_PRE: &str = "void take(const char *);\nnamespace ns { struct V {}; }\n\
+     void f(ns::V) { take(__PRETTY_FUNCTION__); }\nint g() { take(__func__); return 1; }\n";
+
+// WP-112 (verify §4.4, §8): a parameter type requalified changes the
+// string `f` passes on and nothing `f` does: verified, with one note for
+// `f`; `g`'s string is unchanged and gives none. The map shard carries
+// the section with both units' entries.
+#[test]
+fn names_note_beside_verified() {
+    let tree = Tree::new("note", &[("a.cpp", NOTE_PRE)]);
+    write(&tree.post.join("a.cpp"), &NOTE_PRE.replace("void f(ns::V)", "void f(::ns::V)"));
+    let o = tree.observer();
+    let m = tree.map(&o);
+    assert_eq!(m.names.as_ref().expect("names").units.len(), 2);
+    assert!(m.names.as_ref().unwrap().notes.is_empty());
+    let v = tree.verify(&o);
+    let verdict = v.verdict.as_ref().unwrap();
+    assert_eq!(verdict.kind, VerdictKind::Verified);
+    assert_eq!(verdict.total, 0);
+    check_post_shard(&v);
+    let notes = &v.names.as_ref().expect("names").notes;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].name, "f(ns::V)");
+}
+
+// WP-112: a note beside a finding of the same key (the body changed
+// too): a mismatch keeps its notes.
+#[test]
+fn names_note_beside_a_finding() {
+    let tree = Tree::new("note-mismatch", &[("a.cpp", NOTE_PRE)]);
+    let post = NOTE_PRE.replace(
+        "void f(ns::V) { take(__PRETTY_FUNCTION__); }",
+        "void f(::ns::V) { take(__PRETTY_FUNCTION__); take(0); }",
+    );
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    tree.map(&o);
+    let v = tree.verify(&o);
+    let verdict = v.verdict.as_ref().unwrap();
+    assert_eq!(verdict.kind, VerdictKind::Mismatch);
+    assert!(
+        verdict.findings.iter().any(|f| f.kind == FindingKind::Changed && f.name == "f(ns::V)")
+    );
+    check_post_shard(&v);
+    assert_eq!(v.names.as_ref().unwrap().notes.len(), 1);
+}
+
+// WP-112: `g` changed and the string it passes on did not: a finding,
+// no note. (A test of its own: a `Tree` holds the lock while it lives.)
+#[test]
+fn names_no_note_without_a_string_change() {
+    let same = Tree::new("note-none", &[("a.cpp", NOTE_PRE)]);
+    write(&same.post.join("a.cpp"), &NOTE_PRE.replace("return 1;", "return 2;"));
+    let o = same.observer();
+    same.map(&o);
+    let v = same.verify(&o);
+    assert_eq!(v.verdict.as_ref().unwrap().kind, VerdictKind::Mismatch);
+    assert!(v.names.as_ref().unwrap().notes.is_empty());
+}
+
+// WP-112 (`spec/model.md` §8.7): the notes are computed before step 4;
+// when step 4 refuses (R1: the subject no longer parses) the verdict is
+// unverifiable and the shard keeps its names units but no note.
+#[test]
+fn names_no_note_beside_unverifiable() {
+    let tree = Tree::new("note-r1", &[("a.cpp", NOTE_PRE)]);
+    let post =
+        NOTE_PRE.replace("void f(ns::V)", "void f(::ns::V)").replace("return 1;", "return 2;");
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    tree.map(&o);
+    write(&tree.subject.join("a.cpp"), "int a = ;\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable);
+    assert!(reason(&v).starts_with("pre-image: no longer parses"), "{}", reason(&v));
+    check_post_shard(&v);
+    let names = v.names.as_ref().expect("names");
+    assert_eq!(names.units.len(), 2);
+    assert!(names.notes.is_empty(), "{:?}", names.notes);
+}
+
 // §5.2 step 6 and §6.1: with `locate` 0 no finding is named and the
 // post-image is parsed once more only for step 4; with `locate` 1 only
 // the first finding is.
@@ -520,6 +601,7 @@ fn p3_map_shard_without_digests() {
     let o = tree.observer();
     let mut m = tree.map(&o);
     m.digests = None;
+    m.names = None;
     let id = tree.put_map(&o, &m);
     let v = tree.verify(&o);
     assert_eq!(reason(&v), "pre-image: the map shard has no digests");
@@ -2633,6 +2715,7 @@ fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
     let mut s = v.clone();
     s.counters.retain(|c| c.name.starts_with("verify."));
     s.digests = None;
+    s.names = None;
     let mut text = slip_model::json::write_pretty(&s.to_json()).unwrap();
     text = text.replace(tree.base.to_str().unwrap(), "<base>");
     text = text.replace(&v.observer.to_string(), "<observer>");
@@ -2705,7 +2788,7 @@ const RELOCATE_POST: &str =
 fn s9_1_sections_per_outcome() {
     let rule = rename_ns("fresh", "old");
     let relocated = |tree: &Tree| declared_of(tree, rule.clone(), &[]);
-    let used = vec![slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }];
+    let used = vec![slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }];
     let check = |tree: &Tree, v: &Shard, params: &Params, rule_use: bool| {
         let id = content_id(&params.declared.to_bytes()).unwrap();
         let want = slip_model::Binding { overlay: None, declared: id, pre: params.pre };
@@ -2841,8 +2924,10 @@ fn relocation(
 
 // WP-121 item 5, §9.2, §9.3, `spec/exec.md` §8.7: a namespace relocation
 // over two observers is `verified` in each, and the run is verified
-// (status 0): the rule is listed `unchecked` (§9.2, until WP-111), which
-// does not change the verdict. Before WP-121 both were `failed` (no
+// (status 0). WP-111: no observer is stale for the rule (nothing owned is
+// left in `old`, nothing is kept: `direct` and `kept_via` 0), and no line
+// says it is not checked (until WP-111 the rule was listed `unchecked`,
+// which did not change the verdict). Before WP-121 both were `failed` (no
 // `binding`, no `rule_use`) and the run incomplete (status 4). The wrong
 // edit beside it: `mismatch`, not verified (status 1).
 #[test]
@@ -2851,16 +2936,18 @@ fn s9_3_relocation_verified_over_two_observers() {
     let (tree, params, shards) = relocation("reloc-right", false, &[]);
     for (o, v) in &shards {
         assert_eq!(kind(v), VerdictKind::Verified, "{}: {}", o.main.path.escape_ascii(), reason(v));
-        assert!(v.rule_use.as_ref().unwrap().uses.iter().all(|u| u.via > 0 && u.direct == 0));
+        let u = v.rule_use.as_ref().unwrap();
+        assert!(u.uses.iter().all(|u| u.via > 0 && u.direct == 0 && u.kept_via == 0));
+        assert!(u.kept.is_empty());
     }
     let r = run_report(&tree, &params, &shards);
     assert_eq!(r.states()[0], 2, "{}", r.error_lines());
     assert_eq!(r.verdict(), RunVerdict::Verified);
     assert_eq!(exit_status(r.verdict()), 0);
-    assert_eq!((r.stale(), r.unused(), r.unchecked()), (&[][..], vec![], vec![0]));
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
     let text = r.to_text();
     assert!(text.contains("agreement rules 1 stale 0 unused 0\n"), "{text}");
-    assert!(text.contains("not checked: agreement between observers for namespace rule 0\n"));
+    assert!(!text.contains("not checked"), "{text}");
     assert_eq!(r.verdict_line(), "verdict verified");
     assert_eq!(r.error_lines(), "");
     drop(tree);
@@ -2893,9 +2980,48 @@ fn s2_1_rule_on_a_dependency_entity_not_verified() {
     let at = |s: State| r.states()[State::ALL.iter().position(|&x| x == s).unwrap()];
     assert_eq!((at(State::Mismatch), at(State::Failed)), (2, 0));
     assert_eq!(r.unused(), [0]);
-    assert!(r.unchecked().is_empty());
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     assert_eq!(exit_status(r.verdict()), 1);
+}
+
+// WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
+// owned member left in `old` counts `direct` unless its key is kept; kept,
+// it counts none and its key is seen. A job that passed no kept key would
+// count `direct` 1 in both, and the kept run would be stale.
+#[test]
+fn s9_2_the_job_walks_with_kept() {
+    use slip_model::keys::Key;
+    let pre =
+        "namespace old { int f() { return 1; } int g; }\nint u0() { return old::f() + old::g; }\n";
+    let tree = Tree::new("kept-job", &[("u0.cpp", pre)]);
+    write(
+        &tree.post.join("u0.cpp"),
+        "namespace fresh { int f() { return 1; } }\nnamespace old { int g; }\nint u0() { return fresh::f() + old::g; }\n",
+    );
+    let old =
+        Key { parent: Parent::Root, kind: KeyKind::Namespace, name: ident("old"), disc: None };
+    let g = Key {
+        parent: Parent::Unit(old.id()),
+        kind: KeyKind::Variable,
+        name: ident("g"),
+        disc: None,
+    };
+    for kept in [false, true] {
+        let mut declared = declared_of(&tree, rename_ns("fresh", "old"), &[]);
+        if kept {
+            declared = declared.with_kept(vec![g.id()]).unwrap();
+        }
+        let params = tree.params(declared);
+        let o = tree.observer_of("u0.cpp", &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+        let u = v.rule_use.as_ref().unwrap();
+        let want =
+            slip_model::agreement::Use { rule: 0, via: 1, direct: u64::from(!kept), kept_via: 0 };
+        assert_eq!(u.uses, [want], "kept {kept}");
+        assert_eq!(u.kept, if kept { vec![0] } else { vec![] }, "kept {kept}");
+    }
 }
 
 /// The rule renaming the class `from_post` at the root of the post-image
@@ -2933,16 +3059,20 @@ fn s9_2_rename_with_a_stale_observer() {
             shards.push((o.clone(), tree.verify_with(&o, &params).unwrap()));
         }
         let uses = |i: usize| shards[i].1.rule_use.as_ref().unwrap().uses.clone();
-        assert_eq!(uses(0), [slip_model::agreement::Use { rule: 0, via: 1, direct: 0 }]);
-        assert_eq!(uses(1), [slip_model::agreement::Use { rule: 0, via: 0, direct: 1 }]);
+        let use_of = |via, direct| slip_model::agreement::Use { rule: 0, via, direct, kept_via: 0 };
+        assert_eq!(uses(0), [use_of(1, 0)]);
+        assert_eq!(uses(1), [use_of(0, 1)]);
         let want0 = if wrong { VerdictKind::Mismatch } else { VerdictKind::Verified };
         assert_eq!(kind(&shards[0].1), want0, "{}", reason(&shards[0].1));
         assert_eq!(kind(&shards[1].1), VerdictKind::Verified, "{}", reason(&shards[1].1));
         let r = run_report(&tree, &params, &shards);
         let at = |s: State| r.states()[State::ALL.iter().position(|&x| x == s).unwrap()];
         assert_eq!(at(State::Mismatch), u64::from(wrong));
-        assert_eq!(r.stale(), [Stale { rule: 0, observer: shards[1].0.id, direct: 1 }]);
-        assert!(r.unused().is_empty() && r.unchecked().is_empty());
+        assert_eq!(
+            r.stale(),
+            [Stale { rule: 0, observer: shards[1].0.id, direct: 1, kept_via: 0 }]
+        );
+        assert!(r.unused().is_empty());
         assert!(r.to_text().contains("agreement rules 1 stale 1 unused 0\n"));
         assert_eq!(r.verdict(), RunVerdict::NotVerified);
         assert_eq!(exit_status(r.verdict()), 1);

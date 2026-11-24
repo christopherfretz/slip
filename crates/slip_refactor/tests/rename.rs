@@ -352,6 +352,10 @@ fn render(case: &Case, ran: &Ran) -> String {
                 Piece::Literal(b) => quoted(b),
                 Piece::Spelled { key, text } => format!("spell({}, {})", short(key), quoted(text)),
                 Piece::Copy(p) => format!("copy({}, {}, {})", p.file, p.lo, p.hi),
+                Piece::Identifier { text, key: None } => format!("identifier({})", quoted(text)),
+                Piece::Identifier { text, key: Some(key) } => {
+                    format!("identifier({}, {})", short(key), quoted(text))
+                }
             })
             .collect();
         let _ = write!(
@@ -658,7 +662,9 @@ fn post_image(case: &Case, e: &Edits) -> Vec<(String, Vec<u8>)> {
                     .pieces
                     .iter()
                     .flat_map(|p| match p {
-                        Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.clone(),
+                        Piece::Literal(b)
+                        | Piece::Spelled { text: b, .. }
+                        | Piece::Identifier { text: b, .. } => b.clone(),
                         Piece::Copy(_) => panic!("{}: a copy piece", case.name),
                     })
                     .collect();
@@ -1298,7 +1304,9 @@ fn applied(name: &str, set: &slip_model::editset::EditSet, files: &[(&str, &[u8]
                     .pieces
                     .iter()
                     .flat_map(|p| match p {
-                        Piece::Literal(b) | Piece::Spelled { text: b, .. } => b.clone(),
+                        Piece::Literal(b)
+                        | Piece::Spelled { text: b, .. }
+                        | Piece::Identifier { text: b, .. } => b.clone(),
                         Piece::Copy(_) => panic!("{name}: a copy piece"),
                     })
                     .collect();

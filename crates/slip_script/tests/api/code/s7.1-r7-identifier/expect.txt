@@ -1,0 +1,4 @@
+transform <id>
+edit 0 t.cpp:3:9-3:10 tiers 0 = identifier("g")
+counter api.op.code_identifier 1
+counter api.op.code_text absent

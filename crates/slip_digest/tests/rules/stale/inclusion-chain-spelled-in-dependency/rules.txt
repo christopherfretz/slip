@@ -1,0 +1,5 @@
+# WP-111 re-check, mutant N9 (the reviewer's zz-spelled-in-dep): own2.h, owned, holds only
+# DECL_FIXED, a macro of read-only dep.h that spells legacy::fixed, and is entered through dep.h.
+# fixed's name is spelled in a read-only file, so it is a dependency entity by its spelling, not
+# only by inclusion: it does not count for the rule (direct 0). With every file owned it does.
+relocate legacy => :: acme

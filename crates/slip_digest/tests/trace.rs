@@ -705,3 +705,211 @@ fn s6_1_back_referenced_statement_is_marked() {
     let inner = f.marks.iter().filter(|m| m.node == "CompoundStmt" && m.line == 6).count();
     assert_eq!(inner, 11, "{:#?}", f.marks);
 }
+
+// §6.1 "A unit's place", item 3 of WP-128: the place of a unit of each
+// kind of derived or front-end-made declaration, in each image of an edit.
+
+/// The first mark `(line, node)` of the unit named `name` in `s`.
+fn place_of(s: &Sided, name: &str) -> (u64, &'static str) {
+    let t =
+        s.traces.iter().find(|t| s.names.get(&t.key).is_some_and(|n| n == name)).unwrap_or_else(
+            || panic!("no unit {name}: {:?}", s.names.values().collect::<Vec<_>>()),
+        );
+    let m = &t.marks[0];
+    assert_eq!(m.file, b"main.cpp", "{name}");
+    (m.line, m.node)
+}
+
+/// Asserts the place of each `(name, line before, line after, node)` in
+/// `pre` and `post`.
+fn assert_places(pre: &str, post: &str, rows: &[(&str, u64, u64, &str)]) {
+    let (a, b) = (snippet(pre), snippet(post));
+    for &(name, la, lb, node) in rows {
+        assert_eq!(place_of(&a, name), (la, node), "{name} before the edit");
+        assert_eq!(place_of(&b, name), (lb, node), "{name} after the edit");
+    }
+}
+
+/// The lines `l`, each ended by a newline.
+fn lines(l: &[&str]) -> String {
+    let mut s = l.join("\n");
+    s.push('\n');
+    s
+}
+
+// An implicit instantiation: at its pattern (line 2), not at its point of
+// instantiation (line 4), on both sides of an edit of the pattern.
+#[test]
+fn s6_1_place_of_an_implicit_instantiation() {
+    let src = |n: &str| {
+        lines(&[
+            "int g();",
+            &format!("template <class T> int f() {{ return {n}; }}"),
+            "",
+            "int u() { return f<int>(); }",
+        ])
+    };
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[("f<int>()", 2, 2, "specialisation"), ("f<int>()::<definition>", 2, 2, "resolved")],
+    );
+}
+
+// An explicit instantiation: of a function template, at its pattern
+// (line 1; Kiln declares nothing at the directive, line 3); of a class
+// template not named before, at the directive (line 3), where Kiln makes
+// the specialisation's declaration, the first of its chain with a
+// location; its members at the pattern's (line 2).
+#[test]
+fn s6_1_place_of_an_explicit_instantiation() {
+    let src = |n: &str| {
+        lines(&[
+            &format!("template <class T> int f() {{ return {n}; }}"),
+            &format!("template <class T> struct S {{ int m() {{ return {n}; }} }};"),
+            "template int f<int>(); template struct S<int>;",
+        ])
+    };
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("f<int>()", 1, 1, "specialisation"),
+            ("S<int>", 3, 3, "specialisation"),
+            ("S<int>::m()", 2, 2, "function"),
+        ],
+    );
+}
+
+// An explicit specialisation: at the specialisation the source wrote, of
+// a function template (line 3; Kiln's chain begins with the declaration
+// deduction made at the pattern, line 1), of a class template (line 4),
+// of a variable template (line 6), of a member of an implicit
+// specialisation (line 7). Removed, a function's unit is derived and is
+// at its pattern (E11 `bad-3`, WP-128).
+#[test]
+fn s6_1_place_of_an_explicit_specialisation() {
+    let src = |n: &str| {
+        lines(&[
+            "template <class T> int pick() { return 1; }",
+            "template <class T> struct S { int m() { return 1; } };",
+            &format!("template <> int pick<int>() {{ return {n}; }}"),
+            &format!("template <> struct S<short> {{ int m() {{ return {n}; }} }};"),
+            "template <class T> int v = 1;",
+            &format!("template <> int v<int> = {n};"),
+            &format!("template <> int S<long>::m() {{ return {n}; }}"),
+            "int u() { S<short> a; S<long> b; return pick<int>() + v<int> + a.m() + b.m(); }",
+        ])
+    };
+    assert_places(
+        &src("2"),
+        &src("3"),
+        &[
+            ("pick<int>()", 3, 3, "specialisation"),
+            ("S<short>", 4, 4, "specialisation"),
+            ("v<int>", 6, 6, "specialisation"),
+            ("S<long>::m()", 7, 7, "function"),
+        ],
+    );
+    let removed = src("2").replace("template <> int pick<int>() { return 2; }", "");
+    assert_places(&src("2"), &removed, &[("pick<int>()", 3, 1, "specialisation")]);
+}
+
+// A member of an instantiated class: at the pattern's member (line 3), on
+// both sides; the class at the pattern (line 1).
+#[test]
+fn s6_1_place_of_a_member_of_an_instantiated_class() {
+    let src = |n: &str| {
+        lines(&[
+            "template <class T> struct S {",
+            "  int k;",
+            &format!("  int m() {{ return {n}; }}"),
+            "};",
+            "int u() { S<int> s; return s.m(); }",
+        ])
+    };
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("S<int>", 1, 1, "specialisation"),
+            ("S<int>::m()", 3, 3, "function"),
+            ("S<int>::k", 2, 2, "field"),
+        ],
+    );
+}
+
+// A defaulted special member: explicitly defaulted, at its declaration
+// (line 2); implicitly declared, at its class (line 1); of an
+// instantiated class, at the pattern's declaration (line 6).
+#[test]
+fn s6_1_place_of_a_defaulted_special_member() {
+    let src = |n: &str| {
+        lines(&[
+            "struct D {",
+            "  D() = default;",
+            &format!("  int x = {n};"),
+            "};",
+            "template <class T> struct S {",
+            "  S() = default;",
+            &format!("  T y = {n};"),
+            "};",
+            "int u() { D d; D e = d; S<int> s; return e.x + s.y; }",
+        ])
+    };
+    assert_places(
+        &src("1"),
+        &src("2"),
+        &[
+            ("D::D()", 2, 2, "function"),
+            ("D::D(const D &)", 1, 1, "function"),
+            ("S<int>::S()", 6, 6, "function"),
+        ],
+    );
+}
+
+// A lambda's call operator: no unit of its own; the closure is part of
+// the unit of the entity whose initialiser or body holds it. That unit's
+// place is its entity's (`l`, line 2; the
+// instantiation `t<int>()`, at its pattern, line 5), and the site of an
+// edit inside the lambda is in the lambda's body (lines 3 and 6), on both
+// sides.
+#[test]
+fn s6_1_place_of_a_lambdas_call_operator() {
+    let src = |a: &str, b: &str| {
+        lines(&[
+            "int g(int);",
+            "auto l = [](int a) {",
+            &format!("  return g(a) + {a};"),
+            "};",
+            "template <class T> int t() {",
+            &format!("  auto k = [](T a) {{ return a + {b}; }};"),
+            "  return k(T());",
+            "}",
+            "int u() { return l(1) + t<int>(); }",
+        ])
+    };
+    let (pre, post) = (src("1", "2"), src("3", "4"));
+    assert_places(
+        &pre,
+        &post,
+        &[
+            ("l", 2, 2, "variable"),
+            ("t<int>()", 5, 5, "specialisation"),
+            ("t<int>()::<definition>", 5, 5, "resolved"),
+        ],
+    );
+    let s = sites(&pre, &post);
+    for (name, line) in [("l", 3), ("t<int>()::<definition>", 6)] {
+        assert!(
+            s.contains(&(name.to_owned(), line, "IntegerLiteral", line, "IntegerLiteral")),
+            "{name}: {s:?}"
+        );
+    }
+    let a = snippet(&pre);
+    assert!(
+        !a.names.values().any(|n| n.contains("operator()")),
+        "a unit of a call operator: {:?}",
+        a.names.values().collect::<Vec<_>>()
+    );
+}

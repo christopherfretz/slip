@@ -537,8 +537,11 @@ pub fn run_failed(f: &Failure) -> Ran {
 fn has_keys(out: &RunOutput) -> bool {
     use crate::output::Piece;
     use slip_model::keys::Parent;
-    out.edits.iter().any(|e| e.pieces.iter().any(|p| matches!(p, Piece::Spelled { .. })))
-        || !out.changed.is_empty()
+    out.edits.iter().any(|e| {
+        e.pieces
+            .iter()
+            .any(|p| matches!(p, Piece::Spelled { .. } | Piece::Identifier { key: Some(_), .. }))
+    }) || !out.changed.is_empty()
         || out
             .renamed
             .iter()

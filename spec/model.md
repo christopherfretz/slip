@@ -61,7 +61,7 @@ it was detected:
 | `Malformed` | A rule of this spec is violated (non-minimal `uv`, bad `bool`, unlisted enumeration value, invalid UTF-8 in `str`, wrong order in a sorted list, bytes after the end of a file or payload). |
 | `TooLarge` | A length or count exceeds the bytes remaining. |
 | `BadMagic` | The container magic or kind is not the expected one. |
-| `UnsupportedVersion` | The container version is greater than the reader supports, or zero. |
+| `UnsupportedVersion` | The container version is greater than the reader supports, or zero; for a shard, 1 (§8). |
 | `UnknownSection` | A critical section id the reader does not know (§5). |
 | `Corrupt` | The integrity trailer does not match. |
 
@@ -538,7 +538,11 @@ at the later occurrence.
 
 ## 8. The shard
 
-A shard is what one observer produced in one phase. Kind `SHRD`, version 1.
+A shard is what one observer produced in one phase. Kind `SHRD`, version 2
+(WP-112: version 2 has the `names` section, 27). A reader refuses a
+version-1 shard as `UnsupportedVersion` at byte 12 (JSON path `version`):
+it predates `names`, and a compared shard without it is not one without
+notes (`verify.md` §4.4); a store written before is parsed again.
 Its content is deterministic (§1 rule 2): parsing the same inputs twice gives
 the same bytes.
 
@@ -555,9 +559,11 @@ the same bytes.
 | 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (17) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
-| 25 | rule_use | no | `RuleUse` (`verify.md` §9.1); phase `verify` |
+| 25 | — | — | retired (WP-111): `rule_use` before `kept_via` and `kept`; no writer writes it |
 | 26 | spellings | no | `Spellings` (`verify.md` §10.4): the spelled-entity checks of this observer; phase `verify` |
+| 27 | names | with `digests` | `Names` (§8.7): the names digest of each key that has one, and the notes of a verify shard (`verify.md` §4.4); phases `map` and `verify` |
 | 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
+| 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -586,14 +592,17 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 18, 20) is a critical id no reader knows: a file with
-one is `UnknownSection`. Ids 22 and 23 are not assigned; 27 is work package WP-112's (`names`).
-Sections 17, 24, 25 and 26 were added by M2, and 28 by work package
-WP-117, without a
-change of the shard's version: a reader that predates them refuses a
-shard that has one (the ids are critical), and a shard without them reads
+A reserved id (16, 18, 20) or a retired one (25) is a critical id no
+reader knows: a file with one is `UnknownSection`. Ids 22 and 23 are not
+assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work package
+WP-117 and 29 by WP-111, without a change of the shard's version: a reader
+that predates one refuses a shard that has it (the ids are critical), and a
+shard without them reads
 as before (a map shard without `negatives` is then refused by the verify
-task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). An `edits` section
+task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). A
+section whose payload changes takes a new id and the old one is retired,
+so that a reader never meets a payload it does not know under an id it
+knows (WP-111: 25 to 29). An `edits` section
 in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
 section in a shard of phase `map`, is `Malformed` at the first byte of
 the section's payload, JSON path `sections.<name>`. So are `edits`,
@@ -603,6 +612,18 @@ before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
 `negatives`'s own are §8.6's, last.
+
+Section 27 (`names`, WP-112) changed the version to 2 (above): every
+shard a reader of version 2 reads, of either phase, is one that could
+have 27, 28 and 29, and a version-1 shard, which predates `names`, is
+refused whatever its sections (a version-1 shard with 25 or 29 included).
+`names` and `rule_use` (29) are independent: a verify shard may have
+either, both or neither, and neither's rows refer to the other's. It is present **exactly when** `digests`
+is: a shard with `digests` and without `names` is `Malformed` at the
+first byte of the `digests` payload, JSON path `sections.names` (a pre
+shard of an older build fails closed, not as "no note"); its own rows
+(§8.7) are checked after those of `spellings`, before `rule_use`'s and
+`negatives`'s.
 
 ### 8.1 Invariants
 
@@ -1076,6 +1097,42 @@ prefix that is not the longest".
 as `inputs` is: the parse's lookups are, and a place's path is text. A
 place is written once whatever the number of lookups that missed it, in
 path order.
+
+### 8.7 The `names` section
+
+What a unit's names digest is: `digest.md` §9 "The names digest". The map
+task writes one entry per key that has one, from the walk of the map
+(`names` empty when no unit writes a name-derived string symbolically);
+the verify task writes its post-image's entries and its notes.
+
+```
+Names     := units: list<NamesEntry>, notes: list<NameNote>
+NamesEntry:= key: digest, names: digest
+NameNote  := key: digest, file: bytes, name: str
+```
+
+`names` of an entry is the key's names digest: its one unit's, or for a
+key with several units that have one `H("slip.names.key.v1", count,
+digests)` in the units' order. A note is a key whose names digest differs
+between the pre shard and the post-image (`verify.md` §4.4), with the
+file and name of the post-image's first unit of the key that has one.
+JSON: `{"units": [{"key", "names"}], "notes": [{"key", "file", "name"}]}`
+(digests as hex, `file` as `bytes` in §2's JSON form).
+
+| Row | Rule | Offset | JSON path |
+|---|---|---|---|
+| 1 | present exactly when `digests` is | absent: the first byte of the `digests` payload; present without `digests`: the first byte of the section's payload, checked after row 2 | `sections.names` |
+| 2 | status `ok` | the first byte of the section's payload | `sections.names` |
+| 3 | `units` strictly ascending by `key` | that entry's first byte | `sections.names.units[i]` |
+| 4 | no note in a shard of phase `map`, nor in one whose verdict is not `verified` or `mismatch` | the first note's first byte | `sections.names.notes[0]` |
+| 5 | `notes` strictly ascending by `key` | that note's first byte | `sections.names.notes[i]` |
+| 6 | every note's `key` has an entry in `units` | that note's first byte | `sections.names.notes[i]` |
+| 7 | every note's `name` at most 4096 bytes | the `name` field's first byte | `sections.names.notes[i].name` |
+
+Checked in this order, each over its whole list before the next. Row 1 is
+the shard's (it names `digests`); rows 2 to 7 the section's. Tests:
+`crates/slip_model/tests/sections.rs` `names_1_*` to `names_7_*` and
+`names_rules_in_order`.
 
 ## 9. The run record
 

@@ -1,0 +1,2 @@
+# WP-111 item 5: an owned explicit specialisation of a dependency template, written in the old namespace and left there: keyed under its template, not a member of the namespace, and a dependency entity (spec/verify.md 2.1): not counted.
+relocate legacy => :: acme
