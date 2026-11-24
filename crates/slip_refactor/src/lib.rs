@@ -11,7 +11,11 @@
 //! edited). The AST itself is read only where `docs/wp/WP-071.md` says:
 //! the enclosing scopes of a candidate (§9.1), the declarations a scope
 //! holds (`name_taken`), and what the conservative hooks look at
-//! (`rename::families`, `followers`, `spec_members`). Every range in a
+//! (`rename::families`, `followers`, `spec_members`), and, by
+//! `docs/wp/WP-127.md`, a class's lookup table for what a
+//! using-declaration names (`followers`) and the expression arena for
+//! what an instantiation binds a dependent name to (`dependent`). Every
+//! range in a
 //! claim is an answer of `sites` for a span Kiln gave; nothing here
 //! computes an offset, lexes, or compares identifiers by the bytes of a
 //! file.

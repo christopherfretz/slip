@@ -18,7 +18,7 @@ use slip_script::fake::{
 use slip_script::host::{Host, Limits};
 use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use slip_script::wire::{self, Errc};
 
@@ -466,6 +466,10 @@ fn lit(s: &str) -> Piece {
     Piece::Literal(s.as_bytes().to_vec())
 }
 
+fn ident(text: &str, key: Option<Digest>) -> Piece {
+    Piece::Identifier { text: text.as_bytes().to_vec(), key }
+}
+
 fn spelled(key: Digest, text: &str) -> Piece {
     Piece::Spelled { key, text: text.as_bytes().to_vec() }
 }
@@ -664,10 +668,12 @@ fn no_empty_copy(out: &RunOutput) -> bool {
         .all(|p| !matches!(p, Piece::Copy(at) if at.lo == at.hi))
 }
 
-/// §7.1 rule 4: `spell` of a non-entity is `wrong_kind`; of a
-/// specialisation, a member of a class template, a parameter, an entity
-/// with no identifier, an entity declared in an unnamed class, and an
-/// entity the digest has no key for, `unsupported`.
+/// §7.1 rule 4: `spell` of a non-entity is `wrong_kind`; of a parameter,
+/// an entity with no identifier, and an entity the digest has no key for,
+/// `unsupported`. Of an entity with an identifier and no qualified name
+/// (a specialisation, a member of a class template, an entity declared in
+/// an unnamed class) the code is made (WP-137): the piece holds the
+/// entity.
 #[test]
 fn s7_1_rule_4_spell_refusals() {
     let w = world();
@@ -676,19 +682,81 @@ fn s7_1_rule_4_spell_refusals() {
     let spell = |run: &mut Run<'_, '_>, x: u64| run.status(wire::OP_CODE_SPELL, &[x], &[]);
     assert_eq!(spell(&mut run, r), errc(Errc::WrongKind), "a reference");
     assert_eq!(spell(&mut run, 0), errc(Errc::InvalidHandle));
-    for (e, what) in [
-        (w.foo_spec, "a specialisation"),
-        (w.tmember, "a member of a class template"),
-        (w.a, "a parameter"),
-        (w.unnamed, "no identifier"),
-        (w.inner, "declared in an unnamed class"),
-        (w.main, "no key"),
-    ] {
+    for (e, what) in [(w.a, "a parameter"), (w.unnamed, "no identifier"), (w.main, "no key")] {
         let h = run.entity(e);
         assert_eq!(spell(&mut run, h), errc(Errc::Unsupported), "{what}");
     }
+    for (e, what) in [
+        (w.foo_spec, "a specialisation"),
+        (w.tmember, "a member of a class template"),
+        (w.inner, "declared in an unnamed class"),
+    ] {
+        let h = run.entity(e);
+        assert_eq!(spell(&mut run, h), 0, "{what}");
+    }
     let out = run.finish();
-    assert_eq!(counter(&out, "api.op.code_spell"), None, "no spell succeeded");
+    assert_eq!(counter(&out, "api.op.code_spell"), Some(3), "three made");
+}
+
+/// §7.1 rule 4, §7.2 rule 2 (WP-137): a piece for an entity with no
+/// qualified name, where the place takes the fully qualified spelling,
+/// alone or beside other pieces of a `cat`, is refused at `replace` with
+/// `unsupported`, the error `spell` gave for it before; the refusal names
+/// the entity and has the edit's range as its place, and nothing is
+/// recorded. `cat` itself refuses nothing: it has no place.
+#[test]
+fn s7_2_rule_2_no_qualified_name_is_refused_where_it_lands() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let arg = run.extent(Value::Expression(w.arg1));
+    let arg_range = range(&w, "1", 0);
+    for (e, what) in
+        [(w.tmember, "a member of a class template"), (w.inner, "declared in an unnamed class")]
+    {
+        let s = run.spell(e);
+        let x = run.text("x");
+        let both = run.cat(&[x, s]);
+        for code in [s, both] {
+            assert_eq!(run.try_replace(arg, code, 0, ""), errc(Errc::Unsupported), "{what}");
+            let f = run.h.last_failure().expect("a refusal").clone();
+            assert_eq!(f.place, Some(arg_range), "{what}: the place is the edit's");
+            let display = w.fake.display(Value::Entity(e));
+            assert!(f.message.contains(&display), "{what}: {:?} names {display:?}", f.message);
+            assert!(f.message.contains(what), "{what}: {:?}", f.message);
+            assert!(f.message.starts_with("replace: "), "{:?}", f.message);
+        }
+    }
+    // A piece with a qualified name beside it changes nothing.
+    let bar = run.spell(w.bar);
+    let m = run.spell(w.tmember);
+    let both = run.cat(&[bar, m]);
+    assert_eq!(run.try_replace(arg, both, 0, ""), errc(Errc::Unsupported));
+    let out = run.finish();
+    assert!(out.edits.is_empty(), "a refused request records nothing");
+    assert_eq!(counter(&out, "api.op.replace"), None);
+}
+
+/// §7.2 rules 1 and 5 (WP-137): an entity that is not its own origin (a
+/// specialisation) passes the sibling conditions at the extent of a
+/// reference and at its name range, and is refused there with
+/// `unsupported`: a name written for it is checked against its origin,
+/// never against it, so the spelling could not hold. At a qualified place
+/// it has no qualified name: `unsupported` too.
+#[test]
+fn s7_2_rule_5_an_entity_that_is_no_origin_is_refused() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let extent = run.extent(Value::Reference(w.r1));
+    let name = run.name_range(Value::Reference(w.r1));
+    let arg = run.extent(Value::Expression(w.arg1));
+    let s = run.spell(w.foo_spec);
+    for (at, what) in [(extent, "the extent"), (name, "the name range"), (arg, "an argument")] {
+        assert_eq!(run.try_replace(at, s, 0, ""), errc(Errc::Unsupported), "{what}");
+    }
+    let f = run.h.last_failure().expect("a refusal").clone();
+    assert!(f.message.contains("a specialisation"), "{:?}", f.message);
+    let out = run.finish();
+    assert!(out.edits.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -742,12 +810,13 @@ fn s7_2_each_condition_failed_alone_is_fully_qualified() {
     );
 }
 
-/// §7.2 rule 1: the rule is for a code that is exactly one spelled piece
-/// put at an extent: two pieces, or a range that is no reference's
-/// extent, are fully qualified; an empty literal beside the piece is no
-/// piece.
+/// §7.2 rule 1: the rule is for a code that is exactly one spelled piece:
+/// two pieces at an extent are fully qualified; an empty literal beside
+/// the piece is no piece. At a name range the sibling form applies too
+/// (WP-132; it was fully qualified before), so the spelling at the name
+/// range and the one narrowed from the extent are one edit.
 #[test]
-fn s7_2_rule_1_only_one_spelled_piece_at_an_extent() {
+fn s7_2_rule_1_only_one_spelled_piece() {
     let w = world();
     let mut run = Run::new(&w, &w.fake);
     let extent = run.extent(Value::Reference(w.r1));
@@ -766,7 +835,6 @@ fn s7_2_rule_1_only_one_spelled_piece_at_an_extent() {
         edits(&out),
         vec![
             (lo, hi, vec![spelled(K_BAR, "::lib::inl::bar"), lit("x")]),
-            (hi - 3, hi, vec![spelled(K_BAR, "::lib::inl::bar")]),
             (hi - 3, hi, vec![spelled(K_BAR, "bar")]),
         ]
     );
@@ -804,6 +872,224 @@ fn s7_2_two_references_with_one_extent() {
     f.references[w.r_m2.0 as usize].name = Some(Range { lo: m.lo, hi: m.lo + 3, ..m });
     let out = run_with(&f);
     assert_eq!(edits(&out), vec![(m.lo, m.hi, vec![spelled(K_BAR, "::lib::inl::bar")])]);
+}
+
+/// §7.2 rule 1 at a name range (WP-132): the sibling's identifier at the
+/// name range of a reference and at a declaration's name; any other
+/// entity, or another piece beside the spelled one, is `invalid_argument`
+/// and records nothing.
+#[test]
+fn s7_2_rule_1_at_a_name_range() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let name = run.name_range(Value::Reference(w.r1));
+    let foo_decl = w.fake.declarations(w.foo).expect("declarations")[0];
+    let decl_name = run.name_range(Value::Declaration(foo_decl));
+    let bar = run.spell(w.bar);
+    let other = run.spell(w.other_foo);
+    let x = run.text("x");
+    let with_text = run.cat(&[bar, x]);
+    let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"baz");
+    let with_id = run.cat(&[bar, id]);
+    for (r, code) in [(name, other), (name, with_text), (name, with_id), (decl_name, other)] {
+        assert_eq!(run.try_replace(r, code, 0, ""), errc(Errc::InvalidArgument));
+    }
+    run.replace(name, bar, 0, "");
+    run.replace(decl_name, bar, 0, "");
+    run.replace(decl_name, id, 0, "");
+    let out = run.finish();
+    let (lo, hi) = span(name_in(range(&w, "lib::foo", 0)));
+    let d = w.fake.range_nth(w.t, "foo", 0);
+    // At a declaration's name the spelling is the identifier, with no key
+    // (§7.2 rule 1): a declaration's name is no written reference.
+    assert_eq!(
+        edits(&out),
+        vec![
+            (d.lo, d.hi, vec![ident("bar", None)]),
+            (d.lo, d.hi, vec![ident("baz", None)]),
+            (lo, hi, vec![spelled(K_BAR, "bar")]),
+        ]
+    );
+}
+
+/// §7.2 rule 1 at a name range: a reference named there found indirectly,
+/// or whose origin is no sibling, refuses the spelling; the range of two
+/// uses of a macro argument is one name range for both.
+#[test]
+fn s7_2_rule_1_at_a_name_range_every_name_counts() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let indirect = run.name_range(Value::Reference(w.r_indirect));
+    let bar = run.spell(w.bar);
+    assert_eq!(run.try_replace(indirect, bar, 0, ""), errc(Errc::InvalidArgument));
+    let m = run.name_range(Value::Reference(w.r_m1));
+    run.replace(m, bar, 0, "");
+    let out = run.finish();
+    let (lo, hi) = span(name_in(range(&w, "lib::foo", 2)));
+    assert_eq!(edits(&out), vec![(lo, hi, vec![spelled(K_BAR, "bar")])]);
+    assert_eq!(out.edits[0].tiers, Tiers::ONE);
+}
+
+/// §7.1 rule 7 (WP-132): `identifier(name)` makes one identifier piece,
+/// kept apart from the literals and identifiers beside it, and counted;
+/// the name is one identifier of §6.1 rule 1.
+#[test]
+fn s7_1_rule_7_identifier() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let target = run.extent(Value::Expression(w.arg1));
+    let a = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"a_1");
+    let b = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"B");
+    let x = run.text("+");
+    let code = run.cat(&[a, x, b, a]);
+    run.replace(target, code, 0, "");
+    let refused: [(&[u8], Errc); 9] = [
+        (b"", Errc::InvalidArgument),
+        (b"class", Errc::InvalidArgument),
+        (b"\xff", Errc::InvalidArgument),
+        (b"1a", Errc::InvalidArgument),
+        (b"a b", Errc::InvalidArgument),
+        (b"a::b", Errc::InvalidArgument),
+        (b"a+", Errc::InvalidArgument),
+        (b"a$", Errc::Unsupported),
+        ("\u{e9}".as_bytes(), Errc::Unsupported),
+    ];
+    for (bad, e) in refused {
+        assert_eq!(run.status(wire::OP_CODE_IDENTIFIER, &[], bad), errc(e), "{bad:?}");
+    }
+    let long = vec![b'a'; 4097];
+    assert_eq!(run.status(wire::OP_CODE_IDENTIFIER, &[], &long), errc(Errc::LimitExceeded));
+    let out = run.finish();
+    let id = |s: &str| ident(s, None);
+    assert_eq!(out.edits[0].pieces, vec![id("a_1"), lit("+"), id("B"), id("a_1")]);
+    assert_eq!(counter(&out, "api.op.code_identifier"), Some(2));
+}
+
+/// §7.5 rule 3 (WP-132): an identifier piece that is the whole
+/// replacement of the name range of references takes the key of their
+/// referent's origin when it is declared renamed to exactly that
+/// identifier, whatever the order of `replace` and `expect_renamed`.
+#[test]
+fn s7_5_rule_3_an_identifier_piece_takes_the_renamed_key() {
+    let w = world();
+    let (lo, hi) = span(name_in(range(&w, "lib::foo", 0)));
+    let (lo2, hi2) = span(name_in(range(&w, "lib::foo", 1)));
+    // `order`: 0 renames first, 1 replaces first, 2 renames between.
+    let run_in = |order: u8, also_bar: bool, new: &str, to: &str| {
+        let mut run = Run::new(&w, &w.fake);
+        let n1 = run.name_range(Value::Reference(w.r1));
+        let n2 = run.name_range(Value::Reference(w.r2));
+        let foo = run.entity(w.foo);
+        let bar = run.entity(w.bar);
+        let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], new.as_bytes());
+        let rename = |run: &mut Run<'_, '_>| {
+            assert_eq!(renamed(run, foo, to), 0);
+            if also_bar {
+                assert_eq!(renamed(run, bar, "bar2"), 0);
+            }
+        };
+        if order == 0 {
+            rename(&mut run);
+        }
+        run.replace(n1, id, 0, "");
+        if order == 2 {
+            rename(&mut run);
+        }
+        run.replace(n2, id, 0, "");
+        if order == 1 {
+            rename(&mut run);
+        }
+        edits(&run.finish())
+    };
+    let keyed = vec![
+        (lo, hi, vec![ident("foo2", Some(K_FOO))]),
+        (lo2, hi2, vec![ident("foo2", Some(K_FOO))]),
+    ];
+    for order in 0..3 {
+        for also_bar in [false, true] {
+            assert_eq!(run_in(order, also_bar, "foo2", "foo2"), keyed, "{order} {also_bar}");
+        }
+    }
+    // Renamed to another identifier: no key.
+    let plain = vec![(lo, hi, vec![ident("foo2", None)]), (lo2, hi2, vec![ident("foo2", None)])];
+    assert_eq!(run_in(0, false, "foo2", "foo3"), plain);
+    assert_eq!(run_in(1, true, "foo2", "foo3"), plain);
+}
+
+/// §7.5 rule 3 (WP-132): where an identifier piece takes no key: the
+/// referent not declared renamed; the piece not the whole replacement;
+/// a declaration's name; a range no reference is named at; two
+/// references named at one range that do not agree.
+#[test]
+fn s7_5_rule_3_where_an_identifier_piece_has_no_key() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let n1 = run.name_range(Value::Reference(w.r1));
+    let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+    run.replace(n1, id, 0, "");
+    let out = run.finish();
+    assert_eq!(out.edits[0].pieces, vec![ident("foo2", None)], "not declared renamed");
+
+    let mut run = Run::new(&w, &w.fake);
+    let n1 = run.name_range(Value::Reference(w.r1));
+    let foo = run.entity(w.foo);
+    assert_eq!(renamed(&mut run, foo, "foo2"), 0);
+    let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+    let x = run.text("x");
+    let two = run.cat(&[id, x]);
+    run.replace(n1, two, 0, "");
+    let foo_decl = w.fake.declarations(w.foo).expect("declarations")[0];
+    let d = run.name_range(Value::Declaration(foo_decl));
+    run.replace(d, id, 0, "");
+    let arg = run.extent(Value::Expression(w.arg1));
+    run.replace(arg, id, 0, "");
+    let out = run.finish();
+    assert!(
+        out.edits
+            .iter()
+            .flat_map(|e| &e.pieces)
+            .all(|p| !matches!(p, Piece::Identifier { key: Some(_), .. })),
+        "{:?}",
+        out.edits
+    );
+    assert_eq!(out.edits.len(), 3);
+
+    // r_m1 and r_m2 share a name range; r_m2 is made a reference to bar.
+    let mut f = w.fake.clone();
+    f.references[w.r_m2.0 as usize].referent = w.bar;
+    let shared = |rename_bar: bool| {
+        let mut run = Run::new(&w, &f);
+        let m = run.name_range(Value::Reference(w.r_m1));
+        let foo = run.entity(w.foo);
+        let bar = run.entity(w.bar);
+        assert_eq!(renamed(&mut run, foo, "foo2"), 0);
+        if rename_bar {
+            assert_eq!(renamed(&mut run, bar, "foo2"), 0);
+        }
+        let id = run.ok(wire::OP_CODE_IDENTIFIER, &[], b"foo2");
+        run.replace(m, id, 0, "");
+        run.finish().edits[0].pieces.clone()
+    };
+    assert_eq!(shared(false), vec![ident("foo2", None)], "one renamed, one not");
+    assert_eq!(shared(true), vec![ident("foo2", None)], "two entities, two keys");
+}
+
+/// §6.1 rule 8 (WP-132): `lookup(scope, identifier)` on the fake: an
+/// entity that is no scope is `wrong_kind`; text that is not one
+/// identifier is `invalid_argument`; the members are found through
+/// transparent scopes.
+#[test]
+fn s6_1_rule_8_lookup_in() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let lib = run.entity(w.lib);
+    let foo = run.entity(w.foo);
+    assert_eq!(run.ints(wire::OP_LOOKUP_IN, &[lib], b"foo").len(), 1, "through inl");
+    assert!(run.ints(wire::OP_LOOKUP_IN, &[lib], b"nope").is_empty());
+    assert_eq!(run.status(wire::OP_LOOKUP_IN, &[foo], b"a"), errc(Errc::WrongKind));
+    assert_eq!(run.status(wire::OP_LOOKUP_IN, &[lib], b"inl::foo"), errc(Errc::InvalidArgument));
+    assert_eq!(run.status(wire::OP_LOOKUP_IN, &[lib], b""), errc(Errc::InvalidArgument));
+    assert_eq!(run.status(wire::OP_LOOKUP_IN, &[1], b"foo"), errc(Errc::InvalidHandle));
 }
 
 /// §7.2 rule 2: unnamed namespaces are skipped, inline ones named.
@@ -1167,6 +1453,7 @@ enum Lie {
     None,
     EntityKey(Option<Digest>),
     Qualified(Option<Vec<Vec<u8>>>),
+    Unqualified(Option<Unqualified>),
     UnitKeys(Result<Vec<Digest>, Errc>),
     RenameRule(Result<Rule, Errc>),
     Tiers(Option<[bool; 2]>),
@@ -1196,6 +1483,9 @@ impl Subject for Liar<'_> {
     }
     fn lookup(&self, global: bool, components: &[&[u8]]) -> Vec<Entity> {
         self.fake.lookup(global, components)
+    }
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        self.fake.lookup_in(scope, identifier)
     }
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         self.fake.identifier(v)
@@ -1261,8 +1551,17 @@ impl Subject for Liar<'_> {
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         if let Lie::Qualified(q) = &self.lie { q.clone() } else { self.fake.qualified(e) }
     }
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        if let Lie::Unqualified(u) = self.lie { u } else { self.fake.unqualified(e) }
+    }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         if let Lie::ReferencesAt(x) = &self.lie { x.clone() } else { self.fake.references_at(r) }
+    }
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        self.fake.references_named_at(r)
+    }
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        self.fake.declarations_named_at(r)
     }
     fn found_directly(&self, r: Reference) -> bool {
         self.fake.found_directly(r)
@@ -1296,6 +1595,8 @@ fn under(w: &World, lie: Lie, what: &str) -> Result<u8, String> {
     let mut run = Run::new(w, &liar);
     let (op, ints, text): (u32, Vec<u64>, &[u8]) = match what {
         "spell" => (wire::OP_CODE_SPELL, vec![run.entity(w.bar)], b""),
+        "spell tmember" => (wire::OP_CODE_SPELL, vec![run.entity(w.tmember)], b""),
+        "spell unnamed" => (wire::OP_CODE_SPELL, vec![run.entity(w.unnamed)], b""),
         "replace" => {
             let e = run.extent(Value::Reference(w.r1));
             let s = run.spell(w.bar);
@@ -1333,6 +1634,22 @@ fn s7_1_subject_entity_key_statuses() {
 /// `unsupported`; an answer that is no qualified name of the entity (no
 /// name, an empty name, a last name that is not the entity's identifier)
 /// is a host failure naming the method.
+/// `Subject::unqualified` (§7.1 rule 4): asked only when `qualified` is
+/// `None`; `None` is `unsupported`, a reason makes the code; a reason for
+/// an entity with no identifier is a host failure naming the method.
+#[test]
+fn s7_1_subject_unqualified_statuses() {
+    let w = world();
+    let some = Some(Unqualified::MemberOfClassTemplate);
+    // `bar` has a qualified name: `unqualified` is not asked.
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell"), Ok(0));
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell tmember"), Ok(errc(Errc::Unsupported)));
+    assert_eq!(under(&w, Lie::Unqualified(some), "spell tmember"), Ok(0));
+    assert_eq!(under(&w, Lie::None, "spell tmember"), Ok(0));
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell unnamed"), Ok(errc(Errc::Unsupported)));
+    host_failure(under(&w, Lie::Unqualified(some), "spell unnamed"), &["Subject::unqualified"]);
+}
+
 #[test]
 fn s7_2_subject_qualified_statuses() {
     let w = world();
@@ -1657,7 +1974,13 @@ fn run_requests(w: &World, requests: &[Request], values: &[Value], early: bool) 
                     None => 0,
                 };
                 let target = x.range(*at);
-                x.run.replace(target, code, g, note);
+                // §7.2 rule 1 at a name range (WP-132): a code with a
+                // spelled piece there is one sibling's identifier or is
+                // refused, whatever the order.
+                let status = x.run.try_replace(target, code, g, note);
+                let refused_at_a_name =
+                    matches!(at, At::Name(_)) && status == errc(Errc::InvalidArgument);
+                assert!(status == 0 || refused_at_a_name, "{status}");
             }
             Request::Report { at, severity, message } => {
                 let ints = match at {

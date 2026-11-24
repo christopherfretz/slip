@@ -29,6 +29,7 @@ enum MP {
     L(Vec<u8>),
     C(PP),
     S(Digest, Vec<u8>),
+    I(Vec<u8>, Option<Digest>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -236,6 +237,7 @@ pub fn reduce(
             Piece::Literal(b) => MP::L(b.clone()),
             Piece::Copy(c) => MP::C(pp(c)),
             Piece::Spelled { key, text } => MP::S(*key, text.clone()),
+            Piece::Identifier { text, key } => MP::I(text.clone(), *key),
         };
         for c in &e.claims {
             n_claims += 1;
@@ -781,6 +783,7 @@ pub fn reduce(
                     MP::L(b) => Piece::Literal(b.clone()),
                     MP::C(c) => Piece::Copy(place(c)),
                     MP::S(k, t) => Piece::Spelled { key: *k, text: t.clone() },
+                    MP::I(t, k) => Piece::Identifier { text: t.clone(), key: *k },
                 })
                 .collect(),
             subjects: l.j.subjects.iter().copied().collect(),

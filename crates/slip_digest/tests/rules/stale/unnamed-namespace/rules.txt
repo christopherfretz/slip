@@ -1,0 +1,2 @@
+# WP-111 item 1: "inside" includes the unnamed namespace: legacy::(anonymous)::b left behind counts direct (stale).
+relocate legacy => :: acme

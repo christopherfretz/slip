@@ -405,6 +405,9 @@ pub(super) fn piece_violation(
             Piece::Spelled { text, .. } if text.is_empty() => {
                 Some("a spelled piece's text is empty")
             }
+            Piece::Identifier { text, .. } if !crate::transform::is_plain(text) => {
+                Some("an identifier piece's text is not one plain identifier")
+            }
             Piece::Copy(place) if !within(files, place) || place.lo == place.hi => {
                 Some("a copy piece's place is empty or not within its file")
             }
@@ -521,6 +524,12 @@ pub(super) fn enc_piece(e: &mut Encoder, p: &Piece) {
         Piece::Copy(place) => enc_place(e, place),
         Piece::Spelled { key, text } => {
             e.digest(key).bytes(text);
+        }
+        Piece::Identifier { text, key } => {
+            e.bytes(text);
+            enc_opt(e, key.as_ref(), |e, k| {
+                e.digest(k);
+            });
         }
     }
 }
@@ -662,6 +671,7 @@ pub(super) fn dec_piece(d: &mut Decoder<'_>) -> Result<Piece> {
         0 => Piece::Literal(d.bytes()?.to_vec()),
         1 => Piece::Copy(dec_place(d)?),
         2 => Piece::Spelled { key: d.digest()?, text: d.bytes()?.to_vec() },
+        3 => Piece::Identifier { text: d.bytes()?.to_vec(), key: dec_opt(d, Decoder::digest)? },
         _ => return Err(malformed(at, "unlisted Piece value")),
     })
 }
@@ -855,6 +865,10 @@ pub(super) fn json_piece(p: &Piece) -> Value {
         Piece::Spelled { key, text } => {
             object(vec![("spelled", record(SPELLED, [json_digest(key), json_bytes(text)]))])
         }
+        Piece::Identifier { text, key: None } => object(vec![("identifier", json_bytes(text))]),
+        Piece::Identifier { text, key: Some(key) } => {
+            object(vec![("identifier", json_bytes(text)), ("key", json_digest(key))])
+        }
     }
 }
 
@@ -981,9 +995,19 @@ pub(super) fn read_string(v: &Value, at: &At<'_>) -> JResult<String> {
     Ok(read_str(v, at)?.to_owned())
 }
 
-const PIECE_EXPECTED: &str = "a Piece is an object with one member: literal, copy or spelled";
+const PIECE_EXPECTED: &str = "a Piece is an object with one member, literal, copy, spelled or \
+     identifier, or with the two members identifier and key";
 
 pub(super) fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
+    if let Some([(form, text), (k, key)]) = v.as_object()
+        && form == "identifier"
+        && k == "key"
+    {
+        return Ok(Piece::Identifier {
+            text: read_bytes(text, &at.key(form))?,
+            key: Some(read_digest(key, &at.key(k))?),
+        });
+    }
     let Some([(form, value)]) = v.as_object() else {
         return Err(at.error(PIECE_EXPECTED));
     };
@@ -998,6 +1022,7 @@ pub(super) fn read_piece(v: &Value, at: &At<'_>) -> JResult<Piece> {
                 text: read_bytes(text, &here.key("text"))?,
             }
         }
+        "identifier" => Piece::Identifier { text: read_bytes(value, &here)?, key: None },
         _ => return Err(here.error(PIECE_EXPECTED)),
     })
 }

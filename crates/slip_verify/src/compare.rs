@@ -11,6 +11,7 @@ use std::fmt;
 use slip_model::Digest;
 use slip_model::declared::Declared;
 use slip_model::digests::{self, Digests, Group, GroupClass, Unit, group_digest, tu_digest};
+use slip_model::names::NamesEntry;
 use slip_model::verdict::{Finding, FindingKind, Verdict, VerdictKind};
 
 /// Longest `Verdict::reason`, in bytes (`spec/verify.md` §6, `spec/model.md` §8).
@@ -228,6 +229,11 @@ pub struct Comparison {
     pub only_post: u64,
     /// Exemptions that prevented a finding; ascending, no two equal.
     pub used: Vec<Digest>,
+    /// The keys of the notes `names_changed` (§4.4, WP-112): ascending,
+    /// no two equal. [`compare_groups`] leaves it empty (it sees no names
+    /// digest); the caller sets it from [`names_changed`]. Not a finding:
+    /// [`verdict`] does not read it.
+    pub notes: Vec<Digest>,
 }
 
 /// A group given to `compare_groups` that breaks a precondition. `post`
@@ -608,7 +614,30 @@ pub fn compare_groups(
     // key order already, sorted again to make that independent of `runs`.
     used.sort_unstable();
     used.dedup();
-    Ok(Comparison { findings, only_pre, only_post, used })
+    Ok(Comparison { findings, only_pre, only_post, used, notes: Vec::new() })
+}
+
+/// §4.4 (WP-112): the keys that have a names digest in both images and
+/// whose names digests differ, ascending. A key with a names digest in one
+/// image only gives nothing. `pre` and `post` are a `names` section's
+/// `units`: strictly ascending by key (`spec/model.md` §8.7).
+pub fn names_changed(pre: &[NamesEntry], post: &[NamesEntry]) -> Vec<Digest> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while let (Some(p), Some(q)) = (pre.get(i), post.get(j)) {
+        match p.key.cmp(&q.key) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                if p.names != q.names {
+                    out.push(p.key);
+                }
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +646,8 @@ pub fn compare_groups(
 /// The verdict of a comparison: `mismatch` if it has a finding, else
 /// `verified`; `findings` cut to the first `limit`.
 pub fn verdict(comparison: Comparison, pre_shard: Digest, rules: Digest, limit: usize) -> Verdict {
-    let Comparison { mut findings, only_pre, only_post, used } = comparison;
+    // The notes are not findings (§4.4): they take no part in the verdict.
+    let Comparison { mut findings, only_pre, only_post, used, notes: _ } = comparison;
     let total = findings.len() as u64;
     let kind = if findings.is_empty() { VerdictKind::Verified } else { VerdictKind::Mismatch };
     findings.truncate(limit);

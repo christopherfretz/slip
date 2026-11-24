@@ -1,0 +1,4 @@
+# pending
+# needs: kiln (a local class's or closure's __PRETTY_FUNCTION__ prints the enclosing function's parameter types desugared, `h(int, int)` for clang's `h(int, decltype(ns::S::value))`; spec/landed/digest/WP-125.md "For Kiln")
+exact derived
+derived-changed h<int>(int, int)::<definition>

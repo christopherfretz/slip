@@ -16,8 +16,14 @@
 //! in an `unverifiable` verdict, a shard without a verdict (the
 //! post-image does not parse), or the job's `Err`.
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::Path;
+
 use slip_digest::map::counters as walk_counters;
-use slip_digest::{Detail, Options, Output, ReadOnly, ReadOnlyFiles, digest};
+use slip_digest::{
+    Detail, NamesUnit, Options, Output, ReadOnly, ReadOnlyFiles, digest, digest_kept,
+};
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
@@ -25,16 +31,18 @@ use slip_model::agreement::{Binding, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
+use slip_model::hash::content_digest;
 use slip_model::keys::RuleTable;
-use slip_model::verdict::{FindingKind, Verdict};
+use slip_model::names::{NameNote, Names, NamesEntry};
+use slip_model::verdict::{FindingKind, Verdict, VerdictKind};
 use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
     AtSums, CompareError, Comparison, Exemptions, at_sums, comparable, compare_groups,
-    unverifiable, verdict, verified,
+    names_changed, unverifiable, verdict, verified,
 };
 
 use crate::image::{Image, Resolver, Side, show_path};
-use crate::locate;
+use crate::{locate, negatives};
 
 /// A verify job's parameters (`spec/verify.md` §5; `spec/exec.md` §8.6).
 /// The worker makes them from `job.post` and its own options, in one
@@ -122,7 +130,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
 
-    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, C.
+    // Step 2: P1 to P3, G1, L1, G4, G5, G6, O2, N1, C.
     let Some(pre) = pre else {
         return unverifiable_now(post, shard, "pre-image: no map shard");
     };
@@ -142,6 +150,15 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     if let Some(reason) = not_comparable(pre_digests, &post.digests) {
         return unverifiable_now(post, shard, &reason);
     }
+    // §4.4 (WP-112): the notes, on both paths that compare (a declared
+    // rename leaves the sums equal). A map shard with digests has names
+    // (`spec/model.md` §8.7), so this guard cannot fire on a shard the
+    // store gave back; it is kept so that no note is ever "none" by default.
+    let Some(pre_names) = pre.shard.names.as_ref() else {
+        return unverifiable_now(post, shard, "pre-image: the map shard has no names section");
+    };
+    let notes = names_changed(&pre_names.units, &post.names.units);
+    post.note(&notes);
 
     // Step 3: the sums.
     let g = match at_sums(pre_digests, &post.digests) {
@@ -165,7 +182,8 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     };
 
     // Step 5: the verdict from the comparison.
-    let comparison = compared(comparison, observer)?;
+    let mut comparison = compared(comparison, observer)?;
+    comparison.notes = notes;
     for f in &comparison.findings {
         post.by_kind[kind_index(f.kind)] += 1;
     }
@@ -214,6 +232,7 @@ fn post_walk(
     detail: Detail<'_>,
 ) -> Result<(Shard, Option<(Output, Lookups)>), String> {
     let (rules, files) = (params.declared.rules(), params.declared.files());
+    let kept = params.declared.kept();
     params
         .image
         .parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
@@ -225,7 +244,9 @@ fn post_walk(
                 names: false,
                 rule_use: !rules.is_empty(),
             };
-            digest(input, &options)
+            // `Declared.kept` decides a namespace rule's `direct` and
+            // `kept_via` (§9.2, WP-111).
+            digest_kept(input, &options, kept)
         })
         .map(|(mut shard, output)| {
             if !rules.is_empty() && shard.outcome.status != Status::Failed {
@@ -323,6 +344,10 @@ struct Post {
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
     by_kind: [u64; 6],
+    /// Step 1's names digests, and from step 2 the notes (§4.4, WP-112).
+    names: Names,
+    /// Step 1's names digests with each key's file and name, by key.
+    name_strings: Vec<NamesUnit>,
     /// `verify.traces.unstable` (§7.2), present only when not 0.
     unstable: u64,
     /// `verify.traces.panicked` (§7.2): the images whose second writing
@@ -341,14 +366,41 @@ impl Post {
         counters.extend(walk_counters(&output));
         Post {
             counters,
-            rule_use: counted.then_some(RuleUse { rules: rules_id, uses: output.rule_use }),
+            rule_use: counted.then_some(RuleUse {
+                rules: rules_id,
+                uses: output.rule_use,
+                kept: output.kept,
+            }),
             digests: output.digests,
             differing: 0,
             reparsed: 0,
             by_kind: [0; 6],
+            names: Names {
+                units: output
+                    .name_strings
+                    .iter()
+                    .map(|n| NamesEntry { key: n.key, names: n.names })
+                    .collect(),
+                notes: Vec::new(),
+            },
+            name_strings: output.name_strings,
             unstable: 0,
             panicked: 0,
         }
+    }
+
+    /// The notes of `keys` (ascending, each with a names digest in step
+    /// 1), with the file and name of the key's unit (§4.4).
+    fn note(&mut self, keys: &[Digest]) {
+        let strings = &self.name_strings;
+        self.names.notes = keys
+            .iter()
+            .filter_map(|k| {
+                let i = strings.binary_search_by(|n| n.key.cmp(k)).ok()?;
+                let n = &strings[i];
+                Some(NameNote { key: n.key, file: n.file.clone(), name: n.name.clone() })
+            })
+            .collect();
     }
 
     /// The post shard of §5.4: step 1's outcome and inputs (already in
@@ -362,6 +414,8 @@ impl Post {
             differing,
             reparsed,
             by_kind,
+            mut names,
+            name_strings: _,
             unstable,
             panicked,
         } = self;
@@ -394,6 +448,11 @@ impl Post {
         let mut out = shard.clone();
         out.counters = counters;
         out.digests = Some(digests);
+        // Notes only beside a comparison (`spec/model.md` §8.7).
+        if !matches!(v.kind, VerdictKind::Verified | VerdictKind::Mismatch) {
+            names.notes.clear();
+        }
+        out.names = Some(names);
         out.verdict = Some(v);
         out.rule_use = rule_use;
         out
@@ -501,9 +560,10 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): [`post_parse_guards`], then O2 of the tree form (not
-/// with the identity, where every change since the map phase is the edit
-/// compared). The reason of the first that fails.
+/// this order (§5.3): [`post_parse_guards`], then O2 (both parts), N1 and N2 of the tree
+/// form (not with the identity, where every change since the map phase is
+/// the edit compared). The reason of the first that fails. They run before
+/// the comparison, so whatever it finds.
 fn image_guards(
     params: &Params,
     observer: &Observer,
@@ -521,8 +581,32 @@ fn image_guards(
         return None;
     }
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
-    drifted(&mut resolver, post_inputs, pre_inputs)
-        .map(|path| format!("pre-image: {} changed since the map phase", show_path(path)))
+    if let Some(path) = drifted(&mut resolver, post_inputs, pre_inputs) {
+        return Some(format!("pre-image: {} changed since the map phase", show_path(path)));
+    }
+    if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
+        return Some(how.reason(path));
+    }
+    // N1: no file has appeared, outside the subject roots, where the map
+    // parse looked for one and found none. Without the record, fail closed.
+    let Some(negatives) = pre.shard.negatives.as_deref() else {
+        return Some(
+            "pre-image: the map shard has no negative inputs (run `slip parse` again)".to_owned(),
+        );
+    };
+    if let Some(path) = negatives::appeared(&mut resolver, negatives) {
+        return Some(format!("pre-image: {} appeared since the map phase", show_path(path)));
+    }
+    // N2: every found lookup of the map parse leads where it led, and the
+    // inputs that were one file are one file. Without the record, fail
+    // closed.
+    let Some(found) = pre.shard.found.as_ref() else {
+        return Some(
+            "pre-image: the map shard has no record of where its lookups led (run `slip parse` again)"
+                .to_owned(),
+        );
+    };
+    negatives::found_moved(&mut resolver, found, pre_inputs)
 }
 
 /// The guards of §5.3 that need only the post-image parse, in this order:
@@ -616,6 +700,107 @@ fn drifted<'a>(
         })
         .find(|f| !resolver.under_post(&f.path))
         .map(|f| f.path.as_slice())
+}
+
+/// What became of a file the map parse read and the post-image parse did
+/// not (O2's second part).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Left {
+    /// No regular file is at the path now.
+    Gone,
+    /// The path leads, through a link made since, to this other real
+    /// path: not the file the map parse read there (two inputs made one by
+    /// a link, or a directory on the way replaced by a link).
+    Moved(Vec<u8>),
+    /// The file there has another size or content, or cannot be read.
+    Changed,
+}
+
+impl Left {
+    /// The reason of the `unverifiable` verdict for the input at `path`.
+    fn reason(&self, path: &[u8]) -> String {
+        let path = show_path(path);
+        match self {
+            Left::Gone => {
+                format!("pre-image: {path} is gone since the map phase (run `slip parse` again)")
+            }
+            Left::Moved(real) => format!(
+                "pre-image: {path} now leads to {}, not the file the map parse read (run `slip parse` again)",
+                show_path(real)
+            ),
+            Left::Changed => {
+                format!("pre-image: {path} changed since the map phase (run `slip parse` again)")
+            }
+        }
+    }
+}
+
+/// Guard O2's second part, of the tree form (§5.3): the first entry of the
+/// pre shard's `inputs`, in path order, whose path the post-image parse's
+/// `inputs` do not list (the same path identity as [`drifted`]: the bytes
+/// of the path), that is not a file of the subject as recorded, and at
+/// which there is no longer the file the map parse read: a regular file
+/// whose real path is the recorded path, of the size and content digest
+/// listed. Both lists are sorted by path. A file the map parse read and
+/// the post parse did not is no file the comparison looks at: gone,
+/// changed or reached elsewhere, the pre shard no longer describes the
+/// pre-image (a header deleted, so that the search now finds another, the
+/// post-image's edit compensating).
+///
+/// "A file of the subject as recorded": under a subject root
+/// (`Resolver::under_subject`) judged on the recorded path only while that
+/// path is still as recorded ([`as_recorded`]); through a link made since
+/// (a directory of the dependency replaced by a link into the subject),
+/// the entry is checked, not skipped.
+fn left_behind<'a>(
+    resolver: &mut Resolver<'_>,
+    post: &[FileRef],
+    pre: &'a [FileRef],
+) -> Option<(&'a [u8], Left)> {
+    pre.iter()
+        .filter(|p| post.binary_search_by(|f| f.path.cmp(&p.path)).is_err())
+        .filter(|p| !(as_recorded(&p.path) && resolver.under_subject(&p.path)))
+        .find_map(|p| still_there(p).err().map(|how| (p.path.as_slice(), how)))
+}
+
+/// Whether `path`, a real path when the map parse recorded it, is still
+/// one: the path, or the nearest ancestor of it that exists, is its own
+/// real path now (no symbolic link has been made on the way since).
+pub(crate) fn as_recorded(path: &[u8]) -> bool {
+    let mut at = Path::new(OsStr::from_bytes(path));
+    loop {
+        if at.symlink_metadata().is_ok() {
+            return std::fs::canonicalize(at).is_ok_and(|real| real == at);
+        }
+        match at.parent() {
+            Some(up) => at = up,
+            None => return true,
+        }
+    }
+}
+
+/// Whether the file the map parse read at `f.path` is still there: a
+/// regular file (links followed now) whose real path is `f.path`, of `f`'s
+/// size and content digest.
+fn still_there(f: &FileRef) -> Result<(), Left> {
+    let path = Path::new(OsStr::from_bytes(&f.path));
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {
+            match std::fs::canonicalize(path) {
+                Ok(real) if real == path => {}
+                Ok(real) => return Err(Left::Moved(real.into_os_string().into_vec())),
+                Err(_) => return Err(Left::Gone),
+            }
+            if m.len() != f.size {
+                return Err(Left::Changed);
+            }
+        }
+        _ => return Err(Left::Gone),
+    }
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() as u64 == f.size && content_digest(&bytes) == f.content => Ok(()),
+        _ => Err(Left::Changed),
+    }
 }
 
 #[cfg(test)]

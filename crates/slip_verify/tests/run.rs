@@ -13,6 +13,7 @@ use std::path::Path;
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, SCHEME, tu_digest};
 use slip_model::json::{self, Value};
+use slip_model::names::{NameNote, Names, NamesEntry};
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use slip_model::{Counter, Digest, Outcome, Phase, Shard, Status};
 use slip_verify::run::{Header, Report, RunVerdict, State, run_verdict, state};
@@ -85,6 +86,9 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(Names::default()),
+        negatives: None,
+        found: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -110,6 +114,9 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
+        negatives: None,
+        found: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -271,6 +278,7 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
     // A verdict in a shard without digests (rule 1).
     let mut s = verified(1);
     s.digests = None;
+    s.names = None;
     assert_eq!(ok(&s), State::Failed);
     // A diagnosed shard with a verdict.
     let mut s = verified(1);
@@ -1022,4 +1030,193 @@ fn s7_1_text_escapes_paths_and_strings() {
     let nv = j.get("not_verified").unwrap().as_array().unwrap();
     assert_eq!(nv[1].get("message").unwrap().as_str(), Some(nasty));
     assert_eq!(nv[0].get("main").unwrap().as_str(), Some(nasty));
+}
+
+// ---------------------------------------------------------------------------
+// §7.1 `names_changed` and `--strict-names` (WP-112)
+
+/// `s` with notes on `keys` (each with a names digest), named `n<k>` in
+/// `/h<k>.h`.
+fn with_notes(mut s: Shard, keys: &[u8]) -> Shard {
+    let mut keys = keys.to_vec();
+    keys.sort_unstable();
+    s.names = Some(Names {
+        units: keys.iter().map(|&k| NamesEntry { key: key(k), names: d(k) }).collect(),
+        notes: keys
+            .iter()
+            .map(|&k| NameNote {
+                key: key(k),
+                file: format!("/h{k}.h").into_bytes(),
+                name: format!("n{k:03}"),
+            })
+            .collect(),
+    });
+    s.validate().expect("a valid shard");
+    s
+}
+
+/// The index of `s` in `State::ALL`, the order of `Report::states`.
+fn at(s: State) -> usize {
+    State::ALL.iter().position(|&x| x == s).unwrap()
+}
+
+fn names_member(r: &Report) -> Option<Value> {
+    r.to_json().get("names_changed").cloned()
+}
+
+// §7.1: without the option a note changes no state, no verdict, no count
+// and no finding; the report lists it once per key however many observers
+// noted it (ten here), by the first observer in plan order.
+#[test]
+fn s7_1_names_changed_counted_once_over_observers() {
+    let mut r = Report::new(header(vec![], 10), &Declared::none());
+    for o in 0..10u8 {
+        let main = format!("/m{o}.cpp");
+        r.add(&d(o), main.as_bytes(), Some(&with_notes(verified(o), &[1])), Some(Status::Ok));
+    }
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(r.states()[at(State::Verified)], 10);
+    assert_eq!(r.names_changed(), 1);
+    let m = names_member(&r).expect("the member");
+    assert_eq!(m.get("total").unwrap().as_u64(), Some(1));
+    let l = m.get("listed").unwrap().as_array().unwrap();
+    assert_eq!(l.len(), 1);
+    assert_eq!(l[0].get("observers").unwrap().as_u64(), Some(10));
+    assert_eq!(l[0].get("first").unwrap().as_str(), Some("/m0.cpp"));
+    let t = r.to_text();
+    assert_eq!(t.matches("note: name-derived string changed: n001 @ /h1.h\n").count(), 1, "{t}");
+    assert!(t.contains("findings 0 total, 0 listed, 0 group(s)\n"), "{t}");
+    assert_eq!(r.verdict_line(), "verdict verified");
+}
+
+// §7.1: a note in a `mismatch` shard is read too, and adds nothing to its
+// findings; one in an `unverifiable` shard is impossible (the section's
+// rule) and an unparsed shard has none.
+#[test]
+fn s7_1_names_changed_beside_findings() {
+    let mut r = Report::new(header(vec![], 2), &Declared::none());
+    let m = with_notes(mismatch(1, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]), &[1, 2]);
+    r.add(&d(1), b"/a.cpp", Some(&m), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&unverifiable(2)), Some(Status::Ok));
+    assert_eq!(r.names_changed(), 2);
+    let j = r.to_json();
+    assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(1));
+}
+
+// §7.1: the first 100 keys in the report's order (by name, then key), in
+// JSON and in text, and how many more.
+#[test]
+fn s7_1_names_changed_cut_at_100() {
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    let keys: Vec<u8> = (0..120).rev().collect();
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &keys)), Some(Status::Ok));
+    assert_eq!(r.names_changed(), 120);
+    let m = names_member(&r).unwrap();
+    assert_eq!(m.get("total").unwrap().as_u64(), Some(120));
+    let l = m.get("listed").unwrap().as_array().unwrap();
+    assert_eq!(l.len(), 100);
+    let names: Vec<&str> = l.iter().map(|x| x.get("name").unwrap().as_str().unwrap()).collect();
+    let want: Vec<String> = (0..100).map(|k| format!("n{k:03}")).collect();
+    assert_eq!(names, want);
+    let t = r.to_text();
+    assert_eq!(
+        t.lines().filter(|l| l.starts_with("note: name-derived string changed: ")).count(),
+        100
+    );
+    assert!(t.contains("note: name-derived string changed: n000 @ /h0.h\n"), "{t}");
+    assert!(!t.contains("n100 @"), "{t}");
+    assert!(t.contains("note: 20 more (see the report)\n"), "{t}");
+}
+
+// §7.1: a run without a note has no member and no line: the goldens of
+// `s7_1_golden_json_and_text` are unchanged (that test is the check), and
+// a run whose shards hold empty names sections says nothing new either.
+#[test]
+fn s7_1_names_changed_absent_without_a_note() {
+    let r = sample();
+    assert!(names_member(&r).is_none());
+    assert!(!r.to_text().contains("note:"));
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &[])), Some(Status::Ok));
+    assert!(names_member(&r).is_none());
+    assert_eq!(r.names_changed(), 0);
+}
+
+// §7.1 `--strict-names`: each note is a finding of kind `names_changed`
+// which no exemption prevents: a `verified` observer with a note is
+// `mismatch`, the run `not_verified`; the key is one group over observers.
+#[test]
+fn s7_1_strict_names_makes_notes_findings() {
+    // The noted key is in `changed`: still a finding.
+    let mut r = Report::new(header(vec![], 3), &declared(&[1], &[], &[]));
+    r.strict_names();
+    let shard = ok_shard(1, verified_verdict(&[1]), None);
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(shard, &[1])), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&with_notes(verified(2), &[1])), Some(Status::Ok));
+    r.add(&d(3), b"/c.cpp", Some(&verified(3)), Some(Status::Ok));
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+    assert_eq!(r.states()[at(State::Mismatch)], 2);
+    assert_eq!(r.states()[at(State::Verified)], 1);
+    let json = r.to_json();
+    let findings = json.get("findings").unwrap();
+    assert_eq!(findings.get("total").unwrap().as_u64(), Some(2));
+    let groups = findings.get("groups").unwrap().as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].get("kind").unwrap().as_str(), Some("names_changed"));
+    assert_eq!(groups[0].get("observers").unwrap().as_u64(), Some(2));
+    // The exemption is still counted as used by the shard that used it.
+    let used = json.get("exemptions").unwrap().as_array().unwrap();
+    assert_eq!(used[0].get("observers").unwrap().as_u64(), Some(1));
+    let text = r.to_text();
+    assert!(
+        text.contains(&format!(
+            "finding names_changed {} observers 2 n001\n",
+            &key(1).to_string()[..16]
+        )),
+        "{text}"
+    );
+    assert!(text.contains("findings 2 total, 2 listed, 1 group(s)\n"), "{text}");
+    assert!(text.contains("note: name-derived string changed: n001 @ /h1.h\n"), "{text}");
+    assert_eq!(r.verdict_line(), "verdict not verified");
+    // Without a note, the option changes nothing.
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    r.strict_names();
+    r.add(&d(1), b"/a.cpp", Some(&verified(1)), Some(Status::Ok));
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+}
+
+// §4.4, model §8.7 row 1: a shard with `digests` and no `names` breaks
+// its format, so `add` never reads a result from it: a `verified` or
+// `mismatch` shard without the section is `failed`, not a shard without
+// notes, with the option or without it (the same holds of any shard with
+// `digests`, `unverifiable` included).
+#[test]
+fn s4_4_compared_shard_without_names_is_failed() {
+    for strict in [false, true] {
+        let mut r = Report::new(header(vec![], 3), &Declared::none());
+        if strict {
+            r.strict_names();
+        }
+        let mut v = verified(1);
+        v.names = None;
+        r.add(&d(1), b"/a.cpp", Some(&v), Some(Status::Ok));
+        let mut m = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
+        m.names = None;
+        r.add(&d(2), b"/b.cpp", Some(&m), Some(Status::Ok));
+        let mut u = unverifiable(3);
+        u.names = None;
+        r.add(&d(3), b"/c.cpp", Some(&u), Some(Status::Ok));
+        assert_eq!(r.states()[at(State::Failed)], 3, "strict {strict}");
+        assert_eq!(r.names_changed(), 0, "strict {strict}");
+        assert_eq!(r.verdict(), RunVerdict::Incomplete, "strict {strict}");
+    }
+}
+
+// §7.1: the option is set before the first `add`.
+#[test]
+#[should_panic(expected = "Report::strict_names after Report::add")]
+fn s7_1_strict_names_after_add_panics() {
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&verified(1)), Some(Status::Ok));
+    r.strict_names();
 }

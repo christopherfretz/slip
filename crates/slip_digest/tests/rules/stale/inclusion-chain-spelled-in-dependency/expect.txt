@@ -1,0 +1,2 @@
+# fixed, left in legacy, is spelled by dep.h's macro: no owned member (mutant N9).
+use 5 via 1 direct 0

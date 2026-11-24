@@ -1,3 +1,5 @@
 # WP-131 item 1: a rule whose name is a conversion name (a relocate of a conversion function with `=`, the one declared change that gives one) matches the member's own key, as for an entity that follows no pattern; before WP-131 it matched the plain key and gave another key than following (operator T), key/rule-on-instantiated-member.
+# WP-111 review F1: with `a::detail => a :: impl` above, the second line maps the member's key to
+# itself: an identity rule, now refused (spec/verify.md §2.1 "One way to each key").
 relocate a::detail => a :: impl
 relocate [function] W<bool>::operator bool() const => W<bool> :: =

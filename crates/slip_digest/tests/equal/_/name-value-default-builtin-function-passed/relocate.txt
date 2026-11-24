@@ -1,0 +1,4 @@
+rename f2() => f
+rename g2() => g
+rename h2() => h
+rename k2() => k

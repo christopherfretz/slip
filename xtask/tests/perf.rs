@@ -110,6 +110,9 @@ fn shard(observer: Digest, round: u64, status: Status, counters: &[(&str, u64)])
         binding: None,
         rule_use: None,
         spellings: None,
+        names: None,
+        negatives: None,
+        found: None,
     }
 }
 

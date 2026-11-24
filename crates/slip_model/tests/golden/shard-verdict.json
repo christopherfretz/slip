@@ -1,6 +1,6 @@
 {
   "kind": "SHRD",
-  "version": 1,
+  "version": 2,
   "sections": {
     "header": {
       "observer": "3333333333333333333333333333333333333333333333333333333333333333",
@@ -80,6 +80,10 @@
           "where": null
         }
       ]
+    },
+    "names": {
+      "units": [],
+      "notes": []
     }
   }
 }

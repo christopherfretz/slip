@@ -1,0 +1,3 @@
+# WP-111 review F1: one entity renamed twice. Both rules produce legacy::f(int): no table.
+relocate legacy::f(int) => legacy :: g
+relocate legacy::f(int) => legacy :: h

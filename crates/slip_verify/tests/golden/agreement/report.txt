@@ -12,11 +12,13 @@ observer never_parsed 0
 observer failed 0
 mismatch indeterminate_only 0
 findings 0 total, 0 listed, 0 group(s)
-agreement rules 3 stale 2 unused 1
-stale rule 1 direct 2 /m/a0.cc
-stale rule 1 direct 1 /m/a1.cc
+exemption kept 1005000000000000 observers 1
+exemption kept 1006000000000000 observers 0
+agreement rules 3 stale 3 unused 1
+stale rule 0 direct 0 kept_via 1 /m/a0.cc
+stale rule 1 direct 2 kept_via 0 /m/a0.cc
+stale rule 1 direct 1 kept_via 0 /m/a1.cc
 unused rule 2
-not checked: agreement between observers for namespace rule 0
 spelling obligations 3 passed 1 failed 2
 spelling denotes_other /s/a.h:5-9 1041000000000000 observers 2 other119
 spelling unseen /s/b.h:0-3 1042000000000000 observers 0

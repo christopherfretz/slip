@@ -1,0 +1,1 @@
+# control: S() value-initialises through the implicit constructor, so the initializer is evaluated as S's (clang: len 1 on both sides)

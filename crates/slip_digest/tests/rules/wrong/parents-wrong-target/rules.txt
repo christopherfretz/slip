@@ -1,3 +1,5 @@
 # Item 9, from parents/mapped-parent: the target of the outer rule replaced by another existing namespace, a::b.
+# Before WP-111's review (F1) the table was accepted and the run found `removed a`; both rules
+# produce a::b's key, and such a table is now refused (spec/verify.md §2.1 "One way to each key").
 relocate a::b => :: x
 relocate a::b => x :: y

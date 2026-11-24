@@ -1,4 +1,6 @@
 # box<Mine> is the dependency's (its template is), so its implicit default
-# constructor is too (bullet 3): rule 4 matches nothing. Equal.
-use 2 via 1 direct 1
+# constructor is too (bullet 3): rule 4 matches nothing. Equal. Rule 2:
+# Mine moved (via 1); box<acme::Mine> is keyed under its template, not a
+# member of legacy, and acme itself is a namespace: direct 0 (WP-111).
+use 2 via 1 direct 0
 use 4 via 0 direct 0

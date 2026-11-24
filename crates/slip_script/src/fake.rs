@@ -14,7 +14,7 @@ use slip_model::{Digest, FileRef};
 
 use crate::host::Out;
 use crate::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use crate::wire::{self, Errc};
 
@@ -386,6 +386,22 @@ impl Subject for FakeSubject {
         found
     }
 
+    fn lookup_in(&self, scope: Entity, identifier: &[u8]) -> Option<Vec<Entity>> {
+        if !self.ent(scope).scope {
+            return None;
+        }
+        let mut found: Vec<Entity> = (0..self.entities.len() as u32)
+            .map(Entity)
+            .filter(|&e| {
+                self.ent(e).identifier == identifier && self.findable(e) && self.member_of(e, scope)
+            })
+            .collect();
+        found.sort_by_key(|&e| {
+            self.declarations.iter().position(|d| d.entity == e).unwrap_or(usize::MAX)
+        });
+        Some(found)
+    }
+
     fn identifier(&self, v: Value) -> Option<Vec<u8>> {
         match v {
             Value::Entity(e) => Some(self.ent(e).identifier.clone()),
@@ -541,10 +557,52 @@ impl Subject for FakeSubject {
         Some(names)
     }
 
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        let fe = self.ent(e);
+        if fe.identifier.is_empty() || self.is(e, wire::KIND_PARAMETER) {
+            return None;
+        }
+        // A reason found nearer the entity names it; a function anywhere
+        // above refuses the spelling outright.
+        let mut why = fe.origin.map(|_| Unqualified::Specialisation);
+        let mut p = fe.parent?;
+        while let Some(grand) = self.ent(p).parent {
+            let fp = self.ent(p);
+            let found = if fp.kinds & wire::KIND_FUNCTION != 0 {
+                return None;
+            } else if fp.kinds & wire::KIND_TEMPLATE != 0 {
+                Some(Unqualified::MemberOfClassTemplate)
+            } else if fp.origin.is_some() {
+                Some(Unqualified::MemberOfSpecialisation)
+            } else if fp.identifier.is_empty() && fp.kinds & wire::KIND_NAMESPACE == 0 {
+                Some(Unqualified::InUnnamedClass)
+            } else {
+                None
+            };
+            why = why.or(found);
+            p = grand;
+        }
+        why
+    }
+
     fn references_at(&self, r: Range) -> Vec<Reference> {
         (0..self.references.len() as u32)
             .map(Reference)
             .filter(|x| self.references[x.0 as usize].extent == Some(r))
+            .collect()
+    }
+
+    fn references_named_at(&self, r: Range) -> Vec<Reference> {
+        (0..self.references.len() as u32)
+            .map(Reference)
+            .filter(|x| self.references[x.0 as usize].name == Some(r))
+            .collect()
+    }
+
+    fn declarations_named_at(&self, r: Range) -> Vec<Declaration> {
+        (0..self.declarations.len() as u32)
+            .map(Declaration)
+            .filter(|d| self.declarations[d.0 as usize].name == Some(r))
             .collect()
     }
 

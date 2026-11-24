@@ -443,6 +443,7 @@ fn s8_usage_text() {
         "slip declare --plan",
         "slip units --plan",
         "--post-image",
+        "--strict-names",
         "--declared <file>",
         "--match <substring>",
         "slip --version",
@@ -504,6 +505,7 @@ fn s8_7_verify_options() {
         "--locate=0",
         "--report",
         "r.json",
+        "--strict-names",
         "--store=s",
         "-j3",
         "--only",
@@ -528,6 +530,7 @@ fn s8_7_verify_options() {
             findings: 5,
             locate: 0,
             report: Some("r.json".into()),
+            strict_names: true,
             run: RunArgs {
                 store: "s".into(),
                 jobs: Some(3),
@@ -553,6 +556,7 @@ fn s8_7_verify_options() {
             findings: DEFAULT_FINDINGS,
             locate: DEFAULT_LOCATE,
             report: None,
+            strict_names: false,
             run: default_run(),
         }
     );
@@ -571,6 +575,17 @@ fn s8_7_verify_usage_errors() {
     assert!(usage_error(&["verify", "--plan", "p", "--from", "x"]).contains("unknown option"));
     assert!(usage_error(&["verify", "--plan", "p", "--post-image"]).contains("unknown option"));
     assert!(usage_error(&["verify", "--plan", "p", "extra"]).contains("unexpected argument"));
+    // `--strict-names` takes no value, is `verify`'s alone, and is given once.
+    assert_eq!(
+        usage_error(&["verify", "--plan", "p", "--strict-names=1"]),
+        "`--strict-names` takes no value"
+    );
+    assert!(verify_args(&["verify", "--strict-names", "--plan", "p"]).strict_names);
+    assert!(
+        usage_error(&["verify", "--plan", "p", "--strict-names", "--strict-names"])
+            .contains("more than once")
+    );
+    assert!(usage_error(&["units", "--plan", "p", "--strict-names"]).contains("unknown option"));
     for twice in ["--round", "--declared", "--findings", "--locate", "--report", "--plan"] {
         let line = usage_error(&["verify", "--plan", "p", twice, "1", twice, "1"]);
         assert!(line.contains("more than once"), "{twice}: {line}");

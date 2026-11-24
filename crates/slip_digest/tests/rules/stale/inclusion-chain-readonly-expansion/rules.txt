@@ -1,0 +1,4 @@
+# WP-111 review F2 (mutant F2b): inclusion-chain-readonly-declaration with dep.h's declaration of
+# legacy::f(int) written through own2.h's macro: its name is spelled in owned own2.h, but the
+# declaration is expanded in read-only dep.h, so the dependency declares it: not counted.
+relocate legacy => :: acme

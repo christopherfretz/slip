@@ -1,6 +1,6 @@
 {
   "kind": "RSLT",
-  "version": 1,
+  "version": 2,
   "sections": {
     "result": {
       "scheme": 1,
@@ -31,21 +31,19 @@
         {
           "rule": 0,
           "observer": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-          "direct": 2
+          "direct": 2,
+          "kept_via": 0
         },
         {
           "rule": 1,
           "observer": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
-          "direct": 1
+          "direct": 0,
+          "kept_via": 3
         }
       ],
       "unused": [
         1,
         4
-      ],
-      "unchecked": [
-        0,
-        3
       ],
       "spellings": {
         "obligations": 5,

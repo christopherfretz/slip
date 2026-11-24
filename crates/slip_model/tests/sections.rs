@@ -16,6 +16,7 @@ use slip_model::edits::Edits;
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::content_digest;
 use slip_model::json::{self, Value};
+use slip_model::names::{NameNote, Names, NamesEntry};
 use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
 use slip_model::wire::{Encoder, Error, ErrorKind};
@@ -94,7 +95,7 @@ fn patch(bytes: &[u8], at: usize, from: u8, to: u8) -> Vec<u8> {
 }
 
 fn sealed(sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
-    let mut w = Writer::new(*b"SHRD", 1);
+    let mut w = Writer::new(*b"SHRD", Shard::VERSION);
     for (id, p) in sections {
         w.section(*id, p);
     }
@@ -136,6 +137,40 @@ fn raw_opt_digest(e: &mut Encoder, v: Option<Digest>) {
 
 fn raw_site(e: &mut Encoder, s: &Site) {
     e.bytes(&s.file).uv(s.line).uv(s.column).str(&s.node).str(&s.what);
+}
+
+fn raw_verdict(v: &Verdict) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.uv(v.kind as u64)
+        .digest(&v.pre)
+        .digest(&v.rules)
+        .str(&v.reason)
+        .uv(v.only_pre)
+        .uv(v.only_post)
+        .count(v.used.len());
+    for k in &v.used {
+        e.digest(k);
+    }
+    e.uv(v.total).count(v.findings.len());
+    for f in &v.findings {
+        e.uv(f.kind as u64);
+        raw_opt_digest(&mut e, f.key);
+        e.bytes(&f.file);
+        raw_opt_digest(&mut e, f.pre);
+        raw_opt_digest(&mut e, f.post);
+        e.str(&f.name);
+        match &f.location {
+            None => {
+                e.u8(0);
+            }
+            Some(w) => {
+                e.u8(1);
+                raw_site(&mut e, &w.pre);
+                raw_site(&mut e, &w.post);
+            }
+        }
+    }
+    e.into_bytes()
 }
 
 fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
@@ -193,37 +228,7 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         out.push((19, e.into_bytes()));
     }
     if let Some(v) = &s.verdict {
-        let mut e = Encoder::new();
-        e.uv(v.kind as u64)
-            .digest(&v.pre)
-            .digest(&v.rules)
-            .str(&v.reason)
-            .uv(v.only_pre)
-            .uv(v.only_post)
-            .count(v.used.len());
-        for k in &v.used {
-            e.digest(k);
-        }
-        e.uv(v.total).count(v.findings.len());
-        for f in &v.findings {
-            e.uv(f.kind as u64);
-            raw_opt_digest(&mut e, f.key);
-            e.bytes(&f.file);
-            raw_opt_digest(&mut e, f.pre);
-            raw_opt_digest(&mut e, f.post);
-            e.str(&f.name);
-            match &f.location {
-                None => {
-                    e.u8(0);
-                }
-                Some(w) => {
-                    e.u8(1);
-                    raw_site(&mut e, &w.pre);
-                    raw_site(&mut e, &w.post);
-                }
-            }
-        }
-        out.push((21, e.into_bytes()));
+        out.push((21, raw_verdict(v)));
     }
     if let Some(b) = &s.binding {
         let mut e = Encoder::new();
@@ -231,25 +236,55 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         e.digest(&b.declared).uv(b.pre);
         out.push((24, e.into_bytes()));
     }
-    if let Some(r) = &s.rule_use {
-        out.push((25, raw_rule_use(r).0));
-    }
     if let Some(x) = &s.spellings {
         out.push((26, raw_spellings(x).0));
+    }
+    if let Some(x) = &s.names {
+        out.push((27, raw_names(x).0));
+    }
+    if let Some(r) = &s.rule_use {
+        out.push((29, raw_rule_use(r).0));
     }
     out
 }
 
-/// The payload of a `rule_use` section, and the offset in it of each use.
-fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>) {
+/// The payload of a names section (WP-112, `spec/model.md` §8.7), and the
+/// offsets in it of each unit, each note and each note's name.
+fn raw_names(x: &Names) -> (Vec<u8>, Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut e = Encoder::new();
+    let (mut units, mut notes, mut names) = (Vec::new(), Vec::new(), Vec::new());
+    e.count(x.units.len());
+    for u in &x.units {
+        units.push(e.as_bytes().len());
+        e.digest(&u.key).digest(&u.names);
+    }
+    e.count(x.notes.len());
+    for n in &x.notes {
+        notes.push(e.as_bytes().len());
+        e.digest(&n.key).bytes(&n.file);
+        names.push(e.as_bytes().len());
+        e.str(&n.name);
+    }
+    (e.into_bytes(), units, notes, names)
+}
+
+/// The payload of a `rule_use` section, the offset in it of each use, and
+/// of each element of `kept`.
+fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>, Vec<usize>) {
     let mut e = Encoder::new();
     e.digest(&r.rules).count(r.uses.len());
     let mut at = Vec::new();
     for u in &r.uses {
         at.push(e.as_bytes().len());
-        e.uv(u.rule).uv(u.via).uv(u.direct);
+        e.uv(u.rule).uv(u.via).uv(u.direct).uv(u.kept_via);
     }
-    (e.into_bytes(), at)
+    e.count(r.kept.len());
+    let mut kept = Vec::new();
+    for &k in &r.kept {
+        kept.push(e.as_bytes().len());
+        e.uv(k);
+    }
+    (e.into_bytes(), at, kept)
 }
 
 /// The payload of a spellings section, and the offsets in it of each
@@ -330,6 +365,9 @@ fn map_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(Names::default()),
+        negatives: None,
+        found: None,
     }
 }
 
@@ -337,11 +375,11 @@ fn map_shard() -> Shard {
 const MAP_GROUP: &str = "db3248c61386d5aa2e494aa55c9b780e301275eacc26c569cfd147b39300323d";
 /// `tu_digest` of `map_shard`'s groups.
 const MAP_TU: &str = "8ce2bbe9792bff3bfd8902d2ef50daaf4db1fbac564d05c70e26959a3cf88ec4";
-const MAP_TRAILER: &str = "982cb92548bfb71f9a17c28c0b4af8106af98abb82a485c2a4231ecd1b1a12d7";
+const MAP_TRAILER: &str = "83f39b51dfb0d5b2503a379e3b7910e238a65b4fcdf3a3d62dea1c88ccb78967";
 
 fn map_shard_bytes() -> Vec<u8> {
     hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",
         &rep("33", 32),
         "01 00",              // header: observer, map, round 0
@@ -366,7 +404,8 @@ fn map_shard_bytes() -> Vec<u8> {
         "02  00  01  00", //   tu "" count 1, indeterminate 0   @319
         &rep("55", 32),   //     digest
         "00",             //     no units
-        "00",             // end                       @356
+        "1b 02  00  00",  // names, 2 bytes: no unit, no note   @356
+        "00",             // end                       @360
         MAP_TRAILER,
     ])
 }
@@ -431,16 +470,19 @@ fn verify_shard() -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(Names::default()),
+        negatives: None,
+        found: None,
     }
 }
 
 const VERIFY_GROUP: &str = "16616ca8c602bc6c8ebe3c4e0dcd9c1659ee02809421d7d815b05b0176c69cd6";
 const VERIFY_TU: &str = "7caedd7cdd53009ed0e15c4fac970a603d974936dd94351078141828b4ecaadc";
-const VERIFY_TRAILER: &str = "987491e0b22bfbb556631932a8535aa537ae5b1e9238946b57a57c108bb23071";
+const VERIFY_TRAILER: &str = "99e5b3f6579c40d7e217b94e61e42ed6260f5a5c942466aad35560836e452056";
 
 fn verify_shard_bytes() -> Vec<u8> {
     hex(&[
-        "53 4c 49 50 1a 0a 00 00  53 48 52 44  01 00 00 00", // magic, SHRD, version 1
+        "53 4c 49 50 1a 0a 00 00  53 48 52 44  02 00 00 00", // magic, SHRD, version 2
         "01 22",
         &rep("33", 32),
         "02 01",                // header: observer, verify, round 1
@@ -480,7 +522,8 @@ fn verify_shard_bytes() -> Vec<u8> {
         "02 2f 61  01", //     file "/a", pre         @473
         &rep("47", 32),
         "00  01 78  00", //     no post, name "x", no where   @509
-        "00",            // end                        @513
+        "1b 02  00  00", // names, 2 bytes: no unit, no note   @513
+        "00",            // end                        @517
         VERIFY_TRAILER,
     ])
 }
@@ -490,7 +533,7 @@ fn verify_shard_bytes() -> Vec<u8> {
 #[test]
 fn digests_bytes_exact() {
     let bytes = map_shard_bytes();
-    assert_eq!(bytes.len(), 389);
+    assert_eq!(bytes.len(), 393);
     assert_eq!(map_shard().to_bytes(), bytes);
     assert_eq!(raw(&map_shard()), bytes);
     assert_eq!(Shard::from_bytes(&bytes).unwrap(), map_shard());
@@ -501,7 +544,7 @@ fn digests_bytes_exact() {
 #[test]
 fn verdict_bytes_exact() {
     let bytes = verify_shard_bytes();
-    assert_eq!(bytes.len(), 546);
+    assert_eq!(bytes.len(), 550);
     assert_eq!(verify_shard().to_bytes(), bytes);
     assert_eq!(raw(&verify_shard()), bytes);
     assert_eq!(Shard::from_bytes(&bytes).unwrap(), verify_shard());
@@ -659,6 +702,9 @@ fn sample_map_shard(digests: Digests) -> Shard {
         binding: None,
         rule_use: None,
         spellings: None,
+        names: Some(Names::default()),
+        negatives: None,
+        found: None,
     }
 }
 
@@ -1091,10 +1137,12 @@ fn verdict_1_where_it_may_be() {
     assert_eq!(rejected(&s, "sections.verdict"), 206);
     let mut s = verify_shard();
     s.digests = None;
+    s.names = None;
     // Without the 142 bytes of the digests section.
     assert_eq!(rejected(&s, "sections.verdict"), 206 - 142);
     let mut s = verify_shard();
     s.digests = None;
+    s.names = None;
     s.outcome.status = Status::Rejected;
     let offset = rejected(&s, "sections.verdict");
     assert_eq!(
@@ -1458,7 +1506,7 @@ fn json_members() {
     let v = verify_shard().to_json();
     let sections = v.get("sections").unwrap().as_object().unwrap();
     let names: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(names, ["header", "outcome", "counters", "digests", "verdict"]);
+    assert_eq!(names, ["header", "outcome", "counters", "digests", "verdict", "names"]);
     let f = v.get("sections").unwrap().get("verdict").unwrap().get("findings").unwrap();
     let f0: Vec<&str> =
         f.as_array().unwrap()[0].as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
@@ -1500,11 +1548,11 @@ fn json_members() {
 }
 
 // spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 17, 24,
-// 25 and 26: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
-// reserved, UnknownSection.
+// 26 and 29: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
+// reserved, and 25 (`rule_use` before WP-111) is retired: UnknownSection.
 #[test]
 fn reserved_ids_still_unknown() {
-    for id in [16u64, 18, 20] {
+    for id in [16u64, 18, 20, 25] {
         let mut sections = raw_sections(&map_shard());
         sections.push((id, Vec::new()));
         sections.sort_by_key(|s| s.0);
@@ -1517,8 +1565,8 @@ fn reserved_ids_still_unknown() {
 }
 
 // ---------------------------------------------------------------------------
-// The sections of M2 in a verify shard: binding (24), rule_use (25) and
-// spellings (26) (spec/model.md §8, spec/verify.md §9.1, §10.4; WP-060).
+// The sections of M2 in a verify shard: binding (24), spellings (26) and
+// rule_use (29; 25 retired, WP-111) (spec/model.md §8, spec/verify.md §9.1, §10.4; WP-060).
 
 fn binding() -> Binding {
     Binding { overlay: Some(d(0x81)), declared: d(0x82), pre: 3 }
@@ -1528,10 +1576,12 @@ fn rule_use() -> RuleUse {
     RuleUse {
         rules: d(0x83),
         uses: vec![
-            Use { rule: 0, via: 2, direct: 0 },
-            Use { rule: 1, via: 0, direct: 1 },
-            Use { rule: 300, via: 1 << 60, direct: 1 << 53 },
+            Use { rule: 0, via: 2, direct: 0, kept_via: 0 },
+            Use { rule: 1, via: 0, direct: 1, kept_via: 0 },
+            Use { rule: 7, via: 0, direct: 0, kept_via: 3 },
+            Use { rule: 300, via: 1 << 60, direct: 1 << 53, kept_via: 1 << 40 },
         ],
+        kept: vec![0, 2, 1 << 33],
     }
 }
 
@@ -1594,6 +1644,7 @@ fn m2_sections_round_trip() {
             message: "e".to_owned(),
         },
         digests: None,
+        names: None,
         verdict: None,
         ..Shard { binding: Some(binding()), ..sample_verify_shard(verified()) }
     });
@@ -1612,14 +1663,15 @@ fn m2_sections_round_trip() {
             "digests",
             "verdict",
             "binding",
-            "rule_use",
-            "spellings"
+            "spellings",
+            "names",
+            "rule_use"
         ]
     );
     assert_eq!(names(sections.get("binding").unwrap()), ["overlay", "declared", "pre"]);
-    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses"]);
-    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[2];
-    assert_eq!(names(u), ["rule", "via", "direct"]);
+    assert_eq!(names(sections.get("rule_use").unwrap()), ["rules", "uses", "kept"]);
+    let u = &sections.get("rule_use").unwrap().get("uses").unwrap().as_array().unwrap()[3];
+    assert_eq!(names(u), ["rule", "via", "direct", "kept_via"]);
     assert_eq!(u.get("via").unwrap().as_str(), Some("1152921504606846976"));
     let sp = sections.get("spellings").unwrap();
     assert_eq!(names(sp), ["seen", "held", "failed"]);
@@ -1648,12 +1700,12 @@ fn m2_sections_round_trip() {
     }
 }
 
-// spec/model.md §5 rule 2, §8: 17, 24, 25 and 26 are known sections; their
+// spec/model.md §5 rule 2, §8: 17, 24, 26 and 29 are known sections; their
 // opt tags are Malformed at their first byte.
 #[test]
 fn known_sections_of_m2() {
     let bytes = m2_shard().to_bytes();
-    for id in [24, 25, 26] {
+    for id in [24, 26, 29] {
         payload_at(&bytes, id);
     }
     let b = payload_at(&bytes, 24);
@@ -1690,7 +1742,7 @@ fn m2_sections_phase_and_status() {
     };
     for (s, path, id) in [
         (only(true, false, false), "sections.binding", 24),
-        (only(false, true, false), "sections.rule_use", 25),
+        (only(false, true, false), "sections.rule_use", 29),
         (only(false, false, true), "sections.spellings", 26),
     ] {
         // A map shard.
@@ -1705,6 +1757,7 @@ fn m2_sections_phase_and_status() {
                 message: "x".to_owned(),
             },
             digests: None,
+            names: None,
             verdict: None,
             inputs: None,
             counters: Vec::new(),
@@ -1726,15 +1779,19 @@ fn m2_sections_phase_and_status() {
     // In id order: the binding's phase before the rule_use's.
     let s = Shard { phase: Phase::Map, verdict: None, ..m2_shard() };
     rejected_at(&s, "sections.binding", 24, 0);
+    // The spellings' (26) before the rule_use's (29, WP-111).
+    let s = Shard { phase: Phase::Map, verdict: None, binding: None, ..m2_shard() };
+    rejected_at(&s, "sections.spellings", 26, 0);
 }
 
-// spec/verify.md §9.1: uses strictly ascending by rule; no use with via
-// and direct both 0. Each rule over the whole list.
+// spec/verify.md §9.1, §9.2: uses strictly ascending by rule; no use with
+// all three counts 0; kept strictly ascending. Each rule over the whole
+// list.
 #[test]
 fn rule_use_invariants() {
     let with =
         |uses: Vec<Use>| Shard { rule_use: Some(RuleUse { uses, ..rule_use() }), ..m2_shard() };
-    let u = |rule, via, direct| Use { rule, via, direct };
+    let u = |rule, via, direct| Use { rule, via, direct, kept_via: 0 };
     for uses in [
         vec![u(1, 1, 0), u(0, 1, 0)],
         vec![u(1, 1, 0), u(1, 0, 1)],
@@ -1744,16 +1801,26 @@ fn rule_use_invariants() {
         let s = with(uses);
         let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[n];
         assert!(
-            rejected_at(&s, &format!("sections.rule_use.uses[{n}]"), 25, rel).contains("ascending")
+            rejected_at(&s, &format!("sections.rule_use.uses[{n}]"), 29, rel).contains("ascending")
         );
     }
     let s = with(vec![u(0, 1, 0), u(1, 0, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[1];
-    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 25, rel).contains("both 0"));
+    assert!(rejected_at(&s, "sections.rule_use.uses[1]", 29, rel).contains("all 0"));
+    // kept_via alone is a use (WP-111).
+    let s = with(vec![u(0, 1, 0), Use { kept_via: 1, ..u(1, 0, 0) }]);
+    assert_eq!(Shard::from_bytes(&s.to_bytes()).unwrap(), s);
+    for kept in [vec![1, 0], vec![2, 2], vec![0, 4, 3]] {
+        let n = kept.len() - 1;
+        let s = Shard { rule_use: Some(RuleUse { kept, ..rule_use() }), ..m2_shard() };
+        let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).2[n];
+        let got = rejected_at(&s, &format!("sections.rule_use.kept[{n}]"), 29, rel);
+        assert!(got.contains("kept is not strictly ascending"), "{got}");
+    }
     // The order rule over the whole list first.
     let s = with(vec![u(0, 0, 0), u(2, 1, 0), u(1, 1, 0)]);
     let rel = raw_rule_use(s.rule_use.as_ref().unwrap()).1[2];
-    rejected_at(&s, "sections.rule_use.uses[2]", 25, rel);
+    rejected_at(&s, "sections.rule_use.uses[2]", 29, rel);
 }
 
 // spec/verify.md §10.4: no span of count 0 or running past 2^64 - 1;
@@ -1850,4 +1917,130 @@ fn spellings_invariants() {
         0,
         "both",
     );
+}
+
+// ---------------------------------------------------------------------------
+// The names section (section 27; WP-112, spec/model.md §8.7). Each row
+// refused, at the offset and path the spec names.
+
+/// A names section of keys `units` (each with names digest `key + 0x80`)
+/// and notes on `notes`.
+fn names_of(units: &[u8], notes: &[u8]) -> Names {
+    Names {
+        units: units.iter().map(|&k| NamesEntry { key: d(k), names: d(k ^ 0x80) }).collect(),
+        notes: notes
+            .iter()
+            .map(|&k| NameNote { key: d(k), file: b"/a".to_vec(), name: format!("f{k}") })
+            .collect(),
+    }
+}
+
+/// The file offsets of the names section of `s`: its payload, each unit,
+/// each note and each note's name.
+fn names_offsets(s: &Shard) -> (usize, Vec<usize>, Vec<usize>, Vec<usize>) {
+    let at = payload_at(&raw(s), 27);
+    let (_, u, n, m) = raw_names(s.names.as_ref().unwrap());
+    let shift = |v: Vec<usize>| v.into_iter().map(|x| x + at).collect();
+    (at, shift(u), shift(n), shift(m))
+}
+
+/// A verify shard with a mismatch verdict and `names`.
+fn noted(names: Names) -> Shard {
+    Shard { names: Some(names), ..verify_shard() }
+}
+
+// names rule 1 (spec/model.md §8.7): a shard with digests has names, and
+// one without has none; refused at the digests payload, path
+// `sections.names`, in either direction.
+#[test]
+fn names_1_with_digests_and_only_with_them() {
+    let mut s = map_shard();
+    s.names = None;
+    assert_eq!(rejected(&s, "sections.names"), payload_at(&raw(&s), 19));
+    let mut s = map_shard();
+    s.digests = None;
+    let at = names_offsets(&s).0;
+    assert_eq!(rejected(&s, "sections.names"), at);
+    // Present and empty is valid, in both phases.
+    round_trip(&map_shard());
+    round_trip(&verify_shard());
+}
+
+// names rule 2: status ok only.
+#[test]
+fn names_2_status_ok() {
+    let mut s = map_shard();
+    s.digests = None;
+    s.counters.clear();
+    s.outcome =
+        Outcome { status: Status::Diagnosed, errors: 1, warnings: 0, message: "e".to_owned() };
+    let at = names_offsets(&s).0;
+    assert_eq!(rejected(&s, "sections.names"), at);
+}
+
+// names rule 3: units strictly ascending by key.
+#[test]
+fn names_3_units_ascending() {
+    for units in [&[0x02, 0x01][..], &[0x01, 0x01]] {
+        let s = Shard { names: Some(names_of(units, &[])), ..map_shard() };
+        let (_, u, _, _) = names_offsets(&s);
+        assert_eq!(rejected(&s, "sections.names.units[1]"), u[1]);
+    }
+    round_trip(&Shard { names: Some(names_of(&[0x01, 0x02], &[])), ..map_shard() });
+}
+
+// names rule 4: no note in a map shard, nor in a verify shard whose verdict
+// is not verified or mismatch; a verified one may hold notes.
+#[test]
+fn names_4_notes_only_beside_a_comparison() {
+    let s = Shard { names: Some(names_of(&[0x01], &[0x01])), ..map_shard() };
+    let (_, _, n, _) = names_offsets(&s);
+    assert_eq!(rejected(&s, "sections.names.notes[0]"), n[0]);
+    let mut s = noted(names_of(&[0x01], &[0x01]));
+    s.verdict = Some(unverifiable());
+    let (_, _, n, _) = names_offsets(&s);
+    assert_eq!(rejected(&s, "sections.names.notes[0]"), n[0]);
+    round_trip(&noted(names_of(&[0x01], &[0x01])));
+    let mut s = noted(names_of(&[0x01], &[0x01]));
+    s.verdict = Some(verified());
+    round_trip(&s);
+}
+
+// names rule 5: notes strictly ascending by key.
+#[test]
+fn names_5_notes_ascending() {
+    for notes in [&[0x02, 0x01][..], &[0x01, 0x01]] {
+        let s = noted(names_of(&[0x01, 0x02], notes));
+        let (_, _, n, _) = names_offsets(&s);
+        assert_eq!(rejected(&s, "sections.names.notes[1]"), n[1]);
+    }
+}
+
+// names rule 6: a note's key has an entry in units.
+#[test]
+fn names_6_note_key_in_units() {
+    let s = noted(names_of(&[0x01, 0x03], &[0x01, 0x02]));
+    let (_, _, n, _) = names_offsets(&s);
+    assert_eq!(rejected(&s, "sections.names.notes[1]"), n[1]);
+}
+
+// names rule 7: a note's name is at most 4096 bytes.
+#[test]
+fn names_7_note_name_length() {
+    let mut x = names_of(&[0x01, 0x02], &[0x01, 0x02]);
+    x.notes[1].name = "n".repeat(4097);
+    let s = noted(x.clone());
+    let (_, _, _, m) = names_offsets(&s);
+    assert_eq!(rejected(&s, "sections.names.notes[1].name"), m[1]);
+    x.notes[1].name = "n".repeat(4096);
+    round_trip(&noted(x));
+}
+
+// The order of the rules: an unordered unit list before a note in a map
+// shard.
+#[test]
+fn names_rules_in_order() {
+    let s = Shard { names: Some(names_of(&[0x02, 0x01], &[0x05])), ..map_shard() };
+    let (_, u, _, _) = names_offsets(&s);
+    assert_eq!(rejected(&s, "sections.names.units[1]"), u[1]);
 }

@@ -1,0 +1,4 @@
+# The unit digests are equal by digest §9 (what a name-derived string
+# prints beyond names is content, not part of the unit digest); the names
+# digest differs (WP-112).
+names-changed f<int>(int)
