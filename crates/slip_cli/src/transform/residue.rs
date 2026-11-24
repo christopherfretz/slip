@@ -121,6 +121,46 @@ fn walk(
     Ok(())
 }
 
+/// The files to scan, each file once (WP-076 fix round, should-fix 5):
+/// paths that are one file by identity (device and inode, links
+/// followed: a hard link, two spellings on a case-insensitive volume)
+/// are scanned once, under the path the edit set names, else one some
+/// observer read, else the least; with whether some observer read it
+/// under any of them. A path that cannot be looked up is its own file
+/// (reading it fails and names it).
+fn by_identity(
+    files: BTreeSet<Vec<u8>>,
+    set: &EditSet,
+    read_by_some: &[Vec<u8>],
+) -> Vec<(Vec<u8>, bool)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let read = |p: &[u8]| read_by_some.binary_search_by(|r| r.as_slice().cmp(p)).is_ok();
+    let rank = |p: &[u8]| (set.file_index(p).is_none(), !read(p));
+    let mut groups: HashMap<(u64, u64), usize> = HashMap::new();
+    let mut out: Vec<(Vec<u8>, bool)> = Vec::with_capacity(files.len());
+    for path in files {
+        let id = fs::metadata(std::ffi::OsStr::from_bytes(&path)).ok().map(|m| (m.dev(), m.ino()));
+        let was_read = read(&path);
+        match id.and_then(|id| groups.get(&id).copied()) {
+            Some(k) => {
+                // Files come in byte order: the least path is already there.
+                out[k].1 |= was_read;
+                if rank(&path) < rank(&out[k].0) {
+                    out[k].0 = path;
+                }
+            }
+            None => {
+                if let Some(id) = id {
+                    groups.insert(id, out.len());
+                }
+                out.push((path, was_read));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// §8.4: the residue of a rename request. `read_by_some` holds, sorted,
 /// the owned real paths in the `inputs` of some `ok` map shard of the
 /// round; `unparsed_mains` the main files of the unparsed observers under
@@ -143,7 +183,7 @@ pub fn residue(
     for entry in &ownership.owned {
         walk(entry, ownership, extensions, &mut files)?;
     }
-    let files: Vec<Vec<u8>> = files.into_iter().collect();
+    let files = by_identity(files, set, read_by_some);
 
     let mut edits = by_file(set.edits.iter().map(|e| (e.file, e.lo, e.hi)));
     let mut kept = by_file(set.kept.iter().map(|p| (p.file, p.lo, p.hi)));
@@ -165,7 +205,7 @@ pub fn residue(
         .collect();
 
     let scan_one = |i: usize| -> io::Result<Vec<Residue>> {
-        let path = &files[i];
+        let (path, read) = (&files[i].0, files[i].1);
         let shown = String::from_utf8_lossy(path);
         let bytes = fs::read(std::ffi::OsStr::from_bytes(path))
             .map_err(|e| io::Error::new(e.kind(), format!("{shown}: {e}")))?;
@@ -182,7 +222,6 @@ pub fn residue(
             }
             None => None,
         };
-        let read = read_by_some.binary_search(path).is_ok();
         let mut out = Vec::new();
         for h in slip_kiln::scan::scan(&bytes, name) {
             let at = |c: fn(&Covers) -> &Cover| cover.is_some_and(|x| c(x).covers(h.lo, h.hi));

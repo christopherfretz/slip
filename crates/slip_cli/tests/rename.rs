@@ -1391,3 +1391,20 @@ fn s10_2_a_given_declaration_exempts_only_what_the_set_derives() {
         assert!(!out.has_line("result "), "{name}: {out:?}");
     }
 }
+
+// §8.4 (WP-076 fix round, should-fix 5): a file is scanned once, by
+// identity. `src/hl.h` is a hard link to `src/h.h`, which the set edits:
+// the walk finds both paths, and the file's spellings of `f` are the
+// edits' (before, `hl.h`'s were `not_compiled` residue).
+#[test]
+fn s8_4_a_file_is_scanned_once_by_identity() {
+    let t = Tree::three_files("residue-identity");
+    std::fs::hard_link(t.path("src/h.h"), t.path("src/hl.h")).unwrap();
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert!(
+        out.has_line("residue: dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "{out:?}"
+    );
+    assert_eq!(out.stdout.lines().last(), Some("state verified"), "{out:?}");
+}
