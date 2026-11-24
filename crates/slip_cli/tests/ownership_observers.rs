@@ -37,7 +37,7 @@ use slip_model::formats::content_id;
 use slip_model::keys::{KeyKind, Name, Parent, Rule, RuleTable};
 use slip_model::transform::Ownership;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard};
-use slip_verify::run::{Header, Report, RunVerdict};
+use slip_verify::run::{Header, MapShard, Report, RunVerdict};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -158,10 +158,12 @@ impl Tree {
         shard
     }
 
-    fn stored_map(&self, observer: &Observer) -> Shard {
+    /// The map shard as the run reads it: its status and content id.
+    fn stored_map(&self, observer: &Observer) -> MapShard {
         let bytes =
             self.store.read_shard(&Digest([7; 32]), Phase::Map, 0, &observer.id).unwrap().unwrap();
-        Shard::from_bytes(&bytes).unwrap()
+        let shard = Shard::from_bytes(&bytes).unwrap();
+        MapShard::Read { status: shard.outcome.status, id: content_id(&bytes).unwrap() }
     }
 }
 
@@ -297,8 +299,7 @@ fn run(shape: Shape<'_>) -> Ran {
         }
         summary.push_str(line.trim_end());
         summary.push('\n');
-        let map = tree.stored_map(&o);
-        report.add(&o.id, &o.main.path, Some(&v), Some(map.outcome.status));
+        report.add(&o.id, &o.main.path, Some(&v), Some(tree.stored_map(&o)));
     }
     let verdict = report.verdict();
     let _ = writeln!(
