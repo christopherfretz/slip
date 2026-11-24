@@ -1,0 +1,4 @@
+# WP-112 (second fix round, F2): the names digest of these units differs (digest §9).
+names-changed legacy::f()
+names-changed legacy::g()
+names-changed legacy::h()

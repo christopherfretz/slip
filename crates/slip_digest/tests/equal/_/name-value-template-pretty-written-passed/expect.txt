@@ -1,0 +1,4 @@
+# The pattern passes the string on and holds no value of it; the
+# instantiation's string differs (digest §9, WP-112): every unit is
+# equal and the names digest of h<int> differs.
+names-changed h<int>(int, int)

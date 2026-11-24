@@ -519,6 +519,16 @@ fn lower_by_value(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
     w.by_value -= 1;
 }
 
+/// Raises [`Walk::in_constant`] for the operand of a `ConstantExpr`.
+fn enter_constant(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.in_constant += 1;
+}
+
+/// Lowers what [`enter_constant`] raised.
+fn leave_constant(w: &mut Walk<'_>, _: &mut Stream, _: ExprId) {
+    w.in_constant -= 1;
+}
+
 /// `ConstantExpr`: the flag word (`aux-elided`, `aux-value-hidden`), `a`,
 /// then `b`: `value?`.
 pub(crate) fn constant(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<Item>) {
@@ -532,7 +542,9 @@ pub(crate) fn constant(s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<Item>)
     if v.is_none() {
         out.push(Item::Exec(raise_by_value, e));
     }
+    out.push(Item::Exec(enter_constant, e));
     child(out, n.a, Cause::Unaccounted("ExprNode/ConstantExpr.a"));
+    out.push(Item::Exec(leave_constant, e));
     if v.is_none() {
         out.push(Item::Exec(lower_by_value, e));
     }

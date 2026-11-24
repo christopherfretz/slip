@@ -449,7 +449,8 @@ fn declared(d: &Digested, key: &slip_model::Digest) -> Vec<(GroupClass, slip_mod
 
 /// The judgment of a case (the head of this file).
 fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
-    if e.lines.is_empty() {
+    let lines = common::pairs::without_names(&e.lines);
+    if lines.is_empty() {
         if e.exact {
             return Err("`exact derived` in an equal case".into());
         }
@@ -461,6 +462,7 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
         if let Err(p) = common::pairs::judge_equal(a, b) {
             problems.push(p);
         }
+        problems.extend(common::pairs::judge_names(&e.lines, a, b, true));
         return if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) };
     }
     let (ia, ka) = hard(a);
@@ -494,7 +496,7 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
     if e.exact {
         got.extend(dd);
     } else {
-        for line in e.lines.iter().filter(|l| l.is_derived()) {
+        for line in lines.iter().filter(|l| l.is_derived()) {
             let n = line.name().to_owned();
             let holds = match line {
                 Expect::DerivedAdded(_) | Expect::DerivedRemoved(_) => dd.contains(line),
@@ -511,12 +513,14 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
             }
         }
     }
-    if got == e.lines {
-        return Ok(());
+    let mut problems = common::pairs::judge_names(&e.lines, a, b, false);
+    if got != lines {
+        let missing: Vec<String> = lines.difference(&got).map(Expect::line).collect();
+        let extra: Vec<String> = got.difference(&lines).map(Expect::line).collect();
+        problems
+            .push(format!("expected but not seen: {missing:?}\nseen but not expected: {extra:?}"));
     }
-    let missing: Vec<String> = e.lines.difference(&got).map(Expect::line).collect();
-    let extra: Vec<String> = got.difference(&e.lines).map(Expect::line).collect();
-    Err(format!("expected but not seen: {missing:?}\nseen but not expected: {extra:?}"))
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
 
 /// One case: its table, its two sides, the judgment and the counts, under

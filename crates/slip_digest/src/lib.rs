@@ -317,6 +317,26 @@ pub struct Output {
     /// entity of the walk has, as indices into that list, ascending
     /// (`spec/verify.md` §9.2); empty when `rule_use` is.
     pub kept: Vec<u64>,
+    /// The names digests (`spec/digest.md` §9 "The names digest", WP-112):
+    /// one per key whose units hold a name-derived string written
+    /// symbolically, sorted by key; empty when the translation unit holds
+    /// none.
+    pub name_strings: Vec<NamesUnit>,
+}
+
+/// The names digest of one key (`Output::name_strings`), with what a note
+/// about it shows (`spec/verify.md` §6, §7.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamesUnit {
+    pub key: Digest,
+    /// The digest of the bytes of the name-derived strings its units hold
+    /// symbolically, in the order the walk writes them, each after what
+    /// its symbolic form holds (digest §9).
+    pub names: Digest,
+    /// The file of the key's first unit that has one (its group's file).
+    pub file: Vec<u8>,
+    /// That unit's name, as `Output::names` gives it.
+    pub name: String,
 }
 
 /// Why a unit is indeterminate (`spec/digest.md` §10).

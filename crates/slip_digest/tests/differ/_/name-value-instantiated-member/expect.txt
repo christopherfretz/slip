@@ -1,3 +1,5 @@
 exact derived
 changed S::m()
 derived-changed S<int>::m()::<definition>
+# WP-112: the names digest of this unit differs (digest §9).
+names-changed S<int>::m()
