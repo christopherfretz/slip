@@ -476,11 +476,12 @@ fn s5_1_verify_a_correct_rename() {
         assert_eq!(counter(&shard, "verify.spelling.not_seen"), Some(0));
         let via: u64 = rule_use.uses.iter().map(|u| u.via).sum();
         match main {
-            "a.cpp" | "b.cpp" => {
-                assert!(via > 0, "{main}: {rule_use:?}");
-                assert!(expected > 0, "{main} reads an edited file");
-            }
+            "a.cpp" | "b.cpp" => assert!(via > 0, "{main}: {rule_use:?}"),
             _ => assert!(rule_use.uses.is_empty(), "{main}: {rule_use:?}"),
+        }
+        // `a.cpp`'s call of `f` is a reference: an obligation.
+        if main == "a.cpp" {
+            assert!(expected > 0, "a.cpp reads a reference the rename spells");
         }
     }
     assert_eq!(tree.snapshot(), before, "the verify job writes no file of the subject");
@@ -736,4 +737,84 @@ fn s10_4_a_tree_image_has_no_spellings() {
             assert_eq!(b.overlay, None);
         }
     }
+}
+
+// spec/verify.md §5.1 "Loading", WP-066's F8: an overlay file reached by
+// another path than the overlay's (a hard link: Kiln matches an entry by
+// identity). `c.cpp`'s edit includes `v2.h`, a hard link of `v.h`, which
+// the overlay names. The first parse reads `v2.h` from disk; it is the
+// overlay file `v.h` by identity, so it is given and the observer parsed
+// again; the second parse reads it through the overlay. Verified, with
+// `v2.h`'s input the overlay's bytes.
+#[test]
+fn s5_1_loading_an_overlay_file_by_identity() {
+    let tree = Tree::new("identity");
+    std::fs::hard_link(tree.subject.join("v.h"), tree.subject.join("v2.h")).unwrap();
+    let (o, _, declared) = tree.map_c();
+    let c_post = "#include \"w.h\"\n#include \"v2.h\"\nint c = V;\n";
+    let mut overlay = tree.include_overlay(&[]);
+    let c = overlay.find(&tree.path("c.cpp")).unwrap();
+    overlay.files[c].post = content(c_post.as_bytes());
+    let ovly = tree.put_overlay(&overlay, &[c_post.as_bytes(), V_POST.as_bytes()]);
+    let shard = tree.verify_task(&o, ovly, declared).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    let inputs = shard.inputs.as_ref().unwrap();
+    let v2 = inputs.iter().find(|f| f.path == tree.path("v2.h")).expect("v2.h read");
+    assert_eq!(v2.content, content_digest(V_POST.as_bytes()));
+}
+
+// WP-074's guards of the overlay form (spec/landed/exec/WP-074.md §5): an
+// overlay made from another `c.cpp` than the map phase read (the subject's
+// sums), and a header that appeared, after the map phase, where the map
+// parse looked for one and found none (N1 over every negative input).
+#[test]
+fn s5_3_subject_sums_and_n1() {
+    let tree = Tree::new("sums");
+    let (o, _, declared) = tree.map_c();
+    let mut overlay = tree.include_overlay(&[]);
+    let c = overlay.find(&tree.path("c.cpp")).unwrap();
+    overlay.files[c].pre = content(b"int c = 1;\n");
+    let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
+    let shard = tree.verify_task(&o, ovly, declared).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    let c = String::from_utf8(tree.path("c.cpp")).unwrap();
+    assert_eq!(
+        reason(&shard),
+        format!("pre-image: the overlay was made from another {c} than the map phase read")
+    );
+
+    // `n.cpp` includes `<w.h>` searching `i/` before the subject: the map
+    // parse looked for `i/w.h` and found none.
+    let i = tree.base.join("i");
+    std::fs::create_dir_all(&i).unwrap();
+    std::fs::write(tree.subject.join("n.cpp"), "#include <w.h>\nint n = W;\n").unwrap();
+    let mut n = observer_of(&tree.subject, "n.cpp", 5);
+    let flags = [format!("-I{}", i.display()), format!("-I{}", tree.subject.display())];
+    n.command.argv.splice(2..2, flags.iter().map(|f| f.as_bytes().to_vec()));
+    n.id = n.command.observer_id();
+    let shard = tree.map(&n, None).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    tree.store.publish_shard(&tree.plan_id, Phase::Map, ROUND, &n.id, &shard.to_bytes()).unwrap();
+    let good = tree.put_overlay(&tree.include_overlay(&[]), &[]);
+    let shard = tree.verify_task(&n, good, declared).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Verified, "{}", reason(&shard));
+    std::fs::write(i.join("w.h"), "#define W 1\n").unwrap();
+    let shard = tree.verify_task(&n, good, declared).unwrap();
+    assert_eq!(kind(&shard), VerdictKind::Unverifiable);
+    let w = i.join("w.h");
+    assert_eq!(reason(&shard), format!("pre-image: {} appeared since the map phase", w.display()));
+}
+
+// spec/verify.md §5.1 "Loading": a blob of the right digest but not of the
+// size the overlay gives fails the job.
+#[test]
+fn s5_1_a_blob_of_another_size_fails_the_job() {
+    let tree = Tree::new("size");
+    let (o, _, declared) = tree.map_c();
+    let mut overlay = tree.include_overlay(&[]);
+    let v = overlay.find(&tree.path("v.h")).unwrap();
+    overlay.files[v].post.size += 1;
+    let ovly = tree.put_overlay(&overlay, &[C_POST.as_bytes(), V_POST.as_bytes()]);
+    let e = tree.verify_task(&o, ovly, declared).unwrap_err();
+    assert!(e.contains(&format!("has {} bytes; the overlay {ovly} gives", V_POST.len())), "{e}");
 }
