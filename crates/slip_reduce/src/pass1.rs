@@ -176,6 +176,18 @@ pub(crate) fn read(ctx: &Ctx<'_>, index: usize) -> Result<Read, String> {
             }
         }
     }
+    // §5.1: a rule that no rule table may hold (`spec/verify.md` §2.1,
+    // `Rule::refusal`) is not an observer's to give.
+    for (j, r) in edits.renamed.iter().enumerate() {
+        if let Some(what) = r.refusal() {
+            return Err(format!("edits.renamed[{j}] is a rule no table may hold: {what}"));
+        }
+    }
+    for (j, s) in edits.subjects.iter().enumerate() {
+        if let Some(what) = s.rule.as_ref().and_then(Rule::refusal) {
+            return Err(format!("edits.subjects[{j}].rule is a rule no table may hold: {what}"));
+        }
+    }
     let is_subject = |k: &Digest| edits.subjects.binary_search_by(|s| s.id.cmp(k)).is_ok();
     for (j, l) in edits.links.iter().enumerate() {
         if !is_subject(&l.a) || !is_subject(&l.b) {

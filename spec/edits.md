@@ -532,8 +532,10 @@ the job.
 Checked in this order, the claim rules for each claim in turn. That a
 subject of a claim or a link names a subject of the shard, that a
 subject's `id` and `rule` belong together, that `files` agrees with
-`inputs`, and that a `replace` is in an owned file, are checked by reduce
-(§5.1), which reports them as `Input` errors naming the shard.
+`inputs`, that a `replace` is in an owned file, and that no rule of
+`renamed` or of a subject is one that no rule table may hold, are
+checked by reduce (§5.1), which reports them as `Input` errors naming
+the shard.
 
 ### 4.8 From a run output
 
@@ -581,7 +583,11 @@ an observer is its position in the plan.
 - Every `ok` shard must have an `edits` section with `scheme` 1 and
   `transform` the request's id. Otherwise reduce fails with an `Input`
   error naming the shard. A shard that breaks a rule of §4.7's last
-  paragraph fails the same way.
+  paragraph fails the same way, and so does one whose `renamed`, or the
+  `rule` of one of its subjects, holds a rule that no rule table may hold
+  (`verify.md` §2.1: an identity rule, a rule on a specialisation or a
+  part, a namespace rule between a named and an unnamed namespace;
+  `Rule::refusal`).
 - An `ok` shard with a `failure` is a **failed run**. Reduce records the
   failure (§6) and takes nothing else from the shard.
 - If no shard is `ok` and without a failure, the edit set is refused with
@@ -1006,11 +1012,16 @@ refused one has none.
     which are also the set's `rules`; and
   - the `rule` of every selected subject and follower that has one.
 
-  Two rules with one `(parent, kind, name, disc)` and different targets,
-  or two rules of a kind other than `namespace` with one target
-  `(to_parent, kind, to_name, disc)` and different `(parent, name)`,
+  Two rules with one `(parent, kind, name, disc)` and different targets
   refuse the edit set with `rule_conflict`: two observers disagree about
-  what an entity is renamed to. (Namespaces may merge, `verify.md` §2.1.)
+  what an entity is called in the pre-image. So do two rules, of any
+  kind, with one target `(to_parent, kind, to_name, disc)` and different
+  `(parent, name)`: two entities of the post-image are called one key of
+  the pre-image, which no rule table holds (`verify.md` §2.1, "One way to
+  each key"). What `verify.md` §2.1 calls "Namespaces merge" is one rule
+  whose target is also the key of a namespace that the post-image still
+  has unmapped, never two rules; a namespace split in two is declared per
+  member or per nested namespace (`verify.md` §2.3).
 - **`changed`**: the keys of the `changed` entries that are in force: an
   edit of the set shares a byte with the entry's place.
 - **`created`, `removed`**: empty.
@@ -2266,7 +2277,8 @@ and nothing under it.
   disagreement in `files`, in `inputs` and in a copied file; unparsed
   observers; a failed run; the declared changes of §6.2, with a `changed`
   entry in force and one whose edit was rejected; `rule_conflict` both
-  ways and the namespace exception; `no_edit`.
+  ways, for namespaces too (two namespace rules of one target refused,
+  one accepted); an identity rule as an `Input` error; `no_edit`.
 - `crates/slip_reduce/tests/pieces.rs` — §5.3, §5.4, §5.5: strict
   identity (the same text as a literal, as a spelled piece, with another
   key: `divergent`); crossing edits; an edit crossing a copied range; an

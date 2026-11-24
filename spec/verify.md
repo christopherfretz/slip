@@ -143,6 +143,8 @@ needs no map.
 - **Namespaces merge.** A rule of kind `namespace` may give its entity the
   key that another namespace of the post-image has: `acme` mapped to
   `legacy` while `legacy` still exists for the entities that stay in it.
+  That is one rule beside a namespace that no rule maps, never two rules
+  of one target, which "One way to each key" refuses.
   The two are then one unit (`digest.md` §3.4); if their digests differ
   there are two units with one key, and the comparison reports it (§4).
   For every other kind, two entities with one mapped key are a collision
