@@ -107,7 +107,10 @@ real path (`canonicalize`) is walked:
   call in apply), and a component passes only when it is, byte for byte, a
   listed name. A component that is not is the listed name that is the
   same file (`lstat`, device and inode), found among the names equal to it
-  but for ASCII case, then the non-ASCII names, then the rest; a component
+  but for ASCII case, then the non-ASCII names; if neither has it, the
+  directory is listed again (once per walk: a file made since the
+  listing is a name of the new one), and only then are the rest of the
+  names tried, over the fresh listing; a component
   with a non-ASCII byte, or with no ASCII letter in a directory not yet
   decided, always lists its directory (a casefolding directory finds a
   stored `1\u{200B}3` as `13`; it compares a name that is not UTF-8 by its

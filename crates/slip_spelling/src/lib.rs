@@ -314,13 +314,22 @@ impl<L: Lookup> Spelling<L> {
             return Ok((name.to_vec(), id));
         }
         let id = self.lstat(path, &at)?.ok_or_else(missing)?;
-        let mut found = self.by_identity(path, dir_path, names, name, id)?;
-        if found.is_empty() && relisted.insert(dir) {
-            let names = self.listing(state, path, dir_path, true)?;
-            if names.contains(name) {
-                return Ok((name.to_vec(), id));
-            }
-            found = self.by_identity(path, dir_path, names, name, id)?;
+        // The near tiers against the cached listing first; a file made
+        // since the listing (every temporary file in a listed directory)
+        // is then one re-listing, not one `lstat` per name of the
+        // directory. Only then every tier, over the fresh listing.
+        let mut found = self.by_identity(path, dir_path, names, name, id, NEAR)?;
+        if found.is_empty() {
+            let names = if relisted.insert(dir) {
+                let names = self.listing(state, path, dir_path, true)?;
+                if names.contains(name) {
+                    return Ok((name.to_vec(), id));
+                }
+                names
+            } else {
+                names
+            };
+            found = self.by_identity(path, dir_path, names, name, id, ALL)?;
         }
         if found.len() == 1 {
             return Ok((found.swap_remove(0), id));
@@ -361,9 +370,10 @@ impl<L: Lookup> Spelling<L> {
     }
 
     /// The listed names that are the file `id`, from the first of these
-    /// that has any: the names equal to `name` but for ASCII case; the
-    /// names with a non-ASCII byte, or equal to it under Unicode lower
-    /// case (the Kelvin sign for `k`); every other name.
+    /// tiers (the first `tiers` of them) that has any: the names equal to
+    /// `name` but for ASCII case; the names with a non-ASCII byte, or
+    /// equal to it under Unicode lower case (the Kelvin sign for `k`);
+    /// every other name.
     fn by_identity(
         &self,
         path: &[u8],
@@ -371,6 +381,7 @@ impl<L: Lookup> Spelling<L> {
         names: &HashSet<Vec<u8>>,
         name: &[u8],
         id: Id,
+        tiers_asked: usize,
     ) -> Result<Vec<Vec<u8>>, SpellingError> {
         let lower = String::from_utf8_lossy(name).to_lowercase();
         let mut tiers: [Vec<&Vec<u8>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
@@ -384,7 +395,7 @@ impl<L: Lookup> Spelling<L> {
             };
             tiers[tier].push(n);
         }
-        for mut tier in tiers {
+        for mut tier in tiers.into_iter().take(tiers_asked) {
             tier.sort();
             let mut found = Vec::new();
             for n in tier {
@@ -399,6 +410,11 @@ impl<L: Lookup> Spelling<L> {
         Ok(Vec::new())
     }
 }
+
+/// The tiers of [`Spelling::by_identity`] tried against a cached listing
+/// before it is listed again, and all of them.
+const NEAR: usize = 2;
+const ALL: usize = 3;
 
 /// The process-wide walk over the disk, shared by every thread.
 pub fn disk() -> &'static Spelling<Disk> {

@@ -33,6 +33,7 @@ struct Fake {
     seen: RefCell<HashSet<Vec<u8>>>,
     folded_lookups: RefCell<u64>,
     names_calls: RefCell<Vec<Vec<u8>>>,
+    lstats: RefCell<Vec<Vec<u8>>>,
     /// Entries not there yet.
     hidden: RefCell<BTreeSet<Vec<u8>>>,
     next: u64,
@@ -191,6 +192,7 @@ impl Fake {
 
 impl Lookup for Fake {
     fn lstat(&self, p: &[u8]) -> io::Result<Option<Id>> {
+        self.lstats.borrow_mut().push(p.to_vec());
         Ok(self.find(p).map(|s| self.entries[&s]))
     }
 
@@ -400,6 +402,31 @@ fn a_name_made_since_the_listing() {
     s.lookup().hidden.borrow_mut().clear();
     assert_eq!(ok(&s, "/r/New"), "/r/new");
     assert_eq!(s.lookup().listings_of("/r"), 2);
+}
+
+/// Cost: a file made since its directory was listed costs one listing
+/// and no `lstat` of the directory's other names; a respelled name in a
+/// cached listing costs no listing.
+#[test]
+fn a_new_file_in_a_big_listed_directory() {
+    let mut fake = Fake::new().folds("/r");
+    for i in 0..1000 {
+        fake = fake.file(&format!("/r/f{i:04}"), 1);
+    }
+    let s = Spelling::new(fake.file("/r/new", 1).hide("/r/new"));
+    assert_eq!(ok(&s, "/r/f0000"), "/r/f0000");
+    assert_eq!(s.lookup().listings_of("/r"), 1);
+    s.lookup().hidden.borrow_mut().clear();
+    s.lookup().lstats.borrow_mut().clear();
+    assert_eq!(ok(&s, "/r/new"), "/r/new");
+    assert_eq!(s.lookup().listings_of("/r"), 2, "one names call");
+    let others = |s: &Spelling<Fake>| {
+        s.lookup().lstats.borrow().iter().filter(|p| p.starts_with(b"/r/f")).count()
+    };
+    assert_eq!(others(&s), 0, "no lstat of the other names");
+    assert_eq!(ok(&s, "/r/F0001"), "/r/f0001");
+    assert_eq!(s.lookup().listings_of("/r"), 2, "a respelled name: no names call");
+    assert_eq!(others(&s), 1, "the one name equal but for case");
 }
 
 /// Not there, and not a path.
