@@ -820,6 +820,36 @@ template <class T> requires Big<decltype(make(T()))> int f(T) { return 1; }
 int u = f(lib::X());   // the slot of Big<...> holds lib::make
 ```
 
+## 5.12 Kiln's answers to §5.11 (2026-11-24)
+
+Run by Kiln at the tip of its landing queue, 31 commits past Slip's
+pin. The work-package numbers are Kiln's.
+
+| Item | Answer | Kiln's row |
+|---|---|---|
+| A array bounds | Slip's probe of the pin is right; Kiln's answer in §5.8 described a change (written bounds kept in ordinary code and for a bound that is not dependent) that is in its landing queue and on neither its main nor Slip's pin. A bound made by substitution is value only at the tip too | WP-3015 (queued): ordinary and non-dependent bounds. WP-3580: the substituted bound, and the parameter's type before adjustment |
+| B adjusted parameter | confirmed: an instantiated parameter loses its original type | WP-3581 |
+| C pack index | confirmed: no sugar and no index expression after substitution; a limit until then | WP-3582 |
+| D deduced type | no fact at the tip: `auto`, `decltype(auto)` and a plain type look alike; and Kiln's own walk of written expressions follows a deduced type, against its `spec/types.md` §8.4 | WP-3583: a placeholder kind on the variable; the walk stops at a deduced type |
+| E1 concept-id's arguments | the substituted concept-id and the nested requirement are built and dropped; stage 2 keeps them. **New defect found**: an unqualified call resolved by argument-dependent lookup inside a constraint or a generic lambda has no per-specialisation row (a qualified call has) | stage 2; WP-3584 (launched) |
+| E2, E3 partly checked concept-id | the per-argument results exist only as locals; a nested requirement that fails whole and passes atom by atom becomes the literal `true` | WP-3585, in the stage 2 design |
+| E4 the uncached path | a member with one template level is cached; a member template walks its constraint again at every use, its atoms hit the atom cache | WP-3586 (optional) |
+| E5 second use | Kiln (and GCC 16) keep the alias's first binding; clang 19 and 22 substitute again. Ill-formed, no diagnostic required. A limit | WP-3587 (documented) |
+| F lost to a non-template | at the default compatibility level (22) a perfect non-template match skips the template's deduction: no specialisation, no rows. At level 19, or with a match that is not perfect, both are kept | WP-3588 (documented, with a test) |
+| G written types in expressions | every listed operand keeps its written type, in ordinary code and in instances, except a compound literal of array type `(T[]){...}` | WP-3589: a spec subsection that states the stability; the compound literal fixed |
+
+Also answered: the internal error in class template argument
+deduction (a guide's parameter types still name the constructor's own
+parameters; WP-3590, launched); and `spec/ast.md` §18.9.4: true for
+member templates, but "every node an instantiation rebuilds is a
+pattern node of its entry" has eight exceptions, which WP-3591 lists
+(asked for inline; `docs/wp/WP-154.md` depends on it).
+
+Slip asked for the order: WP-3584 first (the rename plans from those
+rows), then WP-3015 with 3580 and 3581 (the array-bound site), then
+3583, 3589; and that the second pin move's list say which of them are
+on Kiln's main.
+
 ## 6. Still open between Slip and Kiln
 
 1. **The form** (§5.3), ruled as roots for all four kinds: the cost
