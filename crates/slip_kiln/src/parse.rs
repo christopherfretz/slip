@@ -490,6 +490,7 @@ fn new_shard(
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     }
 }
 

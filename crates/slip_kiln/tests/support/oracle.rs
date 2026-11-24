@@ -97,6 +97,7 @@ pub fn old_shard(
         rule_use: None,
         spellings: None,
         negatives: None,
+        found: None,
     })
 }
 
