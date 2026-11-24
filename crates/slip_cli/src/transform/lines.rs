@@ -240,10 +240,6 @@ pub fn edit_set_details(
         if r.reason != Reason::None {
             line.extend_from_slice(format!(" {}", r.reason.name()).as_bytes());
         }
-        if r.reason == Reason::NoHolder {
-            // §10.5: what `no_holder` means, at the place that follows.
-            line.extend_from_slice(b" (the front end records no declaration holding the name)");
-        }
         line.push(b':');
         let display = r
             .subject
@@ -323,8 +319,15 @@ pub fn edit_set_details(
     let _ = writeln!(
         out,
         "instances: {n_edited} edited, {} refused; a specialisation made only outside the run is \
-         not checked",
-        at.len() - n_edited
+         not checked{}",
+        at.len() - n_edited,
+        if n_edited > 0 {
+            // `spec/edits.md` §10.5: the holder of an edited dependent
+            // name differs until dependent names are compared mapped.
+            "; the run cannot verify a name edited here until dependent names are compared mapped"
+        } else {
+            ""
+        }
     );
     let instances = set.instances.iter().map(|s| {
         let i = &s.instance;

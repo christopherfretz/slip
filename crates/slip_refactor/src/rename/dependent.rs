@@ -27,10 +27,18 @@
 //!
 //! | The rows | Claim |
 //! |---|---|
-//! | every one binds the name to a subject | `replace` (literal piece), the holder's `changed` entry; `refuse(no_holder)` when there is no holder; `refuse(instantiated)` under `dependent: refuse` (item 4) |
+//! | every one binds the name to a subject | `replace` (literal piece); `refuse(instantiated)` under `dependent: refuse` (item 4) |
 //! | none binds a subject, and one binds a declaration named like the old name | `keep` |
 //! | some bind a subject and some do not | `refuse(mixed_instances)` |
 //! | no row is evidence, or no row binds a declaration named like the old name | `unresolved` |
+//!
+//! Row 2 is read only under `dependent: offer` or `refuse`. Under
+//! `leave`, the request's default until dependent names are compared
+//! mapped (`docs/wp/WP-154.md`), every dependent name is `unresolved`
+//! (residue `dependent`), as before this package. A `replace` here gives
+//! no `changed` entry: no unit is withdrawn from the comparison for a
+//! token (WP-139's second review), so the holder of an edited name
+//! differs and the run is not verified, loudly, until then.
 //!
 //! A row whose entity is not named like the old name is not a subject
 //! and is counted with those that "do not" bind one, but alone it makes
@@ -94,7 +102,8 @@ struct Bound {
 
 /// Claims `name` from its rows.
 fn claim(ctx: &mut Ctx<'_, '_, '_>, name: &DependentName, rows: &[Row]) {
-    if name.role == Role::UsingDecl {
+    // `dependent: leave` (the default): row 2 is not read (§9.4).
+    if name.role == Role::UsingDecl || ctx.request.dependent == Dependent::Leave {
         ctx.claims.unresolved(&ctx.sites, name.name);
         return;
     }
@@ -114,15 +123,12 @@ fn claim(ctx: &mut Ctx<'_, '_, '_>, name: &DependentName, rows: &[Row]) {
         (false, false) => {
             if ctx.request.dependent == Dependent::Refuse {
                 ctx.claims.refuse(&ctx.sites, name.name, &subjects, Reason::Instantiated);
-            } else if let Some(key) = holder(ctx, name.enclosing) {
-                ctx.claims.replace(&ctx.sites, name.name, &subjects, Written::Literal);
-                let mut reason = b"dependent name ".to_vec();
-                reason.extend_from_slice(ctx.old);
-                ctx.claims.changed(name.name, key, reason);
             } else {
-                // No holder to exempt: the pattern's unit would differ and
-                // the run could not verify (§9.4, "The holder").
-                ctx.claims.refuse(&ctx.sites, name.name, &subjects, Reason::NoHolder);
+                // No `changed` entry: no unit is withdrawn from the
+                // comparison for a token (WP-139's second review). The
+                // holder differs, and the run is not verified, until
+                // dependent names are compared mapped (§9.4).
+                ctx.claims.replace(&ctx.sites, name.name, &subjects, Written::Literal);
             }
             record(ctx, name.name, &bound);
         }
@@ -146,13 +152,6 @@ fn bound(ctx: &mut Ctx<'_, '_, '_>, row: Row) -> Option<Bound> {
         None
     };
     Some(Bound { row, subject, named })
-}
-
-/// The key of the unit whose stream holds a name enclosed by `enclosing`
-/// (§9.4, "The holder"), if it has one.
-fn holder(ctx: &mut Ctx<'_, '_, '_>, enclosing: Option<DeclId>) -> Option<KeyId> {
-    let unit = ctx.keys.unit_of(enclosing?)?;
-    ctx.keys.key_id(unit).ok()
 }
 
 /// Records the instances of the claim at `name`: one per row that is

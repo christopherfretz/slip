@@ -2,3 +2,4 @@ spec: edits.md §9.4 (T::f() bound by an instantiation to a subject: refuse mixe
 from: n::S::f
 to: g
 kind: function
+dependent: offer

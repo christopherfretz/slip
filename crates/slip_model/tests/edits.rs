@@ -1009,7 +1009,7 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 13), // reason
+        (187, 0, 12), // reason
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -1071,8 +1071,10 @@ fn edits_unlisted_values() {
 
 // spec/edits.md §4.2: every value of `Reason` is written as its number
 // and read back, in binary and in JSON (by its name); the number after
-// the last, 13, is Malformed (`edits_unlisted_values`). `directive` (10)
-// was added by WP-068, `instantiated` (11) and `no_holder` (12) by WP-139.
+// the last, 12, is Malformed (`edits_unlisted_values`). `directive` (10)
+// was added by WP-068, `instantiated` (11) by WP-139. (WP-139's fix round
+// added `no_holder` as 12 and its second review dropped it before any
+// release: 12 is unlisted again.)
 #[test]
 fn edits_reason_values() {
     let all = [
@@ -1087,7 +1089,6 @@ fn edits_reason_values() {
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
-        (Reason::NoHolder, 12, "no_holder"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");
@@ -2302,14 +2303,15 @@ fn transform_rename_names() {
     // Every component is checked, the first bad one reported.
     refused(&with(&[b"a", b"1", b"int"], b"g"), "sections.transform.rename.target[1]");
 }
-
+// spec/model.md §1 rule 6, §2, §5.4: the request's enumerations (`dependent`: 3 is
+// unlisted, 2 is `leave`), its bool
 // spec/model.md §1 rule 6, §2, §5.4: the request's enumerations, its bool
 // and opt tags; the section is required; unknown sections.
 #[test]
 fn transform_structural() {
     let bytes = rename_bytes();
     for (at, from, to) in
-        [(18, 1, 3), (18, 1, 0), (31, 1, 2), (32, 1, 2), (38, 1, 3), (41, 0, 2), (42, 0, 2)]
+        [(18, 1, 3), (18, 1, 0), (31, 1, 2), (32, 1, 2), (38, 1, 3), (41, 0, 3), (42, 0, 2)]
     {
         assert_eq!(
             error(Transform::from_bytes(&patch(&bytes, at, from, to))),

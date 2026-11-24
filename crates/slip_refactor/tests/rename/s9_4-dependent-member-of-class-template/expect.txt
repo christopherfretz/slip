@@ -6,6 +6,5 @@ claims:
   main.cpp:2:36+1 replace "g" t0 votes=1 none [089ac656]
   main.cpp:3:36+1 replace "g" t0 votes=1 none [089ac656]
 changed:
-  cd2ece07 main.cpp:3:36+1 dependent name f
 instances:
   main.cpp:3:36+1 e5ebe759 n::t<n::S<int>>(n::S<int>) [089ac656]

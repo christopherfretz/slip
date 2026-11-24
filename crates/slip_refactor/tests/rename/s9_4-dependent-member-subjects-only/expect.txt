@@ -11,9 +11,6 @@ claims:
   main.cpp:4:51+1 replace "g" t0 votes=1 none [85f5d4ed]
   main.cpp:4:59+1 replace "g" t0 votes=1 none [85f5d4ed]
 changed:
-  c0b8103f main.cpp:4:43+1 dependent name f
-  c0b8103f main.cpp:4:51+1 dependent name f
-  c0b8103f main.cpp:4:59+1 dependent name f
 instances:
   main.cpp:4:43+1 7a3aeeab n::t<n::S>(n::S, n::S *) [d53c5070]
   main.cpp:4:51+1 7a3aeeab n::t<n::S>(n::S, n::S *) [85f5d4ed]

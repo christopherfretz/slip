@@ -126,15 +126,6 @@ pub enum Reason {
     /// Added by WP-139, item 8: `mixed_instances` is the name some
     /// instantiations bind to a subject and some to another declaration.
     Instantiated = 11,
-    /// A dependent name every instantiation binds to a subject, whose
-    /// `replace` would have no holder to exempt (§9.4, "The holder"): the
-    /// front end records no declaration enclosing it (an alias template's
-    /// pattern, a requires-clause, at the pin), no unit holds it, or the
-    /// unit has no key. The edit could not verify, so the site is refused.
-    /// When the front end records the enclosing declaration the refusal
-    /// goes with no change to the rename. Added by WP-139 (the ruling on
-    /// its finding 2).
-    NoHolder = 12,
 }
 
 /// The bits of `Claim::tiers` (§2.2, §4.2): bit t for tier t, bit 4 for X.

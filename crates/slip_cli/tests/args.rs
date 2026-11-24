@@ -748,7 +748,8 @@ fn s8_9_units_options() {
 }
 
 /// `spec/edits.md` §10.1 (`docs/wp/WP-139.md` item 4): `--dependent`
-/// takes `offer` or `refuse`, and nothing else, as the usage error says.
+/// takes `offer`, `refuse` or `leave`, and nothing else, as the usage
+/// error says.
 /// No command of this version takes the option (`map` and `rename` are
 /// `docs/wp/WP-076.md`'s); its value is parsed as theirs will be.
 #[test]
@@ -756,8 +757,10 @@ fn s10_1_dependent_values() {
     use slip_model::transform::Dependent;
     assert_eq!(args::parse_dependent("offer".as_ref()), Ok(Dependent::Offer));
     assert_eq!(args::parse_dependent("refuse".as_ref()), Ok(Dependent::Refuse));
+    assert_eq!(args::parse_dependent("leave".as_ref()), Ok(Dependent::Leave));
+    assert_eq!(Dependent::default(), Dependent::Leave);
     for bad in ["", "Offer", "refused", "offer "] {
         let e = args::parse_dependent(bad.as_ref()).unwrap_err();
-        assert!(e.0.contains("is not `offer` or `refuse`"), "{bad:?}: {e:?}");
+        assert!(e.0.contains("is not `offer`, `refuse` or `leave`"), "{bad:?}: {e:?}");
     }
 }

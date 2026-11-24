@@ -135,9 +135,8 @@ pub(crate) fn run(
     refs::claim(&mut ctx, &hits);
     dependent::claim_all(&mut ctx);
 
-    let Ctx { subjects, claims, mut changed, .. } = ctx;
-    let (files, claims, claimed_changed, instances) = claims.finish(files, main)?;
-    changed.extend(claimed_changed);
+    let Ctx { subjects, claims, changed, .. } = ctx;
+    let (files, claims, instances) = claims.finish(files, main)?;
     let (subjects, links) = subjects.finish(unit.ast());
     let mut edits = Edits {
         scheme: SCHEME,

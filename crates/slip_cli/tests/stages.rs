@@ -184,10 +184,6 @@ fn keep(path: &'static str, lo: u64) -> C {
     C { path, lo, stance: Stance::Keep, text: "", reason: Reason::None }
 }
 
-fn refuse(path: &'static str, lo: u64, reason: Reason) -> C {
-    C { path, lo, stance: Stance::Refuse, text: "", reason }
-}
-
 /// One observer's map shard, by path.
 #[derive(Clone)]
 struct S {
@@ -762,22 +758,6 @@ fn s10_5_reduce_instance_lines() {
         .map(|l| l.replace(&src, "<src>"))
         .collect();
     golden("reduce-instances.txt", &(lines.join("\n") + "\n"));
-}
-
-/// §10.5 (WP-139's fix round): a `no_holder` refusal is printed with what
-/// it means after the reason.
-#[test]
-fn s10_5_reduce_no_holder_line() {
-    let fx = Fx::new("no-holder");
-    let a = S::new(vec![refuse("h.h", F_H, Reason::NoHolder), put("a.cc", F_A, "g")]);
-    let b = S::new(vec![put("b.cc", F_B[0], "g")]);
-    let (_, _, out) = fx.reduced(&fx.script(), &[("a.cc", a), ("b.cc", b)]);
-    // A script request is divisible: the refused site's group is left out,
-    // the rest accepted.
-    out.expect(0);
-    let want = "refusal site_refused no_holder (the front end records no declaration holding \
-                the name): ";
-    assert!(out.lines().iter().any(|l| l.starts_with(want)), "{out:#?}");
 }
 
 /// A golden of `crates/slip_cli/tests/golden/`; `SLIP_BLESS=1` rewrites it.
