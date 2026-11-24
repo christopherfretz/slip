@@ -2310,6 +2310,14 @@ fn s2_1_a_directory_that_cannot_be_listed() {
     io_at_srv(slip_apply::check_owned(&o, &own, &untrusted));
     let root = Ownership { owned: vec![b"/".to_vec()], readonly: vec![] };
     io_at_srv(slip_apply::check_owned(&o, &root, &untrusted));
+    // An ownership entry under the directory, the overlay's path not:
+    // the entry's check lists `/srv` and fails there.
+    let files =
+        vec![(b"/w/a.cc".to_vec(), b"a".to_vec()), (b"/srv/bob/v.h".to_vec(), b"v".to_vec())];
+    let (o, _) = one_file("/w/a.cc", b"a", b"b");
+    let entry = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/srv/bob".to_vec()] };
+    assert_eq!(slip_apply::check_owned(&o, &entry, &Unlistable(files.clone(), true)), Ok(()));
+    io_at_srv(slip_apply::check_owned(&o, &entry, &Unlistable(files, false)));
 }
 
 /// Two listed names of one file (hard links), the path asked by a third

@@ -397,6 +397,11 @@ fn a_non_ascii_component_does_not_decide_the_state() {
     );
     assert_eq!(s.on_disk(b"/d/fo\xFFo").unwrap(), b"/d/fo\xFFo");
     assert_eq!(ok(&s, "/d/Foo.h"), "/d/foo.h");
+    // A directory that folds normalisation and not case: a probe by the
+    // non-ASCII name would miss its other case and call the directory
+    // not folding, passing the NFD spelling as asked.
+    let s = Spelling::new(Fake::new().file("/e/caf\u{e9}.h", 1).normalises("/e").consistent(1));
+    assert_eq!(ok(&s, "/e/cafe\u{301}.h"), "/e/caf\u{e9}.h");
 }
 
 /// Folding is decided per directory, not per device: a folding directory
@@ -516,11 +521,13 @@ fn a_mount_that_reports_another_mounts_device() {
 22 1 8:1 / / rw - ext4 /dev/sda1 rw
 23 22 0:45 / /t rw - tmpfs tmpfs rw
 24 22 0:47 /x /v rw,nosuid - fakeowner /run/host_mark/Volumes rw
+25 22 0:46 / /u rw - tmpfs tmpfs rw
 ";
     let dev = makedev(0, 45);
     let m = Mounts::parse(text);
     assert!(m.consistent(b"/t/a", dev), "the tmpfs itself");
     assert!(!m.consistent(b"/v/w", dev), "the FUSE mount reporting the tmpfs's device");
+    assert!(!m.consistent(b"/u/w", dev), "a trusted holder of another device");
     let fake = Fake::new()
         .file("/v/w/foo.h", dev)
         .folds("/v/w")
