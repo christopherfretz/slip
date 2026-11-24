@@ -85,6 +85,15 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                         name.push_str(&i.to_string());
                         name.push('>');
                     }
+                    if let Some(view) = u.view {
+                        // A namespace's unit in another view (WP-140 review
+                        // F4): the name its key denotes, and whose part it is.
+                        let part = if view { "owned" } else { "dependency's" };
+                        name = match &u.denotes {
+                            Some(d) => format!("{d} (the {part} part of {name})"),
+                            None => format!("{name} (the {part} part)"),
+                        };
+                    }
                     if let Some(r) = u.resolved {
                         name.push_str("::<");
                         name.push_str(r.property.word());

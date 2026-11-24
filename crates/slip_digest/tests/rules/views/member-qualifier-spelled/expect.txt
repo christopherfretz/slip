@@ -1,4 +1,6 @@
 # A qualified member of a dependent object, t.legacy::B::f() redirected to t.acme::B::f(): the
 # canonical qualifier names B (mapped), not the namespace.
-# WP-140: equal, via 1.
+# WP-140: equal, via 1. Right only while no object class has a member named like the new root
+# (acme): with one, t.acme::B::f() looks acme up in the class first, a Kiln defect at
+# instantiation (WP-140 review F2; pending pair views/member-qualifier-member-named-acme).
 use 1 via 1 direct 0

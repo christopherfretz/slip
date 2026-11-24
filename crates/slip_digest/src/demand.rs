@@ -223,6 +223,7 @@ fn write_part(
         owner: Some(owner.key),
         collided: false,
         view: None,
+        denotes: None,
     }
 }
 

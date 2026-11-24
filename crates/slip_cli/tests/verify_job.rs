@@ -3069,6 +3069,45 @@ fn wp140_untouched_observers_that_open_the_dependency_namespace() {
     assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
 }
 
+// WP-140 review F1, pending WP-146: ownership differs between observers.
+// `dep/d.h` declares `old::hook`, which u1 defines; u1 does not include the
+// header, so there `hook` is owned and moves with `old` to `fresh::hook`,
+// while u0, which includes it, calls the dependency's `old::hook`. Each
+// observer is verified alone and the run is `Verified` today, but the
+// program no longer links (`old::hook` has no definition). The run must
+// not be verified. Rules cases `views/hook-definer-without-dependency`
+// and `hook-user-with-dependency` hold each observer's answer.
+#[test]
+#[ignore = "pending: WP-146 (ownership differs between observers, a wrong verified)"]
+fn wp146_ownership_differs_between_observers_is_not_verified() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0() + old::hook(1); }\n";
+    let u1 = "namespace old { int hook(int x) { return x; } }\n";
+    let tree = Tree::new(
+        "wp146-hook",
+        &[
+            ("dep/d.h", "namespace old { int hook(int); }\nnamespace fresh { struct D {}; }\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(
+        &tree.post.join("u0.cpp"),
+        "#include \"dep/d.h\"\nnamespace fresh { inline int f0() { return 0; } }\nint u0() { return fresh::f0() + old::hook(1); }\n",
+    );
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::NotVerified, "{}", r.error_lines());
+}
+
 // WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
 // owned member left in `old` counts `direct` unless its key is kept; kept,
 // it counts none and its key is seen. A job that passed no kept key would

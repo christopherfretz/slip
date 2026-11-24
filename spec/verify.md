@@ -286,8 +286,8 @@ came from, and nothing about the rest:
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped:
   their keys agree. The namespace's own unit is the dependency's (one
-  opening is read-only), keyed `acme`; and since owned code opens it too,
-  it also has a unit **in the owned view**, keyed `legacy` under the rule,
+  opening is read-only), keyed `acme`; and since owned entities are keyed
+  under it, it also has a unit **in the owned view**, keyed `legacy` under the rule,
   with the namespace's one digest (`digest.md` §3.4 "A namespace's unit
   in each view", WP-140). That unit is the pre-image's `legacy`'s
   partner, and the rule is used by it (`via`, §9.2). So a correct move
@@ -306,9 +306,17 @@ came from, and nothing about the rest:
   (`views/deprecated-owned-opening`, `deprecated-dependency-opening`,
   `inline-reopened-plain`); so is an attribute that applies to its own
   opening only (`visibility`), which fails closed
-  (`views/visibility-owned-opening`). A reference to the namespace
-  writes its own key, the dependency's: "Open questions", "References to
-  a namespace that two views key".
+  (`views/visibility-owned-opening`). The owned view exists where the
+  namespace holds something owned, not where an owned opening merely
+  stands: an observer the edit did not touch that opens the dependency's
+  `acme` only to specialise its template, or with an empty opening, is
+  equal (`views/untouched-specialisation`, `untouched-empty-opening`,
+  `verify_job.rs`
+  `wp140_untouched_observers_that_open_the_dependency_namespace`; review
+  F3), and an empty `legacy {}` moved there is a removal ("Open
+  questions"). A reference to the namespace writes its own key, the
+  dependency's: "Open questions", "References to a namespace that two
+  views key".
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -3155,12 +3163,34 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   key that names which pre-image namespace an owned reference meant
   (the post-image cannot say, above) or a rule form that states it for
   a set of files is open: `docs/wp/WP-141.md`.
-- **Ownership differs between observers** (§2.1). An entity the
-  dependency declares only in a header some observers do not include is
-  owned in those and a dependency entity in the others. Each comparison
-  is consistent with itself; whether the run should compare ownership
-  across observers (a count per key is too much; a count per rule of
-  entities reached both ways is not exact) is open.
+- **Ownership differs between observers** (§2.1): **a demonstrated wrong
+  `verified`** (WP-140 review F1; to be fixed by `docs/wp/WP-146.md`). An
+  entity the dependency declares only in a header some observers do not
+  include is owned in those and a dependency entity in the others. The
+  dependency's `dep/d.h` declares `old::hook`; `u1.cpp` defines it and
+  does not include the header, so there `hook` is owned and moves with
+  `old` to `fresh::hook`; `u0.cpp` includes the header and calls the
+  dependency's `old::hook`, which stays. Each observer is verified, and
+  the run is `Verified`, but the program no longer links: nothing defines
+  `old::hook`. Source: `crates/slip_cli/tests/verify_job.rs`
+  `wp146_ownership_differs_between_observers_is_not_verified` (pending,
+  expects `NotVerified`), and each observer's answer in
+  `crates/slip_digest/tests/rules/views/hook-definer-without-dependency`
+  and `hook-user-with-dependency`. Whether the run should compare
+  ownership across observers (a count per key is too much; a count per
+  rule of entities reached both ways is not exact) is WP-146's.
+- **An empty namespace moved into one a dependency opens** (WP-140
+  review F3). A pre-image `namespace legacy {}` that holds nothing, moved
+  to `namespace acme {}` that a dependency opens, holds nothing in the
+  post-image either, so `acme` has no owned view and the pre-image's
+  `legacy` has no partner: `removed legacy`
+  (`crates/slip_digest/tests/rules/views/empty-owned-opening`). The user
+  declares the removal: `removed legacy` beside the `relocate`, which
+  `slip declare` takes today and which verifies
+  (`crates/slip_cli/tests/verify.rs`
+  `wp140_empty_opening_moved_is_a_declared_removal`). The same holds of an
+  owned opening that holds only a forward declaration of a dependency
+  entity (`owned/owned-forward-then-dependency`).
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the

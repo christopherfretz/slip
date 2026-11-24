@@ -1,6 +1,6 @@
 # WP-140 review F3 (A4): a static_assert written in the owned opening counts, as the
 # directive.
-added acme
+added legacy (the owned part of acme)
 added acme::<static_assert>
 removed acme::<static_assert>
 use 3 via 1 direct 0
