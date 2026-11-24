@@ -980,6 +980,7 @@ pub(crate) fn impl_function_name(w: &mut Walk<'_>, location: ConstValueId) -> Im
         offset: _,
         designated: _,
         past: _,
+        unions: _,
     }) = w.ast.consts.scalar(location)
     else {
         return ImplObject::Other;
@@ -999,6 +1000,7 @@ pub(crate) fn string_of(w: &Walk<'_>, v: ConstValueId) -> Option<StringLitId> {
             offset: _,
             designated: _,
             past: _,
+            unions: _,
         }) => Some(lit),
         _ => None,
     }
