@@ -3372,6 +3372,92 @@ fn n2_two_subject_inputs_made_one_file() {
     assert_eq!(reason(&v), merged(&a, &b));
 }
 
+// The re-check's third tree: after the map phase `ext/y.h` is made a hard
+// link of the post tree's `x.h` (equal bytes: the edit is in `a.cpp`
+// alone), the subject's `s/x.h` untouched: two files at the recorded
+// paths, one where the post parse reads them.
+// Refused by N2 (ii) where the post parse reads. Kills "the one-file-now
+// check made only at the recorded paths".
+#[test]
+fn n2_outside_input_made_one_file_with_the_post_counterpart() {
+    let tree = Tree::new("n2-so-post", &[("a.cpp", SO_MAIN), ("x.h", MERGE_HDR)]);
+    write(&tree.base.join("ext/y.h"), MERGE_HDR);
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("ext"))]);
+    let map = tree.map(&o);
+    assert_eq!(map.outcome.status, Status::Ok, "{:?}", map.outcome);
+    let y = tree.base.join("ext/y.h");
+    std::fs::remove_file(&y).unwrap();
+    std::fs::hard_link(tree.post.join("x.h"), &y).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), merged(&y, &tree.subject.join("x.h")));
+}
+
+// The re-check's fourth tree: `s/a.h` and `s/b.h`, two files of equal
+// bytes (`#pragma once`); in the post tree `b.h` is a hard link of `a.h`
+// and the edit compensates (`V == 1`). The post tree as verified must be
+// the post tree as delivered, and a delivery that copies bytes makes them
+// two files again: refused by N2 (ii) where the post parse reads, every
+// pair. Kills "the post side compares only pairs with an outside member".
+#[test]
+fn n2_two_subject_inputs_made_one_file_in_the_post_tree() {
+    let quoted = |t: &str| t.replace("<a.h>", "\"a.h\"").replace("<b.h>", "\"b.h\"");
+    let (pre, post) = (quoted(MERGE_PRE), quoted(MERGE_POST));
+    let tree =
+        Tree::new("n2-ss-post", &[("a.cpp", pre.as_str()), ("a.h", MERGE_HDR), ("b.h", MERGE_HDR)]);
+    write(&tree.post.join("a.cpp"), &post);
+    let o = tree.observer();
+    let map = tree.map(&o);
+    assert_eq!(map.outcome.status, Status::Ok, "{:?}", map.outcome);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
+    std::fs::remove_file(tree.post.join("b.h")).unwrap();
+    std::fs::hard_link(tree.post.join("a.h"), tree.post.join("b.h")).unwrap();
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), merged(&tree.subject.join("a.h"), &tree.subject.join("b.h")));
+}
+
+// The re-check's first tree: `s/a.cpp` edited in place after the map
+// phase, the post tree the planned edit of the subject as the map phase
+// read it. Verified, rightly: the claim of a tree-form verdict is about
+// the subject as the map phase read it (`spec/verify.md` §5.1, "The
+// claim"); whether the subject on disk is still that subject is not part
+// of it. The identity image, which parses the subject on disk, refuses.
+#[test]
+fn n2_subject_edited_in_place_after_the_map_phase() {
+    let tree = Tree::new("n2-subject-edited", &[("a.cpp", "int f() { return 1; }\n")]);
+    let o = tree.observer();
+    tree.map(&o);
+    let main = tree.subject.join("a.cpp");
+    write(&main, "int f() { return 7; }\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    let pre_now = tree.verify_with(&o, &identity_params(&tree)).unwrap();
+    assert_eq!(reason(&pre_now), changed(&main));
+}
+
+// The re-check's second tree: a `cfg.h` created in the subject beside
+// `a.cpp` after the map phase, where the map parse looked first and found
+// nothing, shadowing `ext/cfg.h`. Verified, rightly (§5.1, "The claim": the
+// subject as the map phase read it has nothing there). The identity image
+// parses the subject on disk, which reads `s/cfg.h` where the map parse
+// read `ext/cfg.h`: R2 refuses, "ext/cfg.h changed since the map phase"
+// (the input the map parse read is not read as it was).
+#[test]
+fn n2_subject_header_created_after_the_map_phase() {
+    let pre = format!("#include \"cfg.h\"\n{SEL_PRE}");
+    let tree = Tree::new("n2-subject-created", &[("a.cpp", pre.as_str())]);
+    write(&tree.base.join("ext/cfg.h"), "#define USE_NEW 0\n");
+    let o = tree.observer_in(&tree.subject, &[arg("-I", &tree.base.join("ext"))]);
+    tree.map(&o);
+    write(&tree.subject.join("cfg.h"), "#define USE_NEW 1\n");
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    let pre_now = tree.verify_with(&o, &identity_params(&tree)).unwrap();
+    assert_eq!(reason(&pre_now), changed(&tree.base.join("ext/cfg.h")));
+}
+
 // The review's second tree: `cfg.h` first spelled `w/ext-a/cfg.h`, then
 // `w/lnk/cfg.h` (one buffer); `w/lnk` retargeted from `ext-a` to `ext-c`,
 // whose `cfg.h` is a link to `ext-a/cfg.h` and whose `sub.h` differs. The
