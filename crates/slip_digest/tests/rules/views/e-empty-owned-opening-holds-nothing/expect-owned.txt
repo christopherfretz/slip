@@ -1,0 +1,4 @@
+# Every file owned: the dependency's acme is legacy's key.
+added acme::Dep
+removed acme
+removed acme::Dep

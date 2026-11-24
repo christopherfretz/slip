@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+relocate oldx => :: newx

@@ -305,11 +305,10 @@ impl Walk<'_> {
                 }
             }
         }
+        // Never empty: `keys` holds both views (two keys), every known
+        // route gives one, and an empty found set takes every key.
         let mut ids: Vec<Digest> =
             keys.iter().filter(|(v, _)| every || views.contains(v)).map(|&(_, id)| id).collect();
-        if ids.is_empty() {
-            ids = keys.iter().map(|&(_, id)| id).collect();
-        }
         ids.sort();
         ids.dedup();
         Some((ids, keys_cause(self, ns)))

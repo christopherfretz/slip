@@ -1,0 +1,9 @@
+# Every file owned: one view, acme is legacy's key everywhere it is written.
+changed template <class> int f(type-parameter-0-0)
+added acme::h(char)
+added acme::h(int)
+removed acme
+removed acme::<shadow legacy::h(long)>
+removed acme::<using legacy::h>
+removed acme::h(char)
+removed acme::h(int)
