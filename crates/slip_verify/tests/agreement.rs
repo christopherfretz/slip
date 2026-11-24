@@ -1180,3 +1180,77 @@ fn s10_4_fold_refusal_says_why() {
         assert_eq!(line, format!("slip: failed: /m/a0.cc: {message}\n"));
     }
 }
+
+/// A map shard of the run's pre round for observer `obs`: `ok`, reading
+/// `/s/x.cpp` and the overlay paths `read`.
+fn map_shard(obs: u8, read: &[&str]) -> slip_model::Shard {
+    let mut inputs = vec![file("/s/x.cpp", 1, 0x99)];
+    inputs.extend(read.iter().map(|p| file(p, 10, 0x51)));
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    slip_model::Shard {
+        observer: d(obs),
+        phase: slip_model::Phase::Map,
+        round: ROUND,
+        outcome: slip_model::Outcome {
+            status: Status::Ok,
+            errors: 0,
+            warnings: 0,
+            message: String::new(),
+        },
+        inputs: Some(inputs),
+        counters: vec![],
+        digests: None,
+        verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
+        names: None,
+        negatives: None,
+        found: None,
+    }
+}
+
+// spec/edits.md §8.2, §5.5 (WP-076): `add_unchanged_at` decides
+// "unchanged" from the map shard itself and fails closed: the observer is
+// `unchanged` only in a run with an overlay and no rule, from its own `ok`
+// map shard of the pre round, with inputs none of which is an overlay file.
+#[test]
+fn s5_5_unchanged_is_decided_by_the_report() {
+    // No obligation: an observer that read no overlay file meets none.
+    let bare = || Overlay { spellings: Vec::new(), ..overlay() };
+    let no_rules = Run::new(vec![], Some(bare()));
+    let mut r = no_rules.report();
+    r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &[]));
+    assert_eq!(count(&r, State::Unchanged), 1);
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(r.error_lines(), "");
+
+    let wrong = |run: &Run, map: slip_model::Shard, why: &str| {
+        let mut r = run.report();
+        r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map);
+        assert_eq!(count(&r, State::Unchanged), 0, "{why}");
+        assert_eq!(count(&r, State::Failed), 1, "{why}");
+        assert_ne!(r.verdict(), RunVerdict::Verified, "{why}");
+        let lines = r.error_lines();
+        assert!(
+            lines.starts_with("slip: failed: /m/a.cc: the observer got no verify job"),
+            "{lines}"
+        );
+        assert!(lines.contains(why), "{why}: {lines}");
+    };
+    wrong(&no_rules, map_shard(0x10, &["/s/a.h"]), "read the overlay's /s/a.h");
+    let mut m = map_shard(0x10, &[]);
+    m.round = ROUND + 1;
+    wrong(&no_rules, m, "not its shard of phase map");
+    wrong(&no_rules, map_shard(0x11, &[]), "not its shard of phase map");
+    let mut m = map_shard(0x10, &[]);
+    m.outcome.status = Status::Diagnosed;
+    wrong(&no_rules, m, "is not ok");
+    let mut m = map_shard(0x10, &[]);
+    m.inputs = None;
+    wrong(&no_rules, m, "has no inputs");
+    let rules = Run::new(vec![rule(KeyKind::Function, "f", "g")], Some(bare()));
+    wrong(&rules, map_shard(0x10, &[]), "in a run with rules");
+    wrong(&Run::new(vec![], None), map_shard(0x10, &[]), "without an overlay");
+}
