@@ -130,11 +130,12 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
         (map_unit(unit, &options, &identity), places)
     })?;
     let (walked, places) = ran.map_or((None, None), |(w, p)| (w, p));
-    if negatives && let Some(inputs) = &shard.inputs {
-        if let Some((missed, found)) = places {
-            shard.found = Some(crate::negatives::record(found, inputs)?);
-            shard.negatives = Some(missed);
-        }
+    if negatives
+        && let Some(inputs) = &shard.inputs
+        && let Some((missed, found)) = places
+    {
+        shard.found = Some(crate::negatives::record(found, inputs)?);
+        shard.negatives = Some(missed);
     }
     let output = match walked {
         Some(Ok(output)) => output,

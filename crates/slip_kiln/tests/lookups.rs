@@ -751,5 +751,5 @@ fn found_absolute_name_through_read() {
     d.write("a.cpp", &format!("#include \"{h}\"\n"));
     let (status, l) = d.lookups("", &[]);
     assert_eq!(status, Status::Ok, "{l:?}");
-    assert!(l.read.iter().any(|r| *r == h), "{l:?}");
+    assert!(l.read.contains(&h), "{l:?}");
 }

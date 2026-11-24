@@ -146,12 +146,12 @@ impl Offsets {
 /// The section, and where each part begins. The front-coding's own rules
 /// are checked here, at the `shared` field, as `negatives` checks them.
 pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Found, Offsets)> {
-    let mut o = Offsets { section: d.offset(), ..Offsets::default() };
-    let n = d.count()?;
-    let mut places: Vec<FoundPlace> = Vec::with_capacity(n.min(1 << 16));
-    for _ in 0..n {
+    let mut offsets = Offsets { section: d.offset(), ..Offsets::default() };
+    let place_count = d.count()?;
+    let mut places: Vec<FoundPlace> = Vec::with_capacity(place_count.min(1 << 16));
+    for _ in 0..place_count {
         let at = d.offset();
-        o.places.push(at);
+        offsets.places.push(at);
         let shared = d.uv()?;
         let rest = d.bytes()?;
         let prev: &[u8] = places.last().map_or(&[], |p| p.path.as_slice());
@@ -165,25 +165,25 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Found, Offsets)> {
         let mut path = Vec::with_capacity(shared + rest.len());
         path.extend_from_slice(&prev[..shared]);
         path.extend_from_slice(rest);
-        o.inputs.push(d.offset());
+        offsets.inputs.push(d.offset());
         let input = d.uv()?;
         places.push(FoundPlace { path, input });
     }
-    let m = d.count()?;
-    let mut classes: Vec<Vec<u64>> = Vec::with_capacity(m.min(1 << 16));
-    for _ in 0..m {
-        o.classes.push(d.offset());
-        let k = d.count()?;
-        let mut class = Vec::with_capacity(k.min(1 << 16));
-        let mut at = Vec::with_capacity(k.min(1 << 16));
-        for _ in 0..k {
+    let class_count = d.count()?;
+    let mut classes: Vec<Vec<u64>> = Vec::with_capacity(class_count.min(1 << 16));
+    for _ in 0..class_count {
+        offsets.classes.push(d.offset());
+        let size = d.count()?;
+        let mut class = Vec::with_capacity(size.min(1 << 16));
+        let mut at = Vec::with_capacity(size.min(1 << 16));
+        for _ in 0..size {
             at.push(d.offset());
             class.push(d.uv()?);
         }
-        o.members.push(at);
+        offsets.members.push(at);
         classes.push(class);
     }
-    Ok((Found { places, classes }, o))
+    Ok((Found { places, classes }, offsets))
 }
 
 // ---------------------------------------------------------------------------

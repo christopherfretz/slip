@@ -3234,8 +3234,9 @@ fn n2_hard_linked_inputs_that_stay() {
     let (tree, o, m) = hard_linked_tree("n2-hard-stay", CONSULT);
     let inputs = m.inputs.as_ref().unwrap();
     let at = |p: &str| inputs.iter().position(|f| f.path == bytes(&tree.base.join(p))).unwrap();
-    let (a, b) = (at("ext/a.h") as u64, at("ext/b.h") as u64);
-    assert_eq!(m.found.as_ref().unwrap().classes, vec![vec![a.min(b), a.max(b)]]);
+    let pair = (at("ext/a.h") as u64, at("ext/b.h") as u64);
+    let class = vec![pair.0.min(pair.1), pair.0.max(pair.1)];
+    assert_eq!(m.found.as_ref().unwrap().classes, vec![class]);
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
 }
@@ -3258,12 +3259,11 @@ fn n2_hard_linked_inputs_separated() {
 // identity. Kept: verified. Separated (equal bytes): refused by N2 (i).
 #[test]
 fn n2_hard_link_read_as_one_buffer() {
-    let (tree, o, m) = hard_linked_tree("n2-hard-one", MERGE_PRE);
-    let a = tree.base.join("ext/a.h");
-    let b = tree.base.join("ext/b.h");
-    let inputs = m.inputs.as_ref().unwrap();
+    let (tree, o, map) = hard_linked_tree("n2-hard-one", MERGE_PRE);
+    let (a, b) = (tree.base.join("ext/a.h"), tree.base.join("ext/b.h"));
+    let inputs = map.inputs.as_ref().unwrap();
     assert!(!inputs.iter().any(|f| f.path == bytes(&b)), "{inputs:?}");
-    let found = m.found.as_ref().unwrap();
+    let found = map.found.as_ref().unwrap();
     let place = found.places.iter().find(|p| p.path == bytes(&b)).expect("ext/b.h found");
     assert_eq!(inputs[place.input as usize].path, bytes(&a));
     let v = tree.verify(&o);
