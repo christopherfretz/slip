@@ -1,0 +1,8 @@
+# Row (a): the pre-image's acme already has an owned opening with an owned member (acme::old) besides
+# dep.h's; legacy's members move in under the namespace rule. The rule maps the owned view of acme,
+# old included, onto legacy: acme::old is keyed legacy::old and must not verify.
+# WP-140: not verified.
+changed u()
+added acme::old(int)
+removed acme::old(int)
+use 1 via 1 direct 0

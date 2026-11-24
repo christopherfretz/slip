@@ -674,6 +674,7 @@ pub(crate) fn run_kept<R>(
     }
     written.push(crate::units::order_unit(&mut w));
     crate::units::apply_taints(&w, &mut written);
+    crate::units::view_units(&mut w, &mut written);
     let collisions = crate::units::mark_collisions(&mut written)
         + crate::keys::mark_mapped_collisions(&w, input, &mut written);
     let collisions = collisions + crate::units::mark_part_collisions(&mut written);

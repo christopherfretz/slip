@@ -1,0 +1,4 @@
+# WP-140 review F3: an untouched observer specialises the dependency's Trait in acme (the
+# normal case of the migration). The specialisation is keyed under its template, not under
+# acme, so acme holds nothing owned: no owned view, equal.
+use 3 via 0 direct 0

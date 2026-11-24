@@ -1,0 +1,3 @@
+# Owned code opens acme with the dependency's ACME_BEGIN (the name token in dep.h): no owned opening, an owned member.
+# WP-140: acme has an owned member, so a unit in the owned view (legacy): equal, via 1.
+use 1 via 1 direct 0

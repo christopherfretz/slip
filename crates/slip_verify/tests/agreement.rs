@@ -24,6 +24,7 @@ use slip_model::agreement::Binding;
 use slip_model::json;
 use slip_model::keys::KeyKind;
 use slip_model::overlay::{Content, Obligation, OverlayFile};
+use slip_model::verdict::VerdictKind;
 use slip_model::{FileRef, Overlay, Status};
 use slip_verify::guards::{OverlayGuard, overlay_inputs};
 use slip_verify::run::{RunVerdict, Stale, State, combine};
@@ -46,7 +47,7 @@ fn stale(rule: u64, obs: u8, direct: u64) -> Stale {
 fn add(r: &mut slip_verify::run::Report, s: &slip_model::Shard) {
     let obs = s.observer;
     let main = format!("/m/{:02x}.cc", obs.0[0]);
-    r.add(&obs, main.as_bytes(), Some(s), Some(Status::Ok));
+    r.add(&obs, main.as_bytes(), Some(s), common::MAP_OK);
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ fn add(r: &mut slip_verify::run::Report, s: &slip_model::Shard) {
 fn s9_2_two_observers_stale_for_one_rule() {
     let run = two_rules();
     let mut r = run.report();
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     add(&mut r, &run.ok(0xa1, v.clone(), &[], &[used(0, 0, 2)]));
     add(&mut r, &run.ok(0xa0, v.clone(), &[], &[used(0, 1, 1), used(1, 3, 0)]));
     assert_eq!(count(&r, State::Verified), 2);
@@ -72,7 +73,7 @@ fn s9_2_two_observers_stale_for_one_rule() {
 fn s9_2_one_observer_stale_for_two_rules() {
     let run = two_rules();
     let mut r = run.report();
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     add(&mut r, &run.ok(0xa0, v.clone(), &[], &[]));
     add(&mut r, &run.ok(0xa1, v.clone(), &[], &[used(0, 0, 1), used(1, 0, 4)]));
     add(&mut r, &run.ok(0xa2, v, &[], &[used(0, 5, 0)]));
@@ -87,7 +88,7 @@ fn s9_2_one_observer_stale_for_two_rules() {
 #[test]
 fn s9_2_namespace_rule_stale_by_either_count() {
     let run = Run::new(vec![rule(KeyKind::Namespace, "n", "m")], None);
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     for (u, stale_pair) in [
         (used_kept(0, 1, 0, 0), None),
         (used_kept(0, 0, 7, 0), Some((7, 0))),
@@ -125,7 +126,7 @@ fn s9_2_namespace_rule_stale_by_either_count() {
 fn s9_2_kept_via_of_another_kind_is_stale() {
     let run = two_rules();
     let mut r = run.report();
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     add(&mut r, &run.ok(0xa0, v, &[], &[used_kept(0, 1, 0, 1)]));
     assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 0, kept_via: 1 }]);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
@@ -258,7 +259,7 @@ fn s9_2_attack_list_two_observers() {
 fn s9_2_rule_used_by_via_in_one_observer() {
     let run = two_rules();
     let mut r = run.report();
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     add(&mut r, &run.ok(0xa0, v.clone(), &[], &[]));
     add(&mut r, &run.ok(0xa1, v, &[], &[used(1, 2, 0)]));
     assert!(r.stale().is_empty());
@@ -266,12 +267,12 @@ fn s9_2_rule_used_by_via_in_one_observer() {
     assert_eq!(r.verdict(), RunVerdict::Verified);
 }
 
-// §9.2, §9.3: staleness is read from this run's `ok` shards the state
-// table accepts. An `unverifiable` verdict is one: its pairs count. A
-// `verified` verdict whose map shard is not `ok` is `failed`: its uses
-// are not read (the run is not verified on that account already).
+// §9.3 (WP-070, WP-114): stale pairs and uses are read from the
+// `rule_use` of this run's `verified` and `mismatch` shards only: not from
+// an `unverifiable` one (checked, not folded), not from a verdict the
+// state table refused (its map shard failed). The mismatch's pair is read.
 #[test]
-fn s9_3_stale_read_from_accepted_ok_shards_only() {
+fn s9_3_stale_read_from_verified_and_mismatch_shards_only() {
     let run = two_rules();
     let mut r = run.report();
     let mut u = run.unverifiable(0xa0, "post-image: x");
@@ -279,12 +280,93 @@ fn s9_3_stale_read_from_accepted_ok_shards_only() {
     add(&mut r, &u);
     let mut v = run.verified(0xa1);
     v.rule_use.as_mut().unwrap().uses = vec![used(1, 0, 1)];
-    r.add(&v.observer, b"/m/a1.cc", Some(&v), Some(Status::Failed));
+    r.add(&v.observer, b"/m/a1.cc", Some(&v), Some(common::map_of(Status::Failed)));
     assert_eq!(count(&r, State::Failed), 1);
-    assert_eq!(r.stale(), [stale(0, 0xa0, 1)]);
-    // Rule 1 was named only by the shard that was not read.
-    assert_eq!(r.unused(), [1]);
+    assert!(r.stale().is_empty());
+    assert_eq!(r.unused(), [0, 1]);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    let mut m = run.mismatch(0xa2);
+    m.rule_use.as_mut().unwrap().uses = vec![used(1, 0, 3)];
+    add(&mut r, &m);
+    assert_eq!(r.stale(), [stale(1, 0xa2, 3)]);
+    assert_eq!(r.unused(), [0]);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
+}
+
+// §9.3 "Which `rule_use` is folded" (WP-114 item 5, the ruling "check
+// only"): the `rule_use` of an `unverifiable` shard is not folded, whatever
+// made it unverifiable (here G3, a post-image that changed during the job).
+// A stale pair in it is no finding of the run: the run is `incomplete`
+// (status 4, `slip verify`'s `status::INCOMPLETE`), not `not verified`
+// (1), and no `stale` line is written; a use in it does not make its rule
+// used, so a rule used only there is listed `unused`, and the text says
+// over how many observers the fold ran; a `kept` index in it is not seen.
+#[test]
+fn s9_3_unverifiable_rule_use_is_checked_not_folded() {
+    let mut run = two_rules();
+    run.declared = run.declared.clone().with_kept(vec![key(0x50)]).unwrap();
+    let mut r = run.report();
+    let mut u = run.unverifiable(0xa0, "post-image: changed during the job");
+    let ru = u.rule_use.as_mut().unwrap();
+    ru.uses = vec![used(0, 0, 2), used(1, 1, 0)];
+    ru.kept = vec![0];
+    add(&mut r, &u);
+    assert_eq!(count(&r, State::Unverifiable), 1);
+    assert!(r.stale().is_empty());
+    assert_eq!(r.unused(), [0, 1]);
+    assert_eq!(r.unseen_kept(), [key(0x50)]);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    // With a verified observer that uses rule 0: rule 1, used only in the
+    // unverifiable shard, is listed unused, with the sentence.
+    add(&mut r, &run.ok(0xa1, run.verdict(VerdictKind::Verified), &[], &[used(0, 1, 0)]));
+    assert_eq!(r.unused(), [1]);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    let t = r.to_text();
+    assert!(
+        t.contains(
+            "agreement rules 2 stale 0 unused 1\nunused rule 1\n\
+             agreement read 1 of 2 observers: rule use of 1 unverifiable not read\n"
+        ),
+        "{t}"
+    );
+    assert!(!t.contains("stale rule"), "{t}");
+    let json = json::write_compact(&r.to_json()).unwrap();
+    assert!(json.contains(r#""agreement":{"rules":2,"stale":[],"unused":[1]}"#), "{json}");
+    // No unverifiable observer: no sentence.
+    let mut r = run.report();
+    add(&mut r, &run.ok(0xa1, run.verdict(VerdictKind::Verified), &[], &[used(0, 1, 0)]));
+    assert!(!r.to_text().contains("agreement read"), "{}", r.to_text());
+}
+
+// §9.3 (WP-114): the `rule_use` of an `unverifiable` shard is still
+// checked: under another rule table, with a rule past the table or a
+// `kept` index past `Declared.kept`, or absent in a run with rules, the
+// shard is not this run's and the observer is `failed`.
+#[test]
+fn s9_3_unverifiable_rule_use_still_checked() {
+    let run = two_rules();
+    let good = run.unverifiable(0xa0, "post-image: changed during the job");
+    assert_eq!(state_of(&run, &good), State::Unverifiable);
+    let mut wrong = Vec::new();
+    let mut s = good.clone();
+    s.rule_use.as_mut().unwrap().rules = d(0x99);
+    wrong.push(("another rules_id", s));
+    let mut s = good.clone();
+    s.rule_use.as_mut().unwrap().uses = vec![used(2, 1, 0)];
+    wrong.push(("a rule past the table", s));
+    let mut s = good.clone();
+    s.rule_use.as_mut().unwrap().kept = vec![0];
+    wrong.push(("a kept index past Declared.kept", s));
+    let mut s = good.clone();
+    s.rule_use = None;
+    wrong.push(("no rule_use", s));
+    for (what, s) in wrong {
+        let mut r = run.report();
+        add(&mut r, &s);
+        assert_eq!(count(&r, State::Failed), 1, "{what}");
+        let t = r.to_text();
+        assert!(!t.contains("agreement read 0 of 1"), "{what}: {t}");
+    }
 }
 
 // §9.2: without rules, no agreement at all.
@@ -309,13 +391,17 @@ fn state_of(run: &Run, s: &slip_model::Shard) -> State {
 
 // §9.3: a shard a worker wrote must carry the run's binding: without
 // one, or bound to another overlay, another pre round or other declared
-// changes, it is not this run's and the observer is `failed`. For `ok`
-// and for `not_parsed` shards alike.
+// changes, it is not this run's and the observer is `failed`. For `ok`,
+// `diagnosed` and `rejected` shards alike.
 #[test]
 fn s9_3_binding_must_be_the_runs() {
     let runs = [two_rules(), Run::new(vec![], Some(overlay()))];
     for run in &runs {
-        let shards = [run.verified(0xa0), run.unparsed(0xa0, Status::Diagnosed, "e")];
+        let shards = [
+            run.verified(0xa0),
+            run.unparsed(0xa0, Status::Diagnosed, "e"),
+            run.unparsed(0xa0, Status::Rejected, "e"),
+        ];
         for good in &shards {
             let want = state_of(run, good);
             assert_ne!(want, State::Failed);
@@ -338,18 +424,29 @@ fn s9_3_binding_must_be_the_runs() {
     }
 }
 
-// §9.3, §9.4: a run with a tree image and no rule is M1's: a shard
-// without a binding is still its own (so M1's shards and goldens are
-// unchanged); one with a binding must have the run's.
+// §9.3 (WP-114): the exception of a run with a tree image and no rule is
+// gone. A shard a worker wrote without a binding is not this run's there
+// either: `failed`, with the reason, for an `ok`, a `diagnosed` and a
+// `rejected` shard;
+// one with a binding must have the run's.
 #[test]
-fn s9_3_tree_run_without_rules_needs_no_binding() {
+fn s9_3_tree_run_without_rules_needs_the_binding() {
     let run = Run::new(vec![], None);
-    let mut s = run.verified(0xa0);
-    assert_eq!(state_of(&run, &s), State::Verified);
-    s.binding = None;
-    assert_eq!(state_of(&run, &s), State::Verified);
-    s.binding = Some(Binding { pre: 9, ..run.binding() });
-    assert_eq!(state_of(&run, &s), State::Failed);
+    for good in [
+        run.verified(0xa0),
+        run.unparsed(0xa0, Status::Diagnosed, "e"),
+        run.unparsed(0xa0, Status::Rejected, "e"),
+    ] {
+        assert_ne!(state_of(&run, &good), State::Failed);
+        let mut s = good.clone();
+        s.binding = None;
+        assert_eq!(state_of(&run, &s), State::Failed, "{:?}", good.outcome.status);
+        let mut r = run.report();
+        add(&mut r, &s);
+        assert_eq!(r.error_lines(), "slip: failed: /m/a0.cc: the shard has no binding\n");
+        s.binding = Some(Binding { pre: 9, ..run.binding() });
+        assert_eq!(state_of(&run, &s), State::Failed);
+    }
     // A tree run with rules needs it (the contradiction with WP-074 item 3
     // is read the refusing way, spec/landed/verify/WP-070.md).
     let run = two_rules();
@@ -378,12 +475,7 @@ fn s9_3_failed_shard_needs_no_binding() {
 #[test]
 fn s9_3_rule_use_must_be_the_runs() {
     let run = two_rules();
-    let good = run.ok(
-        0xa0,
-        run.verdict(slip_model::verdict::VerdictKind::Verified),
-        &[],
-        &[used(1, 1, 0)],
-    );
+    let good = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[], &[used(1, 1, 0)]);
     assert_eq!(state_of(&run, &good), State::Verified);
     let mut s = good.clone();
     s.rule_use = None;
@@ -432,12 +524,7 @@ fn s9_3_spellings_present_exactly_with_obligations() {
 #[test]
 fn s9_3_sections_of_another_runs_shard_are_not_read() {
     let run = two_rules();
-    let mut s = run.ok(
-        0xa0,
-        run.verdict(slip_model::verdict::VerdictKind::Verified),
-        &[],
-        &[used(0, 0, 3)],
-    );
+    let mut s = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[], &[used(0, 0, 3)]);
     s.binding = Some(Binding { pre: 0, ..run.binding() });
     let mut r = run.report();
     add(&mut r, &s);
@@ -481,19 +568,11 @@ fn s9_3_stale_overrides_incomplete() {
     let mut r = run.report();
     add(&mut r, &run.unverifiable(0xa0, "r"));
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
-    add(
-        &mut r,
-        &run.ok(
-            0xa1,
-            run.verdict(slip_model::verdict::VerdictKind::Verified),
-            &[],
-            &[used(0, 0, 1)],
-        ),
-    );
+    add(&mut r, &run.ok(0xa1, run.verdict(VerdictKind::Verified), &[], &[used(0, 0, 1)]));
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     let mut r = run.report();
     assert_eq!(r.verdict(), RunVerdict::Incomplete, "no observer");
-    r.add(&d(0xa2), b"/m", None, Some(Status::Ok));
+    r.add(&d(0xa2), b"/m", None, common::MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
 }
 
@@ -506,7 +585,7 @@ fn s9_3_stale_overrides_incomplete() {
 fn m2_report() -> slip_verify::run::Report {
     let run = m2_run();
     let (f, n) = (ix(&run, "f"), ix(&run, "n"));
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     let o = overlay();
     let mut r = run.report();
     // The namespace rule: stale in a0 by `kept_via` (WP-111), used and not
@@ -639,7 +718,7 @@ fn s9_4_members_only_when_they_apply() {
 fn s9_4_stale_lines_at_most_100() {
     let mut run = Run::new(vec![rule(KeyKind::Function, "f", "g")], None);
     run.plan_observers = 200;
-    let v = run.verdict(slip_model::verdict::VerdictKind::Verified);
+    let v = run.verdict(VerdictKind::Verified);
     for (n, more) in [(100u8, None), (101, Some(1)), (103, Some(3))] {
         let mut r = run.report();
         for i in 0..n {
@@ -934,9 +1013,10 @@ fn s5_3_guard_reasons() {
 }
 
 // §9.4: a run with a tree image and no rule writes exactly the M1
-// document: its shards without a binding (M1's) and with the run's give
-// the same report, with M1's members only. (M1's own goldens,
-// `tests/golden/run/`, are checked by `tests/run.rs`, unchanged.)
+// document, with M1's members only, its shards carrying the run's binding
+// (WP-114; before it, M1's shards without one gave the same report). (M1's
+// own goldens, `tests/golden/run/`, are checked by `tests/run.rs`,
+// unchanged.) Without the binding every observer is `failed` (§9.3).
 #[test]
 fn s9_4_m1_run_report_unchanged() {
     let run = Run::new(vec![], None);
@@ -953,11 +1033,10 @@ fn s9_4_m1_run_report_unchanged() {
         }
         r
     };
-    let (m1, m2) = (report(false), report(true));
+    let (unbound, m1) = (report(false), report(true));
+    assert_eq!(count(&unbound, State::Failed), 3);
+    assert_eq!(unbound.verdict(), RunVerdict::Incomplete);
     let j1 = json::write_pretty(&m1.to_json()).unwrap();
-    assert_eq!(j1, json::write_pretty(&m2.to_json()).unwrap());
-    assert_eq!(m1.to_text(), m2.to_text());
-    assert_eq!(m1.error_lines(), m2.error_lines());
     for member in ["\"overlay\"", "\"agreement\"", "\"spellings\""] {
         assert!(!j1.contains(member), "{member}");
     }
@@ -1083,11 +1162,9 @@ fn s9_3_refused_shard_says_why() {
 fn s10_4_fold_refusal_says_why() {
     use slip_model::spellings::{Span, Spellings};
     let run = Run::new(vec![], Some(overlay()));
-    for kind in
-        [slip_model::verdict::VerdictKind::Verified, slip_model::verdict::VerdictKind::Unverifiable]
-    {
+    for kind in [VerdictKind::Verified, VerdictKind::Unverifiable] {
         let mut v = run.verdict(kind);
-        if kind == slip_model::verdict::VerdictKind::Unverifiable {
+        if kind == VerdictKind::Unverifiable {
             v.reason = "post-image: x".to_owned();
         }
         let mut s = run.ok(0xa0, v, &[0], &[]);

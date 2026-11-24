@@ -1,0 +1,5 @@
+# Owned code reopens the dependency's inline acme::v1 without inline; legacy::v1 was not inline, so g is now found as acme::g.
+# WP-140: the owned view's unit of v1 has the namespace's one digest, inline: changed legacy::v1.
+# One of the three cases why the digest is not per view (a per-view digest would be equal).
+changed legacy::v1
+use 1 via 1 direct 0

@@ -1,0 +1,3 @@
+# An owned namespace alias to the dependency's acme, not edited.
+# WP-140: equal; the alias writes acme's own key, as before.
+use 1 via 1 direct 0

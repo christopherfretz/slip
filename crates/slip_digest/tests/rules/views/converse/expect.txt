@@ -1,0 +1,3 @@
+# The motivating case: dep.h keeps legacy, owned g moves to acme (the dependency included).
+# WP-140: unchanged (no owned opening of the dependency's legacy is left).
+use 1 via 1 direct 0

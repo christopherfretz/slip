@@ -1,0 +1,7 @@
+# WP-140 review F1 (WP-146): dep.h declares legacy::hook, which owned code defines. This observer
+# does not include dep.h, so hook is owned here and moves with legacy: equal, right for this
+# observer alone. With hook-user-with-dependency (which includes dep.h, so hook is the
+# dependency's and stays legacy::hook) the program no longer links, yet each observer is equal:
+# ownership differs between observers. The run-level test is pending in slip_cli verify_job.rs
+# (wp146_ownership_differs_between_observers_is_not_verified).
+use 1 via 1 direct 0

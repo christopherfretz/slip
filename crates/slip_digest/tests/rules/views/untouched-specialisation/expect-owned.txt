@@ -1,0 +1,15 @@
+# Every file owned: acme is owned and mapped (to legacy); the dependency's entities move units.
+changed u()
+added acme
+added acme::Dep
+added acme::Trait
+added acme::Trait::v
+added acme::Trait<int>
+added acme::Trait<int>::v
+removed acme
+removed acme::Dep
+removed acme::Trait
+removed acme::Trait::v
+removed acme::Trait<int>
+removed acme::Trait<int>::v
+use 3 via 1 direct 0

@@ -2919,10 +2919,12 @@ fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
     text
 }
 
-// §5.4, §9.1 (WP-121 item 3): a job whose rule table is empty writes the
-// shard it wrote before WP-121, byte for byte: neither `binding` nor
-// `rule_use`, for each outcome. The golden was blessed on `main` before
-// the package's code changed (spec/landed/verify/WP-121.md §3).
+// §5.4, §9.1 (WP-121 item 3, WP-114 item 2): a job whose rule table is
+// empty writes the shard it wrote before WP-121 with one section more,
+// `binding` (WP-114): no `rule_use`, for each outcome. The golden was
+// blessed on `main` before WP-121's code changed
+// (spec/landed/verify/WP-121.md §3) and moved at WP-114 by exactly the
+// `binding` member of each shard (spec/landed/verify/WP-114.md §2).
 #[test]
 fn s9_1_no_rules_shard_unchanged() {
     const PRE: &str = "int f() { return 1; }\nint g() { return f(); }\n";
@@ -2947,8 +2949,11 @@ fn s9_1_no_rules_shard_unchanged() {
         // and no rule (files need a rule, `spec/verify.md` §2).
         let exempting = Declared::new(vec![], vec![Digest([1; 32])], vec![], vec![]).unwrap();
         for declared in [Declared::none(), exempting] {
-            let v = tree.verify_with(&o, &tree.params(declared)).unwrap();
-            assert!(v.binding.is_none() && v.rule_use.is_none(), "{name}");
+            let params = tree.params(declared);
+            let v = tree.verify_with(&o, &params).unwrap();
+            let want = slip_model::Binding { overlay: None, declared: params.declared_id, pre: 0 };
+            assert_eq!(v.binding, Some(want), "{name}");
+            assert!(v.rule_use.is_none(), "{name}");
         }
         let v = tree.verify(&o);
         out.push_str(name);
@@ -3077,8 +3082,9 @@ fn run_report(
     };
     let mut r = Report::new(header, &params.declared);
     for (o, v) in shards {
-        let (map, _) = tree.stored_map(o);
-        r.add(&o.id, &o.main.path, Some(v), Some(map.outcome.status));
+        let (map, id) = tree.stored_map(o);
+        let map = slip_verify::run::MapShard::Read { status: map.outcome.status, id };
+        r.add(&o.id, &o.main.path, Some(v), Some(map));
     }
     r
 }
@@ -3176,6 +3182,130 @@ fn s2_1_rule_on_a_dependency_entity_not_verified() {
     assert_eq!(r.unused(), [0]);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     assert_eq!(exit_status(r.verdict()), 1);
+}
+
+// WP-140 row (e), §2.1, §9.2: a relocation of `old` into `fresh`, which a
+// read-only header also opens, over two observers: `u0` includes that
+// header itself, `u1` sees its opening of `fresh` only through another
+// read-only header. `fresh` has a unit in the owned view (keyed `old`, the
+// namespace's one digest), so each observer is `verified`, with the same
+// counts (`via` 1: the owned view's key matched the rule), and the run is
+// verified. Until WP-140 each was `mismatch` (`removed old`, `via` 0).
+#[test]
+fn wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/w.h\"\nnamespace old { inline int f1() { return 1; } }\nint u1() { return old::f1(); }\n";
+    let tree = Tree::new(
+        "wp140-two-observers",
+        &[
+            ("dep/d.h", "namespace fresh { struct D {}; }\n"),
+            ("dep/w.h", "#include \"d.h\"\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        let u = v.rule_use.as_ref().unwrap();
+        assert_eq!(
+            u.uses,
+            [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]
+        );
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
+// WP-140 review F3: observers the edit did not touch that open the
+// dependency's `fresh` only to specialise its template, or with an empty
+// opening, hold nothing owned there: no owned view, so each is verified
+// beside the observer that moves `old` (before the fix, `added fresh`).
+#[test]
+fn wp140_untouched_observers_that_open_the_dependency_namespace() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/d.h\"\nnamespace fresh { template <> struct Trait<int> { static const int v = 2; }; }\nint u1() { return fresh::Trait<int>::v; }\n";
+    let u2 = "#include \"dep/d.h\"\nnamespace fresh { }\nint u2() { return sizeof(fresh::D); }\n";
+    let tree = Tree::new(
+        "wp140-untouched",
+        &[
+            (
+                "dep/d.h",
+                "namespace fresh { struct D {}; template <class T> struct Trait { static const int v = 1; }; }\n",
+            ),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+            ("u2.cpp", u2),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for (main, via) in [("u0.cpp", 1), ("u1.cpp", 0), ("u2.cpp", 0)] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        // A rule an observer did not use has no `Use` there.
+        let want: Vec<_> = (via > 0)
+            .then_some(slip_model::agreement::Use { rule: 0, via, direct: 0, kept_via: 0 })
+            .into_iter()
+            .collect();
+        assert_eq!(v.rule_use.as_ref().unwrap().uses, want, "{main}");
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
+// WP-140 review F1, pending WP-146: ownership differs between observers.
+// `dep/d.h` declares `old::hook`, which u1 defines; u1 does not include the
+// header, so there `hook` is owned and moves with `old` to `fresh::hook`,
+// while u0, which includes it, calls the dependency's `old::hook`. Each
+// observer is verified alone and the run is `Verified` today, but the
+// program no longer links (`old::hook` has no definition). The run must
+// not be verified. Rules cases `views/hook-definer-without-dependency`
+// and `hook-user-with-dependency` hold each observer's answer.
+#[test]
+#[ignore = "pending: WP-146 (ownership differs between observers, a wrong verified)"]
+fn wp146_ownership_differs_between_observers_is_not_verified() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0() + old::hook(1); }\n";
+    let u1 = "namespace old { int hook(int x) { return x; } }\n";
+    let tree = Tree::new(
+        "wp146-hook",
+        &[
+            ("dep/d.h", "namespace old { int hook(int); }\nnamespace fresh { struct D {}; }\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(
+        &tree.post.join("u0.cpp"),
+        "#include \"dep/d.h\"\nnamespace fresh { inline int f0() { return 0; } }\nint u0() { return fresh::f0() + old::hook(1); }\n",
+    );
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::NotVerified, "{}", r.error_lines());
 }
 
 // WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
@@ -3834,4 +3964,216 @@ fn n1_duplicate_directory_retargeted() {
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
     assert_eq!(reason(&v), appeared(&tree.base.join("lnk/cfg.h")));
+}
+
+// ----- WP-114: `binding` in every shard, whatever the rules (spec/verify.md
+// §9.1, §9.3)
+
+/// The content id of the empty `DECL` container, `Declared::none()`'s
+/// bytes: what `slip verify` with nothing declared publishes and gives
+/// every job of the run as `Job.post.declared` (`spec/landed/verify/WP-114.md`
+/// §1). A function of the format alone: it moves only with `DECL`'s.
+const EMPTY_DECLARED: &str = "1df101a21fe96c2dbac45dc569ef03a35b2a1eed5ba122510a0f7413b44c1d6e";
+
+/// Each job's shard as the worker returns it, published to the store and
+/// read back (`spec/exec.md` §8.4): `pre` is the job's pre round.
+fn worker_shard(tree: &Tree, o: &Observer, post: &Post) -> Shard {
+    let mut task = PhaseTask::new(64, 16);
+    let mut job = tree.job(o, Phase::Verify, 1);
+    job.post = Some(post.clone());
+    let v = task.run(&job).unwrap();
+    tree.store.publish_shard(&job.plan, Phase::Verify, 1, &o.id, &v.to_bytes()).unwrap();
+    let back = tree.store.read_shard(&job.plan, Phase::Verify, 1, &o.id).unwrap().unwrap();
+    let back = Shard::from_bytes(&back).unwrap();
+    back.validate().unwrap();
+    assert_eq!(back, v);
+    back
+}
+
+/// A case of `s9_1_binding_in_every_shard_read_back`.
+type Case<'a> = (&'a str, &'a str, Option<&'a str>, Status, Option<VerdictKind>, u64);
+
+// §9.1 (WP-114 item 1): every shard the task writes has `binding`, with or
+// without rules, for every outcome (`ok` verified, mismatch and
+// unverifiable, `diagnosed`, `rejected`): `overlay` absent, `declared` the
+// job's `DECL`, `pre` the job's pre round. `rule_use` only in an `ok`
+// shard under a rule table that is not empty. Read back from the store.
+// With nothing declared, `declared` is the empty container's id, the same
+// in every job.
+#[test]
+fn s9_1_binding_in_every_shard_read_back() {
+    let empty = content_id(&Declared::none().to_bytes()).unwrap();
+    assert_eq!(empty.to_string(), EMPTY_DECLARED);
+    // (post-image before the relocation the rule declares, which is made
+    // when there is a rule; extra flag; expected status and verdict kind;
+    // pre round)
+    let changed = RELOCATE_PRE.replace("return 1", "return 2");
+    let cases: [Case; 5] = [
+        ("verified", RELOCATE_PRE, None, Status::Ok, Some(VerdictKind::Verified), 0),
+        ("mismatch", &changed, None, Status::Ok, Some(VerdictKind::Mismatch), 0),
+        ("unverifiable", RELOCATE_PRE, None, Status::Ok, Some(VerdictKind::Unverifiable), 9),
+        ("diagnosed", "namespace old { int f( }\n", None, Status::Diagnosed, None, 0),
+        ("rejected", RELOCATE_PRE, Some("-fdiagnostics-color=bogus"), Status::Rejected, None, 0),
+    ];
+    for (name, post, flag, status, verdict, pre) in cases {
+        for rules in [false, true] {
+            let tree = Tree::new(&format!("every-{name}-{rules}"), &[("a.cpp", RELOCATE_PRE)]);
+            let post = if rules { post.replace("old", "fresh") } else { post.to_owned() };
+            write(&tree.post.join("a.cpp"), &post);
+            let o = match flag {
+                Some(f) => tree.observer_of("a.cpp", &[f]),
+                None => tree.observer(),
+            };
+            tree.map(&o);
+            let declared = if rules {
+                declared_of(&tree, rename_ns("fresh", "old"), &[])
+            } else {
+                Declared::none()
+            };
+            let id = tree.store.publish_declared(&declared.to_bytes()).unwrap();
+            if !rules {
+                assert_eq!(id, empty);
+            }
+            let job = Post { pre, declared: id, image: tree.image().to_post() };
+            let v = worker_shard(&tree, &o, &job);
+            let what = format!("{name}, rules {rules}: {:?}", v.outcome);
+            assert_eq!(v.outcome.status, status, "{what}");
+            assert_eq!(v.verdict.as_ref().map(|v| v.kind), verdict, "{what}");
+            let want = slip_model::Binding { overlay: None, declared: id, pre };
+            assert_eq!(v.binding, Some(want), "{what}");
+            let counted = rules && status == Status::Ok;
+            assert_eq!(v.rule_use.is_some(), counted, "{what}");
+            if let Some(u) = &v.rule_use {
+                assert_eq!(u.rules, declared.rules_id(), "{what}");
+            }
+            assert!(v.spellings.is_none(), "{what}");
+        }
+    }
+}
+
+// §9.1, §9.3 (WP-114): the jobs of one run, each for another observer and
+// each made by its own worker, write one `declared` and one `pre`, with
+// and without rules.
+#[test]
+fn s9_1_jobs_of_one_run_write_one_binding() {
+    for rules in [false, true] {
+        let tree = Tree::new(
+            &format!("one-binding-{rules}"),
+            &[("a.h", RELOCATE_HEADER_PRE), ("u0.cpp", RELOCATE_U0), ("u1.cpp", RELOCATE_U1)],
+        );
+        let declared = if rules {
+            declared_of(&tree, rename_ns("fresh", "old"), &[])
+        } else {
+            Declared::none()
+        };
+        let id = tree.store.publish_declared(&declared.to_bytes()).unwrap();
+        let post = Post { pre: 0, declared: id, image: tree.image().to_post() };
+        let mut bindings = Vec::new();
+        for main in ["u0.cpp", "u1.cpp"] {
+            let o = tree.observer_of(main, &[]);
+            tree.map(&o);
+            bindings.push(worker_shard(&tree, &o, &post).binding);
+        }
+        let want = slip_model::Binding { overlay: None, declared: id, pre: 0 };
+        assert_eq!(bindings, [Some(want), Some(want)], "rules {rules}");
+    }
+}
+
+// §9.3 (WP-114): the agreement accepts the task's own shards, under a
+// rule table and under none; a shard of another run (another `declared`
+// in the run's header) is `failed`, with the reason. Without rules the run
+// is verified (status 0), its report M1's.
+#[test]
+fn s9_3_agreement_takes_the_jobs_own_shards() {
+    use slip_verify::run::{RunVerdict, State};
+    for rules in [false, true] {
+        let tree = Tree::new(
+            &format!("agree-{rules}"),
+            &[("a.h", RELOCATE_HEADER_PRE), ("u0.cpp", RELOCATE_U0), ("u1.cpp", RELOCATE_U1)],
+        );
+        if rules {
+            let fresh = |s: &str| s.replace("old", "fresh");
+            write(&tree.post.join("a.h"), &fresh(RELOCATE_HEADER_PRE));
+            write(&tree.post.join("u0.cpp"), &fresh(RELOCATE_U0));
+            write(&tree.post.join("u1.cpp"), &fresh(RELOCATE_U1));
+        }
+        let declared = if rules {
+            declared_of(&tree, rename_ns("fresh", "old"), &[])
+        } else {
+            Declared::none()
+        };
+        let params = tree.params(declared);
+        let mut shards = Vec::new();
+        for main in ["u0.cpp", "u1.cpp"] {
+            let o = tree.observer_of(main, &[]);
+            tree.map(&o);
+            let v = tree.verify_with(&o, &params).unwrap();
+            assert!(v.binding.is_some());
+            shards.push((o, v));
+        }
+        let r = run_report(&tree, &params, &shards);
+        assert_eq!(r.states()[0], 2, "rules {rules}: {}", r.error_lines());
+        assert_eq!(r.verdict(), RunVerdict::Verified);
+        assert_eq!(exit_status(r.verdict()), 0);
+        assert_eq!(r.to_text().contains("agreement"), rules);
+
+        // Another run: other declared changes (another content id).
+        let other = Params { declared_id: Digest([0x5a; 32]), ..params.clone() };
+        let r = run_report(&tree, &other, &shards);
+        assert_eq!(r.states()[State::ALL.len() - 1], 2, "rules {rules}");
+        assert_eq!(r.verdict(), RunVerdict::Incomplete);
+        let mains: Vec<String> =
+            shards.iter().map(|(o, _)| String::from_utf8(o.main.path.clone()).unwrap()).collect();
+        assert_eq!(
+            r.error_lines(),
+            format!(
+                "slip: failed: {}: the shard's binding is not this run's: its declared changes\n\
+                 slip: failed: {}: the shard's binding is not this run's: its declared changes\n",
+                mains[0], mains[1]
+            )
+        );
+    }
+}
+
+// §9.3 (WP-114 item 5): a map shard republished between the job and the
+// report (`Store::publish` renames over it; here a map shard of the same
+// observer and round with other bytes): the verdict names the map shard
+// it compared against, which the run no longer reads; the observer is
+// `failed`, with the reason, and the run incomplete. Put back, the
+// observer is `verified` again.
+#[test]
+fn s9_3_map_shard_republished_between_job_and_report() {
+    use slip_verify::run::RunVerdict;
+    let tree = Tree::new("map-republished", &[("a.cpp", RELOCATE_PRE)]);
+    let o = tree.observer();
+    tree.map(&o);
+    let params = tree.params(Declared::none());
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Verified, "{}", reason(&v));
+    let (map, was) = tree.stored_map(&o);
+    let shards = [(o.clone(), v)];
+    assert_eq!(run_report(&tree, &params, &shards).verdict(), RunVerdict::Verified);
+
+    // The same map shard but for one counter: another content id.
+    let mut other = map.clone();
+    other.counters.push(slip_model::Counter { name: "zz.republished".to_owned(), value: 1 });
+    other.counters.sort();
+    let now = tree.put_map(&o, &other);
+    assert_ne!(now, was);
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    assert_eq!(exit_status(r.verdict()), 4);
+    let short = |d: &Digest| d.to_string()[..16].to_owned();
+    assert_eq!(
+        r.error_lines(),
+        format!(
+            "slip: failed: {}: the shard's verdict is verified: it was made against map shard \
+             {}, not the run's {}\n",
+            String::from_utf8(o.main.path.clone()).unwrap(),
+            short(&was),
+            short(&now)
+        )
+    );
+    tree.put_map(&o, &map);
+    assert_eq!(run_report(&tree, &params, &shards).verdict(), RunVerdict::Verified);
 }

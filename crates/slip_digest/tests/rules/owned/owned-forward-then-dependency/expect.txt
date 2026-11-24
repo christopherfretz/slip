@@ -1,4 +1,7 @@
 # Late is the dependency's: it moved, and so did acme (opened by dep.h).
+# WP-140 review F3: acme's owned opening holds only the forward declaration of
+# Late, a dependency entity (keyed in the dependency view), so acme holds nothing
+# owned and has no owned view: `removed legacy`, as before WP-140; Late differs.
 changed use()
 added acme
 added acme::Late

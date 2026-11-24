@@ -58,6 +58,16 @@ pub(crate) struct Written {
     /// Whether the unit's key is in a collision (§3.4), whatever cause
     /// `cause` keeps first.
     pub collided: bool,
+    /// For a namespace's unit in a view that is not its own ownership
+    /// ([`view_units`], WP-140), that view (`true`: owned); `None` for
+    /// every other unit.
+    pub view: Option<bool>,
+    /// For a view unit, the name its key denotes (`legacy` for the owned
+    /// view of a dependency's `acme` under `relocate legacy => :: acme`),
+    /// read from the key; `None` for every other unit, and when the key's
+    /// name is not one a namespace has. `names::names` reports a view unit
+    /// as `<denotes> (the owned part of <namespace>)` (WP-140 review F4).
+    pub denotes: Option<String>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -640,6 +650,8 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         default_argument: None,
         owner: None,
         collided: false,
+        view: None,
+        denotes: None,
     })
 }
 
@@ -688,6 +700,180 @@ fn fallback_key(
     Some((key.id(), kind, parent_cause))
 }
 
+/// The units of namespaces in a view that is not their own ownership
+/// (`spec/digest.md` §3.4 "A namespace's unit in each view",
+/// `spec/verify.md` §2.1 rule 2; WP-140), after every other unit is
+/// written and tainted.
+///
+/// A namespace `N` is owned iff none of its openings lies in a read-only
+/// file (`Walk::owned`); its own unit is keyed in that view. It has a unit
+/// in the other view too when it **holds something** there: an entity
+/// that is not a namespace keyed with `N` as its namespace parent in that
+/// view (`OwnedState::member_views`: a function, a class, a variable, and
+/// the content-keyed using-directive, alias, using-declaration or
+/// `static_assert` written in an opening), or a nested namespace keyed
+/// under `N` in that view that itself holds something there
+/// (`OwnedState::nested_views`, transitively). An opening alone is not
+/// enough: an empty owned opening, or one that holds only an explicit
+/// specialisation (keyed under its template, not under `N`), holds
+/// nothing (WP-140 review F3; the same definition as `docs/wp/WP-141.md`
+/// Addendum A4). The unit is written when its key differs from `N`'s own
+/// key (equal keys would be one unit; the dedup of `groups::build` is not
+/// relied on). Its digest is `N`'s own unit's, made of every opening (the
+/// inline bit and the attributes of the whole chain): the digest is not
+/// per view, or a fact one view's openings hold would be lost in the
+/// other's unit (`spec/landed/digest/WP-140.md`, why option A was
+/// rejected). Its cause is the own unit's, merged with the view key's. A
+/// view whose key cannot be formed makes the own unit indeterminate with
+/// its cause.
+///
+/// A reference to `N` (an alias's target, a using-directive, a qualifier,
+/// a reflection) still writes `N`'s own key (`spec/verify.md` "Open
+/// questions"). Under the empty table nothing is written.
+pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
+    if w.rules.is_empty() {
+        return;
+    }
+    let mut views = Vec::new();
+    for (i, u) in written.iter().enumerate() {
+        if u.kind != KeyKind::Namespace
+            || u.view.is_some()
+            || u.resolved.is_some()
+            || u.default_argument.is_some()
+        {
+            continue;
+        }
+        let Some(e) = u.entity else { continue };
+        views.push((i, e));
+    }
+    let mut nested: std::collections::HashMap<(DeclId, bool), Vec<DeclId>> =
+        std::collections::HashMap::new();
+    for &(n, b, m) in &w.owned_state.nested_views {
+        nested.entry((n, b)).or_default().push(m);
+    }
+    let first_view = written.len();
+    for (i, e) in views {
+        let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
+        let view = !w.owned(e);
+        if !holds(&w.owned_state.member_views, &nested, e, view) {
+            continue;
+        }
+        match w.view_key(e, view) {
+            KeyRes::Key { id, cause, .. } => {
+                if id == own {
+                    continue;
+                }
+                let mut u = written[i].clone();
+                u.key = id;
+                u.view = Some(view);
+                // A guard (WP-140 review F5): a namespace key's cause is made
+                // of its name's (an identifier or the unnamed namespace:
+                // none) and its parents', which are the same namespaces'
+                // in either view, so the view key's cause is the own key's,
+                // which the own unit already holds (`write`). No source
+                // makes the two differ.
+                if let Some(c) = cause {
+                    u.cause = Some(merge(u.cause, c));
+                }
+                if view {
+                    crate::rule_use::view_unit(w, e);
+                }
+                written.push(u);
+            }
+            // A guard (WP-140 review F5): an error of a namespace key
+            // (a refused table, a bad name) is the same in either view and
+            // would have left the own key without one (`continue` above);
+            // an abort (depth, cycle) cannot happen here, at depth 0 with
+            // the enclosing namespaces' keys in this view asked, and
+            // memoised, before their members' (`written` is in arena
+            // order). No source reaches this arm.
+            KeyRes::None(cause) => {
+                let c = cause.unwrap_or(Cause::Unaccounted("key/view"));
+                written[i].cause = Some(merge(written[i].cause, c));
+            }
+        }
+    }
+    if first_view == written.len() {
+        return;
+    }
+    // The name each view unit's key denotes, from its key and the names its
+    // parents' keys denote (a parent is a namespace's own or view unit).
+    let mut by_key = std::collections::HashMap::new();
+    for (j, u) in written.iter().enumerate() {
+        if u.kind == KeyKind::Namespace && u.resolved.is_none() && u.default_argument.is_none() {
+            by_key.entry(u.key).or_insert(j);
+        }
+    }
+    let mut memo = std::collections::HashMap::new();
+    for i in first_view..written.len() {
+        let id = written[i].key;
+        written[i].denotes = denoted(w, written, &by_key, &mut memo, id, 0);
+    }
+}
+
+/// The qualified name the namespace key `id` denotes (`Written::denotes`):
+/// its key's identifier (or the unnamed namespace) under the name its
+/// parent's key denotes. `None` when a part has another form, or a parent
+/// is no namespace unit here.
+fn denoted(
+    w: &mut Walk<'_>,
+    written: &[Written],
+    by_key: &std::collections::HashMap<Digest, usize>,
+    memo: &mut std::collections::HashMap<Digest, Option<String>>,
+    id: Digest,
+    depth: u32,
+) -> Option<String> {
+    if let Some(n) = memo.get(&id) {
+        return n.clone();
+    }
+    if depth > 64 {
+        return None;
+    }
+    let u = &written[*by_key.get(&id)?];
+    let key = crate::records::key_again(w, u.entity?, u.view)?;
+    let leaf = match &key.name {
+        Name::Identifier(s) => String::from_utf8_lossy(s).into_owned(),
+        Name::Anonymous => "(anonymous namespace)".to_owned(),
+        _ => return None,
+    };
+    let name = match key.parent {
+        Parent::Root => Some(leaf),
+        Parent::Unit(p) => {
+            denoted(w, written, by_key, memo, p, depth + 1).map(|p| format!("{p}::{leaf}"))
+        }
+        Parent::CLinkage | Parent::Builtin => None,
+    };
+    memo.insert(id, name.clone());
+    name
+}
+
+/// Whether the namespace `n` holds something in `view` (`view_units`):
+/// an entity that is not a namespace keyed under it in that view, or a
+/// nested namespace that does, at any depth (the namespaces of a
+/// translation unit nest without a cycle; `seen` bounds the search all
+/// the same).
+fn holds(
+    members: &std::collections::HashSet<(DeclId, bool)>,
+    nested: &std::collections::HashMap<(DeclId, bool), Vec<DeclId>>,
+    n: DeclId,
+    view: bool,
+) -> bool {
+    let mut stack = vec![n];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(x) = stack.pop() {
+        if !seen.insert(x) {
+            continue;
+        }
+        if members.contains(&(x, view)) {
+            return true;
+        }
+        if let Some(children) = nested.get(&(x, view)) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    false
+}
+
 /// Makes the unit around each declaration of a kind without a key kind
 /// indeterminate (`collect`); the order unit at the top level.
 pub(crate) fn apply_taints(w: &Walk<'_>, written: &mut [Written]) {
@@ -733,6 +919,8 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         file: Vec::new(),
         resolved: None,
         default_argument: None,
+        view: None,
+        denotes: None,
     }
 }
 

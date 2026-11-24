@@ -1437,6 +1437,155 @@ fn s2_1_rule_naming_a_dependency_entity_matches_nothing() {
     );
 }
 
+// WP-140, `spec/verify.md` "Open questions" (a reference to a namespace
+// that two views key): `old` relocated into `fresh`, which read-only
+// `dep/d.h` also opens, with an owned alias and an owned using-directive
+// redirected from `old` to `fresh`. A reference writes the namespace's own
+// key (the dependency's `fresh`), so the relocation alone is `mismatch`:
+// `changed L` (the alias has a key of its own) and the directive removed
+// and added (it is keyed by its content). Declared, `changed L`, and the
+// directive's pre-image unit removed and its post-image unit created, it
+// is `verified`: what a user can declare today to get past each.
+#[test]
+fn wp140_redirected_references_declared() {
+    let f = Fixture::new("wp140-references");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\n");
+    let pre = "#include \"dep/d.h\"\nnamespace old { int f(int x) { return x; } }\nnamespace L = old;\nusing namespace old;\nint u0() { return L::f(1) + f(2); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("old", "fresh"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    let mut found = groups(&report);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("added".to_owned(), "<using_directive fresh>".to_owned()),
+            ("changed".to_owned(), "L".to_owned()),
+            ("removed".to_owned(), "<using_directive old>".to_owned()),
+        ],
+        "{out:?}"
+    );
+    f.write(
+        "t.txt",
+        "relocate old => :: fresh\nchanged L\nremoved <using_directive old>\ncreated <using_directive fresh>\n",
+    );
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"), "{out:?}");
+}
+
+// WP-140 review F4: a namespace's unit in the owned view is reported under
+// the name its key denotes and the namespace it is a part of. u1 is
+// untouched and writes a using-directive in the dependency's `fresh`, so
+// `fresh` holds something owned there and has a unit keyed `old`, with no
+// partner in u1's pre-image: `added old (the owned part of fresh)`. The
+// name is what `slip declare` takes: `created` of it, and the directive
+// moved under it declared, verifies; `kept` of it is accepted and exempts
+// nothing.
+#[test]
+fn wp140_a_view_unit_is_named_by_its_key_and_its_namespace() {
+    let f = Fixture::new("wp140-view-name");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\nnamespace other { int o(); }\n");
+    let u0 = "#include \"dep/d.h\"\nnamespace old { int f(int x) { return x; } }\nint u0() { return old::f(1); }\n";
+    f.write("s/u0.cpp", u0);
+    f.write("post/u0.cpp", &u0.replace("old", "fresh"));
+    f.both(
+        "u1.cpp",
+        "#include \"dep/d.h\"\nnamespace fresh { using namespace other; }\nint u1() { return 1; }\n",
+    );
+    f.db(&["u0.cpp", "u1.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    let mut found = groups(&report);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("added".to_owned(), "fresh::<using_directive other>".to_owned()),
+            ("added".to_owned(), "old (the owned part of fresh)".to_owned()),
+            ("removed".to_owned(), "fresh::<using_directive other>".to_owned()),
+        ],
+        "{out:?}"
+    );
+    f.write(
+        "t.txt",
+        "relocate old => :: fresh\ncreated old (the owned part of fresh)\nremoved fresh::<using_directive other>\ncreated fresh::<using_directive other>\n",
+    );
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.contains("created 2\nremoved 1\n"), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(out.value("agreement"), Some("rules 1 stale 0 unused 0"), "{out:?}");
+    f.write("t.txt", "relocate old => :: fresh\nkept old (the owned part of fresh)\n");
+    // `kept` takes the name too (its key is the view unit's), and exempts
+    // nothing: it says an entity stays in the old namespace (§9.2), which
+    // the stale check reads; the three findings stay.
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    assert!(out.stdout.contains("kept 1\n"), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(groups(&report).len(), 3, "{out:?}");
+}
+
+// WP-140 review F3: an empty owned `namespace old {}` moved to `namespace
+// fresh {}`, which the dependency opens, holds nothing: `fresh` has no
+// owned view, and the pre-image's `old` has no partner (`removed old`, a
+// stated limit, `spec/verify.md` "Open questions"). It is declared as a
+// removal, which verifies.
+#[test]
+fn wp140_empty_opening_moved_is_a_declared_removal() {
+    let f = Fixture::new("wp140-empty-opening");
+    f.both("dep/d.h", "namespace fresh { struct D {}; }\n");
+    let pre = "#include \"dep/d.h\"\nnamespace old { }\nint u0() { return sizeof(fresh::D); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("namespace old", "namespace fresh"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let mut extra = img.clone();
+    extra.extend(["--owned", "s", "--readonly", "s/dep"]);
+    let mut with = img.clone();
+    with.extend(["--declared", "d.decl"]);
+    f.write("t.txt", "relocate old => :: fresh\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "not_verified");
+    assert_eq!(groups(&report), [("removed".to_owned(), "old".to_owned())], "{out:?}");
+    f.write("t.txt", "relocate old => :: fresh\nremoved old\n");
+    let out = declare(&f, &plan, "t.txt", &extra);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let (out, report) = f.verify_report(&plan, &with);
+    assert_verdict(&out, &report, "verified");
+}
+
 // WP-111 (WP-053 review F2): an `--owned` entry that covers no file a
 // selected pre-image read (here the post tree) is a warning, the status
 // unchanged; one that covers a file is not.
@@ -1792,7 +1941,59 @@ fn s9_2_rename_declared_with_a_stale_observer() {
             out.stdout.contains(&format!("\nstale rule 0 direct 1 kept_via 0 {u1}\n")),
             "{out:?}"
         );
+        // WP-114 item 3: the report's member (§9.4), the pair's observer
+        // the one of `u1`.
+        let stale = get(&report, "agreement.stale").as_array().unwrap();
+        assert_eq!(stale.len(), 1, "{out:?}");
+        let o1 = f.observers(&plan).into_iter().find(|(_, m)| m.ends_with("u1.cpp")).unwrap().0;
+        assert_eq!(
+            json::write_compact(&stale[0]).unwrap(),
+            format!(r#"{{"rule":0,"observer":"{o1}","main":"{u1}","direct":1,"kept_via":0}}"#)
+        );
+        assert_eq!(json::write_compact(get(&report, "agreement.unused")).unwrap(), "[]");
     }
+}
+
+// spec/verify.md §9.2, §9.4 (WP-114 item 3): a rule no observer of the
+// run uses, through `slip verify` with a tree. The edit renames `S` to `T`
+// by hand (`u0`); the declared file also renames `G`, which only `u1`
+// declares, and the run selects `u0` alone (`--only`; `slip declare`
+// refuses a name no pre-image has): `u0` `verified`, the run verified (an
+// unused rule changes no verdict, status 0), the report's `agreement`
+// lists `G`'s rule unused (rule 0: a table is sorted by the post-image's
+// key, `H` before `T`), and the text says `unused rule 0`.
+#[test]
+fn s9_2_unused_rule_declared() {
+    const U0: &str = "#include \"a.h\"\nint u0() { S s{1}; return s.x; }\n";
+    const U1: &str = "struct G { int y; };\nint u1() { G g{2}; return g.y; }\n";
+    let (f, plan) = declared_run(
+        "unused-rule",
+        &[("a.h", "struct S { int x; };\n"), ("u0.cpp", U0), ("u1.cpp", U1)],
+        &[("a.h", "struct T { int x; };\n".to_owned()), ("u0.cpp", U0.replace("S s", "T s"))],
+        "relocate S => :: T\nrelocate G => :: H\n",
+    );
+    let declared = Declared::from_bytes(&std::fs::read(f.path("d.decl")).unwrap()).unwrap();
+    let names: Vec<&slip_model::keys::Name> =
+        declared.rules().rules().iter().map(|r| &r.name).collect();
+    assert_eq!(
+        names,
+        [
+            &slip_model::keys::Name::Identifier(b"H".to_vec()),
+            &slip_model::keys::Name::Identifier(b"T".to_vec())
+        ]
+    );
+    let mut s = Vec::new();
+    let mut args = image(&f, &mut s);
+    args.extend(["--declared", "d.decl", "--only", "u0.cpp"]);
+    let (out, report) = f.verify_report(&plan, &args);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(states(&report), [1, 0, 0, 0, 0, 0, 0], "{out:?}");
+    assert_eq!(out.value("agreement"), Some("rules 2 stale 0 unused 1"));
+    assert!(out.stdout.contains("\nunused rule 0\n"), "{out:?}");
+    assert!(!out.stdout.contains("\nstale rule"), "{out:?}");
+    let agreement = get(&report, "agreement");
+    assert_eq!(json::write_compact(agreement).unwrap(), r#"{"rules":2,"stale":[],"unused":[0]}"#);
+    assert_eq!(out.stderr, "", "{out:?}");
 }
 
 // ----- units (spec/exec.md §8.9) ------------------------------------------------------

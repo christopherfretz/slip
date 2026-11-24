@@ -285,13 +285,38 @@ came from, and nothing about the rest:
   (pitfall row N34).
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped:
-  their keys agree. The namespace's own unit is not: the post-image's
-  `acme` is keyed as the dependency's namespace, so the pre-image's unit
-  `legacy` has no partner, the run reports `removed legacy`, and the rule
-  is used by no level (`via 0`). A correct move into a namespace that a
-  dependency opens therefore does not verify today: a stated limit,
-  `docs/wp/WP-140.md` ("Open questions"; fixtures
-  `stale/dependency-opens-target-moved` and `-kept-moved`).
+  their keys agree. The namespace's own unit is the dependency's (one
+  opening is read-only), keyed `acme`; and since owned entities are keyed
+  under it, it also has a unit **in the owned view**, keyed `legacy` under the rule,
+  with the namespace's one digest (`digest.md` §3.4 "A namespace's unit
+  in each view", WP-140). That unit is the pre-image's `legacy`'s
+  partner, and the rule is used by it (`via`, §9.2). So a correct move
+  into a namespace that a dependency opens verifies
+  (`tests/rules/stale/dependency-opens-target-moved`, `tests/rules/views/`,
+  pitfall row N46), in every observer alike: one that does not include
+  the dependency has `acme` owned and mapped, the same unit
+  (`views/target-opened-observer-without-dependency`, and two observers
+  that reach the dependency's opening through different headers,
+  `views/observer-direct`, `observer-through-header` and
+  `crates/slip_cli/tests/verify_job.rs`
+  `wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers`).
+  The digest is the namespace's, over every opening, in both views: an
+  owned opening that adds `[[deprecated]]`, or a dependency's `inline`
+  that the pre-image's namespace did not have, is a difference
+  (`views/deprecated-owned-opening`, `deprecated-dependency-opening`,
+  `inline-reopened-plain`); so is an attribute that applies to its own
+  opening only (`visibility`), which fails closed
+  (`views/visibility-owned-opening`). The owned view exists where the
+  namespace holds something owned, not where an owned opening merely
+  stands: an observer the edit did not touch that opens the dependency's
+  `acme` only to specialise its template, or with an empty opening, is
+  equal (`views/untouched-specialisation`, `untouched-empty-opening`,
+  `verify_job.rs`
+  `wp140_untouched_observers_that_open_the_dependency_namespace`; review
+  F3), and an empty `legacy {}` moved there is a removal ("Open
+  questions"). A reference to the namespace writes its own key, the
+  dependency's: "Open questions", "References to a namespace that two
+  views key".
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -2035,6 +2060,10 @@ selected observer ends in one **state**:
 | `never_parsed` | its shard is `diagnosed` or `rejected`, and its map shard is absent or not `ok`: nothing is known to have changed |
 | `failed` | anything else: a shard of status `failed`, no shard, an `ok` shard without a verdict, a shard that is not this run's; a `verified` or `mismatch` verdict whose map shard is absent or not `ok` (the pre shard it compared against is not the one the store has now); a shard of another observer or round, or a verdict under rules other than the run's (`Report::add`, §7.3) |
 
+A `verified` or `mismatch` verdict is believed only against the map shard
+whose content id it names as its `pre`: "its map shard" in the rows above
+is that shard, compared by id (§9.3).
+
 **This run's shard.** The shard of an observer is read from the store and
 is this run's if its content id is the `shard` of the observer's last
 `Job` entry in the run's record (`spec/model.md` §9). A shard another run
@@ -2115,8 +2144,11 @@ NameNote     := { "key": <id>, "name": <str>, "file": <path>, "observers": <n>,
   (`unverifiable`), the shard's message (`not_parsed`, `never_parsed`,
   `failed`; empty if there is no shard; for a shard the report refuses
   as not this run's, §7 and §9.3, the reason it refuses it, never the
-  shard's own message: `spec/landed/verify/WP-121.md` §4) or the empty
-  string (`mismatch`);
+  shard's own message: `spec/landed/verify/WP-121.md` §4; for a shard the
+  state table refuses, §7, the reason it refuses it, such as an `ok` shard
+  without a verdict, counters that disagree with the verdict, a verdict
+  against another map shard: `spec/landed/verify/WP-114.md` §5) or the
+  empty string (`mismatch`);
   and for a `mismatch` the verdict's `total`, how many of them are
   `indeterminate` or `derived_indeterminate` (from the counters of §7.2)
   and how many the verdict lists; three zeros otherwise. An observer is
@@ -2199,7 +2231,11 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
 | `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
-A shard without a verdict has none of them. The counters by kind are what
+A shard without a verdict has none of them; a shard with a verdict has
+`verify.findings` and the six by kind always (the job writes them with
+every verdict), and one without any of them is not believed: the
+observer is `failed`, "the shard has no counter <name>" (§7, WP-114).
+The counters by kind are what
 `indeterminate_only` (§7) is computed from: a verdict lists only its first
 `limit` findings.
 
@@ -2213,8 +2249,10 @@ pub enum State { Verified, Unchanged, Mismatch, NotParsed, Unverifiable, NeverPa
 impl State { pub const ALL: [State; 7]; pub fn name(self) -> &'static str; }
 
 /// §7: `verify` is this run's shard of the observer (None: there is none, or
-/// it is not this run's); `map` the status of its map shard (None: absent).
-pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State;
+/// it is not this run's); `map` its map shard as the run reads it, status and
+/// content id (None: absent; unusable: there and not a valid map shard of the
+/// observer; §9.3, §9.5 `MapShard`).
+pub fn state(verify: Option<&Shard>, map: Option<MapShard>) -> State;
 
 /// Re-exported: `slip_model::result::RunVerdict` (spec/edits.md §8.5), the
 /// one type, `Verified = 0, NotVerified = 1, Incomplete = 2`.
@@ -2230,13 +2268,13 @@ impl Report {
     pub fn new(header: Header, declared: &Declared) -> Report;
     /// `add_at` at the next position (the number of calls so far): for a caller
     /// that adds every selected observer in plan order (M1's `slip verify`).
-    pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<Status>);
+    pub fn add(&mut self, observer: &Digest, main: &[u8], verify: Option<&Shard>, map: Option<MapShard>);
     /// One call per selected observer, `position` its index in the plan, in any
     /// order: nothing the report holds depends on the order of the calls. Panics if
     /// `position` is not below `plan_observers`, or it or the observer was added
     /// before: a defect of the caller, which would let one observer stand for another.
     pub fn add_at(&mut self, position: u64, observer: &Digest, main: &[u8],
-                  verify: Option<&Shard>, map: Option<Status>);
+                  verify: Option<&Shard>, map: Option<MapShard>);
     pub fn verdict(&self) -> RunVerdict;
     pub fn states(&self) -> [u64; 7];
     pub fn to_json(&self) -> slip_model::json::Value;
@@ -2253,8 +2291,13 @@ impl Report {
 
 `add` refuses a shard that is not this observer's result in this run: a
 shard whose `observer` is not `observer`, whose `round` is not the
-header's, or whose verdict's `rules` is not the header's `rules` makes the
-observer `failed`, with an empty message.
+header's, or whose verdict's `rules` is not the header's `rules` (and
+what §9.3 adds) makes the observer `failed`. So does a shard the state
+table refuses (§7's `failed` row). Every refusal says why: the observer's
+message (§7.1 `not_verified`, and its line on standard error) is the
+reason, in the order checked (`spec/landed/verify/WP-121.md` §4,
+`spec/landed/verify/WP-114.md` §5). Only an observer with no shard has the
+empty message.
 
 `add` keeps the findings of a shard and drops the shard; a report over
 4000 observers of 64 findings each holds a quarter of a million findings.
@@ -2433,11 +2476,11 @@ Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 is `spellings`, §10.4; 25 is retired, below.)
 
 - `binding` is present in every shard a verify job writes, whatever the
-  parse's outcome, and is taken from `Job.post`. (Until the exception of
-  §9.3 is removed, a job of a tree image writes it only when the rules
-  are not empty: `spec/landed/verify/WP-121.md`.) A shard the coordinator
-  wrote for a worker that produced none (status `failed`) has no
-  `binding`.
+  parse's outcome and whatever the rules, and is taken from `Job.post`:
+  M1's `slip verify` with nothing declared included, whose `declared` is
+  the content id of the empty container it published
+  (`spec/landed/verify/WP-114.md`). A shard the coordinator wrote for a
+  worker that produced none (status `failed`) has no `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
   not empty, and absent otherwise. Invariants: `uses` strictly ascending
   by `rule`; no `Use` with its three counts 0; `kept` strictly ascending.
@@ -2604,9 +2647,28 @@ has, which counts in that rule's `direct`; with no rule the moved one is
 a difference). Pinned by `tests/rules/stale/tu-local-left`,
 `tu-local-moved-kept` and `unnamed-member-left`; "Open questions".
 
-**Unused rules.** A rule with every count 0 in every observer names
-an entity no observer has. It is reported with the run, like an exemption
-no observer needed (§2.2), and changes no verdict.
+**Unused rules.** A rule with every count 0 in every observer whose
+`rule_use` is folded (§9.3: those `verified` or `mismatch`) names an
+entity no such observer has. It is reported with the run, like an
+exemption no observer needed (§2.2), and changes no verdict: a rule that matches
+nothing changes no key (`digest.md` §3.4, "A rule that matches nothing
+changes nothing"), so it cannot make a comparison equal; what it can do
+is hide a typo, which the report's line shows (WP-140 item 3). A rule used
+only in `unverifiable` observers is listed unused, and a `kept` key
+seen only there is listed with 0 observers; when any observer is
+`unverifiable` the text says over how many observers the fold ran (§9.4).
+
+**A namespace used through its owned view** (WP-140). A dependency
+namespace that owned code opens, or that has an owned member, has a unit
+in the owned view (`digest.md` §3.4); when that unit is written (its key
+differs from the namespace's own), the rule that matched its key counts
+`via` once for the namespace, however many owned openings it has
+(`tests/rules/views/two-owned-openings`). Before WP-140 that key was only
+a level of its members' chains and the rule had `via 0`, which read as
+unused in an observer whose every owned member of the namespace moved
+(`tests/rules/stale/dependency-opens-target-moved`: `via 1` now). Its
+members' `direct` and `kept_via` are as above: the owned view's key is
+the level their chain climbs.
 
 ### 9.3 What is added to the run (§7)
 
@@ -2621,15 +2683,31 @@ for any shard another run left. So is an `ok` shard with a `rule_use`
 under no rule or naming a rule past the table or a `kept` index past
 `Declared.kept`, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
-none, or refused by the fold (§10.4). A run with a tree image and no
-rule is M1's: its shards need no `binding`, and one that has a binding
-must have the run's (`spec/landed/verify/WP-070.md` §2.1). The verify job keeps to
-it: with a tree image it writes `binding` and `rule_use` when the rules
-are not empty and neither when they are (`spec/landed/verify/WP-121.md`).
-This exception is temporary: a verify job is to write `binding` in every
-shard (§9.1), M1's `slip verify` included, after which a package of the
-coordinator's removes it and a shard without a binding is never this
-run's.
+none, or refused by the fold (§10.4). A shard a worker wrote without a
+`binding` is never this run's, whatever the image and the rules (the
+exception M1's runs had, a tree image and no rule, was removed with the
+job's writing of `binding` in every shard: `spec/landed/verify/WP-114.md`).
+
+**The map shard a verdict compared against.** A `verified` or `mismatch`
+verdict names the map shard it compared against by content id (its
+`pre`). It is believed only if that is the map shard the run reads for
+the observer: §7's `failed` row "a `verified` or `mismatch` verdict whose
+map shard is absent or not `ok` (the pre shard it compared against is
+not the one the store has now)" is checked by content id, not by status
+alone, so a map shard replaced within a round (`Store::publish` renames
+over an existing shard) makes such a verdict `failed`, with the reason.
+`Report::add` and `Report::add_at` take the map shard as `MapShard`
+(§9.5). Bytes at the map shard's address that are not a valid map shard
+of the observer (they do not decode, or are of another observer, phase or
+round) are `MapShard::Unusable`: not `ok`, and the reason says that, not
+"no map shard". An `unverifiable` verdict is not held to it: it is not believed
+as a comparison (§7: the observer is `unverifiable` whatever its map
+shard is), so no result of a comparison is read from it. That is not
+because it compared nothing: one ended by a guard after the sums (R1, G2,
+R2, §5.3) or after the full comparison (G3) compared against the map
+shard the job read, and names it as `pre`; but its findings are not the
+run's. Nor is its `rule_use` folded: it is checked as any other and not
+folded ("Which `rule_use` is folded", below).
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -2648,8 +2726,24 @@ already keeps the run from being verified.
 
 A stale observer and a failed obligation are facts about the post-image,
 like a `mismatch`: they make the run not verified also when other
-observers are `unverifiable` or `failed`. Staleness is read from the
-`rule_use` of this run's `ok` shards only.
+observers are `unverifiable` or `failed`.
+
+**Which `rule_use` is folded** (WP-114, as §10.6 does for `spellings`).
+Stale pairs, used rules and seen `kept` keys are read from the
+`rule_use` of this run's `verified` and `mismatch` shards only. That of
+an `unverifiable` shard is checked as above (present exactly when the
+run has rules, the run's `rules_id`, no index past the table or past
+`Declared.kept`; a shard that fails is not this run's) and not folded:
+the fold says what the run's post-image did with the rules, and an
+`unverifiable` observer's post-image may not be the run's (a guard of
+§5.3 refused it, or it changed during the job). Such an observer is
+`unverifiable` whatever its counts, so the run is `incomplete` (status 4)
+on its account, never `not verified` by a stale pair of it. *The cost,
+accepted*: an observer `unverifiable` only for a reason of its pre-image,
+whose post-image is the run's, has real counts, and a stale pair there is
+not reported until the observer verifies; the run is not verified
+meanwhile. A shard that fails before its verdict (`failed`, `diagnosed`,
+`rejected`) has no `rule_use` to fold.
 
 ### 9.4 What is added to the report (§7.1)
 
@@ -2679,7 +2773,13 @@ image overlay <overlay id>                       in place of the `image` lines o
 agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n>` counts pairs
 stale rule <index> direct <n> kept_via <n> <main file>    at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
+agreement read <n> of <m> observers: rule use of <k> unverifiable not read    when there are rules and k > 0
 ```
+
+`agreement read` follows the `unused rule` lines: `n` observers'
+`rule_use` was folded (those `verified` or `mismatch`), of the `m`
+selected, `k` of them `unverifiable` (§9.3). The JSON document needs no
+member for it: its `observers` counts by state give the same numbers.
 
 Nothing is added to the lines on standard error: those list observers by
 state, and a stale observer's state is whatever its verdict made it.
@@ -2710,6 +2810,13 @@ The run's half, in `slip_verify::run` (trusted base), added to §7.3:
 
 ```rust
 pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64, pub kept_via: u64 }
+
+/// §9.3 (WP-114): the observer's map shard as the run reads it: the `map` of
+/// §7.3's `state`, `Report::add` and `Report::add_at` (before WP-114, its status alone).
+pub enum MapShard {
+    Read { status: Status, id: Digest /* its content id */ },  // a valid map shard of the observer, round 0
+    Unusable,   // bytes at its address that do not decode, or are of another observer, phase or round: not `ok`
+}
 
 /// §9.3: the verdict of the states, with the two conditions over all observers.
 pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;
@@ -3183,20 +3290,91 @@ is pending, until Kiln records a range for it
   translation unit only (a `kept` given per file, as above, or an entity
   of internal linkage told apart by its unit) would let it be declared
   with a namespace rule; until then it fails closed.
-- **A move into a namespace that a dependency opens** (§2.1, "So `acme`
-  mapped to `legacy`"; `docs/wp/WP-140.md`). Relocating `legacy` into
-  `acme` when a read-only header also opens `acme` maps every owned
-  member, but the post-image's `acme` is keyed as the dependency's
-  namespace, so the unit `legacy` has no partner: `removed legacy`, and
-  the rule's `via` is 0. The move is correct and does not verify; it
-  fails closed. The fixtures `rules/stale/dependency-opens-target-moved`
-  and `dependency-opens-target-kept-moved` hold today's answer.
-- **Ownership differs between observers** (§2.1). An entity the
-  dependency declares only in a header some observers do not include is
-  owned in those and a dependency entity in the others. Each comparison
-  is consistent with itself; whether the run should compare ownership
-  across observers (a count per key is too much; a count per rule of
-  entities reached both ways is not exact) is open.
+- **References to a namespace that two views key** (WP-140; §2.1,
+  "A dependency that itself opens `acme`"; `digest.md` §3.4). A
+  namespace with a unit in each view keeps **one** key wherever it is
+  written as a reference: its own, which for a namespace a dependency
+  opens is the dependency's, unmapped. Nothing in the post-image says
+  which pre-image namespace an owned reference meant, and a reference to
+  a dependency's namespace by the dependency's name is what rule 1
+  already promises. So after relocating `legacy` into `acme`, an owned
+  reference that named `legacy` and now names `acme` writes `acme`,
+  the pre-image wrote `legacy`, and the holding unit differs. The move is
+  correct and fails closed; the motivating migration meets this
+  wherever owned code aliases, `using namespace`s, or qualifies a
+  dependent name with the moved namespace. Where it is written (every
+  path that reaches `write_ref` or `write_canonical_nns` with a
+  namespace), with fixtures in `crates/slip_digest/tests/rules/views/`:
+
+  - an alias's target (`namespace L = legacy;`): held by the alias, own
+    key, one per unit; `changed L` (`alias-redirected`).
+  - a using-directive's target: held by the directive, keyed by content
+    (the target is the key), one per unit; `removed <using_directive
+    legacy>`, `added <using_directive acme>` (`directive-redirected`).
+  - a using-declaration's qualifier (`using legacy::g;`): held by the
+    using-declaration, keyed by content, one per unit; removed and added
+    (`using-declaration-redirected`).
+  - a qualifier written in a body, of a name not resolved at the
+    definition (a dependent call `legacy::h(t)` with more than one `h`,
+    a dependent-scope reference, a member-overload qualifier): held by
+    the function, own key, any number per unit; `changed f`
+    (`qualifier-dependent-overloaded`). Resolved at the definition (one
+    callee, `qualifier-dependent-redirected`; a non-dependent call,
+    `qualifier-non-dependent-in-template`), the callee is written, not
+    the qualifier, and it verifies; so does a qualifier whose next level
+    is a type (`dependent-type-redirected`, `member-qualifier-spelled`).
+  - a qualifier in a signature's profile (`decltype(legacy::h(t))`):
+    held by the function, whose key the profile is part of, any number
+    per key; removed and added (`profile-qualifier-overloaded`; with one
+    `h`, `profile-qualifier-redirected` verifies).
+  - a qualifier in a type (`typename legacy::X<T>::type`, a dependent
+    template name): held by whatever unit writes the type, own key or
+    content as that unit is; differs where the namespace level is
+    written, as above.
+  - a reflection (`^^legacy`): unsupported, indeterminate either way.
+  - a spelling (`spelled-nns`, the own spelling of a qualifier): writes
+    a named namespace's identifier, not its key, and nothing for a
+    namespace level of the own spelling; not affected.
+
+  What a user can declare today: `changed L` for the alias, and a
+  declared removal with `created` for a unit keyed by content
+  (`removed <using_directive legacy>`, `created <using_directive acme>`):
+  both verify, `crates/slip_cli/tests/verify.rs`
+  `wp140_redirected_references_declared`. A function whose body differs
+  is declared `changed` the same way; one whose profile differs needs a
+  removal and a `created` of its two signatures. Each declaration is per
+  unit, so the cost grows with the references, not the namespaces. A
+  key that names which pre-image namespace an owned reference meant
+  (the post-image cannot say, above) or a rule form that states it for
+  a set of files is open: `docs/wp/WP-141.md`.
+- **Ownership differs between observers** (§2.1): **a demonstrated wrong
+  `verified`** (WP-140 review F1; to be fixed by `docs/wp/WP-146.md`). An
+  entity the dependency declares only in a header some observers do not
+  include is owned in those and a dependency entity in the others. The
+  dependency's `dep/d.h` declares `old::hook`; `u1.cpp` defines it and
+  does not include the header, so there `hook` is owned and moves with
+  `old` to `fresh::hook`; `u0.cpp` includes the header and calls the
+  dependency's `old::hook`, which stays. Each observer is verified, and
+  the run is `Verified`, but the program no longer links: nothing defines
+  `old::hook`. Source: `crates/slip_cli/tests/verify_job.rs`
+  `wp146_ownership_differs_between_observers_is_not_verified` (pending,
+  expects `NotVerified`), and each observer's answer in
+  `crates/slip_digest/tests/rules/views/hook-definer-without-dependency`
+  and `hook-user-with-dependency`. Whether the run should compare
+  ownership across observers (a count per key is too much; a count per
+  rule of entities reached both ways is not exact) is WP-146's.
+- **An empty namespace moved into one a dependency opens** (WP-140
+  review F3). A pre-image `namespace legacy {}` that holds nothing, moved
+  to `namespace acme {}` that a dependency opens, holds nothing in the
+  post-image either, so `acme` has no owned view and the pre-image's
+  `legacy` has no partner: `removed legacy`
+  (`crates/slip_digest/tests/rules/views/empty-owned-opening`). The user
+  declares the removal: `removed legacy` beside the `relocate`, which
+  `slip declare` takes today and which verifies
+  (`crates/slip_cli/tests/verify.rs`
+  `wp140_empty_opening_moved_is_a_declared_removal`). The same holds of an
+  owned opening that holds only a forward declaration of a dependency
+  entity (`owned/owned-forward-then-dependency`).
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the

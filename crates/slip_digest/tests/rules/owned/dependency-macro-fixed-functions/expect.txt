@@ -1,5 +1,8 @@
 # The names are spelled in dep.h: dependency entities, keyed as declared.
+# WP-140: the owned acme has dependency members, so it has a unit in the dependency
+# view too (acme, unmapped), which the pre-image has not: `added acme (the dependency's part of acme)`.
 changed user()
+added acme (the dependency's part of acme)
 added acme::legacy_count()
 added acme::legacy_init()
 removed legacy::legacy_count()
