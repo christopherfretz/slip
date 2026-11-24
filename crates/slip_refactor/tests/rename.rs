@@ -753,8 +753,11 @@ fn requests_the_rename_does_not_run() {
                 slip_digest::map::with_input(u, &subject, |input| {
                     let sites = slip_kiln::sites::Sites::new(u, &good.ownership);
                     let files = |f| sites.file_ref(f);
+                    // Each is refused before its id is read; an invalid
+                    // request has no encoding, so the id is a placeholder.
                     [&good, &keyword, &ucn, &script].map(|t| {
-                        slip_refactor::run(t, request_id(t), u, &mut Keys::new(input), &files).err()
+                        let id = if t == &good { request_id(t) } else { Digest([0x1d; 32]) };
+                        slip_refactor::run(t, id, u, &mut Keys::new(input), &files).err()
                     })
                 })
             })

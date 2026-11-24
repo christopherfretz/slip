@@ -972,20 +972,20 @@ fn s5_1_a_blob_of_another_size_fails_the_job() {
 #[test]
 fn s5_1_two_entries_of_one_file_fail_the_job() {
     let tree = Tree::new("two-entries");
-    let s = tree.subject.clone();
+    let dir = tree.subject.clone();
     let m1: &[u8] = b"#define M 1\n";
     let m2: &[u8] = b"#define M 2\n";
-    std::fs::write(s.join("m.h"), m1).unwrap();
-    std::fs::hard_link(s.join("m.h"), s.join("m2.h")).unwrap();
-    std::fs::write(s.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
-    let (o, declared) = tree.map_publish("q.cpp", 8);
+    std::fs::write(dir.join("m.h"), m1).unwrap();
+    std::fs::hard_link(dir.join("m.h"), dir.join("m2.h")).unwrap();
+    std::fs::write(dir.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
+    let (q_cpp, declared) = tree.map_publish("q.cpp", 8);
     let only = Overlay {
         edits: Digest([0x0f; 32]),
         files: vec![tree.entry("m.h", m1, m2)],
         spellings: Vec::new(),
     };
     let only = tree.put_overlay(&only, &[m2]);
-    let shard = tree.verify_limit(&o, only, declared, None).unwrap();
+    let shard = tree.verify_limit(&q_cpp, only, declared, None).unwrap();
     assert_eq!(kind(&shard), VerdictKind::Unverifiable);
     let both = Overlay {
         edits: Digest([0x0f; 32]),
@@ -993,39 +993,39 @@ fn s5_1_two_entries_of_one_file_fail_the_job() {
         spellings: Vec::new(),
     };
     let both = tree.put_overlay(&both, &[m2, m1]);
-    let e = tree.verify_limit(&o, both, declared, None).unwrap_err();
-    let (m, m2_path) = (s.join("m.h"), s.join("m2.h"));
+    let err = tree.verify_limit(&q_cpp, both, declared, None).unwrap_err();
+    let (first_name, second_name) = (dir.join("m.h"), dir.join("m2.h"));
     assert_eq!(
-        e,
+        err,
         format!(
             "the overlay {both} names one file twice: {} and {} are the same file",
-            m.display(),
-            m2_path.display()
+            first_name.display(),
+            second_name.display()
         )
     );
     // An observer that reads neither: the refusal does not depend on what
     // the observer read.
-    let e = tree.verify_limit(&tree.observer("e.cpp"), both, declared, None).unwrap_err();
-    assert!(e.contains("names one file twice"), "{e}");
+    let err = tree.verify_limit(&tree.observer("e.cpp"), both, declared, None).unwrap_err();
+    assert!(err.contains("names one file twice"), "{err}");
 
-    let upper = s.join("W.h");
-    let lower = std::fs::metadata(s.join("w.h")).unwrap();
-    let same =
-        std::fs::metadata(&upper).is_ok_and(|m| (m.dev(), m.ino()) == (lower.dev(), lower.ino()));
+    let upper = dir.join("W.h");
+    let lower = std::fs::metadata(dir.join("w.h")).unwrap();
+    let same = std::fs::metadata(&upper)
+        .is_ok_and(|meta| (meta.dev(), meta.ino()) == (lower.dev(), lower.ino()));
     if !same {
         eprintln!("the volume tells W.h from w.h: the case half is skipped");
         return;
     }
-    std::fs::write(s.join("k.cpp"), "#include \"W.h\"\nint k = W;\n").unwrap();
-    let (k, declared) = tree.map_publish("k.cpp", 9);
-    let w = std::fs::read(s.join("w.h")).unwrap();
+    std::fs::write(dir.join("k.cpp"), "#include \"W.h\"\nint k = W;\n").unwrap();
+    let (k_cpp, declared) = tree.map_publish("k.cpp", 9);
+    let w_h = std::fs::read(dir.join("w.h")).unwrap();
     let w3: &[u8] = b"#define W 3\n";
-    let mut files = vec![tree.entry("W.h", &w, &w), tree.entry("w.h", &w, w3)];
+    let mut files = vec![tree.entry("W.h", &w_h, &w_h), tree.entry("w.h", &w_h, w3)];
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let both = Overlay { edits: Digest([0x0f; 32]), files, spellings: Vec::new() };
-    let both = tree.put_overlay(&both, &[&w, w3]);
-    let e = tree.verify_limit(&k, both, declared, None).unwrap_err();
-    assert!(e.contains("names one file twice"), "{e}");
+    let both = tree.put_overlay(&both, &[&w_h, w3]);
+    let err = tree.verify_limit(&k_cpp, both, declared, None).unwrap_err();
+    assert!(err.contains("names one file twice"), "{err}");
 }
 
 // WP-074 review F3: an input that is an overlay file by identity and not by
