@@ -55,8 +55,12 @@ fn with_post<R>(
 ) -> R {
     let main = format!("#include \"{first}\"\n#include \"{second}\"\n{USE}");
     let files = [("main.cpp", main.as_str()), ("dep.h", DEP), ("own.h", OWN)];
-    let snippet =
-        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++20" };
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++20",
+    };
     let extra = slip_kiln::snippet::Extra::default();
     let table = if rules { table() } else { RuleTable::empty() };
     slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
@@ -123,7 +127,7 @@ fn counter(o: &Output, name: &str) -> u64 {
 
 #[test]
 fn views_are_written_ascending() {
-    let out = with_post("dep.h", "own.h", true, |i, o| slip_digest::digest(i, o));
+    let out = with_post("dep.h", "own.h", true, slip_digest::digest);
     let f = units_of_f(&out);
     assert_eq!(f.len(), 1, "one unit of f: {f:?}");
     assert_eq!(counter(&out, "digest.ref.namespace_route_unknown"), 0);
@@ -132,14 +136,15 @@ fn views_are_written_ascending() {
     // key under no rule) and the owned view's (`legacy`, mapped).
     let view_keys = keys_of_acme(&out);
     assert_eq!(view_keys.len(), 2, "acme has a unit in each view: {:?}", names(&out));
-    let plain = with_post("dep.h", "own.h", false, |i, o| slip_digest::digest(i, o));
+    let plain = with_post("dep.h", "own.h", false, slip_digest::digest);
     let own = keys_of_acme(&plain);
     assert_eq!(own.len(), 1, "one acme under no rule");
     let own = own[0];
     assert!(view_keys.contains(&own), "the own key is a view key");
     let other = *view_keys.iter().find(|&&k| k != own).expect("two keys");
     assert!(own > other, "the case has teeth only if the own key is the greater: rename");
-    let traced = with_post("dep.h", "own.h", true, |i, o| slip_digest::trace::trace(i, o, &[key_f]));
+    let traced =
+        with_post("dep.h", "own.h", true, |i, o| slip_digest::trace::trace(i, o, &[key_f]));
     let t = traced.traces.iter().find(|t| t.key == key_f).expect("f is traced");
     let mut seen = 0;
     for w in t.refs.windows(2) {
@@ -160,7 +165,7 @@ fn views_are_written_ascending() {
 // unit of f (the own key does not follow the include order).
 #[test]
 fn views_do_not_depend_on_the_include_order() {
-    let a = with_post("dep.h", "own.h", true, |i, o| slip_digest::digest(i, o));
-    let b = with_post("own.h", "dep.h", true, |i, o| slip_digest::digest(i, o));
+    let a = with_post("dep.h", "own.h", true, slip_digest::digest);
+    let b = with_post("own.h", "dep.h", true, slip_digest::digest);
     assert_eq!(units_of_f(&a), units_of_f(&b));
 }

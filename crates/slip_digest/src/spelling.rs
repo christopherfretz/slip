@@ -211,8 +211,8 @@ fn takes_part(role: Role) -> bool {
 /// equal ones the references in the table's order, then the names
 /// without a referent in the table's order).
 fn placed_refs(unit: &Unit<'_>, input: &Input<'_>) -> Vec<Placed> {
-    let sm = unit.sm();
     type Name = (Span, Option<DeclId>, bool, Role, Option<Loc>);
+    let sm = unit.sm();
     let mut names: Vec<Name> = written::written_refs(unit)
         .into_iter()
         .filter(|r| takes_part(r.role))

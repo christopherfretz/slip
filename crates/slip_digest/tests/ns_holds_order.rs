@@ -45,8 +45,12 @@ fn table() -> RuleTable {
 fn digest(body: &str) -> Output {
     let main = format!("#include \"dep.h\"\n{body}");
     let files = [("main.cpp", main.as_str()), ("dep.h", DEP)];
-    let snippet =
-        slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++20" };
+    let snippet = slip_kiln::snippet::Snippet {
+        files: &files,
+        main: "main.cpp",
+        include: &[""],
+        std: "c++20",
+    };
     let extra = slip_kiln::snippet::Extra::default();
     let table = table();
     slip_kiln::snippet::parse_with(&snippet, &extra, |p| {

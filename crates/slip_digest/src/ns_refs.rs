@@ -114,6 +114,25 @@ struct NsInfo {
     holds: [bool; 2],
 }
 
+/// Where a using-directive (or a namespace) is, at namespace scope.
+#[derive(Clone, Copy)]
+enum NsScope {
+    /// The global namespace.
+    Global,
+    /// The namespace entity.
+    In(DeclId),
+}
+
+impl NsScope {
+    /// The enclosing namespace entity; `None` for the global namespace.
+    fn ns(self) -> Option<DeclId> {
+        match self {
+            NsScope::Global => None,
+            NsScope::In(n) => Some(n),
+        }
+    }
+}
+
 impl NsInfo {
     /// The view exists: the namespace holds something in it
     /// ([`Walk::ns_holds`], the one predicate).
@@ -431,7 +450,7 @@ impl Walk<'_> {
     /// of the same enclosing namespace entity in the same file (A3).
     fn named_by(&mut self, table: &Table, d: DeclId, ns: DeclId) -> BTreeSet<DeclId> {
         if self.ast.decls.get(d).kind() == DeclKind::UsingDirective
-            && let Some(scope) = self.directive_scope(d)
+            && let Some(scope) = self.directive_scope(d).map(NsScope::ns)
         {
             let file = self.ns_file_of(d);
             if let Some(set) = table.named.get(&(scope, file)) {
@@ -461,18 +480,17 @@ impl Walk<'_> {
         self.buffer_of(self.sm.expansion_loc(loc))
     }
 
-    /// The enclosing namespace of using-directive `d` (`Some(None)`: the
-    /// global namespace), through transparent contexts; `None` if it is
-    /// not at namespace scope.
-    fn directive_scope(&self, d: DeclId) -> Option<Option<DeclId>> {
+    /// The enclosing namespace of using-directive `d`, through
+    /// transparent contexts; `None` if it is not at namespace scope.
+    fn directive_scope(&self, d: DeclId) -> Option<NsScope> {
         let ast = self.ast;
         let mut c = ast.decls.get(d).ctx();
         for _ in 0..ROUTE_LIMIT {
-            let Some(x) = c else { return Some(None) };
+            let Some(x) = c else { return Some(NsScope::Global) };
             match info(ast.decls.get(x).kind()).role {
-                Role::Root => return Some(None),
+                Role::Root => return Some(NsScope::Global),
                 Role::Transparent => c = ast.decls.get(x).ctx(),
-                Role::Entity(KeyKind::Namespace) => return Some(Some(self.entity(x))),
+                Role::Entity(KeyKind::Namespace) => return Some(NsScope::In(self.entity(x))),
                 Role::Entity(_)
                 | Role::Content(_)
                 | Role::Nothing
@@ -485,6 +503,7 @@ impl Walk<'_> {
     }
 
     /// The table, made on first need from every declaration of the AST.
+    #[allow(clippy::too_many_lines, reason = "one pass over the declarations, for every table")]
     fn ns_table(&mut self) -> Arc<Table> {
         if let Some(t) = &self.ns_refs.table {
             return Arc::clone(t);
@@ -514,17 +533,15 @@ impl Walk<'_> {
                     }
                 }
             }
-            let parent = self.directive_scope(e).flatten();
-            info_of.insert(
-                e,
-                NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] },
-            );
+            let parent = self.directive_scope(e).and_then(NsScope::ns);
+            info_of
+                .insert(e, NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] });
             order.push(e);
         }
         for &d in &ids {
             let kind = ast.decls.get(d).kind();
             if kind == DeclKind::UsingDirective
-                && let Some(scope) = self.directive_scope(d)
+                && let Some(scope) = self.directive_scope(d).map(NsScope::ns)
                 && let Some(t) = ast.using_target(d)
             {
                 let file = self.ns_file_of(d);
