@@ -1287,7 +1287,9 @@ fn interrupted_map(name: &str, call: &str) -> (Tree, String, Vec<String>) {
         t.write(&format!("src/p{n}.h"), "\n");
         t.write(
             u,
-            &format!("#include \"h.h\"\n#include \"p{n}.h\"\nint g{k}(int x) {{ return {call}; }}\n"),
+            &format!(
+                "#include \"h.h\"\n#include \"p{n}.h\"\nint g{k}(int x) {{ return {call}; }}\n"
+            ),
         );
     }
     t.db(&units);
