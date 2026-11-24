@@ -48,7 +48,7 @@ fn report(verdict: RunVerdict, set: &EditSet) -> (Report, Overlay) {
         RunVerdict::Incomplete => run.unverifiable(0xa1, "r"),
     };
     for s in [run.verified(0xa0), second] {
-        r.add(&s.observer, b"/m.cc", Some(&s), Some(Status::Ok));
+        r.add(&s.observer, b"/m.cc", Some(&s), common::MAP_OK);
     }
     assert_eq!(r.verdict(), verdict);
     (r, o)
@@ -309,7 +309,7 @@ fn s8_5_report_of_another_run_is_none() {
     let run = Run::new(vec![], Some(overlay()));
     let mut r = run.report();
     let s = run.verified(0xa0);
-    r.add(&s.observer, b"/m", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m", Some(&s), common::MAP_OK);
     let b = Built {
         set: set(SetFacts::default()),
         report: Some(r),
@@ -341,7 +341,7 @@ fn two_verified(run: &Run) -> Report {
     let mut r = run.report();
     for obs in [0xa0, 0xa1] {
         let sh = run.verified(obs);
-        r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+        r.add(&sh.observer, b"/m.cc", Some(&sh), common::MAP_OK);
     }
     assert_eq!(r.verdict(), RunVerdict::Verified);
     r
@@ -393,7 +393,7 @@ fn s7_3_add_at_refuses_a_caller_defect() {
     let a = run.ok(0xa0, run.verdict(VerdictKind::Verified), &[], &[used(0, 0, 1)]);
     let b = run.verified(0xa1);
     let mut r = run.report();
-    r.add_at(0, &a.observer, b"/m/a", Some(&a), Some(Status::Ok));
+    r.add_at(0, &a.observer, b"/m/a", Some(&a), common::MAP_OK);
     let before = slip_model::json::write_compact(&r.to_json()).unwrap();
     let defects: [(&str, u64, &slip_model::Shard); 4] = [
         ("P1: A again at B's position", 1, &a),
@@ -404,7 +404,7 @@ fn s7_3_add_at_refuses_a_caller_defect() {
     for (what, position, s) in defects {
         let mut r2 = r.clone();
         let hit = catch_unwind(AssertUnwindSafe(|| {
-            r2.add_at(position, &s.observer, b"/m/x", Some(s), Some(Status::Ok));
+            r2.add_at(position, &s.observer, b"/m/x", Some(s), common::MAP_OK);
         }));
         assert!(hit.is_err(), "{what}");
         assert_eq!(slip_model::json::write_compact(&r2.to_json()).unwrap(), before, "{what}");
@@ -412,11 +412,11 @@ fn s7_3_add_at_refuses_a_caller_defect() {
     // M1's `add` is `add_at` at the next position: it refuses a repeat too.
     let mut r2 = r.clone();
     let hit = catch_unwind(AssertUnwindSafe(|| {
-        r2.add(&a.observer, b"/m/a", Some(&a), Some(Status::Ok));
+        r2.add(&a.observer, b"/m/a", Some(&a), common::MAP_OK);
     }));
     assert!(hit.is_err());
     // The last position of the plan is accepted.
-    r.add_at(9, &b.observer, b"/m/b", Some(&b), Some(Status::Ok));
+    r.add_at(9, &b.observer, b"/m/b", Some(&b), common::MAP_OK);
     assert_eq!(r.states()[0], 2);
     assert_eq!(r.stale(), [Stale { rule: 0, observer: d(0xa0), direct: 1, kept_via: 0 }]);
 }
@@ -483,7 +483,7 @@ fn s7_3_report_independent_of_call_order() {
         let mut r = run.report();
         for i in p {
             let (pos, sh, main) = &shards[i];
-            r.add_at(*pos, &sh.observer, main, Some(sh), Some(Status::Ok));
+            r.add_at(*pos, &sh.observer, main, Some(sh), common::MAP_OK);
         }
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
         let f =
@@ -522,9 +522,9 @@ fn s8_5_conclude_copies_the_report() {
     let mut r = run.report();
     let mut s = run.ok(0xb2, v.clone(), &[0], &[used(0, 0, 1)]);
     s.spellings = Some(section(&o, s.inputs.as_ref().unwrap(), &[0], &[(1, 3)]));
-    r.add(&s.observer, b"/m2", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m2", Some(&s), common::MAP_OK);
     let s = run.ok(0xb1, v, &[], &[used(0, 0, 4)]);
-    r.add(&s.observer, b"/m1", Some(&s), Some(Status::Ok));
+    r.add(&s.observer, b"/m1", Some(&s), common::MAP_OK);
     let b = Built {
         set: set(SetFacts::default()),
         report: Some(r),
@@ -854,9 +854,9 @@ fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<O
             bad.state = true;
             if pick == 8 {
                 let s = run.unparsed(obs, Status::Diagnosed, "e");
-                r.add_at(k, &s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
+                r.add_at(k, &s.observer, main.as_bytes(), Some(&s), common::MAP_OK);
             } else {
-                r.add_at(k, &d(obs), main.as_bytes(), None, Some(Status::Ok));
+                r.add_at(k, &d(obs), main.as_bytes(), None, common::MAP_OK);
             }
             continue;
         }
@@ -949,7 +949,7 @@ fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<O
         }
         s.inputs = Some(inputs);
         s.validate().expect("a valid random shard");
-        r.add_at(k, &s.observer, main.as_bytes(), Some(&s), Some(Status::Ok));
+        r.add_at(k, &s.observer, main.as_bytes(), Some(&s), common::MAP_OK);
     }
     if duplicate {
         // Review P1: an observer added again, at a free position (or at
@@ -958,7 +958,7 @@ fn random_run(g: &mut Rng, set: &EditSet) -> (Option<Report>, u64, Bad, Option<O
         let s = run.verified(0xa0 + k as u8);
         let at = if g.chance(2) { k } else { n };
         let hit = catch_unwind(AssertUnwindSafe(|| {
-            r.add_at(at, &s.observer, b"/m/again.cc", Some(&s), Some(Status::Ok));
+            r.add_at(at, &s.observer, b"/m/again.cc", Some(&s), common::MAP_OK);
         }));
         assert!(hit.is_err(), "an observer added twice is refused");
         return (None, n, bad, ov);
@@ -1131,14 +1131,14 @@ fn s9_2_namespace_rule_stale_permits_nothing() {
         for obs in [0xa0, 0xa1] {
             let u = if obs == 0xa1 { uses.clone() } else { vec![] };
             let sh = run.ok(obs, v.clone(), &[], &u);
-            r.add(&sh.observer, b"/m.cc", Some(&sh), Some(Status::Ok));
+            r.add(&sh.observer, b"/m.cc", Some(&sh), common::MAP_OK);
         }
         // An observer whose shard is not read (another round): its use is
         // not read either.
         let mut r2 = r.clone();
         let mut stray = run.ok(0xa2, v.clone(), &[], &[used(ns, 1, 1)]);
         stray.round += 1;
-        r2.add(&stray.observer, b"/m2.cc", Some(&stray), Some(Status::Ok));
+        r2.add(&stray.observer, b"/m2.cc", Some(&stray), common::MAP_OK);
         assert_eq!(r2.stale().len(), usize::from(stale));
         assert_eq!(r.stale().len(), usize::from(stale));
         assert_eq!(

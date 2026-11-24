@@ -7,6 +7,7 @@
 //! The question this file answers for the trusted base: no input makes the
 //! report say `verified` when a selected observer is not.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -15,8 +16,8 @@ use slip_model::digests::{Digests, SCHEME, tu_digest};
 use slip_model::json::{self, Value};
 use slip_model::names::{NameNote, Names, NamesEntry};
 use slip_model::verdict::{Finding, FindingKind, Site, Verdict, VerdictKind, Where};
-use slip_model::{Counter, Digest, Outcome, Phase, Shard, Status};
-use slip_verify::run::{Header, Report, RunVerdict, State, run_verdict, state};
+use slip_model::{Binding, Counter, Digest, Outcome, Phase, Shard, Status};
+use slip_verify::run::{Header, MapShard, Report, RunVerdict, State, run_verdict, state};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,6 +34,11 @@ fn key(n: u8) -> Digest {
 }
 
 const ROUND: u64 = 1;
+
+/// The binding of the run of `header` (§9.1, §9.3): no overlay, its
+/// declared changes, pre round 0. Every shard a worker writes has it
+/// (WP-114: also in a run with a tree image and no rule).
+const BINDING: Binding = Binding { overlay: None, declared: Digest([0x02; 32]), pre: 0 };
 
 /// The six counters of §7.2 by kind, and `verify.findings`, sorted.
 fn counters(by_kind: [u64; 6]) -> Vec<Counter> {
@@ -83,7 +89,7 @@ fn ok_shard(obs: u8, verdict: Verdict, by_kind: Option<[u64; 6]>) -> Shard {
         digests: Some(empty_digests()),
         verdict: Some(verdict),
         edits: None,
-        binding: None,
+        binding: Some(BINDING),
         rule_use: None,
         spellings: None,
         names: Some(Names::default()),
@@ -111,7 +117,7 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         digests: None,
         verdict: None,
         edits: None,
-        binding: None,
+        binding: (!failed).then_some(BINDING),
         rule_use: None,
         spellings: None,
         names: None,
@@ -195,8 +201,24 @@ fn declared(changed: &[u8], created: &[u8], removed: &[u8]) -> Declared {
     Declared::new(vec![], keys(changed), keys(created), keys(removed)).unwrap()
 }
 
-const MAP_STATUSES: [Option<Status>; 5] =
-    [None, Some(Status::Ok), Some(Status::Diagnosed), Some(Status::Rejected), Some(Status::Failed)];
+/// The map shard every verdict of these tests names (`verified_verdict`'s
+/// `pre`), with `status`.
+const fn map_of(status: Status) -> MapShard {
+    MapShard::Read { status, id: Digest([0x70; 32]) }
+}
+
+/// An `ok` map shard, the one the verdicts name.
+const MAP_OK: Option<MapShard> = Some(map_of(Status::Ok));
+
+/// Every map shard the run can read, an unusable one too (WP-114 review F3).
+const MAP_STATUSES: [Option<MapShard>; 6] = [
+    None,
+    Some(MapShard::Unusable),
+    MAP_OK,
+    Some(map_of(Status::Diagnosed)),
+    Some(map_of(Status::Rejected)),
+    Some(map_of(Status::Failed)),
+];
 
 fn golden(name: &str, actual: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/run").join(name);
@@ -222,7 +244,7 @@ fn golden(name: &str, actual: &str) {
 fn s7_state_of_an_ok_shard_is_its_verdict() {
     let mismatch = mismatch(1, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
     for map in MAP_STATUSES {
-        let ok = map == Some(Status::Ok);
+        let ok = map == MAP_OK;
         let (v, m) =
             if ok { (State::Verified, State::Mismatch) } else { (State::Failed, State::Failed) };
         assert_eq!(state(Some(&verified(1)), map), v, "{map:?}");
@@ -238,7 +260,7 @@ fn s7_state_of_an_unparsed_shard_depends_on_the_map_shard() {
     for status in [Status::Diagnosed, Status::Rejected] {
         let s = unparsed_shard(1, status, "a.cpp:1:1: error: x");
         for map in MAP_STATUSES {
-            let want = if map == Some(Status::Ok) { State::NotParsed } else { State::NeverParsed };
+            let want = if map == MAP_OK { State::NotParsed } else { State::NeverParsed };
             assert_eq!(state(Some(&s), map), want, "{status:?} {map:?}");
         }
     }
@@ -269,7 +291,7 @@ fn s7_state_failed() {
 // be `verified`.
 #[test]
 fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
-    let ok = |s: &Shard| state(Some(s), Some(Status::Ok));
+    let ok = |s: &Shard| state(Some(s), MAP_OK);
     // A verified verdict with a finding: rejected by spec/model.md §8.3 rule 3.
     let mut s = verified(1);
     s.verdict.as_mut().unwrap().total = 1;
@@ -294,12 +316,9 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
         for i in 0..base.counters.len() {
             let mut s = base.clone();
             let removed = s.counters.remove(i);
-            let want = if removed.name == "verify.findings" {
-                state(Some(&base), Some(Status::Ok))
-            } else {
-                State::Failed
-            };
-            assert_eq!(ok(&s), want, "without {}", removed.name);
+            // Each of the seven, `verify.findings` too (WP-114 review F8:
+            // the job writes it with every verdict).
+            assert_eq!(ok(&s), State::Failed, "without {}", removed.name);
         }
         let mut s = base.clone();
         s.counters.clear();
@@ -326,11 +345,11 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
 #[test]
 fn s7_a_shard_of_another_observer_or_round_is_failed() {
     let mut r = Report::new(header(vec![], 3), &Declared::none());
-    r.add(&d(9), b"/a.cpp", Some(&verified(1)), Some(Status::Ok));
+    r.add(&d(9), b"/a.cpp", Some(&verified(1)), MAP_OK);
     let mut other_round = verified(2);
     other_round.round = ROUND + 1;
-    r.add(&d(2), b"/b.cpp", Some(&other_round), Some(Status::Ok));
-    r.add(&d(3), b"/c.cpp", Some(&verified(3)), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&other_round), MAP_OK);
+    r.add(&d(3), b"/c.cpp", Some(&verified(3)), MAP_OK);
     assert_eq!(r.states(), [1, 0, 0, 0, 0, 0, 2]);
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
 }
@@ -343,14 +362,14 @@ fn s7_a_verdict_under_other_rules_is_failed() {
     let mut other = verified(1);
     other.verdict.as_mut().unwrap().rules = d(0x04);
     other.validate().unwrap();
-    r.add(&d(1), b"/a.cpp", Some(&other), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&other), MAP_OK);
     let mut other = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
     other.verdict.as_mut().unwrap().rules = d(0x04);
-    r.add(&d(2), b"/b.cpp", Some(&other), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&other), MAP_OK);
     let mut other = unverifiable(3);
     other.verdict.as_mut().unwrap().rules = d(0x04);
-    r.add(&d(3), b"/c.cpp", Some(&other), Some(Status::Ok));
-    r.add(&d(4), b"/d.cpp", Some(&verified(4)), Some(Status::Ok));
+    r.add(&d(3), b"/c.cpp", Some(&other), MAP_OK);
+    r.add(&d(4), b"/d.cpp", Some(&verified(4)), MAP_OK);
     assert_eq!(r.states(), [1, 0, 0, 0, 0, 0, 3]);
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
     // Nothing of the foreign shards is listed or counted.
@@ -364,18 +383,13 @@ fn s7_a_verdict_under_other_rules_is_failed() {
 #[test]
 fn s7_1_a_foreign_shard_says_why() {
     let mut r = Report::new(header(vec![], 3), &Declared::none());
-    r.add(
-        &d(9),
-        b"/a.cpp",
-        Some(&unparsed_shard(1, Status::Diagnosed, "foreign")),
-        Some(Status::Ok),
-    );
+    r.add(&d(9), b"/a.cpp", Some(&unparsed_shard(1, Status::Diagnosed, "foreign")), MAP_OK);
     let mut other_round = unparsed_shard(2, Status::Failed, "foreign");
     other_round.round = ROUND + 1;
-    r.add(&d(2), b"/b.cpp", Some(&other_round), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&other_round), MAP_OK);
     let mut other_rules = unverifiable(3);
     other_rules.verdict.as_mut().unwrap().rules = d(0x04);
-    r.add(&d(3), b"/c.cpp", Some(&other_rules), Some(Status::Ok));
+    r.add(&d(3), b"/c.cpp", Some(&other_rules), MAP_OK);
     let j = r.to_json();
     let nv = j.get("not_verified").unwrap().as_array().unwrap();
     let messages: Vec<&str> = nv
@@ -403,6 +417,142 @@ fn s7_1_a_foreign_shard_says_why() {
              slip: failed: /c.cpp: the shard's verdict was made under other rules than the run's\n"
         )
     );
+}
+
+// §7 row `failed`, §9.3 (WP-114): a `verified` or `mismatch` verdict is
+// believed only against the map shard the run reads, by content id: a map
+// shard republished within the round (`Store::publish` renames over it)
+// leaves the verdict `failed`, with the reason. An `unverifiable` verdict
+// compared nothing and is not held to it.
+#[test]
+fn s9_3_verdict_of_another_map_shard_is_failed() {
+    let replaced = Some(MapShard::Read { status: Status::Ok, id: d(0x71) });
+    let mismatch = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
+    assert_eq!(state(Some(&verified(1)), replaced), State::Failed);
+    assert_eq!(state(Some(&mismatch), replaced), State::Failed);
+    assert_eq!(state(Some(&unverifiable(3)), replaced), State::Unverifiable);
+    let mut r = Report::new(header(vec![], 3), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&verified(1)), replaced);
+    r.add(&d(2), b"/b.cpp", Some(&mismatch), replaced);
+    r.add(&d(3), b"/c.cpp", Some(&unverifiable(3)), replaced);
+    assert_eq!(r.states(), [0, 0, 0, 0, 1, 0, 2]);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    let (was, now) = ("7070707070707070", "7171717171717171");
+    assert_eq!(
+        r.error_lines(),
+        format!(
+            "slip: failed: /a.cpp: the shard's verdict is verified: it was made against map \
+             shard {was}, not the run's {now}\n\
+             slip: failed: /b.cpp: the shard's verdict is mismatch: it was made against map \
+             shard {was}, not the run's {now}\n\
+             slip: unverifiable: /c.cpp: pre-image: no map shard\n"
+        )
+    );
+}
+
+// §7.1 (WP-114, from WP-121's follow-up): a shard the state table refuses
+// says why, as one that is not this run's does: not of phase `verify`,
+// invalid, `ok` without a verdict, a counter missing, counters that
+// disagree with the verdict (their sum past 2^64 too), `verify.findings`
+// missing (the job writes it with every verdict, §7.2), a `verified` or
+// `mismatch` verdict whose map shard is absent, there and unusable, or not
+// `ok`. A map shard in the verify slot (no binding, as map shards have
+// none) is refused for its phase, not for the binding. A shard of status
+// `failed` keeps its own message, and an observer without a shard has none.
+#[test]
+fn s7_1_refused_by_the_state_table_says_why() {
+    let mut map_phase = verified(1);
+    map_phase.phase = Phase::Map;
+    map_phase.verdict = None;
+    map_phase.binding = None;
+    let mut invalid = verified(2);
+    invalid.verdict.as_mut().unwrap().total = 1;
+    let invalid_why = invalid.validate().unwrap_err();
+    let mut no_verdict = verified(3);
+    no_verdict.verdict = None;
+    let mut no_counter = verified(4);
+    no_counter.counters.retain(|c| c.name != "verify.findings.added");
+    let v = mismatch_verdict(2, vec![finding(FindingKind::Changed, 1, "/a.h", "")], &[]);
+    let short_sum = ok_shard(5, v.clone(), Some([1, 0, 0, 0, 0, 0]));
+    let mut total = ok_shard(6, v, Some([1, 0, 0, 0, 1, 0]));
+    total.counters.iter_mut().find(|c| c.name == "verify.findings").unwrap().value = 3;
+    let listed = ok_shard(
+        7,
+        mismatch_verdict(1, vec![finding(FindingKind::Changed, 1, "/a.h", "")], &[]),
+        Some([0, 0, 0, 0, 1, 0]),
+    );
+    let mut overflow = ok_shard(
+        11,
+        mismatch_verdict(1, vec![finding(FindingKind::Changed, 1, "/a.h", "")], &[]),
+        Some([1, 0, 0, 0, 0, 0]),
+    );
+    overflow.counters.iter_mut().find(|c| c.name == "verify.findings.removed").unwrap().value =
+        u64::MAX;
+    let mut no_findings = verified(12);
+    no_findings.counters.retain(|c| c.name != "verify.findings");
+    let cases: Vec<(Shard, Option<MapShard>, String)> = vec![
+        (map_phase, MAP_OK, "the shard is of phase map, not verify".to_owned()),
+        (invalid, MAP_OK, format!("the shard is not valid: {invalid_why}")),
+        (no_verdict, MAP_OK, "the shard is ok and has no verdict".to_owned()),
+        (no_counter, MAP_OK, "the shard has no counter verify.findings.added".to_owned()),
+        (
+            short_sum,
+            MAP_OK,
+            "the shard's counters by kind add up to 1, not its verdict's total 2".to_owned(),
+        ),
+        (
+            total,
+            MAP_OK,
+            "the shard's counter verify.findings is 3, not its verdict's total 2".to_owned(),
+        ),
+        (
+            listed,
+            MAP_OK,
+            "the shard's verdict lists 1 findings of kind changed, its counter 0".to_owned(),
+        ),
+        (
+            overflow,
+            MAP_OK,
+            "the shard's counters by kind add up to at least 2^64, not its verdict's total 1"
+                .to_owned(),
+        ),
+        (no_findings, MAP_OK, "the shard has no counter verify.findings".to_owned()),
+        (
+            verified(8),
+            None,
+            "the shard's verdict is verified: the observer has no map shard".to_owned(),
+        ),
+        (
+            verified(13),
+            Some(MapShard::Unusable),
+            "the shard's verdict is verified: its map shard is there and is not a valid map \
+             shard of the observer"
+                .to_owned(),
+        ),
+        (
+            verified(9),
+            Some(map_of(Status::Diagnosed)),
+            "the shard's verdict is verified: its map shard is diagnosed".to_owned(),
+        ),
+        (
+            mismatch(10, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]),
+            Some(map_of(Status::Failed)),
+            "the shard's verdict is mismatch: its map shard is failed".to_owned(),
+        ),
+    ];
+    let n = cases.len() as u64 + 2;
+    let mut r = Report::new(header(vec![], n), &Declared::none());
+    let mut want = String::new();
+    for (i, (s, map, why)) in cases.iter().enumerate() {
+        assert_eq!(state(Some(s), *map), State::Failed, "{why}");
+        let main = format!("/{i}.cpp");
+        r.add(&s.observer, main.as_bytes(), Some(s), *map);
+        writeln!(want, "slip: failed: {main}: {why}").unwrap();
+    }
+    r.add(&d(0x31), b"/f.cpp", Some(&unparsed_shard(0x31, Status::Failed, "killed")), MAP_OK);
+    r.add(&d(0x32), b"/n.cpp", None, MAP_OK);
+    want.push_str("slip: failed: /f.cpp: killed\nslip: failed: /n.cpp: \n");
+    assert_eq!(r.error_lines(), want);
 }
 
 // ---------------------------------------------------------------------------
@@ -513,9 +663,9 @@ fn s7_report_properties() {
         let mut states = Vec::new();
         let mut truly_verified = true;
         for obs in 0..n {
-            let map = MAP_STATUSES[rng.below(5) as usize];
+            let map = MAP_STATUSES[rng.below(MAP_STATUSES.len() as u64) as usize];
             let (shard, good) = match rng.below(13) {
-                0..=2 => (Some(verified(obs)), map == Some(Status::Ok)),
+                0..=2 => (Some(verified(obs)), map == MAP_OK),
                 3 => (
                     Some(mismatch(obs, vec![finding(FindingKind::Indeterminate, 3, "/a.h", "")])),
                     false,
@@ -599,17 +749,17 @@ fn s7_1_indeterminate_only_from_the_counters() {
     // 100 findings, two listed, both indeterminate; the counters say one
     // of the others is derived_changed: not indeterminate only.
     let v = mismatch_verdict(100, vec![ind(1), ind(2)], &[]);
-    r.add(&d(1), b"/a.cpp", Some(&ok_shard(1, v, Some([0, 0, 0, 99, 1, 0]))), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&ok_shard(1, v, Some([0, 0, 0, 99, 1, 0]))), MAP_OK);
     // 100 findings, one listed; every one indeterminate or
     // derived_indeterminate by the counters.
     let v = mismatch_verdict(100, vec![ind(1)], &[]);
-    r.add(&d(2), b"/b.cpp", Some(&ok_shard(2, v, Some([0, 0, 0, 60, 0, 40]))), Some(Status::Ok));
+    r.add(&d(2), b"/b.cpp", Some(&ok_shard(2, v, Some([0, 0, 0, 60, 0, 40]))), MAP_OK);
     // Listing a changed finding first, counted as such.
     let v = mismatch_verdict(3, vec![finding(FindingKind::Changed, 4, "/a.h", "")], &[]);
-    r.add(&d(3), b"/c.cpp", Some(&ok_shard(3, v, Some([1, 0, 0, 2, 0, 0]))), Some(Status::Ok));
+    r.add(&d(3), b"/c.cpp", Some(&ok_shard(3, v, Some([1, 0, 0, 2, 0, 0]))), MAP_OK);
     // A mismatch with no listed finding (limit 0), all indeterminate.
     let v = mismatch_verdict(5, vec![], &[]);
-    r.add(&d(4), b"/d.cpp", Some(&ok_shard(4, v, Some([0, 0, 0, 5, 0, 0]))), Some(Status::Ok));
+    r.add(&d(4), b"/d.cpp", Some(&ok_shard(4, v, Some([0, 0, 0, 5, 0, 0]))), MAP_OK);
     let j = r.to_json();
     let obs = j.get("observers").unwrap();
     assert_eq!(obs.get("mismatch").unwrap().as_u64(), Some(4));
@@ -669,10 +819,10 @@ fn s7_1_groups_across_observers_and_their_order() {
                 finding(Indeterminate, 6, "/s/x.h", "g"),
             ],
         )),
-        Some(Status::Ok),
+        MAP_OK,
     );
     // Observer 2 verified: lists nothing.
-    r.add(&d(2), b"/s/two.cpp", Some(&verified(2)), Some(Status::Ok));
+    r.add(&d(2), b"/s/two.cpp", Some(&verified(2)), MAP_OK);
     // Observer 3: key 5 changed and named here; key 8 changed named "a".
     r.add(
         &d(3),
@@ -681,7 +831,7 @@ fn s7_1_groups_across_observers_and_their_order() {
             3,
             vec![named_at(Changed, 5, "/s/z.h", "ns::f(int)"), finding(Changed, 8, "/s/z.h", "a")],
         )),
-        Some(Status::Ok),
+        MAP_OK,
     );
     let j = r.to_json();
     let groups = j.get("findings").unwrap().get("groups").unwrap().as_array().unwrap();
@@ -723,7 +873,7 @@ fn s7_1_groups_across_observers_and_their_order() {
             1,
             vec![finding(Removed, 9, "/a.h", "x"), finding(Removed, 2, "/b.h", "x")],
         )),
-        Some(Status::Ok),
+        MAP_OK,
     );
     let j = r.to_json();
     let keys: Vec<String> = j
@@ -746,22 +896,22 @@ fn s7_1_groups_across_observers_and_their_order() {
 #[test]
 fn s7_1_not_verified() {
     let mut r = Report::new(header(vec![], 7), &Declared::none());
-    r.add(&d(1), b"/1.cpp", Some(&verified(1)), Some(Status::Ok));
-    r.add(&d(2), b"/2.cpp", Some(&unverifiable(2)), Some(Status::Ok));
+    r.add(&d(1), b"/1.cpp", Some(&verified(1)), MAP_OK);
+    r.add(&d(2), b"/2.cpp", Some(&unverifiable(2)), MAP_OK);
     r.add(
         &d(3),
         b"/3.cpp",
         Some(&unparsed_shard(3, Status::Diagnosed, "3.cpp:1:1: error: x\nmore")),
-        Some(Status::Ok),
+        MAP_OK,
     );
     r.add(&d(4), b"/4.cpp", Some(&unparsed_shard(4, Status::Rejected, "bad flag")), None);
-    r.add(&d(5), b"/5.cpp", Some(&unparsed_shard(5, Status::Failed, "killed")), Some(Status::Ok));
-    r.add(&d(6), b"/6.cpp", None, Some(Status::Ok));
+    r.add(&d(5), b"/5.cpp", Some(&unparsed_shard(5, Status::Failed, "killed")), MAP_OK);
+    r.add(&d(6), b"/6.cpp", None, MAP_OK);
     r.add(
         &d(7),
         b"/7.cpp",
         Some(&mismatch(7, vec![finding(FindingKind::Added, 1, "/a.h", "")])),
-        Some(Status::Ok),
+        MAP_OK,
     );
     let j = r.to_json();
     let nv: Vec<(String, String, String)> = j
@@ -824,15 +974,15 @@ fn s7_1_error_lines_are_cut_at_100() {
 fn s7_1_exemptions() {
     let decl = declared(&[1, 2], &[1, 3], &[4]);
     let mut r = Report::new(header(vec![], 4), &decl);
-    r.add(&d(1), b"/1.cpp", Some(&ok_shard(1, verified_verdict(&[1, 3]), None)), Some(Status::Ok));
+    r.add(&d(1), b"/1.cpp", Some(&ok_shard(1, verified_verdict(&[1, 3]), None)), MAP_OK);
     let v = mismatch_verdict(1, vec![finding(FindingKind::Changed, 9, "/a.h", "")], &[1]);
-    r.add(&d(2), b"/2.cpp", Some(&ok_shard(2, v, None)), Some(Status::Ok));
+    r.add(&d(2), b"/2.cpp", Some(&ok_shard(2, v, None)), MAP_OK);
     // Not believed: counters removed, so `failed`; its `used` is not counted.
     let mut s = ok_shard(3, verified_verdict(&[1, 2, 3, 4]), None);
     s.counters.clear();
-    r.add(&d(3), b"/3.cpp", Some(&s), Some(Status::Ok));
+    r.add(&d(3), b"/3.cpp", Some(&s), MAP_OK);
     // A key no list has is ignored.
-    r.add(&d(4), b"/4.cpp", Some(&ok_shard(4, verified_verdict(&[7]), None)), Some(Status::Ok));
+    r.add(&d(4), b"/4.cpp", Some(&ok_shard(4, verified_verdict(&[7]), None)), MAP_OK);
     let j = r.to_json();
     let ex: Vec<(String, String, u64)> = j
         .get("exemptions")
@@ -900,12 +1050,7 @@ fn sample() -> Report {
         vec![changed.clone(), added, finding(DerivedChanged, 3, "/src/app/s.h", "app::S<int>")],
         &[0x21],
     );
-    r.add(
-        &d(1),
-        b"/src/app/main.cpp",
-        Some(&ok_shard(1, v, Some([1, 0, 1, 1, 1, 0]))),
-        Some(Status::Ok),
-    );
+    r.add(&d(1), b"/src/app/main.cpp", Some(&ok_shard(1, v, Some([1, 0, 1, 1, 1, 0]))), MAP_OK);
     let v = mismatch_verdict(
         2,
         vec![
@@ -914,25 +1059,20 @@ fn sample() -> Report {
         ],
         &[],
     );
-    r.add(
-        &d(2),
-        b"/src/app/other.cpp",
-        Some(&ok_shard(2, v, Some([1, 0, 0, 1, 0, 0]))),
-        Some(Status::Ok),
-    );
+    r.add(&d(2), b"/src/app/other.cpp", Some(&ok_shard(2, v, Some([1, 0, 0, 1, 0, 0]))), MAP_OK);
     r.add(
         &d(3),
         b"/src/app/ok.cpp",
         Some(&ok_shard(3, verified_verdict(&[0x21, 0x22]), None)),
-        Some(Status::Ok),
+        MAP_OK,
     );
     r.add(
         &d(4),
         b"/src/app/bad.cpp",
         Some(&unparsed_shard(4, Status::Diagnosed, "bad.cpp:3:1: error: expected ';'")),
-        Some(Status::Ok),
+        MAP_OK,
     );
-    r.add(&d(5), b"/src/app/odd.cpp", Some(&unverifiable(5)), Some(Status::Ok));
+    r.add(&d(5), b"/src/app/odd.cpp", Some(&unverifiable(5)), MAP_OK);
     r
 }
 
@@ -963,7 +1103,7 @@ fn s7_1_text_identity_and_cut() {
     let mut r = Report::new(header(vec![], 1), &Declared::none());
     let findings: Vec<Finding> =
         (0..120).map(|k| finding(FindingKind::Removed, k, "/a.h", "")).collect();
-    r.add(&d(1), b"/a.cpp", Some(&mismatch(1, findings)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&mismatch(1, findings)), MAP_OK);
     let t = r.to_text();
     assert_eq!(t.lines().filter(|l| l.starts_with("finding ")).count(), 100);
     assert!(t.contains("findings 120 total, 120 listed, 120 group(s)\n"), "{t}");
@@ -989,16 +1129,11 @@ fn s7_1_text_escapes_paths_and_strings() {
         location: Some(Where { pre: site.clone(), post: site }),
         ..finding(FindingKind::Changed, 1, nasty, nasty)
     };
-    r.add(&d(1), nasty.as_bytes(), Some(&mismatch(1, vec![f])), Some(Status::Ok));
-    r.add(
-        &d(2),
-        nasty.as_bytes(),
-        Some(&unparsed_shard(2, Status::Diagnosed, nasty)),
-        Some(Status::Ok),
-    );
+    r.add(&d(1), nasty.as_bytes(), Some(&mismatch(1, vec![f])), MAP_OK);
+    r.add(&d(2), nasty.as_bytes(), Some(&unparsed_shard(2, Status::Diagnosed, nasty)), MAP_OK);
     let mut u = unverifiable(3);
     u.verdict.as_mut().unwrap().reason = nasty.to_owned();
-    r.add(&d(3), nasty.as_bytes(), Some(&u), Some(Status::Ok));
+    r.add(&d(3), nasty.as_bytes(), Some(&u), MAP_OK);
     let mut text = r.to_text();
     text.push_str(r.verdict_line());
     text.push('\n');
@@ -1072,7 +1207,7 @@ fn s7_1_names_changed_counted_once_over_observers() {
     let mut r = Report::new(header(vec![], 10), &Declared::none());
     for o in 0..10u8 {
         let main = format!("/m{o}.cpp");
-        r.add(&d(o), main.as_bytes(), Some(&with_notes(verified(o), &[1])), Some(Status::Ok));
+        r.add(&d(o), main.as_bytes(), Some(&with_notes(verified(o), &[1])), MAP_OK);
     }
     assert_eq!(r.verdict(), RunVerdict::Verified);
     assert_eq!(r.states()[at(State::Verified)], 10);
@@ -1096,8 +1231,8 @@ fn s7_1_names_changed_counted_once_over_observers() {
 fn s7_1_names_changed_beside_findings() {
     let mut r = Report::new(header(vec![], 2), &Declared::none());
     let m = with_notes(mismatch(1, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]), &[1, 2]);
-    r.add(&d(1), b"/a.cpp", Some(&m), Some(Status::Ok));
-    r.add(&d(2), b"/b.cpp", Some(&unverifiable(2)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&m), MAP_OK);
+    r.add(&d(2), b"/b.cpp", Some(&unverifiable(2)), MAP_OK);
     assert_eq!(r.names_changed(), 2);
     let j = r.to_json();
     assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(1));
@@ -1109,7 +1244,7 @@ fn s7_1_names_changed_beside_findings() {
 fn s7_1_names_changed_cut_at_100() {
     let mut r = Report::new(header(vec![], 1), &Declared::none());
     let keys: Vec<u8> = (0..120).rev().collect();
-    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &keys)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &keys)), MAP_OK);
     assert_eq!(r.names_changed(), 120);
     let m = names_member(&r).unwrap();
     assert_eq!(m.get("total").unwrap().as_u64(), Some(120));
@@ -1137,7 +1272,7 @@ fn s7_1_names_changed_absent_without_a_note() {
     assert!(names_member(&r).is_none());
     assert!(!r.to_text().contains("note:"));
     let mut r = Report::new(header(vec![], 1), &Declared::none());
-    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &[])), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(verified(1), &[])), MAP_OK);
     assert!(names_member(&r).is_none());
     assert_eq!(r.names_changed(), 0);
 }
@@ -1151,9 +1286,9 @@ fn s7_1_strict_names_makes_notes_findings() {
     let mut r = Report::new(header(vec![], 3), &declared(&[1], &[], &[]));
     r.strict_names();
     let shard = ok_shard(1, verified_verdict(&[1]), None);
-    r.add(&d(1), b"/a.cpp", Some(&with_notes(shard, &[1])), Some(Status::Ok));
-    r.add(&d(2), b"/b.cpp", Some(&with_notes(verified(2), &[1])), Some(Status::Ok));
-    r.add(&d(3), b"/c.cpp", Some(&verified(3)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&with_notes(shard, &[1])), MAP_OK);
+    r.add(&d(2), b"/b.cpp", Some(&with_notes(verified(2), &[1])), MAP_OK);
+    r.add(&d(3), b"/c.cpp", Some(&verified(3)), MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     assert_eq!(r.states()[at(State::Mismatch)], 2);
     assert_eq!(r.states()[at(State::Verified)], 1);
@@ -1181,7 +1316,7 @@ fn s7_1_strict_names_makes_notes_findings() {
     // Without a note, the option changes nothing.
     let mut r = Report::new(header(vec![], 1), &Declared::none());
     r.strict_names();
-    r.add(&d(1), b"/a.cpp", Some(&verified(1)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::Verified);
 }
 
@@ -1199,13 +1334,13 @@ fn s4_4_compared_shard_without_names_is_failed() {
         }
         let mut v = verified(1);
         v.names = None;
-        r.add(&d(1), b"/a.cpp", Some(&v), Some(Status::Ok));
+        r.add(&d(1), b"/a.cpp", Some(&v), MAP_OK);
         let mut m = mismatch(2, vec![finding(FindingKind::Changed, 1, "/a.h", "f")]);
         m.names = None;
-        r.add(&d(2), b"/b.cpp", Some(&m), Some(Status::Ok));
+        r.add(&d(2), b"/b.cpp", Some(&m), MAP_OK);
         let mut u = unverifiable(3);
         u.names = None;
-        r.add(&d(3), b"/c.cpp", Some(&u), Some(Status::Ok));
+        r.add(&d(3), b"/c.cpp", Some(&u), MAP_OK);
         assert_eq!(r.states()[at(State::Failed)], 3, "strict {strict}");
         assert_eq!(r.names_changed(), 0, "strict {strict}");
         assert_eq!(r.verdict(), RunVerdict::Incomplete, "strict {strict}");
@@ -1217,6 +1352,6 @@ fn s4_4_compared_shard_without_names_is_failed() {
 #[should_panic(expected = "Report::strict_names after Report::add")]
 fn s7_1_strict_names_after_add_panics() {
     let mut r = Report::new(header(vec![], 1), &Declared::none());
-    r.add(&d(1), b"/a.cpp", Some(&verified(1)), Some(Status::Ok));
+    r.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
     r.strict_names();
 }
