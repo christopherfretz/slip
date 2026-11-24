@@ -279,8 +279,10 @@ fn write_patch(
     let dir = match relative_to {
         None => None,
         Some(d) => Some(
-            fs::canonicalize(d)
-                .map_err(|e| CommandError::Input(format!("{}: {e}", d.display())))?,
+            // The real path spelled as on disk (`spec/edits.md` §2.1), as
+            // the overlay's paths are.
+            slip_spelling::real_path(d)
+                .map_err(|e| CommandError::Input(format!("{}: {}", d.display(), e.detail())))?,
         ),
     };
     let dir_bytes = dir.as_ref().map(|d| d.as_os_str().as_bytes().to_vec());

@@ -484,22 +484,36 @@ pub fn parse_observer(observer: &Observer, phase: Phase, round: u64) -> Result<S
         .map(|(shard, _)| shard)
 }
 
-/// The shard of `observer`'s parse: `parsed` is its inputs and its count
-/// of preprocessed tokens, when it parsed.
+/// What a parse counts besides its inputs.
+#[derive(Clone, Copy, Debug)]
+struct Tally {
+    /// The preprocessed tokens.
+    tokens: u64,
+    /// The inputs reached under a spelling other than their own on disk.
+    respelled: u64,
+}
+
+/// The shard of `observer`'s parse: `parsed` is its inputs and its tally,
+/// when it parsed. `inputs.respelled` is there only when it is not 0, so
+/// that a shard on a volume that does not fold is what it was before it
+/// (`spec/model.md` §8.4).
 fn new_shard(
     observer: &Observer,
     phase: Phase,
     round: u64,
     outcome: Outcome,
-    parsed: Option<(Vec<FileRef>, u64)>,
+    parsed: Option<(Vec<FileRef>, Tally)>,
 ) -> Shard {
     let (inputs, counters) = match parsed {
-        Some((files, tokens)) => {
-            let counters = vec![
+        Some((files, tally)) => {
+            let mut counters = vec![
                 Counter { name: "inputs.bytes".into(), value: files.iter().map(|f| f.size).sum() },
                 Counter { name: "inputs.files".into(), value: files.len() as u64 },
-                Counter { name: "pp.tokens".into(), value: tokens },
             ];
+            if tally.respelled != 0 {
+                counters.push(Counter { name: "inputs.respelled".into(), value: tally.respelled });
+            }
+            counters.push(Counter { name: "pp.tokens".into(), value: tally.tokens });
             (Some(files), counters)
         }
         None => (None, Vec::new()),
@@ -582,8 +596,8 @@ pub fn parse_observer_with<R: Send>(
     let dir: &Path = &directory;
     let (program_ref, line_ref) = (&program, &line);
     let overlay_ref = overlay.as_deref();
-    let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, u64, R), String> {
-        let (inputs, buffers) = collect_inputs(fe, dir, overlay_ref)?;
+    let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, Tally, R), String> {
+        let (inputs, buffers, respelled) = collect_inputs(fe, dir, overlay_ref)?;
         let lookups = Lookups::of(fe, || driver(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
@@ -600,7 +614,7 @@ pub fn parse_observer_with<R: Send>(
             errors: fe.diags.error_count(),
         };
         let value = f(&unit);
-        Ok((inputs, fe.tokens, value))
+        Ok((inputs, Tally { tokens: fe.tokens, respelled }, value))
     };
     let report = match run_front_end(&program, &line, fe_options(options, overlay.clone()), see) {
         Ok(report) => report,
@@ -645,7 +659,7 @@ pub fn parse_observer_with<R: Send>(
         }
     };
     match parsed {
-        Some((inputs, tokens, value)) => Ok((shard(outcome, Some((inputs, tokens))), Some(value))),
+        Some((inputs, tally, value)) => Ok((shard(outcome, Some((inputs, tally))), Some(value))),
         None => Ok((shard(outcome, None), None)),
     }
 }
@@ -728,9 +742,11 @@ fn collect_inputs(
     fe: &FrontEnd<'_, '_>,
     directory: &Path,
     overlay: Option<&Overlay>,
-) -> Result<(Vec<FileRef>, Buffers), String> {
+) -> Result<(Vec<FileRef>, Buffers, u64), String> {
     let sm = fe.sm;
     let mut found: Vec<Candidate> = Vec::new();
+    let mut respelled_paths: std::collections::BTreeSet<Vec<u8>> =
+        std::collections::BTreeSet::new();
     for file in sm.file_ids() {
         let bytes = match sm.file_origin(file) {
             FileOrigin::Virtual => continue,
@@ -744,12 +760,18 @@ fn collect_inputs(
                 None => continue,
             },
         };
-        let real = real_path(directory, sm.file_name(file))?;
+        let (real, respelled) = real_path(directory, sm.file_name(file))?;
+        if respelled {
+            respelled_paths.insert(real.clone());
+        }
         found.push((real, bytes.len() as u64, content_digest(&bytes), Some(file)));
     }
     let buffers_end = found.len();
     for c in fe.consulted {
-        let real = real_path(directory, &c.path)?;
+        let (real, respelled) = real_path(directory, &c.path)?;
+        if respelled {
+            respelled_paths.insert(real.clone());
+        }
         // A `__has_include` hit is a buffer; an `#embed` resource is not.
         if found[..buffers_end].iter().any(|(p, ..)| *p == real) {
             continue;
@@ -760,7 +782,8 @@ fn collect_inputs(
         };
         found.push((real, size, content, None));
     }
-    merge_inputs(found)
+    let (inputs, buffers) = merge_inputs(found)?;
+    Ok((inputs, buffers, respelled_paths.len() as u64))
 }
 
 /// The overlay's bytes for the file at `real`, if the overlay replaces it.
@@ -812,12 +835,21 @@ fn read_consulted(real: &[u8]) -> Result<(u64, Digest), String> {
     Ok((bytes.len() as u64, content_digest(&bytes)))
 }
 
-/// `name` resolved against `directory`, then to its real path.
-fn real_path(directory: &Path, name: &str) -> Result<Vec<u8>, String> {
+/// `name` resolved against `directory`, then to its real path, spelled
+/// as its directories list it (`spec/model.md` §8.4 "Inputs",
+/// `spec/edits.md` §2.1 "One spelling"); and whether that spelling is not
+/// the one `canonicalize` kept (the name reached the file under another
+/// case or normalisation: `inputs.respelled`).
+fn real_path(directory: &Path, name: &str) -> Result<(Vec<u8>, bool), String> {
     let spelled = directory.join(name);
     let real = std::fs::canonicalize(&spelled)
         .map_err(|e| format!("cannot resolve {}: {e}", spelled.display()))?;
-    Ok(path_bytes(&real))
+    let real = path_bytes(&real);
+    let on_disk = slip_spelling::disk()
+        .on_disk(&real)
+        .map_err(|e| format!("cannot resolve {}: {}", spelled.display(), e.detail()))?;
+    let respelled = on_disk != real;
+    Ok((on_disk, respelled))
 }
 
 #[cfg(unix)]

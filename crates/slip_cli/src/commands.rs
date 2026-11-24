@@ -393,8 +393,9 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// The run's files from `--owned` and `--readonly` (`spec/edits.md` §2.1,
 /// §10.1 step 2: "made real paths"; `spec/verify.md` §2.1: ownership is
 /// of real paths, which are the subject paths). Each entry is made a real
-/// path (`std::fs::canonicalize`, so a symbolic link is resolved and the
-/// result is canonical); an entry that does not exist, or one that is
+/// path (`slip_spelling::real_path`: a symbolic link is resolved, the
+/// result is canonical and spelled as its directories list it, §2.1 "One
+/// spelling"); an entry that does not exist, or one that is
 /// both owned and read-only once resolved, is an input error. Sorted, no
 /// two equal. `None` when neither option is given; the caller has
 /// refused `--readonly` without `--owned` (a usage error).
@@ -410,9 +411,9 @@ pub(crate) fn ownership(
         let mut v = list
             .iter()
             .map(|p| {
-                std::fs::canonicalize(p)
+                slip_spelling::real_path(p)
                     .map(|r| r.as_os_str().as_bytes().to_vec())
-                    .map_err(|e| Failure::Input(format!("{}: {e}", p.display())))
+                    .map_err(|e| Failure::Input(format!("{}: {}", p.display(), e.detail())))
             })
             .collect::<Result<Vec<_>>>()?;
         v.sort();

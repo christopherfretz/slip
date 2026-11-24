@@ -211,15 +211,18 @@ pub fn normalise(
         return Err(exclude(Reason::NotACompile, format!("input `{input}` is not a source file")));
     }
     let directory_path = Path::new(directory);
-    let main = std::fs::canonicalize(directory_path.join(input)).map_err(|e| {
-        let detail = if e.kind() == std::io::ErrorKind::NotFound {
+    // The real path spelled as its directories list it (`spec/edits.md`
+    // §2.1, "One spelling"): one name per file whatever case the entry's
+    // `directory`, input or `file` is written in.
+    let main = slip_spelling::real_path(&directory_path.join(input)).map_err(|e| {
+        let detail = if e.is_not_found() {
             format!("main file `{input}` does not exist")
         } else {
-            format!("main file `{input}`: {e}")
+            format!("main file `{input}`: {}", e.detail())
         };
         exclude(Reason::MissingFile, detail)
     })?;
-    let matches = std::fs::canonicalize(directory_path.join(file)).is_ok_and(|f| f == main);
+    let matches = slip_spelling::real_path(&directory_path.join(file)).is_ok_and(|f| f == main);
     if !matches {
         return Err(exclude(
             Reason::MalformedEntry,

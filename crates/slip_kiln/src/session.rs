@@ -242,7 +242,9 @@ pub enum CompileError {
     Embed { path: Vec<u8>, line: u32 },
 }
 
-/// One file the transform unit read: path as given, content digest.
+/// One file the transform unit read: path as given (spelled as its
+/// directories list it when it is a real path, `slip_spelling::respelled`),
+/// content digest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadFile {
     pub path: Vec<u8>,
@@ -719,7 +721,10 @@ fn read_files(sm: &SourceManager) -> (Vec<ReadFile>, Option<(Vec<u8>, u32)>) {
                 }
             }
         };
-        let path = sm.file_name(id).as_bytes().to_vec();
+        // The path as given, spelled as its directories list it when it
+        // is a real path (`spec/edits.md` §2.1, "One spelling"): one name
+        // for a file whatever case an `#include` wrote it in.
+        let path = slip_spelling::respelled(sm.file_name(id).as_bytes());
         if embed.is_none()
             && let Some(line) = embed_line(&bytes)
         {

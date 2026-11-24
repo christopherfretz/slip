@@ -179,10 +179,14 @@ impl std::error::Error for HeaderError {}
 /// (path as given, content digest) pairs; both embedded headers must be
 /// among them at their path under `resource`, with this build's digests.
 /// `meta.h` is checked first. Paths are compared as paths (component by
-/// component, `spec/landed/api/WP-082.md`), never resolved.
+/// component, `spec/landed/api/WP-082.md`), never resolved; the expected
+/// one is respelled as the files read are (`slip_spelling::respelled`,
+/// `spec/edits.md` §2.1), so that `<resource>` given in another case than
+/// on disk still names the headers.
 pub fn check_headers(read: &[(Vec<u8>, Digest)], resource: &Path) -> Result<(), HeaderError> {
     for header in &HEADERS {
         let expected = header.path_in(resource);
+        let expected = path_from_bytes(&slip_spelling::respelled(&path_bytes(&expected)));
         let mut found = false;
         for (path, digest) in read {
             if path_from_bytes(path) != expected {
@@ -198,6 +202,17 @@ pub fn check_headers(read: &[(Vec<u8>, Digest)], resource: &Path) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn path_bytes(p: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    p.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn path_bytes(p: &Path) -> Vec<u8> {
+    p.to_string_lossy().into_owned().into_bytes()
 }
 
 #[cfg(unix)]

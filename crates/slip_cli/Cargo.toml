@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 slip_model.workspace = true
+slip_spelling.workspace = true
 slip_cdb.workspace = true
 slip_exec.workspace = true
 slip_reduce.workspace = true
