@@ -1,4 +1,4 @@
-# Moving g into acme, which read-only dep.h opens, keys acme's owned view apart: the comparison
-# finds it too. The counts are the case (mutant D2).
-removed legacy
-use 4 via 0 direct 0 kept_via 1
+# Moving g into acme, which read-only dep.h opens: equal since WP-140 (acme's
+# unit in the owned view partners legacy, via 1), and still stale for the
+# kept g, moved (kept_via 1). The counts are the case (mutant D2).
+use 4 via 1 direct 0 kept_via 1

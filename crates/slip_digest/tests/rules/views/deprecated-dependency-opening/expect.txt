@@ -1,0 +1,5 @@
+# dep.h's acme is [[deprecated]]: the moved owned members are now in a deprecated namespace.
+# WP-140: the owned view's unit has the namespace's one digest, deprecated: changed legacy.
+# One of the three cases why the digest is not per view (a per-view digest would be equal).
+changed legacy
+use 1 via 1 direct 0

@@ -1,0 +1,5 @@
+# A qualifier in a call with a dependent argument, redirected: template <class T> int f(T t) { return legacy::h(t); }
+# becomes acme::h(t), acme opened by dep.h. One h: the callee is found at the definition and written as a
+# reference to h (mapped); the qualifier is written nowhere.
+# WP-140: equal, via 1.
+use 1 via 1 direct 0

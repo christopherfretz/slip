@@ -1,0 +1,2 @@
+# Every file owned: Tr itself is owned and left in legacy: direct 1, stale.
+use 1 via 1 direct 1

@@ -1,0 +1,5 @@
+# An owned namespace alias redirected from legacy to acme, which dep.h opens.
+# WP-140: acme's unit in the owned view partners legacy; the alias writes acme's own key
+# (references keep the namespace's own key, spec/verify.md "Open questions"): fails closed.
+changed L
+use 1 via 1 direct 0
