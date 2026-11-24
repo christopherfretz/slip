@@ -1095,29 +1095,68 @@ option Slip does not list) is not resolved at all.
 establishes, for the parse of step 1, is: *the post-image parse neither
 read a file nor looked for one in any directory under a subject root (and
 not under a post root), "under" decided by identity; and every file
-outside every root that both images read is the same bytes in both.* The
-verdict is about the trees as they are now: the pre-image now against the
-post-image now. The post parse saw exactly what a parse of the subject
-with the edit applied, run with the observer's own command, would see
-now: under the post roots the post tree, which is that subject's tree;
-elsewhere the file system as it is now. The pre side is the map shard,
-and O2, N1 and N2 establish that it is what a map parse of the pre-image
-would give now: every file outside the subject it read is unchanged, none
-has appeared where it found none, every place where it found a file
-leads to that file, and its inputs are one file exactly where they were.
-Every lookup of a map parse now is one of the map parse's (the same
-command, the same files up to the first difference, which the guards
-exclude), and each is a recorded place, found or missed, re-walked: a
-quote name beside its includer (the includer's directory as the front
-end entered it, its first spelling, itself a place), `#include_next`
-and `__has_include` in every form, `#embed` and `__has_embed`, a forced
-include, and the main file (a file read) — but for the absolute names of
-"What remains outside". So the comparison is of the pre-image now with
-the post-image now. A lookup the post parse makes that the map parse did
-not (the edit spells a file first through a link retargeted since, and a
-header beside it is found where the link now leads) is the edit's effect
-on the post-image now, which the comparison judges: verified when it is
-equivalent (`n2_first_spelling_moved_by_the_edit`). And, by G6, the subject path of every file the post parse read
+outside every root that both images read is the same bytes in both.*
+
+**The claim.** A tree-form verdict compares the subject *as the map phase
+read it* with the post tree *as it is at verification*, both against
+everything outside the subject as it is at verification. The subject as
+the map phase read it is the files the map shard's `inputs` name under
+the subject roots, with the recorded sizes and digests, and nothing at
+the places under those roots where the map parse looked and found
+nothing. This is §1's `A`, "the subject as planned". The post parse saw
+exactly what a parse of the subject with the edit applied, run with the
+observer's own command, would see at verification: under the post roots
+the post tree, which is that subject's tree, and elsewhere the file
+system as it is. The pre side is the map shard. O2, N1 and N2 establish
+that it is what a map parse of that subject would give against today's
+outside: every file outside the subject that it read is unchanged, none
+has appeared outside where it found none, every place where it found a
+file leads to that file, and its inputs are one file exactly where they
+were.
+
+Every lookup a map parse would make is one of the map parse's: the same
+command and the same files up to the first difference, which the guards
+exclude. Each is a recorded place, found or missed, walked again:
+- a quote name beside its includer (the includer's directory as the
+  front end entered it, which is its first spelling and itself a place);
+- `#include_next` and `__has_include`, in every form;
+- `#embed` and `__has_embed`;
+- a forced include;
+- the main file (a file read).
+
+The absolute names of "What remains outside" are the exception.
+
+A lookup the post parse makes that the map parse did not is the edit's
+effect, and the comparison judges it. For example, the edit spells a
+file first through a link retargeted since, and a header beside it is
+found where the link now leads: `verified` when it is equivalent
+(`n2_first_spelling_moved_by_the_edit`).
+
+**Whether the subject on disk is still the subject the map phase read
+is not part of the verdict.** A subject edited in place after the map
+phase, or given a header at a place where the map parse found none,
+verifies against a post tree made from the subject as it was
+(`n2_subject_edited_in_place_after_the_map_phase`,
+`n2_subject_header_created_after_the_map_phase`). That question is
+checked elsewhere:
+- by R2, when step 4 parses the pre-image at a finding;
+- by the identity image, which parses the subject on disk (both trees
+  above are refused there);
+- by `slip apply --write`, for the files it replaces, before it writes
+  (`spec/edits.md` §7.3 step 1, `stale_file`);
+- by the overlay form, which reads the subject on disk as its pre-image
+  and so must check the sums of the subject's inputs and the subject's
+  negatives on every run (`docs/wp/WP-074.md` decides it).
+
+N2 (ii)'s comparison of identities at the recorded paths of subject
+inputs is stricter than the claim needs: a subject changed in content is
+not refused, but one changed in identity is
+(`n2_two_subject_inputs_made_one_file`). It is kept because a post tree
+is commonly made of hard links to the subject, so an identity change in
+the subject is usually one in the post tree too, and the check costs
+nothing.
+
+And, by G6,And, by G6, the subject path of every file the post parse read
 under a post root is a real path of the subject, or a created path under
 real directories of it: the links the parse followed under a post root
 are the subject's, by name and target, and none of the subject path's
@@ -1344,7 +1383,7 @@ only withdraws: guard G3.
 | O1 | step 2, overlay form: every entry of the post-image parse's `inputs` whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order) |
 | O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed (the overlay form's is O1's and O2's own) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order); (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
-| N2 | step 2, tree form other than the identity, after N1: the pre shard has a `found` section (`model.md` §8.7), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice: for each two inputs of the pre shard, each at its recorded path, and for each two of which at least one is under no subject root (as O2 (ii) judges it, on the path as recorded), each taken where the post parse would read it (an input under a subject root at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
+| N2 | step 2, tree form other than the identity, after N1: the pre shard has a `found` section (`model.md` §8.7), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice, for each two inputs of the pre shard: each at its recorded path, and each taken where the post parse would read it (an input under a subject root, as O2 (ii) judges it on the path as recorded, at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -1413,38 +1452,57 @@ cut as §6 says.
   the same link in both trees and passes); and the place as written
   says nothing of where it leads (`s/../lnk/h.h` is outside). A place
   that led to a subject file and still does passes, whatever the edit
-  did to the file, since the walk is the same. (ii) compares twice, each
-  comparison answering its own question. **At the recorded paths**,
-  every pair, two subject inputs too: is the map shard still what a map
-  parse of the pre-image would give now? The front end's buffers and
-  `#pragma once` follow identity, which no content check sees: a subject
-  `b.h` made a hard link of an equal `a.h` passes every content check,
-  yet a map parse now enters one of them (R2 sees it only when step 4
-  parses the pre-image, at a finding) (`n2_two_subject_inputs_made_one_file`),
-  and an outside `y.h` made a hard link of a subject `x.h` likewise
-  (`n2_outside_input_made_one_file_with_a_subject_input`). **Where the
-  post parse reads them**, each pair with a member outside every subject
-  root, a subject input at its post tree's counterpart: does the post
-  parse identify the shared file as the map parse did? An input outside
-  that was one file with one under a subject root is compared with the
-  post tree's counterpart: the edit that changes the subject's file
-  changes the outside one too, which the post tree does not show, so a
-  post tree that is a copy is refused there
-  (`n2_one_class_subject_and_outside_post_copy`). Two subject inputs are
-  not compared there: the post tree stands for both, and what it makes
-  of them is the edit's, which the comparison judges (a post tree made
-  of hard links to the subject is legitimate, §5.1). Two inputs that were one file at the map phase and still are
+  did to the file, since the walk is the same. (ii) compares the
+  recorded partition twice, every pair each time, and each comparison
+  answers its own question.
+
+  **At the recorded paths** the question is whether the map shard is
+  still what a map parse would give: of the outside as it is now, and of
+  the subject's files as they are now. The front end's buffers and
+  `#pragma once` follow identity, which no content check sees. An
+  outside `y.h` made a hard link of a subject `x.h` passes every content
+  check, yet a map parse now enters only one of them
+  (`n2_outside_input_made_one_file_with_a_subject_input`). For two
+  subject inputs this is stricter than the claim needs (§5.1, "The
+  claim"; `n2_two_subject_inputs_made_one_file`).
+
+  **Where the post parse reads them** (a subject input at its post
+  tree's counterpart, an outside input at its recorded path) the
+  question is whether the partition the post parse sees is the recorded
+  one. The post tree as verified must be the post tree as delivered, and
+  a delivery that copies bytes (`cp` or `rsync` without `-H`, an applier
+  that writes contents) makes two files of one again. So the post tree's
+  `b.h` made a hard link of its `a.h`, with an edit that compensates, is
+  refused (`n2_two_subject_inputs_made_one_file_in_the_post_tree`), as
+  is an outside file made a hard link of the post tree's counterpart
+  (`n2_outside_input_made_one_file_with_the_post_counterpart`). The
+  converse is refused too: an outside file and a subject file that were
+  one at the map phase, with a post tree that is a copy, is the case
+  where an edit of the subject's file in place would change the outside
+  one, which the post tree does not show
+  (`n2_one_class_subject_and_outside_post_copy`). This refuses nothing
+  legitimate: a post tree of hard links to the subject keeps the
+  subject's partition, and never merges two distinct subject files.
+
+  Two inputs that were one file at the map phase and still are
   (stores that deduplicate) pass. With the identity image it is not
   checked, as O2; nor with the overlay form today, which is not
-  implemented (`docs/wp/WP-074.md` decides it). A pre shard without the section (written before work
+  implemented: since the overlay form reads the subject on disk as
+  its pre-image, it must also check the sums of the subject's inputs and
+  the subject's negatives on every run (§5.1, "The claim";
+  `docs/wp/WP-074.md` decides it). A pre shard without the section (written before work
   package WP-135, or by another writer) is refused: `slip parse` writes
   it again.
 - **G2 and R2** say that the pre-image parsed in step 4 is the one the map
-  phase saw. A subject edited in place after the map phase (the identity
-  image used to compare "the tree now" with "the tree as planned") can
-  therefore be `verified` at the sums, and is `unverifiable`, never
-  `mismatch`, when it is not: there is no pre-image left to compare units
-  with.
+  phase saw. The verdict is about the subject as the map phase read it
+  (§5.1, "The claim"), and these two are the only guards that read the
+  subject on disk, at step 4 only. So a subject edited in place after the
+  map phase is not refused at the sums. In tree form it verifies when the
+  post tree is equivalent to the subject as the map phase read it. With
+  the identity image ("the tree now" against "the tree as planned") it
+  verifies when the edit in place is equivalent. When it is not, it is
+  `unverifiable`, never `mismatch`, because there is no pre-image left to
+  compare units with.
 - **G3**: if the post-image is not the same at the second parse, the job
   cannot say which image its verdict is about.
 
