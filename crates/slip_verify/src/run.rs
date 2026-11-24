@@ -731,6 +731,92 @@ impl Report {
         }
     }
 
+    /// An observer that got no verify job because it is **unchanged**
+    /// (§5.5, `spec/edits.md` §8.2; `spec/landed/edits/WP-076.md` §2): one
+    /// call per such observer, as [`Report::add_at`] for the others, with
+    /// `map` its map shard of the run's pre round. The report decides
+    /// "unchanged" itself, from that shard, and does not take the caller's
+    /// word for it: the observer is `Unchanged` only if the run has an
+    /// overlay ([`Report::overlay`]) and no rule, and `map` is this
+    /// observer's shard of phase `map` and round `pre_round`, `ok`, with
+    /// `inputs`, none of whose paths is a file of the overlay. Anything
+    /// else makes it `Failed`, with the reason as its message.
+    ///
+    /// # Panics
+    ///
+    /// As [`Report::add_at`].
+    pub fn add_unchanged_at(&mut self, position: u64, observer: &Digest, main: &[u8], map: &Shard) {
+        assert!(
+            position < self.header.plan_observers,
+            "Report::add_unchanged_at: position {position} is not in the plan of {}",
+            self.header.plan_observers
+        );
+        assert!(
+            !self.positions.contains(&position),
+            "Report::add_unchanged_at: position {position} added twice"
+        );
+        assert!(
+            !self.observers.contains(observer),
+            "Report::add_unchanged_at: an observer added twice"
+        );
+        self.positions.insert(position);
+        self.observers.insert(*observer);
+        self.selected += 1;
+        self.stale_flat = OnceCell::new();
+        self.outcomes = OnceCell::new();
+        let why = self.not_unchanged(observer, map);
+        let state = if why.is_none() { State::Unchanged } else { State::Failed };
+        self.states[state.index()] += 1;
+        self.all_good &= state == State::Unchanged;
+        if let Some(message) = why {
+            self.not_verified.insert(
+                position,
+                NotVerified {
+                    observer: *observer,
+                    main: main.to_vec(),
+                    state,
+                    message,
+                    findings: 0,
+                    indeterminate: 0,
+                    listed: 0,
+                },
+            );
+        }
+    }
+
+    /// Why an observer given to [`Report::add_unchanged_at`] is not
+    /// unchanged; `None` when it is.
+    fn not_unchanged(&self, observer: &Digest, map: &Shard) -> Option<String> {
+        let Some(o) = &self.overlay else {
+            return Some("the observer got no verify job in a run without an overlay".to_owned());
+        };
+        if self.has_rules() {
+            return Some("the observer got no verify job in a run with rules".to_owned());
+        }
+        if map.observer != *observer || map.phase != Phase::Map || map.round != self.pre {
+            return Some(format!(
+                "the observer got no verify job and its map shard is not its shard of phase map, \
+                 round {}",
+                self.pre
+            ));
+        }
+        if map.outcome.status != Status::Ok {
+            return Some("the observer got no verify job and its map shard is not ok".to_owned());
+        }
+        let Some(inputs) = &map.inputs else {
+            return Some(
+                "the observer got no verify job and its map shard has no inputs".to_owned(),
+            );
+        };
+        if let Some(read) = inputs.iter().find(|i| o.overlay.find(&i.path).is_some()) {
+            return Some(format!(
+                "the observer got no verify job and its map shard read the overlay's {}",
+                String::from_utf8_lossy(&read.path)
+            ));
+        }
+        None
+    }
+
     /// The `spellings` and `rule_use` of an `ok` shard the state table
     /// accepted as `state`, of the observer at plan position `index`; the
     /// reason if the fold refuses the section (the shard is then not this

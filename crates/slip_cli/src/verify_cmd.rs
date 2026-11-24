@@ -208,13 +208,13 @@ fn print(
 
 /// What `verify` appends to the worker command of `parse` (§8.7): both
 /// always passed.
-fn worker_options(findings: u64, locate: u64) -> [OsString; 4] {
+pub(crate) fn worker_options(findings: u64, locate: u64) -> [OsString; 4] {
     ["--findings".into(), findings.to_string().into(), "--locate".into(), locate.to_string().into()]
 }
 
 /// The `shard` of each observer's last `Job` entry in the run record (the
 /// entries are in completion order; `None`: the last attempt wrote none).
-fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
+pub(crate) fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
     record.jobs.iter().map(|j| (j.observer, j.shard)).collect()
 }
 
@@ -223,7 +223,7 @@ fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
 /// content id is the `shard` of the observer's last entry in the run
 /// record. Anything else is no shard (`Report::add` with `None`: the
 /// observer is `failed`).
-fn this_runs_shard(
+pub(crate) fn this_runs_shard(
     store: &Store,
     plan: &Digest,
     round: u64,
@@ -260,7 +260,7 @@ fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<
 
 /// The JSON report, written to a file beside `path` and renamed over it
 /// (§8.7), so that a reader sees no report or a whole one.
-fn write_report(path: &Path, report: &json::Value) -> Result<()> {
+pub(crate) fn write_report(path: &Path, report: &json::Value) -> Result<()> {
     let failure = |e: &dyn std::fmt::Display| Failure::Input(format!("{}: {e}", path.display()));
     let mut text = json::write_pretty(report).map_err(|e| failure(&e))?;
     if !text.ends_with('\n') {

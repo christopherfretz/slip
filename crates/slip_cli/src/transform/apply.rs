@@ -63,7 +63,7 @@ pub fn refused_name(r: &Refused) -> (&'static str, &[u8]) {
 
 /// The text after `refused <name>: ` of a refusal: its path, and for
 /// `not_canonical` the spelling on disk.
-fn refused_detail(r: &Refused) -> Vec<u8> {
+pub(crate) fn refused_detail(r: &Refused) -> Vec<u8> {
     let (_, path) = refused_name(r);
     let mut line = path.to_vec();
     if let Refused::NotCanonical { on_disk, .. } = r {
@@ -212,7 +212,7 @@ static PATCH_TMP: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// The signal path's part for the patch: removes its temporary, if one is
 /// being written. Never blocks on the lock (the main thread holds it only
 /// to set or clear the name).
-fn remove_patch_tmp() {
+pub(crate) fn remove_patch_tmp() {
     if let Ok(mut slot) = PATCH_TMP.try_lock()
         && let Some(p) = slot.take()
     {
@@ -238,7 +238,7 @@ fn patch_tmp(file: &Path, pid: u32) -> Option<PathBuf> {
 /// The temporaries of patches to `file` that another process left beside
 /// it (killed by SIGKILL, or still running): reported by the command, not
 /// removed (whether their process is alive cannot be told portably).
-fn patch_leftovers(file: &Path) -> Vec<PathBuf> {
+pub(crate) fn patch_leftovers(file: &Path) -> Vec<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let (Some(name), Some(mine)) = (file.file_name(), patch_tmp(file, std::process::id())) else {
         return Vec::new();

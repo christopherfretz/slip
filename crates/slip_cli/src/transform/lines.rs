@@ -177,7 +177,7 @@ impl Places<'_> {
 /// ` (<n> observer(s), first <main file>)`: `first` is the first of the
 /// record's `first` observers, by its main file in the plan (its id when
 /// the plan does not have it); omitted when the list is empty.
-fn observers_part(
+pub(crate) fn observers_part(
     n: u64,
     first: &[Digest],
     mains: &HashMap<Digest, &[u8]>,
@@ -197,7 +197,7 @@ fn observers_part(
 
 /// Writes the lines of one kind, at most [`DETAIL_MAX`], then the `more`
 /// line if any were cut.
-fn write_capped(
+pub(crate) fn write_capped(
     kind: &str,
     lines: impl ExactSizeIterator<Item = Vec<u8>>,
     record: &Path,
@@ -220,6 +220,21 @@ fn write_capped(
 /// `<kind>: <n> more (slip dump <record>)`; `record` is the file of the
 /// edit set. Lines and columns come from `files`, the pre-image.
 pub fn edit_set_details(
+    set: &EditSet,
+    plan: &Plan,
+    relative_to: Option<&[u8]>,
+    files: &dyn slip_apply::Files,
+    record: &Path,
+    out: &mut dyn Write,
+) {
+    edit_set_head_details(set, plan, relative_to, files, record, out);
+    edit_set_exempt_details(set, relative_to, files, record, out);
+}
+
+/// The `refusal`, `report` and `failed run` lines of [`edit_set_details`]:
+/// §10.5 lists the result's `finding`, `stale` and `spelling` lines
+/// between them and the `exempt` lines (WP-076).
+pub fn edit_set_head_details(
     set: &EditSet,
     plan: &Plan,
     relative_to: Option<&[u8]>,
@@ -290,7 +305,17 @@ pub fn edit_set_details(
         line
     });
     write_capped("failed run", failures, record, out);
+}
 
+/// The `exempt` lines of [`edit_set_details`].
+pub fn edit_set_exempt_details(
+    set: &EditSet,
+    relative_to: Option<&[u8]>,
+    files: &dyn slip_apply::Files,
+    record: &Path,
+    out: &mut dyn Write,
+) {
+    let mut places = Places { files, refs: &set.files, relative_to, newlines: HashMap::new() };
     let exempt = set.changed.iter().map(|x| {
         let key = x.key.to_string();
         let mut line = format!("exempt {} {}: ", &key[..16], printable(&x.reason)).into_bytes();

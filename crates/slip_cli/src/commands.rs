@@ -58,7 +58,10 @@ pub fn dispatch(invocation: Invocation, out: &mut dyn Write, err: &mut dyn Write
         Invocation::Verify(a) => return crate::verify_cmd::main(&a, out, err),
         Invocation::Declare(a) => return crate::declare::main(&a, out, err),
         Invocation::Units(a) => return crate::units::main(&a, out, err),
+        Invocation::Map(a) => crate::transform::map::main(&a, out, err),
+        Invocation::Rename(a) => crate::transform::rename::main(&a, out, err),
         Invocation::Reduce(a) => crate::transform::reduce::main(&a, out, err),
+        Invocation::Check(a) => crate::transform::check::main(&a, out, err),
         Invocation::Apply(a) => crate::transform::apply::main(&a, out, err),
         Invocation::Panic => panic!("slip __panic: a deliberate panic"),
         Invocation::Worker(_) => unreachable!("the worker is run by `run`, not dispatched"),
@@ -119,7 +122,7 @@ fn sources(dbs: &[Db]) -> Vec<Source> {
 /// on the threads whose CPU tokens can be had without waiting (§8.1), and
 /// publishes it. Prints the three kinds of line of §8.1; returns the plan,
 /// its id and the status of `plan`.
-fn build_and_publish(
+pub(crate) fn build_and_publish(
     dbs: &[Db],
     jobs: Option<usize>,
     store: &Store,
@@ -311,7 +314,7 @@ pub(crate) fn wall_and_peak<'a>(
 /// One line on standard error per observer whose shard is not `ok`, in
 /// plan order (§8.2), from the pool's outcomes. Returns whether every one
 /// is `ok`.
-fn report_not_ok(summary: &Summary, selected: &[Observer], err: &mut dyn Write) -> bool {
+pub(crate) fn report_not_ok(summary: &Summary, selected: &[Observer], err: &mut dyn Write) -> bool {
     debug_assert_eq!(summary.outcomes.len(), selected.len(), "one outcome per observer run");
     let mut all_ok = summary.outcomes.len() == selected.len();
     for (o, outcome) in selected.iter().zip(&summary.outcomes) {

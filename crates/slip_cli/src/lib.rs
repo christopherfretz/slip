@@ -1,7 +1,8 @@
 //! The `slip` command-line tool (`spec/exec.md` §8): `plan`, `parse`,
-//! `dump`, `resource`, `verify`, `declare`, `units`, `reduce`, `apply`,
+//! `dump`, `resource`, `verify`, `declare`, `units`, `map`, `reduce`, `check`,
+//! `apply`, `rename`,
 //! `--version`, and the hidden worker. Work package WP-012 (`resource`: WP-082; the verify task:
-//! WP-052; `declare`'s resolution: WP-055; the three M1 commands: WP-053; `reduce` and `apply`: WP-075);
+//! WP-052; `declare`'s resolution: WP-055; the three M1 commands: WP-053; `reduce` and `apply`: WP-075; `map`, `check` and `rename`: WP-076);
 //! the interface is §8.6.
 //!
 //! The binary is a thin `main` over [`run`]; [`args`] is pure, so the
