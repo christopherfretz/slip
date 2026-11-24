@@ -341,6 +341,13 @@ macro_rules! format_impl {
                 Ok($module::decode(bytes)?.0)
             }
 
+            /// [`Self::from_bytes`] and the file's content id (§5, as
+            /// [`content_id`] gives it) from one decode.
+            pub fn from_bytes_with_id(bytes: &[u8]) -> std::result::Result<($ty, Digest), Error> {
+                let (value, _, id) = $module::decode(bytes)?;
+                Ok((value, id))
+            }
+
             /// The JSON rendering (§10).
             pub fn to_json(&self) -> Value {
                 $module::render(self, &[])

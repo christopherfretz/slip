@@ -1,0 +1,2 @@
+# WP-146 stage 1. S20, extern "C": the dependency's declaration.
+lists empty

@@ -1,0 +1,2 @@
+# WP-146 stage 1. S11: the owned definer of hook, not moved (kept).
+lists empty

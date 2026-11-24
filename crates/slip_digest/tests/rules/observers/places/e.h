@@ -1,0 +1,1 @@
+namespace old { void f(); }

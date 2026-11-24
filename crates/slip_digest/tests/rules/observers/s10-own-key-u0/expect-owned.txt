@@ -1,0 +1,5 @@
+# Every file owned.
+made fresh::g(int)
+changed r
+removed fresh::g(int)
+added fresh::g(int)

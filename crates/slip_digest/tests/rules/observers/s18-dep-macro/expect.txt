@@ -1,0 +1,8 @@
+# WP-146 stage 1. S18: the name spelled by the dependency's macro (-DUSE_DEP).
+fixed M fresh::Thing
+removed old::Thing::v
+removed old::Thing
+changed a
+added fresh::Thing::v
+added fresh::Thing
+added fresh (the dependency's part of fresh)
