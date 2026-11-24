@@ -1489,17 +1489,81 @@ fn wp141_a5_resolved_qualifier_holds_with_a_view_key() {
     assert_eq!(got, vec![Holds]);
 }
 
-// A using-directive's or an alias's target: Kiln does not record it at
-// this pin (§10.7, `s10_7_unrecorded_names_are_not_seen`), so A5's
-// whole-reading branch is not reached yet; the day Kiln records it this
-// test fails and the branch gets its cases (not whole fails, whole holds).
+// A using-directive's and an alias's target: Kiln records both as
+// written references at the pin of WP-066, so A5 checks them with the
+// whole reading's key (`ns_whole_key`). Here the spelled `acme` has two
+// view keys: the post-image's directive and alias are whole for the
+// dependency's `acme` alone and drop the dependency's `legacy`, which the
+// pre-image's `legacy` named (Addendum 3). Both fail, and the key found is
+// the dependency's `acme`, not the obligation's `legacy`.
 #[test]
-fn wp141_a5_directive_and_alias_targets_not_seen() {
+fn wp141_a5_directive_and_alias_targets_checked_two_views_fail() {
     let got = a5_case(
         "namespace legacy { int g(int); }\nusing namespace legacy;\nnamespace L = legacy;\n",
         "namespace acme { int g(int); }\nusing namespace «acme»;\nnamespace L = «acme»;\n",
     );
-    assert_eq!(got, vec![NotSeen, NotSeen]);
+    let acme = key_of(&[("new_dep.h", A5_NEW)], "acme");
+    let legacy = key_of(&[("old_dep.h", A5_OLD)], "legacy");
+    assert_ne!(acme, legacy);
+    assert_eq!(got.len(), 2, "{got:?}");
+    for g in &got {
+        assert_eq!(fails(g), Some((Some(acme), "acme".to_owned())), "{got:?}");
+    }
+}
+
+/// An A5 case with no dependency: an owned `legacy` moved to `acme`.
+fn a5_case_alone(pre: &str, post: &str, wants: &[Want<'_>]) -> Vec<Spelling> {
+    let pre_files = [("main.cpp", pre)];
+    let post_files = [("main.cpp", post)];
+    run(&Case {
+        post: &post_files,
+        pre: Some(&pre_files),
+        renames: &[("legacy", "acme")],
+        wants,
+        tables: true,
+        std: "c++20",
+        read_only: &[],
+    })
+}
+
+// The twin that holds: the named namespace has one view key, the
+// obligation's `legacy`, and `E(legacy)` is `acme` alone (no dependency
+// opens `legacy` or `acme`), so the reading is plain and its key is
+// `legacy`.
+#[test]
+fn wp141_a5_directive_and_alias_targets_checked_one_view_hold() {
+    let got = a5_case_alone(
+        "namespace legacy { int g(int); }\nusing namespace legacy;\nnamespace L = legacy;\n",
+        "namespace acme { int g(int); }\nusing namespace «acme»;\nnamespace L = «acme»;\n",
+        &[Named("legacy"), Named("legacy")],
+    );
+    assert_eq!(got, vec![Holds, Holds]);
+}
+
+// A nested target spelled as one piece (`«acme::inner»`) is answered by
+// the target's reference alone (`inner`, §10.2 rule 3): one obligation,
+// checked with the whole reading's key of `inner`.
+#[test]
+fn wp141_a5_nested_target_one_piece() {
+    let got = a5_case_alone(
+        "namespace legacy { namespace inner { int g(int); } }\nusing namespace legacy::inner;\nnamespace L = legacy::inner;\n",
+        "namespace acme { namespace inner { int g(int); } }\nusing namespace «acme::inner»;\nnamespace L = «acme::inner»;\n",
+        &[Named("legacy::inner"), Named("legacy::inner")],
+    );
+    assert_eq!(got, vec![Holds, Holds]);
+}
+
+// The same target spelled as two pieces: `«acme»` is a qualifier
+// component (role `Nns`), checked as the qualifier of a resolved name;
+// `«inner»` is the target, checked as above.
+#[test]
+fn wp141_a5_nested_target_two_pieces() {
+    let got = a5_case_alone(
+        "namespace legacy { namespace inner { int g(int); } }\nusing namespace legacy::inner;\nnamespace L = legacy::inner;\n",
+        "namespace acme { namespace inner { int g(int); } }\nusing namespace «acme»::«inner»;\nnamespace L = «acme»::«inner»;\n",
+        &[Named("legacy"), Named("legacy::inner"), Named("legacy"), Named("legacy::inner")],
+    );
+    assert_eq!(got, vec![Holds, Holds, Holds, Holds]);
 }
 
 // A using-declaration's scope (row 3): the shadow's entity is a member
