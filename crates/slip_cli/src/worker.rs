@@ -18,9 +18,10 @@ use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, Post, PostImage, ServeOptions, Task, serve};
 use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::declared::Declared;
+use slip_model::edits::Edits;
 use slip_model::formats::content_id;
 use slip_model::keys::RuleTable;
-use slip_model::{Digest, Observer, Phase, Shard, Status, Transform};
+use slip_model::{Counter, Digest, Observer, Phase, Shard, Status, Transform};
 
 use crate::args::WorkerArgs;
 use crate::image::Image;
@@ -93,6 +94,31 @@ impl Task for MapTask {
         };
         map_shard(&job.observer, job.round, true, transform.as_ref().map(|(t, id)| (t, *id)))
     }
+}
+
+/// The transform's section and counters for an `ok` unit of the map job of
+/// the request `id`: the transform ran, and its section names the job's
+/// request (the rename is given `id`; this checks that a transform did not
+/// name another).
+///
+/// # Errors
+///
+/// The transform did not run, or its section's `transform` is not `id`: a
+/// defect of Slip, which fails the job.
+fn checked_edits(
+    edits: Option<(Edits, Vec<Counter>)>,
+    id: Digest,
+) -> Result<(Edits, Vec<Counter>), String> {
+    let Some((section, counters)) = edits else {
+        return Err("the unit is ok and the transform did not run".to_owned());
+    };
+    if section.transform != id {
+        return Err(format!(
+            "the edits name the request {}, not the job's {id}",
+            section.transform
+        ));
+    }
+    Ok((section, counters))
 }
 
 fn phase_name(phase: Phase) -> &'static str {
@@ -170,9 +196,9 @@ fn map_shard(
         // §8.1: the transform is entered once the walk's output is
         // complete, and only after a walk that succeeded.
         let edits = match (transform, &walked) {
-            (Some((t, _)), Some(Ok(_))) => {
-                Some(with_input(unit, &identity, |input| transform::run_transform(t, unit, input)))
-            }
+            (Some((t, id)), Some(Ok(_))) => Some(with_input(unit, &identity, |input| {
+                transform::run_transform(t, id, unit, input)
+            })),
             _ => None,
         };
         (walked, places, edits)
@@ -195,15 +221,7 @@ fn map_shard(
     if shard.outcome.status == Status::Ok {
         shard.counters.extend(counters(&output));
         if let Some((_, id)) = transform {
-            let Some((section, edit_counters)) = edits else {
-                return Err("the unit is ok and the transform did not run".to_owned());
-            };
-            if section.transform != id {
-                return Err(format!(
-                    "the edits name the request {}, not the job's {id}",
-                    section.transform
-                ));
-            }
+            let (section, edit_counters) = checked_edits(edits, id)?;
             shard.counters.extend(edit_counters);
             shard.edits = Some(section);
         }
@@ -367,7 +385,7 @@ mod tests {
 
     use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Status};
 
-    use super::map_observer;
+    use super::{checked_edits, map_observer};
 
     /// The parse changes the current directory: one at a time.
     static LOCK: Mutex<()> = Mutex::new(());
@@ -507,5 +525,30 @@ mod tests {
         assert!(run(&job).starts_with("cannot open the store"), "{}", run(&job));
         let transform = Job { transform: Some(Digest([4; 32])), ..job.clone() };
         assert!(run(&transform).starts_with("cannot open the store"), "{}", run(&transform));
+    }
+
+    /// WP-074 review (R10): the section of an `ok` unit must name the job's
+    /// request; one that names another, or none, fails the job.
+    #[test]
+    fn checked_edits_names_the_jobs_request() {
+        let section = |transform| slip_model::edits::Edits {
+            scheme: slip_model::edits::SCHEME,
+            transform,
+            failure: None,
+            files: vec![],
+            subjects: vec![],
+            links: vec![],
+            claims: vec![],
+            groups: vec![],
+            reports: vec![],
+            changed: vec![],
+            renamed: vec![],
+        };
+        let (job, other) = (Digest([5; 32]), Digest([6; 32]));
+        assert!(checked_edits(Some((section(job), vec![])), job).is_ok());
+        let e = checked_edits(Some((section(other), vec![])), job).unwrap_err();
+        assert_eq!(e, format!("the edits name the request {other}, not the job's {job}"));
+        let e = checked_edits(None, job).unwrap_err();
+        assert_eq!(e, "the unit is ok and the transform did not run");
     }
 }

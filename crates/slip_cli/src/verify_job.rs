@@ -347,6 +347,9 @@ fn overlay_walk<'o>(
     detail: Detail<'_>,
     first: Option<&[FileRef]>,
 ) -> Result<Step1<'o>, String> {
+    // One `stat` per entry: two entries of one file fail the job; an entry
+    // with no file now is never given (`Loaded::index`).
+    loaded.index()?;
     match first {
         Some(inputs) => loaded.load(store, &mut inputs.iter().map(|f| f.path.as_slice()))?,
         None => loaded.load_all(store)?,
@@ -945,8 +948,21 @@ fn overlay_guards(
     }
     let overlay: &Overlay = loaded.overlay();
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
-    if let Err(guard) = overlay_inputs(pre_inputs, post_inputs, overlay) {
-        return Some(guard.reason());
+    match overlay_inputs(pre_inputs, post_inputs, overlay) {
+        Ok(()) => {}
+        // An input that is an overlay file by identity (another name of
+        // it): its bytes are the overlay's, not drift (WP-074 review F3).
+        Err(OverlayGuard::O2(path)) => {
+            return Some(match loaded.alias_of(&path) {
+                Some(entry) => format!(
+                    "pre-image: {} is another name of the overlay's {}",
+                    show_path(&path),
+                    show_path(entry)
+                ),
+                None => OverlayGuard::O2(path).reason(),
+            });
+        }
+        Err(guard) => return Some(guard.reason()),
     }
     if let Some(f) = pre_inputs.iter().find(|f| {
         overlay.find(&f.path).is_some_and(|i| {
