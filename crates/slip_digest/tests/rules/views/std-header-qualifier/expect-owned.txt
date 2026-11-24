@@ -1,0 +1,4 @@
+# Every file owned: std is owned and mapped (to legacy); the dependency's Dep moves.
+added std::Dep
+removed std
+removed std::Dep

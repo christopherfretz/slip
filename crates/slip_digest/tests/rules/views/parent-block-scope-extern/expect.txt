@@ -1,9 +1,9 @@
 # WP-141 (keyed under it, lexical and semantic parents differ): a block-scope extern int bx; in an owned out-of-line
 # definition of the dependency's acme::g. bx's only declaration is owned and its semantic
-# parent is acme: an owned entity keyed under acme, which then has an owned view (added acme,
+# parent is acme: an owned entity keyed under acme, which then has an owned view (added legacy (the owned part of acme),
 # the unit keyed legacy). Untouched, and a difference: owned content already in the target
 # namespace (WP-144's case).
 changed acme::g()
-added acme
+added legacy (the owned part of acme)
 added bx
 removed bx

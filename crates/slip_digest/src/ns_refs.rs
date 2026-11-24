@@ -42,7 +42,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::decl::{DeclKind, NamespaceData};
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, NamespaceData};
 use slip_kiln::kiln::source::FileId;
 use slip_model::Digest;
 use slip_model::keys::KeyKind;
@@ -541,9 +541,15 @@ impl Walk<'_> {
             if kind == DeclKind::Namespace {
                 continue;
             }
+            // The ruling's members (spec/verify.md §2.1): (a) an entity,
+            // declared by the source or made by the compiler; (b) a
+            // content-keyed declaration that is written: the
+            // using-directive an unnamed namespace implies is no member.
             match info(kind).role {
-                Role::Entity(_) | Role::Content(_) => {}
-                Role::Unsupported(_)
+                Role::Entity(_) => {}
+                Role::Content(_) if !ast.decls.get(d).has(DeclFlags::IMPLICIT) => {}
+                Role::Content(_)
+                | Role::Unsupported(_)
                 | Role::Nothing
                 | Role::Transparent
                 | Role::Root

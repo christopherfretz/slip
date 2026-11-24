@@ -1,0 +1,3 @@
+# WP-141 ruling (compiler-made members): the same with a read-only header that opens std:
+# std is the dependency's, the compiler's align_val_t is one more dependency member, and the
+# owned view (legacy) holds h. Equal.
