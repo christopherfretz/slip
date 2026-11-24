@@ -4,8 +4,14 @@
 //! fold (`/tmp`: this container's is `overlay`), and the workspace's,
 //! which folds (`CARGO_TARGET_TMPDIR`: a FUSE mount of a macOS volume).
 //! Each test skips, saying why, where its location is not of its kind.
-//! Each makes a uniquely named directory and removes it by that path, on
-//! failure too.
+//!
+//! Two of them must write outside the workspace: the workspace's own
+//! volume folds, so a case-sensitive volume, trusted (`/dev/shm`) or listed
+//! (`/tmp`), exists only outside it. Each makes a directory named for the
+//! test, the process and a counter, and removes it by that path when the
+//! test leaves by any way (a return, a skip, a failed assertion: `Drop`
+//! runs on unwinding), and the directory is owned by the guard before
+//! anything else can fail.
 
 use std::cell::RefCell;
 use std::io;
@@ -14,7 +20,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use slip_spelling::{Disk, Id, Lookup, Spelling, SpellingError, real_path};
+use slip_spelling::{Disk, Id, Lookup, Spelling, SpellingError, real_path, respelled};
 
 /// The disk, counting its listings.
 #[derive(Debug, Default)]
@@ -31,8 +37,8 @@ impl Lookup for Counted {
         self.listed.borrow_mut().push(dir.to_vec());
         self.disk.names(dir)
     }
-    fn consistent(&self, dev: u64) -> bool {
-        self.disk.consistent(dev)
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        self.disk.consistent(dir, dev)
     }
 }
 
@@ -44,10 +50,13 @@ impl Scratch {
     fn new(base: &Path, name: &str) -> Option<Scratch> {
         static N: AtomicU32 = AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let p = base.join(format!("slip-spelling-{name}-{}-{n}", std::process::id()));
-        std::fs::create_dir(&p).ok()?;
-        let p = std::fs::canonicalize(&p).ok()?;
-        Some(Scratch(p))
+        let made = Scratch(base.join(format!("slip-spelling-{name}-{}-{n}", std::process::id())));
+        std::fs::create_dir(&made.0).ok()?;
+        let real = std::fs::canonicalize(&made.0).ok()?;
+        // Removed by its real path from here on (the same directory).
+        let mut made = made;
+        made.0 = real;
+        Some(made)
     }
 
     fn write(&self, rel: &str) -> PathBuf {
@@ -89,7 +98,7 @@ fn folds(p: &Path, other: &Path) -> bool {
 fn trusted_case_sensitive_volume_lists_nothing() {
     let base = Path::new("/dev/shm");
     let s = Spelling::new(Counted::default());
-    if !base.is_dir() || !s.lookup().disk.consistent(dev(base)) {
+    if !base.is_dir() || !s.lookup().disk.consistent(bytes(base), dev(base)) {
         eprintln!("skipped: /dev/shm is missing or not a file system whose lookups are trusted");
         return;
     }
@@ -126,7 +135,7 @@ fn listed_volume_that_does_not_fold() {
         return;
     }
     let s = Spelling::new(Counted::default());
-    if s.lookup().disk.consistent(dev(&t.0)) {
+    if s.lookup().disk.consistent(bytes(&t.0), dev(&t.0)) {
         eprintln!("skipped: /tmp is trusted here, so it is not listed");
         return;
     }
@@ -162,11 +171,33 @@ fn folding_volume_gives_the_listed_spelling() {
     }
 }
 
+/// Review S5 (S18): `respelled` respells a path only when it is its own
+/// real path; one through a link (here `lnk`, to `dir`) is kept as given,
+/// another case and all, as the records that keep a path as given want.
+#[test]
+fn respelled_only_a_path_that_is_its_own_real_path() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let Some(t) = Scratch::new(base, "respell") else {
+        eprintln!("skipped: cannot make a directory in {}", base.display());
+        return;
+    };
+    let f = t.write("dir/foo.h");
+    std::os::unix::fs::symlink(t.0.join("dir"), t.0.join("lnk")).unwrap();
+    let asked = t.0.join("dir/FOO.h");
+    if !folds(&f, &asked) {
+        eprintln!("skipped: {} does not fold case", base.display());
+        return;
+    }
+    assert_eq!(respelled(bytes(&asked)), bytes(&f));
+    let through = t.0.join("lnk/FOO.h");
+    assert_eq!(respelled(bytes(&through)), bytes(&through));
+}
+
 /// What `Disk` says of each location: the device's types from mountinfo
-/// (a wrong `major:minor` decode finds no line), and whether it is
-/// trusted. `/` and `/dev/shm` are named by a mountinfo line of their own
-/// here; the workspace's FUSE mount reports another device than its line,
-/// which is not trusted either way.
+/// (a wrong `major:minor` decode finds no line), the mount that holds it,
+/// and whether it is trusted. `/` and `/dev/shm` are named by a mountinfo
+/// line of their own here; the workspace's FUSE mount reports another
+/// device than its line, so it is not trusted whatever its type.
 #[test]
 fn what_disk_says_of_each_volume() {
     let Ok(text) = std::fs::read_to_string("/proc/self/mountinfo") else {
@@ -190,10 +221,15 @@ fn what_disk_says_of_each_volume() {
         }
         let d = dev(path);
         let types = disk.mounts().types(d);
-        eprintln!("{p}: device {d}, types {types:?}, trusted {}", disk.consistent(d));
+        let holder = disk.mounts().holder(bytes(path));
+        let trusted = disk.consistent(bytes(path), d);
+        eprintln!("{p}: device {d}, types {types:?}, held by {holder:?}, trusted {trusted}");
+        if let Some(h) = holder.filter(|h| h.dev != d) {
+            assert!(!trusted, "{p}: its holder {h:?} names another device than {d}");
+        }
         if let Some(t) = line_type(p).filter(|_| p == "/" || p == "/dev/shm") {
-            assert!(types.contains(&t), "{p}: its mountinfo line is {t}; Disk finds {types:?}");
-            assert_eq!(disk.consistent(d), t == "tmpfs" || t.starts_with("ext"), "{p}");
+            assert!(types.contains(&t.as_str()), "{p}: its line is {t}; Disk finds {types:?}");
+            assert_eq!(trusted, t == "tmpfs" || t.starts_with("ext"), "{p}");
         }
     }
     // The workspace: trusted only if the mount that holds it (the
@@ -210,7 +246,7 @@ fn what_disk_says_of_each_volume() {
         })
         .max();
     if let Some((_, t)) = holder {
-        let trusted = disk.consistent(dev(Path::new(ws)));
+        let trusted = disk.consistent(ws.as_bytes(), dev(Path::new(ws)));
         assert!(!trusted || slip_spelling::CONSISTENT.contains(&t.as_str()), "{ws}: {t}");
     }
 }

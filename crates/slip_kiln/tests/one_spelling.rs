@@ -170,6 +170,33 @@ fn s8_4_input_has_the_spelling_on_disk() {
     assert_eq!(respelled(&shard), Some(1), "{:?}", shard.counters);
 }
 
+/// Review S5 (K4): the counter counts the consulted paths too. An
+/// `#embed` resource and a `__has_include` hit, each named in another case
+/// than the file's: both inputs have the spelling on disk, and both are
+/// counted (the `#embed` resource is no buffer, so only the consulted
+/// paths' loop sees it).
+#[test]
+fn s8_4_consulted_paths_are_counted() {
+    let main = "#if __has_include(\"PROBED.h\")\n#endif\n\
+                const unsigned char d[] = {\n#embed \"DATA.bin\"\n};\n\
+                static_assert(sizeof d == 3);\n";
+    let t = tree(
+        "one-spelling-consulted",
+        &[("data.bin", "abc"), ("probed.h", "int p;\n"), ("main.cpp", main)],
+    );
+    if !folds(&t, "DATA.bin", "s8_4_consulted_paths_are_counted") {
+        return;
+    }
+    let obs = t.observer("main.cpp", "c++26", &[]);
+    let (shard, _) = t.parse(&obs, &ParseOptions::default(), |_| ()).expect("the parse");
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    for name in ["data.bin", "probed.h"] {
+        let want = format!("{}/{name}", t.root().display());
+        assert!(inputs(&shard).contains(&want), "{want}: {:?}", inputs(&shard));
+    }
+    assert_eq!(respelled(&shard), Some(2), "{:?}", shard.counters);
+}
+
 /// `inputs.respelled`, when the shard has it.
 fn respelled(shard: &Shard) -> Option<u64> {
     shard.counters.iter().find(|c| c.name == "inputs.respelled").map(|c| c.value)

@@ -93,11 +93,17 @@ real path (`canonicalize`) is walked:
 - a directory need not be listed where it is seen not to fold: a
   component whose every byte is ASCII and which has an ASCII letter finds,
   with the case of every ASCII letter swapped, nothing or another file
-  (`lstat`, device and inode), on a device whose lookups are trusted. A
-  device is trusted when every mount of it in `/proc/self/mountinfo` is of
-  one of the types `ext2`, `ext3`, `ext4`, `xfs`, `btrfs`, `tmpfs`, `f2fs`
-  (local kernel file systems: a lookup's answer is the directory's, every
-  time). `overlay` is not (its answers are its layers', which mountinfo
+  (`lstat`, device and inode), in a directory whose lookups are trusted.
+  A directory is trusted when the mount that holds it (in
+  `/proc/self/mountinfo`, the line whose mount point is the longest one at
+  or above the directory) names the directory's device (`st_dev`, as
+  `major:minor`) and is of one of the types `ext2`, `ext3`, `ext4`, `xfs`,
+  `btrfs`, `tmpfs`, `f2fs` (local kernel file systems: a lookup's answer
+  is the directory's, every time), and every other line of that device is
+  of one of them too. The device alone decides nothing: a file system may
+  report a device of its own choosing (this workspace's FUSE mount reports
+  0:45 where its line says 0:47), and a device no line names, or a
+  directory whose holder names another device, is not trusted. `overlay` is not (its answers are its layers', which mountinfo
   does not show cheaply); nor is FUSE (a host mount was seen to answer a
   lookup in another case one time and not the next), NFS, CIFS, 9p or
   virtiofs. Adding a type later is safe; removing one is not. Folding is
@@ -118,8 +124,22 @@ real path (`canonicalize`) is walked:
   never passes a component: the path is **missing**.
 - Without `/proc/self/mountinfo` (not Linux) every directory is listed. A
   directory that must be listed and cannot be (search permission without
-  read) is an `Input` error, status 3; on a trusted case-sensitive device
-  it is probed, not listed.
+  read) is an `Input` error, status 3 (for the compile database's main
+  files, `cdb.md` §5: the entry is excluded, `missing_file`); on a
+  trusted case-sensitive device it is probed, not listed. A listing that
+  failed is not kept: the next question lists again.
+- **The tree does not change during a run** (a stated limit). The walk
+  keeps what it learnt for its life (once per process; once per call in
+  apply): on a volume that folds, a file or directory renamed in case
+  only, or removed and made again in another case, after the walk passed
+  it keeps its old spelling in that process (the old spelling still finds
+  it, so nothing tells the walk); on one that does not fold the new name
+  is found again (a probe, or a listing made again). A long-lived worker
+  then names the inputs of its later shards, and the edits of their
+  units, by the old spelling, and those shards' ids differ from a fresh
+  process's. Nothing before apply refuses it; apply walks afresh and
+  refuses such an edit (`not_canonical`, naming the new spelling), so the
+  change fails closed at apply.
 
 Apply checks rather than gives: before any ownership decision a path must
 be its own spelling. A path that is not is refused (`not_canonical`,
@@ -128,14 +148,25 @@ each directory is the file it finds), a path that finds nothing is refused
 `stale_file` (apply replaces only files that are there; on a volume that
 answers lookups inconsistently "nothing" is the answer that would pass a
 read-only file), and nothing is touched. `--write` (§7.3 step 1),
-`--patch` (§7.2) and `--recover` check it (`--recover` passes a missing
-file on: restoring reports it and creates nothing). Without this,
-`src/Vendor/x.h` would pass for a file of `src/` that a `readonly` entry
-`src/vendor` carves out, and one file could be named twice in one
-overlay. Where a request's ownership or a declaration's `files` are read
-for a run, every entry must exist and be its own spelling (`Input`,
-status 3): the command line gives them that spelling, so one that is not
-was written by hand or the volume changed.
+`--patch` (§7.2) and `--recover` check it (`--recover` reports a path
+that finds nothing itself, without looking it up again: restoring
+creates nothing there). Without this, `src/Vendor/x.h` would pass for a
+file of `src/` that a `readonly` entry `src/vendor` carves out, and one
+file could be named twice in one overlay.
+
+Where a request's ownership or a declaration's `files` are read for a
+run, every entry must exist and be its own spelling (`Input`, status 3,
+naming the entry and its spelling on disk): the command line gives them
+that spelling, so one that is not was written by hand or the volume
+changed, and an entry in another case than the paths covers none of
+them (a `readonly` one would protect nothing). Apply checks it, with its
+own walk, before any path is checked against the ownership: `--write`,
+`--patch` and `--recover`, every entry, owned and read-only, of the
+ownership apply decides by (the request's; for `--recover`, the request
+of the edit set of the overlay the journal names). The worker, the
+verify job's read of a declaration and the map phase's read of a
+request do not check it yet (`spec/landed/edits/WP-147.md`, the
+follow-up); apply is the last check before a write, and holds.
 
 Two hard links are two names by design: ownership is by path, and a hard
 link of a read-only file under an owned directory is owned, as a copy

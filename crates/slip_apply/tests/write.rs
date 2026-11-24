@@ -1450,8 +1450,8 @@ mod disk {
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
         }
-        fn consistent(&self, dev: u64) -> bool {
-            DiskTree.consistent(dev)
+        fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+            DiskTree.consistent(dir, dev)
         }
     }
 
@@ -1566,8 +1566,8 @@ mod disk {
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
         }
-        fn consistent(&self, dev: u64) -> bool {
-            DiskTree.consistent(dev)
+        fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+            DiskTree.consistent(dir, dev)
         }
     }
 
@@ -1982,10 +1982,11 @@ fn s2_1_another_case_is_not_canonical() {
 }
 
 /// A path that finds nothing is not a spelling question: the checks
-/// after the spelling find it missing (`StaleFile`).
+/// after the spelling find it missing (`StaleFile`). (The ownership's
+/// entries exist: WP-147 refuses an ownership whose entry is missing.)
 #[test]
 fn s2_1_a_missing_path_is_left_to_the_checks_after() {
-    let tree = Folding::new(&[("/w/a.cc", b"a")]);
+    let tree = Folding::new(&[("/w/a.cc", b"a"), ("/w/vendor/x.h", b"int v;\n")]);
     let w = World(Rc::new(RefCell::new(State::default())));
     let (o, id) = one_file("/w/sub/b.cc", b"a", b"b");
     assert!(matches!(
@@ -2039,6 +2040,40 @@ fn s2_1_disk_another_case() {
         assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(other))));
     }
     assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
+}
+
+/// Review B1 on disk (the reviewer's probe): `tree/vendor/x.h` written,
+/// the overlay naming it as on disk, and the request's `readonly` entry
+/// `tree/VENDOR`. On a volume that folds case the entry finds the
+/// directory under another spelling, which covers nothing of the
+/// overlay's paths: refused, `Invalid` naming the spelling on disk; on
+/// one that does not, it finds nothing: refused, `Invalid`, "does not
+/// exist". Never `Ok`, and nothing written.
+#[test]
+fn s2_1_disk_readonly_entry_in_another_case() {
+    let r = disk::root("entry");
+    std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
+    std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
+    let folds = r.join("tree/VENDOR/x.h").exists();
+    let (o, id) = one_file(r.join("tree/vendor/x.h").to_str().unwrap(), b"int v;\n", b"int w;\n");
+    let own = Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![disk::bytes(&r.join("tree/VENDOR"))],
+    };
+    let got = slip_apply::check_owned(&o, &own, &slip_apply::fs::DiskTree);
+    let store = disk::Store(r.join("store"));
+    let written = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
+    let want = if folds {
+        format!("is not spelled as on disk ({:?})", r.join("tree/vendor").to_string_lossy())
+    } else {
+        eprintln!("s2_1_disk_readonly_entry_in_another_case: {} does not fold", r.display());
+        "does not exist".to_string()
+    };
+    for got in [got, written.map(|_| ())] {
+        assert!(matches!(&got, Err(WriteError::Invalid(m)) if m.ends_with(&want)), "{got:?}");
+    }
+    assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
+    common::remove_tree(&r);
 }
 
 // ---------------------------------------------------------------------------
@@ -2189,8 +2224,9 @@ fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
 }
 
 /// A case-sensitive tree (a name is found only as made) in which `/home`
-/// can be searched but not listed, as a shared `/home` is for a user (here `/srv`).
-struct Unlistable(Vec<(Vec<u8>, Vec<u8>)>);
+/// can be searched but not listed, as a shared `/home` is for a user (here
+/// `/srv`). The flag: whether its lookups are trusted (a local volume).
+struct Unlistable(Vec<(Vec<u8>, Vec<u8>)>, bool);
 
 impl Tree for Unlistable {
     fn stat(&self, p: &[u8]) -> io::Result<Option<Stat>> {
@@ -2247,9 +2283,8 @@ impl Tree for Unlistable {
             || is_dir_of(p, self.0.iter().map(|(f, _)| f.as_slice()));
         Ok(there.then(|| (1, ino_of(p))))
     }
-    /// A case-sensitive local volume: its lookups are trusted.
-    fn consistent(&self, _: u64) -> bool {
-        true
+    fn consistent(&self, _: &[u8], _: u64) -> bool {
+        self.1
     }
 }
 
@@ -2259,11 +2294,144 @@ impl Tree for Unlistable {
 /// so the name needs no listing. WP-075's check gave `Err(Io)` naming
 /// `/home` (status 3 from `apply`), on any volume, because it listed every
 /// directory from `/` down. The tree's device is trusted (`consistent`);
-/// one that is not still lists `/home` and fails, `Io`.
+/// one that is not still lists `/home` and fails, `Io` naming it, never
+/// `Ok` (review S5, A5): for an ownership entry under it and for a path
+/// under it.
 #[test]
 fn s2_1_a_directory_that_cannot_be_listed() {
-    let tree = Unlistable(vec![(b"/srv/alice/w/a.cc".to_vec(), b"a".to_vec())]);
+    let files = vec![(b"/srv/alice/w/a.cc".to_vec(), b"a".to_vec())];
     let own = Ownership { owned: vec![b"/srv/alice/w".to_vec()], readonly: vec![] };
     let (o, _) = one_file("/srv/alice/w/a.cc", b"a", b"b");
-    assert_eq!(slip_apply::check_owned(&o, &own, &tree), Ok(()));
+    assert_eq!(slip_apply::check_owned(&o, &own, &Unlistable(files.clone(), true)), Ok(()));
+    let untrusted = Unlistable(files, false);
+    let io_at_srv = |got: Result<(), WriteError>| {
+        assert!(matches!(&got, Err(WriteError::Io { path, .. }) if path == b"/srv"), "{got:?}");
+    };
+    io_at_srv(slip_apply::check_owned(&o, &own, &untrusted));
+    let root = Ownership { owned: vec![b"/".to_vec()], readonly: vec![] };
+    io_at_srv(slip_apply::check_owned(&o, &root, &untrusted));
+}
+
+/// Two listed names of one file (hard links), the path asked by a third
+/// spelling that the volume finds: no one name is it, `NotCanonical`
+/// naming none (review S5, A2).
+struct TwoNames;
+
+impl Tree for TwoNames {
+    fn stat(&self, _: &[u8]) -> io::Result<Option<Stat>> {
+        Err(err(io::ErrorKind::Unsupported, "not asked"))
+    }
+    fn read(&self, _: &[u8]) -> io::Result<Vec<u8>> {
+        Err(err(io::ErrorKind::Unsupported, "not asked"))
+    }
+    fn create(&self, _: &[u8], _: u32, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn rename(&self, _: &[u8], _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn remove(&self, _: &[u8]) -> io::Result<()> {
+        Err(err(io::ErrorKind::Unsupported, "read only"))
+    }
+    fn sync_dir(&self, _: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    fn names(&self, d: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>> {
+        Ok(match d {
+            b"/" => Some(vec![b"w".to_vec()]),
+            b"/w" => Some(vec![b"X.h".to_vec(), b"x.h".to_vec()]),
+            _ => None,
+        })
+    }
+    fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        Ok(match p.to_ascii_lowercase().as_slice() {
+            b"/" => Some((1, 1)),
+            b"/w" => Some((1, 2)),
+            b"/w/x.h" => Some((1, 7)),
+            _ => None,
+        })
+    }
+}
+
+#[test]
+fn s2_1_two_names_of_one_file_are_not_canonical() {
+    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![] };
+    let (o, _) = one_file("/w/x.H", b"a", b"b");
+    assert_eq!(
+        slip_apply::check_owned(&o, &own, &TwoNames),
+        Err(WriteError::Refused(Refused::NotCanonical { path: b"/w/x.H".to_vec(), on_disk: None }))
+    );
+}
+
+/// Review B1 (T1 at apply): an ownership entry in another case than the
+/// tree's covers nothing of the overlay's paths, which are spelled on
+/// disk, so a read-only one would protect nothing: `write`, `check_owned`
+/// (`--patch`) and `recover` refuse the ownership, `Invalid` naming the
+/// entry and its spelling on disk (status 3), before any path is checked
+/// and with nothing journaled. A missing entry is refused too.
+#[test]
+fn s2_1_an_ownership_entry_not_spelled_on_disk() {
+    let tree = Folding::new(&[("/w/vendor/x.h", b"int v;\n"), ("/w/a.cc", b"a")]);
+    let w = World(Rc::new(RefCell::new(State::default())));
+    let (o, id) = one_file("/w/vendor/x.h", b"int v;\n", b"int w;\n");
+    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/Vendor".to_vec()] };
+    let invalid = |got: Result<(), WriteError>| match got {
+        Err(WriteError::Invalid(m)) => assert_eq!(
+            m,
+            "ownership: the readonly entry \"/w/Vendor\" is not spelled as on disk (\"/w/vendor\")"
+        ),
+        other => panic!("{other:?}"),
+    };
+    invalid(slip_apply::check_owned(&o, &own, &tree));
+    invalid(write(&o, id, &own, &tree, &w, &w).map(|_| ()));
+    assert_eq!(w.0.borrow().journal, None, "nothing journaled");
+    w.0.borrow_mut().journal = Some(Journal::of_write(&o, id).to_bytes());
+    invalid(recover(&own, &tree, &w, &w).map(|_| ()));
+    assert!(w.0.borrow().journal.is_some(), "the journal is kept");
+    let owned = Ownership { owned: vec![b"/W".to_vec()], readonly: vec![] };
+    let got = slip_apply::check_owned(&o, &owned, &tree);
+    assert!(
+        matches!(&got, Err(WriteError::Invalid(m)) if m.contains("owned entry \"/W\"")),
+        "{got:?}"
+    );
+    let gone = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/gone".to_vec()] };
+    assert_eq!(
+        slip_apply::check_owned(&o, &gone, &tree),
+        Err(WriteError::Invalid(
+            "ownership: the readonly entry \"/w/gone\" does not exist".to_string()
+        ))
+    );
+}
+
+/// Review S1: `--recover` on a volume that answers a lookup
+/// inconsistently. The journal names the read-only `/w/vendör/x.h` with
+/// the `ö` in NFD (edited by hand, or the tree renamed since the write):
+/// the walk's lookup misses, so the path is missing; it is reported, and
+/// never handed to the restoring, which would look it up again (and find
+/// it this time), decide its ownership on the NFD bytes and create the
+/// staged pre-image beside it. Nothing is created; the journal is kept.
+#[test]
+fn s7_3_recover_reports_a_path_the_walk_finds_missing() {
+    let tree = Inconsistent {
+        files: vec![
+            ("/w/vend\u{f6}r/x.h".as_bytes().to_vec(), b"int w;\n".to_vec()),
+            (b"/w/a.cc".to_vec(), b"a".to_vec()),
+        ],
+        asked: RefCell::new(BTreeSet::from(["/w/vendo\u{308}r/x.h".as_bytes().to_vec()])),
+    };
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec!["/w/vend\u{f6}r".as_bytes().to_vec()],
+    };
+    let asked = "/w/vendo\u{308}r/x.h";
+    let (o, id) = one_file(asked, b"int v;\n", b"int w;\n");
+    let w = World(Rc::new(RefCell::new(State::default())));
+    w.0.borrow_mut().blobs.insert(content_digest(b"int v;\n"), b"int v;\n".to_vec());
+    w.0.borrow_mut().journal = Some(Journal::of_write(&o, id).to_bytes());
+    let got = recover(&own, &tree, &w, &w);
+    assert_eq!(
+        got,
+        Ok(Some(Recovered { reported: vec![asked.as_bytes().to_vec()], ..Recovered::default() }))
+    );
+    assert!(w.0.borrow().journal.is_some(), "the journal is kept");
 }

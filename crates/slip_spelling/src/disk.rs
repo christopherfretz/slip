@@ -1,7 +1,6 @@
 //! [`Disk`]: [`Lookup`] over `std::fs`, and which devices answer lookups
 //! consistently, from `/proc/self/mountinfo`.
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -29,19 +28,59 @@ pub fn makedev(major: u64, minor: u64) -> u64 {
         | (minor & 0x0000_00ff)
 }
 
-/// The mounts, by device: each device's file system types, one per
-/// mountinfo line that names it.
+/// One line of mountinfo: where it is mounted, its device, its type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mount {
+    /// The mount point, unescaped (mountinfo writes a space, a tab, a
+    /// newline and a backslash as `\ooo`).
+    pub at: Vec<u8>,
+    /// `makedev(major, minor)` of its `major:minor`.
+    pub dev: u64,
+    pub kind: String,
+}
+
+/// The mounts, in mountinfo's order (a later mount on one mount point
+/// hides an earlier one).
 #[derive(Debug, Default)]
 pub struct Mounts {
-    types: HashMap<u64, Vec<String>>,
+    lines: Vec<Mount>,
+}
+
+/// `\ooo` octal escapes undone.
+fn unescape(field: &str) -> Vec<u8> {
+    let b = field.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c))
+        {
+            let v = b[i + 1..i + 4].iter().fold(0u32, |v, c| v * 8 + u32::from(c - b'0'));
+            if let Ok(byte) = u8::try_from(v) {
+                out.push(byte);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `dir` is `at` or under it.
+fn under(dir: &[u8], at: &[u8]) -> bool {
+    at == b"/" || dir == at || (dir.starts_with(at) && dir.get(at.len()) == Some(&b'/'))
 }
 
 impl Mounts {
     /// From the text of `/proc/<pid>/mountinfo`: field 3 is
-    /// `major:minor`, and the field after the `-` that ends the optional
-    /// fields is the type. A line not of that form is skipped.
+    /// `major:minor`, field 5 the mount point, and the field after the `-`
+    /// that ends the optional fields is the type. A line not of that form
+    /// is skipped.
     pub fn parse(text: &str) -> Mounts {
-        let mut types: HashMap<u64, Vec<String>> = HashMap::new();
+        let mut lines = Vec::new();
         for line in text.lines() {
             let fields: Vec<&str> = line.split(' ').collect();
             let Some((major, minor)) = fields.get(2).and_then(|f| f.split_once(':')) else {
@@ -50,11 +89,16 @@ impl Mounts {
             let (Ok(major), Ok(minor)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
                 continue;
             };
+            let Some(at) = fields.get(4).filter(|f| f.starts_with('/')) else { continue };
             let Some(dash) = fields.iter().skip(6).position(|f| *f == "-") else { continue };
             let Some(kind) = fields.get(6 + dash + 1) else { continue };
-            types.entry(makedev(major, minor)).or_default().push((*kind).to_owned());
+            lines.push(Mount {
+                at: unescape(at),
+                dev: makedev(major, minor),
+                kind: (*kind).to_owned(),
+            });
         }
-        Mounts { types }
+        Mounts { lines }
     }
 
     /// `/proc/self/mountinfo`; none when it cannot be read (not Linux).
@@ -62,16 +106,37 @@ impl Mounts {
         fs::read_to_string("/proc/self/mountinfo").map(|t| Mounts::parse(&t)).unwrap_or_default()
     }
 
-    /// The types of the mounts of device `dev`: empty when no line names it.
-    pub fn types(&self, dev: u64) -> &[String] {
-        self.types.get(&dev).map_or(&[], Vec::as_slice)
+    /// The types of the mounts of device `dev`, one per line that names
+    /// it: empty when none does.
+    pub fn types(&self, dev: u64) -> Vec<&str> {
+        self.lines.iter().filter(|m| m.dev == dev).map(|m| m.kind.as_str()).collect()
     }
 
-    /// Consistent when some line names the device and every line's type
-    /// is in [`CONSISTENT`].
-    pub fn consistent(&self, dev: u64) -> bool {
-        let t = self.types(dev);
-        !t.is_empty() && t.iter().all(|t| CONSISTENT.contains(&t.as_str()))
+    /// The mount that holds the directory `dir` (an absolute path): the
+    /// line with the longest mount point that is `dir` or above it, the
+    /// last of those (a later mount hides an earlier one on one point).
+    pub fn holder(&self, dir: &[u8]) -> Option<&Mount> {
+        let mut best: Option<&Mount> = None;
+        for m in &self.lines {
+            if under(dir, &m.at) && best.is_none_or(|b| m.at.len() >= b.at.len()) {
+                best = Some(m);
+            }
+        }
+        best
+    }
+
+    /// Whether lookups in directory `dir`, whose `st_dev` is `dev`, are
+    /// answered consistently: the mount that holds it ([`Mounts::holder`])
+    /// is of device `dev` and of a type in [`CONSISTENT`], and so is every
+    /// other line that names `dev`. A file system may report a device of
+    /// its own choosing (FUSE: this workspace's mount reports `st_dev` 45
+    /// where its line says 0:47), so the device alone decides nothing; a
+    /// directory no line holds, or whose holder names another device, is
+    /// not trusted.
+    pub fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        let trusted = |m: &Mount| CONSISTENT.contains(&m.kind.as_str());
+        self.holder(dir).is_some_and(|h| h.dev == dev && trusted(h))
+            && self.lines.iter().filter(|m| m.dev == dev).all(trusted)
     }
 }
 
@@ -118,7 +183,7 @@ impl Lookup for Disk {
         Ok(Some(names))
     }
 
-    fn consistent(&self, dev: u64) -> bool {
-        self.mounts().consistent(dev)
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        self.mounts().consistent(dir, dev)
     }
 }

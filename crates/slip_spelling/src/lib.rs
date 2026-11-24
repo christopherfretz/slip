@@ -45,7 +45,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-pub use disk::{CONSISTENT, Disk, Mounts, makedev};
+pub use disk::{CONSISTENT, Disk, Mount, Mounts, makedev};
 
 /// Which file: a device and an inode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -63,10 +63,11 @@ pub trait Lookup {
     /// `read_dir`'s names, byte for byte as the file system keeps them;
     /// `None` when `dir` is missing or is not a directory.
     fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
-    /// Whether lookups on device `dev` are answered consistently, so that
-    /// a lookup finding nothing in another case shows that the directory
-    /// does not fold (`spec/edits.md` §2.1; [`CONSISTENT`]).
-    fn consistent(&self, dev: u64) -> bool;
+    /// Whether lookups in the directory `dir` (its path spelled on disk),
+    /// whose device is `dev`, are answered consistently, so that a lookup
+    /// finding nothing in another case shows that the directory does not
+    /// fold (`spec/edits.md` §2.1; [`CONSISTENT`], [`Mounts::consistent`]).
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool;
 }
 
 /// Why a path has no spelling on disk.
@@ -165,8 +166,10 @@ pub fn is_canonical(p: &[u8]) -> bool {
 struct Dir {
     /// Seen not to fold (see the crate's documentation).
     not_folding: bool,
-    /// Its listing, once read; or why it could not be.
-    listing: Option<Result<Listing, (io::ErrorKind, String)>>,
+    /// Its listing, once read. A listing that failed is not kept: the
+    /// next step that needs it lists again (one `EMFILE` must not fail
+    /// every later question about the directory).
+    listing: Option<Listing>,
 }
 
 #[derive(Debug)]
@@ -299,7 +302,7 @@ impl<L: Lookup> Spelling<L> {
             let id = self.lstat(path, &at)?.ok_or_else(missing)?;
             return Ok((name.to_vec(), id));
         }
-        if state.listing.is_none() && may_probe(name) && self.lookup.consistent(dir.dev) {
+        if state.listing.is_none() && may_probe(name) && self.lookup.consistent(dir_path, dir.dev) {
             let id = self.lstat(path, &at)?.ok_or_else(missing)?;
             let other = self.lstat(path, &join(dir_path, &swap_case(name)))?;
             if other != Some(id) {
@@ -346,25 +349,28 @@ impl<L: Lookup> Spelling<L> {
         again: bool,
     ) -> Result<&'d HashSet<Vec<u8>>, SpellingError> {
         if again || state.listing.is_none() {
-            state.listing = Some(match self.lookup.names(dir_path) {
-                Ok(Some(names)) => Ok(Listing { names: names.into_iter().collect() }),
+            state.listing = None;
+            match self.lookup.names(dir_path) {
+                Ok(Some(names)) => {
+                    state.listing = Some(Listing { names: names.into_iter().collect() });
+                }
                 Ok(None) => {
-                    state.listing = None;
                     return Err(SpellingError::Missing {
                         path: path.to_vec(),
                         at: dir_path.to_vec(),
                     });
                 }
-                Err(e) => Err((e.kind(), e.to_string())),
-            });
+                Err(error) => {
+                    return Err(SpellingError::Unlistable {
+                        path: path.to_vec(),
+                        dir: dir_path.to_vec(),
+                        error,
+                    });
+                }
+            }
         }
         match state.listing.as_ref() {
-            Some(Ok(l)) => Ok(&l.names),
-            Some(Err((kind, message))) => Err(SpellingError::Unlistable {
-                path: path.to_vec(),
-                dir: dir_path.to_vec(),
-                error: io::Error::new(*kind, message.clone()),
-            }),
+            Some(l) => Ok(&l.names),
             None => unreachable!("the listing was just read"),
         }
     }

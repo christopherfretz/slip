@@ -114,10 +114,11 @@ impl Tree for DiskTree {
         Ok(slip_spelling::disk().lookup().lstat(p)?.map(|id| (id.dev, id.ino)))
     }
 
-    /// `slip_spelling::Disk`: the device's mounts are all of a type whose
-    /// lookups are trusted (`slip_spelling::CONSISTENT`).
-    fn consistent(&self, dev: u64) -> bool {
-        slip_spelling::disk().lookup().consistent(dev)
+    /// `slip_spelling::Disk`: the mount that holds the directory is of its
+    /// device and of a type whose lookups are trusted, as is every mount of
+    /// the device (`slip_spelling::Mounts::consistent`).
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        slip_spelling::disk().lookup().consistent(dir, dev)
     }
 }
 

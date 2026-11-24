@@ -27,6 +27,13 @@ enum Answer {
 struct Fake {
     entries: BTreeMap<Vec<u8>, Id>,
     folding: BTreeSet<Vec<u8>>,
+    /// Directories that fold normalisation but not case (ZFS with
+    /// `normalization=formD` and `casesensitivity=sensitive`).
+    normalising: BTreeSet<Vec<u8>>,
+    /// Trust by a mount table (`Mounts::consistent`) instead of by device.
+    mounts: Option<Mounts>,
+    /// Directories whose listing fails while named here (`EMFILE`).
+    flaky: RefCell<BTreeSet<Vec<u8>>>,
     consistent: HashSet<u64>,
     answer: BTreeMap<u64, Answer>,
     unlistable: BTreeSet<Vec<u8>>,
@@ -44,6 +51,12 @@ struct Fake {
 /// lower-cased (so the Kelvin sign is `k`); a name that is not UTF-8 by
 /// its bytes, as ext4's casefolding does.
 fn fold(name: &[u8]) -> Vec<u8> {
+    let s = normalise(name);
+    String::from_utf8_lossy(&s).to_lowercase().into_bytes()
+}
+
+/// [`fold`] without the lower-casing.
+fn normalise(name: &[u8]) -> Vec<u8> {
     let Ok(s) = std::str::from_utf8(name) else { return name.to_vec() };
     let mut out = String::new();
     for ch in s.chars() {
@@ -55,7 +68,7 @@ fn fold(name: &[u8]) -> Vec<u8> {
             c => out.push(c),
         }
     }
-    out.to_lowercase().into_bytes()
+    out.into_bytes()
 }
 
 fn parent(p: &[u8]) -> &[u8] {
@@ -112,6 +125,16 @@ impl Fake {
         self
     }
 
+    fn normalises(mut self, dir: &str) -> Fake {
+        self.normalising.insert(dir.as_bytes().to_vec());
+        self
+    }
+
+    fn mounted(mut self, text: &str) -> Fake {
+        self.mounts = Some(Mounts::parse(text));
+        self
+    }
+
     fn consistent(mut self, dev: u64) -> Fake {
         self.consistent.insert(dev);
         self
@@ -155,6 +178,10 @@ impl Fake {
                 None if self.folding.contains(&at) => {
                     by_folding = true;
                     (*kids.iter().find(|k| fold(leaf(k)) == fold(name))?).clone()
+                }
+                None if self.normalising.contains(&at) => {
+                    by_folding = true;
+                    (*kids.iter().find(|k| normalise(leaf(k)) == normalise(name))?).clone()
                 }
                 None => return None,
             };
@@ -202,11 +229,17 @@ impl Lookup for Fake {
         if self.unlistable.contains(&stored) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Permission denied"));
         }
+        if self.flaky.borrow().contains(&stored) {
+            return Err(io::Error::other("Too many open files"));
+        }
         Ok(Some(self.children(&stored).into_iter().map(|k| leaf(k).to_vec()).collect()))
     }
 
-    fn consistent(&self, dev: u64) -> bool {
-        self.consistent.contains(&dev)
+    fn consistent(&self, dir: &[u8], dev: u64) -> bool {
+        match &self.mounts {
+            Some(m) => m.consistent(dir, dev),
+            None => self.consistent.contains(&dev),
+        }
     }
 }
 
@@ -282,17 +315,16 @@ fn a_lookup_that_misses_is_missing_not_a_pass() {
 /// answering every other folded lookup with nothing.
 #[test]
 fn an_overlay_device_is_listed() {
-    let mounts = Mounts::parse(
-        "30 1 0:68 / / rw,relatime - overlay overlay rw,lowerdir=/a,upperdir=/b,workdir=/c\n",
-    );
+    let text =
+        "30 1 0:68 / / rw,relatime - overlay overlay rw,lowerdir=/a,upperdir=/b,workdir=/c\n";
     let dev = makedev(0, 68);
-    assert!(!mounts.consistent(dev));
-    let mut fake =
-        Fake::new().file("/r/foo.h", dev).folds("/r").answers(dev, Answer::EveryOtherMisses);
+    assert!(!Mounts::parse(text).consistent(b"/r", dev));
+    let mut fake = Fake::new()
+        .file("/r/foo.h", dev)
+        .folds("/r")
+        .answers(dev, Answer::EveryOtherMisses)
+        .mounted(text);
     fake.entries.insert(b"/".to_vec(), Id { dev, ino: 1 });
-    if mounts.consistent(dev) {
-        fake = fake.consistent(dev);
-    }
     let s = Spelling::new(fake);
     assert_eq!(ok(&s, "/r/Foo.h"), "/r/foo.h");
 }
@@ -441,8 +473,10 @@ fn missing_and_not_a_path() {
     }
 }
 
-/// mountinfo: the device of a line is `makedev(major, minor)`; a device on
-/// several lines is consistent only if every line's type is.
+/// mountinfo: the device of a line is `makedev(major, minor)`; a
+/// directory is trusted when the mount that holds it (the longest mount
+/// point at or above it) names its device and a trusted type, and every
+/// line of that device is of a trusted type.
 #[test]
 fn mounts_by_device() {
     let text = "\
@@ -451,16 +485,165 @@ fn mounts_by_device() {
 24 22 0:47 /x /v rw,nosuid - fakeowner /run/host_mark/Volumes rw
 25 22 259:3 / /a rw - ext4 /dev/nvme0n1p3 rw
 26 22 259:3 /b /c rw - overlay overlay rw
+28 22 8:300 / /big rw - xfs /dev/sdz rw
 27 22 garbage
 ";
     let m = Mounts::parse(text);
     assert_eq!(makedev(8, 1), 0x801);
     assert_eq!(makedev(259, 3), 259 * 256 + 3);
     assert_eq!(makedev(0, 104), 104);
-    assert!(m.consistent(makedev(8, 1)));
+    assert_eq!(makedev(8, 300), 1_050_668, "minor > 255: 44 | 8 << 8 | 256 << 12");
+    assert!(m.consistent(b"/usr", makedev(8, 1)));
     assert_eq!(m.types(makedev(0, 104)), ["tmpfs"]);
-    assert!(m.consistent(makedev(0, 104)));
-    assert!(!m.consistent(makedev(0, 47)), "FUSE");
-    assert!(!m.consistent(makedev(259, 3)), "ext4 and overlay on one device");
-    assert!(!m.consistent(makedev(9, 9)), "a device no line names");
+    assert!(m.consistent(b"/dev/shm/x", makedev(0, 104)));
+    assert!(m.consistent(b"/big/d", makedev(8, 300)), "a minor above 255");
+    assert!(!m.consistent(b"/v/w", makedev(0, 47)), "FUSE");
+    assert!(!m.consistent(b"/a/d", makedev(259, 3)), "ext4 and overlay on one device");
+    assert!(!m.consistent(b"/q", makedev(9, 9)), "a device no line names");
+    assert_eq!(m.holder(b"/dev/shmx").map(|h| h.at.as_slice()), Some(b"/".as_slice()));
+    assert_eq!(m.holder(b"/dev/shm").map(|h| h.at.as_slice()), Some(b"/dev/shm".as_slice()));
+}
+
+/// Review S2: a FUSE mount reports a device of its own choosing. Here the
+/// mount at `/v` (`fakeowner`, 0:47) reports `st_dev` 0:45, which another
+/// line, a tmpfs at `/t`, names: trusting by the device alone would trust
+/// it. The mount that holds `/v/w` is `/v`, of another device: not
+/// trusted, so its folding directory is listed, never probed (a probe on
+/// this mount can miss).
+#[test]
+fn a_mount_that_reports_another_mounts_device() {
+    let text = "\
+22 1 8:1 / / rw - ext4 /dev/sda1 rw
+23 22 0:45 / /t rw - tmpfs tmpfs rw
+24 22 0:47 /x /v rw,nosuid - fakeowner /run/host_mark/Volumes rw
+";
+    let dev = makedev(0, 45);
+    let m = Mounts::parse(text);
+    assert!(m.consistent(b"/t/a", dev), "the tmpfs itself");
+    assert!(!m.consistent(b"/v/w", dev), "the FUSE mount reporting the tmpfs's device");
+    let fake = Fake::new()
+        .file("/v/w/foo.h", dev)
+        .folds("/v/w")
+        .answers(dev, Answer::EveryOtherMisses)
+        .mounted(text);
+    let s = Spelling::new(fake);
+    assert_eq!(ok(&s, "/v/w/Foo.h"), "/v/w/foo.h");
+    assert_eq!(s.lookup().listings_of("/v/w"), 1);
+}
+
+/// A mount point with a space, which mountinfo writes `\040`.
+#[test]
+fn an_escaped_mount_point() {
+    let m =
+        Mounts::parse("22 1 8:1 / / rw - ext4 a rw\n23 22 0:104 / /my\\040disk rw - tmpfs b rw\n");
+    assert!(m.consistent(b"/my disk/x", makedev(0, 104)));
+    assert_eq!(m.holder(b"/my disk").map(|h| h.at.clone()), Some(b"/my disk".to_vec()));
+}
+
+/// Review S4: a listing that failed (`EMFILE`) is not kept: the next
+/// question lists again, and finds the name.
+#[test]
+fn a_listing_that_failed_is_listed_again() {
+    let s = Spelling::new(Fake::new().file("/r/a", 1).file("/r/b", 1).folds("/r"));
+    s.lookup().flaky.borrow_mut().insert(b"/r".to_vec());
+    let got = on_disk(&s, "/r/a");
+    assert!(matches!(got, Err(SpellingError::Unlistable { .. })), "{got:?}");
+    s.lookup().flaky.borrow_mut().clear();
+    assert_eq!(ok(&s, "/r/B"), "/r/b");
+    assert_eq!(s.lookup().listings_of("/r"), 2);
+}
+
+/// Review S3, a stated limit (`spec/edits.md` §2.1): the tree does not
+/// change during a run. A case-only rename after the directory was listed
+/// (`foo.h` becomes `Foo.h`) keeps the old spelling for the walk's life;
+/// a new walk (apply's, per call) gives the new one.
+#[test]
+fn a_case_only_rename_after_the_listing_is_a_stated_limit() {
+    let fake = || {
+        Fake::new().file("/r/foo.h", 1).link("/r/Foo.h", "/r/foo.h").hide("/r/Foo.h").folds("/r")
+    };
+    let s = Spelling::new(fake());
+    assert_eq!(ok(&s, "/r/FOO.H"), "/r/foo.h");
+    let rename = |f: &Fake| {
+        f.hidden.borrow_mut().clear();
+        f.hidden.borrow_mut().insert(b"/r/foo.h".to_vec());
+    };
+    rename(s.lookup());
+    assert_eq!(ok(&s, "/r/Foo.h"), "/r/foo.h", "the stale answer, for the walk's life");
+    let fresh = Spelling::new(fake());
+    rename(fresh.lookup());
+    assert_eq!(ok(&fresh, "/r/foo.h"), "/r/Foo.h");
+}
+
+/// Review note, a stated limit (`spec/landed/edits/WP-147.md` "As built"):
+/// a hard link in a nearer tier than the name the volume matched wins.
+/// The volume finds U+037E as the stored `;`; the same file is also
+/// listed as `é`, a non-ASCII name, tried first. A path given that name
+/// is a file with two links, which apply refuses (`hard_linked`); a
+/// file-level ownership entry naming either name is its own spelling and
+/// covers that name only, and the write is refused all the same.
+#[test]
+fn a_hard_link_in_a_nearer_tier_wins() {
+    let s = Spelling::new(Fake::new().file("/r/;", 1).link("/r/\u{e9}", "/r/;").folds("/r"));
+    assert_eq!(ok(&s, "/r/\u{37e}"), "/r/\u{e9}");
+}
+
+/// Two directories with one identity (a file system that reuses or fakes
+/// inode numbers): the listing of one serves the other, and a name of the
+/// first asked in the second still needs a lookup that finds it: missing.
+#[test]
+fn two_directories_with_one_identity() {
+    let mut f = Fake::new().folds("/a").folds("/b");
+    f.add(b"/a/x.h", 1);
+    f.add(b"/b/y.h", 1);
+    let ida = f.entries[b"/a".as_slice()];
+    f.entries.insert(b"/b".to_vec(), ida);
+    let s = Spelling::new(f);
+    assert_eq!(ok(&s, "/a/X.h"), "/a/x.h");
+    let got = on_disk(&s, "/b/x.h");
+    assert!(got.is_err(), "{got:?}");
+}
+
+/// A path through a file: missing.
+#[test]
+fn a_path_through_a_file_is_missing() {
+    let s = Spelling::new(Fake::new().file("/r/a", 1).consistent(1));
+    let got = on_disk(&s, "/r/a/b");
+    assert!(matches!(got, Err(SpellingError::Missing { .. })), "{got:?}");
+}
+
+/// Review S5 (S2): ruling (b), a non-ASCII component lists its directory
+/// whatever the directory's state, `NotFolding` too: a directory that
+/// folds normalisation and not case is seen not to fold by an ASCII
+/// probe, and `café.h` asked in NFD is the listed NFC name.
+#[test]
+fn a_non_ascii_component_lists_a_not_folding_directory() {
+    let s = Spelling::new(
+        Fake::new().file("/d/foo.h", 1).file("/d/caf\u{e9}.h", 1).normalises("/d").consistent(1),
+    );
+    assert_eq!(ok(&s, "/d/foo.h"), "/d/foo.h");
+    assert_eq!(s.lookup().listings_of("/d"), 0, "decided by the probe");
+    assert_eq!(ok(&s, "/d/cafe\u{301}.h"), "/d/caf\u{e9}.h");
+    assert_eq!(s.lookup().listings_of("/d"), 1);
+}
+
+/// Review S5 (S6): a listed name that the lookup no longer finds (removed
+/// since the listing) is missing, never a pass.
+#[test]
+fn a_listed_name_the_lookup_misses_is_missing() {
+    let s = Spelling::new(Fake::new().file("/r/a", 1).file("/r/b", 1).folds("/r"));
+    assert_eq!(ok(&s, "/r/a"), "/r/a");
+    s.lookup().hidden.borrow_mut().insert(b"/r/b".to_vec());
+    let got = on_disk(&s, "/r/b");
+    assert!(matches!(&got, Err(SpellingError::Missing { at, .. }) if at == b"/r/b"), "{got:?}");
+}
+
+/// Review S5 (S11): the last tier. A stored ASCII name reached by a
+/// non-ASCII spelling (U+037E for a stored `;`, which this workspace's
+/// volume finds): neither equal but for ASCII case nor non-ASCII, so only
+/// every name, over a fresh listing, finds it.
+#[test]
+fn a_stored_ascii_name_reached_by_a_non_ascii_spelling() {
+    let s = Spelling::new(Fake::new().file("/r/;", 1).file("/r/a", 1).folds("/r"));
+    assert_eq!(ok(&s, "/r/\u{37e}"), "/r/;");
 }
