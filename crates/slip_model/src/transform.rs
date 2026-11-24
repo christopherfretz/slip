@@ -82,6 +82,20 @@ pub enum TargetKind {
     Variable = 2,
 }
 
+/// What a rename does with a dependent name that an instantiation the
+/// observer made binds to a subject (`spec/edits.md` §3, §9.4; added by
+/// `docs/wp/WP-139.md`, item 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Dependent {
+    /// The name is edited when every instantiation of the observer binds
+    /// it to a subject (§9.4 row 2): the default.
+    #[default]
+    Offer = 0,
+    /// The name is refused (`refuse(instantiated)`), for a run whose
+    /// observers are known not to be the program (a library's own tests).
+    Refuse = 1,
+}
+
 /// A native rename (`spec/edits.md` §3, §9).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Rename {
@@ -90,6 +104,8 @@ pub struct Rename {
     pub kind: TargetKind,
     /// An identifier, other than the last component of `target`.
     pub new_name: Vec<u8>,
+    /// Since version 2 (`docs/wp/WP-139.md`).
+    pub dependent: Dependent,
 }
 
 /// A programmable transform (`spec/edits.md` §3, `spec/api.md` §2).
@@ -107,7 +123,7 @@ pub struct Script {
     pub depth: u64,
 }
 
-/// A transform request, kind `TRFM`, version 1 (`spec/edits.md` §3). Its
+/// A transform request, kind `TRFM`, version 2 (`spec/edits.md` §3). Its
 /// content id is the request id a map job and a map shard name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Transform {

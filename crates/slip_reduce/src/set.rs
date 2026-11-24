@@ -11,7 +11,7 @@ use slip_model::edits::{
     SourcePlace, Stance,
 };
 use slip_model::editset::{
-    Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, SCHEME, SetState,
+    Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, SCHEME, Seen, SetState,
 };
 use slip_model::{Counter, Digest, FileRef};
 
@@ -105,6 +105,8 @@ struct SiteRefusal {
 
 type PPlace = (u32, u64, u64);
 type ReportRec = (Option<PPlace>, Severity, Vec<u8>, bool, Sample);
+/// An instance (WP-139): place, specialisation's key, display, subjects.
+type InstanceRec = (PPlace, Option<Digest>, String, Vec<Digest>, Sample);
 type Pending = (Site, Vec<(Stance, Vec<KPiece>, ClaimVal)>, Vec<(Vec<Digest>, Sample)>);
 
 /// What the stream leaves in memory: the records of the set, by rank of
@@ -134,6 +136,7 @@ pub(crate) struct Builder {
     replaces: u64,
     reports: Vec<ReportRec>,
     changed: Vec<(Digest, PPlace, Vec<u8>, Sample)>,
+    instances: Vec<InstanceRec>,
     failures: Vec<(FailureKind, String, Option<SourcePlace>, FailVal)>,
     pending: Option<Pending>,
     sites: u64,
@@ -210,6 +213,10 @@ impl Builder {
             (Key::Changed { key, place, reason }, Val::Sample(s)) => {
                 let place = self.place(&place)?;
                 self.changed.push((key, place, reason, s));
+            }
+            (Key::Instance { place, spec, display, subjects }, Val::Sample(s)) => {
+                let place = self.place(&place)?;
+                self.instances.push((place, spec, display, subjects, s));
             }
             (Key::Failure { kind, message, place }, Val::Failure(f)) => {
                 if let Some(r) = &f.refusal
@@ -751,6 +758,25 @@ impl Builder {
         }
         refusals.sort_by(Refusal::cmp_key);
 
+        // Instances (WP-139): those at an edit or at a refusal of a site.
+        let mut ranges: BTreeSet<PPlace> = finals.iter().map(|l| (l.pid, l.lo, l.hi)).collect();
+        ranges.extend(site_refusals.iter().map(|r| (r.pid, r.lo, r.hi)));
+        let instances: Vec<Seen> = self
+            .instances
+            .iter()
+            .filter(|i| ranges.contains(&i.0))
+            .map(|(p, spec, display, subjects, s)| Seen {
+                instance: slip_model::edits::Instance {
+                    place: pl(*p),
+                    spec: *spec,
+                    display: display.clone(),
+                    subjects: subjects.clone(),
+                },
+                observers: s.observers,
+                first: first(s),
+            })
+            .collect();
+
         let reports: Vec<Reported> = self
             .reports
             .iter()
@@ -864,6 +890,7 @@ impl Builder {
             failures,
             unparsed: parts.unparsed,
             counters,
+            instances,
         }
     }
 }

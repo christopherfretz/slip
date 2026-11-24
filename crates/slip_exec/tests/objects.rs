@@ -248,7 +248,8 @@ fn s2_1_object_of_another_kind_refused() {
     let mut corrupt = trfm.clone();
     let last = corrupt.len() - 1;
     corrupt[last] ^= 1;
-    let mut v2 = Writer::new(*b"EDTS", 2);
+    // A version newer than any reader's (`EDTS` is at 2 since WP-139).
+    let mut v2 = Writer::new(*b"EDTS", 3);
     v2.section(1, b"x");
     let cases: Vec<(Object, Vec<u8>)> = vec![
         (Object::EditSet, trfm.clone()),

@@ -16,7 +16,12 @@
 //!   <file>:<line>:<column>+<length> <stance> <pieces> <tiers> votes=<n> <reason> [<subjects>] (macro=<name>@<offset>)
 //! changed:
 //!   <key> <file>:<line>:<column>+<length> <reason>
+//! instances:                                                    (only when there is one)
+//!   <file>:<line>:<column>+<length> <spec key, 8 digits, or -> <spec display> [<subjects>]
 //! ```
+//!
+//! A `dependent: refuse` line of `test.txt` sets the request's `dependent`
+//! (`docs/wp/WP-139.md` item 4; the default is `offer`).
 //!
 //! a piece being `"text"` or `spell(<key, 8 digits>, "text")`. A unit with
 //! errors renders as `diagnosed` (the worker does not run a transform on
@@ -38,7 +43,7 @@ use slip_kiln::written;
 use slip_kiln::{ParseOptions, Unit};
 use slip_model::edits::{Edits, Piece, Reason, Role, Stance, subject_flags, tiers};
 use slip_model::keys::{Name, RuleTable};
-use slip_model::transform::{Ownership, Rename, TargetKind, TransformKind};
+use slip_model::transform::{Dependent, Ownership, Rename, TargetKind, TransformKind};
 use slip_model::{Digest, Status, Transform};
 
 // ---------------------------------------------------------------------
@@ -53,6 +58,7 @@ struct Case {
     kind: TargetKind,
     new_name: Vec<u8>,
     args: Vec<String>,
+    dependent: Dependent,
     /// Relative path and bytes; `test.txt` and `expect.txt` left out.
     files: Vec<(String, Vec<u8>)>,
 }
@@ -82,6 +88,7 @@ fn read_case(dir: &Path) -> Case {
         .unwrap_or_else(|e| panic!("{name}: test.txt: {e}"));
     let (mut target, mut kind, mut new_name, mut args, mut spec) =
         (None, None, None, Vec::new(), 0);
+    let mut dependent = Dependent::Offer;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let (k, v) = line.split_once(':').unwrap_or_else(|| panic!("{name}: bad line {line:?}"));
         let v = v.trim();
@@ -98,6 +105,13 @@ fn read_case(dir: &Path) -> Case {
                 });
             }
             "args" => args = v.split_whitespace().map(str::to_owned).collect(),
+            "dependent" => {
+                dependent = match v {
+                    "offer" => Dependent::Offer,
+                    "refuse" => Dependent::Refuse,
+                    _ => panic!("{name}: dependent {v:?}"),
+                };
+            }
             _ => panic!("{name}: unknown key {k:?}"),
         }
     }
@@ -114,6 +128,7 @@ fn read_case(dir: &Path) -> Case {
         kind: kind.unwrap_or_else(|| panic!("{name}: no kind:")),
         new_name: new_name.unwrap_or_else(|| panic!("{name}: no to:")),
         args,
+        dependent,
         files,
     }
 }
@@ -151,6 +166,7 @@ fn transform(case: &Case, root: &str) -> Transform {
             target: case.target.clone(),
             kind: case.kind,
             new_name: case.new_name.clone(),
+            dependent: case.dependent,
         }),
         script: None,
     }
@@ -388,6 +404,21 @@ fn render(case: &Case, ran: &Ran) -> String {
             String::from_utf8_lossy(&c.reason)
         );
     }
+    if !e.instances.is_empty() {
+        s.push_str("instances:\n");
+    }
+    for i in &e.instances {
+        let path = &e.files[i.place.file as usize].path;
+        let subs: Vec<String> = i.subjects.iter().map(short).collect();
+        let _ = writeln!(
+            s,
+            "  {} {} {} [{}]",
+            place(case, path, i.place.lo, i.place.hi),
+            i.spec.as_ref().map_or_else(|| "-".to_owned(), short),
+            i.display,
+            subs.join(",")
+        );
+    }
     s
 }
 
@@ -609,6 +640,7 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::MixedSet => "mixed_set",
         Reason::MixedInstances => "mixed_instances",
         Reason::Directive => "directive",
+        Reason::Instantiated => "instantiated",
     }
 }
 
@@ -696,6 +728,7 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
         kind: TargetKind::Function,
         new_name: b"g2".to_vec(),
         args: Vec::new(),
+        dependent: Dependent::Offer,
         files: Vec::new(),
     };
     let t = transform(&case, &root);
@@ -732,6 +765,7 @@ fn requests_the_rename_does_not_run() {
         kind: TargetKind::Function,
         new_name: new.to_vec(),
         args: Vec::new(),
+        dependent: Dependent::Offer,
         files: Vec::new(),
     };
     let good = transform(&case(b"g"), &root);
@@ -990,6 +1024,7 @@ fn map_shards(
     name: &str,
     files: &[(&str, &[u8])],
     mains: &[&str],
+    std: &str,
     t: &dyn Fn(&str) -> Transform,
 ) -> (Transform, Vec<slip_model::Shard>) {
     let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
@@ -997,7 +1032,7 @@ fn map_shards(
     let t = t(&root);
     let mut shards = Vec::new();
     for main in mains {
-        let obs = tree.observer(main, "c++20", &[]);
+        let obs = tree.observer(main, std, &[]);
         let (mut shard, r) = tree
             .parse(&obs, &written_options(), |u| {
                 assert_eq!(u.errors(), 0, "{name}: {main} has errors");
@@ -1061,11 +1096,12 @@ fn family_over_two_observers(name: &str) -> (Vec<slip_model::Shard>, slip_reduce
             kind: TargetKind::Function,
             new_name: b"g".to_vec(),
             args: Vec::new(),
+            dependent: Dependent::Offer,
             files: Vec::new(),
         };
         transform(&c, root)
     };
-    let (t, shards) = map_shards(name, &files, &["a.cpp", "b.cpp"], &case);
+    let (t, shards) = map_shards(name, &files, &["a.cpp", "b.cpp"], "c++20", &case);
     let r = reduced(name, &t, shards.clone());
     (shards, r)
 }
@@ -1153,6 +1189,15 @@ struct EndToEnd {
     /// is only on one side, or is indeterminate on either. Empty: the
     /// rename verifies.
     differences: Vec<String>,
+    /// The set's accepted edits (`<path>:<lo>`), its kept and unresolved
+    /// ranges, and its instances (`<edited|refused> <path>:<lo> <spec
+    /// display> <subject displays> x<observers>`, WP-139).
+    edits: Vec<String>,
+    kept: usize,
+    unresolved: usize,
+    instances: Vec<String>,
+    /// The keys of the units the set exempts (its `changed` in force).
+    exempt: usize,
 }
 
 /// A tree's files: path and bytes.
@@ -1174,6 +1219,29 @@ fn end_to_end(
     new: &str,
     wrong: &dyn Fn(&mut Image),
 ) -> EndToEnd {
+    end_to_end_with(name, files, mains, target, new, Dependent::Offer, "c++20", wrong)
+}
+
+/// [`end_to_end`] with the request's `dependent` and the observers'
+/// language standard `std` (`c++23` for an explicit object parameter,
+/// item 7). The units the set
+/// exempts (`changed` in force, §6.2: a dependent name's holder, §9.4) are
+/// left out of the comparison, as verification leaves them out.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the harness: the request, the run and its verification in one place"
+)]
+fn end_to_end_with(
+    name: &str,
+    files: &[(&str, &[u8])],
+    mains: &[&str],
+    target: &[&str],
+    new: &str,
+    dependent: Dependent,
+    std: &str,
+    wrong: &dyn Fn(&mut Image),
+) -> EndToEnd {
     let request = |root: &str| {
         let c = Case {
             name: name.into(),
@@ -1182,11 +1250,12 @@ fn end_to_end(
             kind: TargetKind::Function,
             new_name: new.as_bytes().to_vec(),
             args: Vec::new(),
+            dependent,
             files: Vec::new(),
         };
         transform(&c, root)
     };
-    let (t, shards) = map_shards(name, files, mains, &request);
+    let (t, shards) = map_shards(name, files, mains, std, &request);
     let r = reduced(name, &t, shards);
     let set = &r.edits;
     let display = |id: &Digest| {
@@ -1195,15 +1264,56 @@ fn end_to_end(
     let mut refusals: Vec<String> = set
         .refusals
         .iter()
-        .map(|x| match &x.subject {
-            Some(id) => format!("{:?} {}", x.cause, display(id)),
-            None => format!("{:?}", x.cause),
+        .map(|x| {
+            let reason = if x.reason == Reason::None {
+                String::new()
+            } else {
+                format!(" {}", reason_name(x.reason))
+            };
+            match &x.subject {
+                Some(id) => format!("{:?}{reason} {}", x.cause, display(id)),
+                None => format!("{:?}{reason}", x.cause),
+            }
         })
         .collect();
     refusals.sort();
     refusals.dedup();
+    let at = |file: u64, lo: u64| {
+        let path = String::from_utf8_lossy(&set.files[file as usize].path).into_owned();
+        format!("{}:{lo}", path.rsplit('/').next().unwrap_or_default())
+    };
+    let edits: Vec<String> = set.edits.iter().map(|e| at(e.file, e.lo)).collect();
+    let instances: Vec<String> = set
+        .instances
+        .iter()
+        .map(|x| {
+            let i = &x.instance;
+            let p = &i.place;
+            let edited = set.edits.iter().any(|e| (e.file, e.lo, e.hi) == (p.file, p.lo, p.hi));
+            let subs: Vec<String> = i.subjects.iter().map(display).collect();
+            format!(
+                "{} {} {} [{}] x{}",
+                if edited { "edited" } else { "refused" },
+                at(p.file, p.lo),
+                i.display,
+                subs.join(","),
+                x.observers
+            )
+        })
+        .collect();
+    let exempt: BTreeSet<Digest> =
+        set.changed.iter().filter(|c| c.in_force).map(|c| c.key).collect();
+    let mut out = EndToEnd {
+        refusals,
+        differences: Vec::new(),
+        edits,
+        kept: set.kept.len(),
+        unresolved: set.unresolved.len(),
+        instances,
+        exempt: exempt.len(),
+    };
     if set.state != slip_model::editset::SetState::Accepted {
-        return EndToEnd { refusals, differences: Vec::new() };
+        return out;
     }
     let mut post = applied(name, set, files);
     wrong(&mut post);
@@ -1214,8 +1324,8 @@ fn end_to_end(
         files.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())).collect();
     let mut differences = Vec::new();
     for main in mains {
-        let (a, _) = digest_units(&format!("{name}-pre"), &pre, main, &none);
-        let (b, uses) = digest_units(&format!("{name}-post"), &post, main, &table);
+        let (a, _) = digest_units(&format!("{name}-pre"), &pre, main, std, &none);
+        let (b, uses) = digest_units(&format!("{name}-post"), &post, main, std, &table);
         for u in uses.iter().filter(|u| u.direct != 0) {
             let rule = &table.rules()[usize::try_from(u.rule).unwrap()];
             if rule.kind != slip_model::keys::KeyKind::Namespace {
@@ -1223,6 +1333,9 @@ fn end_to_end(
             }
         }
         for (key, (digest, indeterminate, n)) in &a {
+            if exempt.contains(key) {
+                continue;
+            }
             match b.get(key) {
                 None => differences.push(format!("{main}: removed {n}")),
                 Some((d2, i2, _)) if d2 != digest || *indeterminate || *i2 => {
@@ -1232,12 +1345,13 @@ fn end_to_end(
             }
         }
         for (key, (_, _, n)) in &b {
-            if !a.contains_key(key) {
+            if !a.contains_key(key) && !exempt.contains(key) {
                 differences.push(format!("{main}: added {n}"));
             }
         }
     }
-    EndToEnd { refusals, differences }
+    out.differences = differences;
+    out
 }
 
 /// The units of an observer: key to digest, whether it is indeterminate,
@@ -1251,12 +1365,13 @@ fn digest_units(
     name: &str,
     files: &[(String, Vec<u8>)],
     main: &str,
+    std: &str,
     rules: &RuleTable,
 ) -> (Units, Vec<slip_model::agreement::Use>) {
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
     let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, &refs).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
-    let obs = tree.observer(main, "c++20", &[]);
+    let obs = tree.observer(main, std, &[]);
     let (_, r) = tree
         .parse(&obs, &written_options(), |u| {
             assert_eq!(u.errors(), 0, "{name}: {main} has errors");
@@ -1682,74 +1797,233 @@ fn wp119_instantiated_using_hidden_by_a_subject_end_to_end() {
     assert!(causes(&r).contains(&"MixedFollower"), "{r:?}");
 }
 
-/// `docs/wp/WP-127.md` item 2, the refusing form (was WP-119's known
-/// mismatch F1): a dependent name of a pattern that an instantiation binds
-/// to a renamed entity is refused at the pattern's name (`site_refused`,
-/// `mixed_instances`), in its three forms (`t.f()`, `T::f()`, `&T::f`),
-/// with one instantiation and with two of which one binds elsewhere
-/// (`n::R`). Before, the run was accepted and verification reported
-/// `changed call<n::S<int>>(...)`.
+// `docs/wp/WP-139.md`: dependent names decided from Kiln's
+// per-specialisation table (§9.4 row 2), end to end.
+
+/// The classes the WP-139 cases instantiate with: `n::S<int>`, whose `f`
+/// is the renamed `n::S::f`, and `n::R`, whose `f` is no subject. `Base`
+/// has an `f` that `S::f` hides, so that a rename that edited the
+/// pattern's name in the wrong instantiation would still compile.
+const WP139_CLASSES: &str = "namespace n {\nstruct Base { int f() { return 2; } static int s() { return 0; } };\ntemplate <class T> struct S : Base { int f() { return 1; } static int s() { return 1; } template <class U> int t() { return 0; } };\nstruct R { int f() { return 3; } static int s() { return 3; } template <class U> int t() { return 3; } };\n}\n";
+
+/// One pattern with its uses: the case's name, the target's last
+/// component, the pattern, the use with `n::S<int>`. The use with `n::R`
+/// is the same text with `n::R`.
+type Form = (&'static str, &'static str, &'static str, &'static str);
+
+/// Item 1 over the forms of `docs/wp/WP-139.md` "Tests": `t.f()`,
+/// `T::f()`, `&T::f`, `t->f()`, `this->f()` with a dependent base, a
+/// pattern that is a member of a class template. (A template name is
+/// item 6's: a member template is no target, §9.1.)
+const WP139_FORMS: [Form; 6] = [
+    ("call", "f", "template <class T> int call(T t) { return t.f(); }\n", "call(n::S<int>())"),
+    ("static", "s", "template <class T> int call() { return T::s(); }\n", "call<n::S<int>>()"),
+    (
+        "address",
+        "f",
+        "template <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\n",
+        "call(n::S<int>())",
+    ),
+    ("arrow", "f", "template <class T> int call(T t) { return (&t)->f(); }\n", "call(n::S<int>())"),
+    (
+        "this-dependent-base",
+        "f",
+        "template <class T> struct D : T { int g() { return this->f(); } };\n",
+        "D<n::S<int>>().g()",
+    ),
+    (
+        "member-of-class-template",
+        "f",
+        "template <class T> struct W { T t; int g() { return t.f(); } };\n",
+        "W<n::S<int>>().g()",
+    ),
+];
+
+/// Item 1, row by row, for every form: every instantiation binds a
+/// subject, `replace` (accepted, the pattern's name edited, its holder
+/// exempt, and it verifies); none does and one binds `n::R`'s, `keep`
+/// (accepted, nothing edited there, and it verifies); both, `refuse(
+/// mixed_instances)`. Every accepted rename is verified.
 #[test]
-fn wp127_dependent_name_bound_by_an_instantiation_is_refused() {
-    let forms: [(&str, &str, &str); 3] = [
-        ("call", "template <class T> int call(T t) { return t.f(); }\n", "call(n::S<int>())"),
-        ("static", "template <class T> int call() { return T::f(); }\n", "call<n::S<int>>()"),
-        (
-            "address",
-            "template <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\n",
-            "call(n::S<int>())",
-        ),
-    ];
-    for (name, pattern, use_s) in forms {
-        let stat = if name == "static" { "static " } else { "" };
-        let classes = format!(
-            "namespace n {{\nstruct Base {{ {stat}int f() {{ return 2; }} }};\ntemplate <class T> struct S : Base {{ {stat}int f() {{ return 1; }} }};\nstruct R {{ {stat}int f() {{ return 3; }} }};\n}}\n"
-        );
+fn wp139_dependent_name_per_form_and_row() {
+    for (name, member, pattern, use_s) in WP139_FORMS {
         let use_r = use_s.replace("n::S<int>", "n::R");
-        for (tag, uses) in [
-            ("one", format!("int u() {{ return {use_s}; }}\n")),
-            ("two", format!("int u() {{ return {use_s} + {use_r}; }}\n")),
-        ] {
-            let text = format!("{classes}{pattern}{uses}");
+        let target = ["n", "S", member];
+        // Not `g`: `D::g` and `W::g` would capture `this->g()` and
+        // `t.g()` (`wp139_new_name_captured_in_an_instantiation_is_not_verified`).
+        let new = "h";
+        let run = |tag: &str, uses: &str| {
+            let text = format!("{WP139_CLASSES}{pattern}int u() {{ return {uses}; }}\n");
             let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
-            let n = format!("wp127-dep-{name}-{tag}");
-            let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
-            assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
-        }
-        // Instantiated with `n::R` only: nothing binds the name to a
-        // subject, it stays `unresolved`, and the rename verifies.
-        let text = format!("{classes}{pattern}int u() {{ return {use_r}; }}\n");
-        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
-        let n = format!("wp127-dep-{name}-elsewhere");
-        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+            let n = format!("wp139-{name}-{tag}");
+            let r = end_to_end(&n, &files, &["main.cpp"], &target, new, &right);
+            (n, r)
+        };
+        let (n, r) = run("subjects", use_s);
+        let kept = r.kept;
         assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        // The declaration of the member and the pattern's name.
+        assert_eq!(r.edits.len(), 2, "{n}: {r:?}");
+        assert_eq!(r.exempt, 1, "{n}: the holder is exempt: {r:?}");
+        assert!(
+            !r.instances.is_empty() && r.instances.iter().all(|i| i.starts_with("edited ")),
+            "{n}: {r:?}"
+        );
+        let (n, r) = run("elsewhere", &use_r);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        // The pattern's name kept, beside what `subjects` keeps (the
+        // declarations of `Base` and `R`).
+        assert_eq!((r.edits.len(), r.kept, r.exempt), (1, kept + 1, 0), "{n}: {r:?}");
+        let (n, r) = run("mixed", &format!("{use_s} + {use_r}"));
+        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused mixed_instances"), "{n}: {r:?}");
+        // The refusal names both specialisations (item 5).
+        assert_eq!(r.instances.len(), 2, "{n}: {r:?}");
+        assert!(r.instances.iter().all(|i| i.starts_with("refused ")), "{n}: {r:?}");
     }
 }
 
-/// Item 2 over two observers of which only one instantiates the pattern
-/// with `n::S<int>`, in both orders: refused whichever observer comes
-/// first (the mutation "checked in the first observer only").
+/// An unqualified dependent call found by argument-dependent lookup at
+/// instantiation (`h(t)`, no `h` visible at the definition): row 2 reads
+/// the table's row (`how` is `adl`), the call is edited, and it verifies.
 #[test]
-fn wp127_dependent_name_two_observers_one_instantiates() {
-    let files: [(&str, &[u8]); 3] = [
-        (
-            "t.h",
-            b"namespace n {\nstruct Base { int f() { return 2; } };\ntemplate <class T> struct S : Base { int f() { return 1; } };\n}\ntemplate <class T> int call(T t) { return t.f(); }\n",
-        ),
-        ("use.cpp", b"#include \"t.h\"\nint u() { return call(n::S<int>()); }\n"),
-        ("pattern.cpp", b"#include \"t.h\"\nint k() { return n::S<int>().f(); }\n"),
-    ];
-    for mains in [["use.cpp", "pattern.cpp"], ["pattern.cpp", "use.cpp"]] {
-        let n = format!("wp127-dep-two-{}", mains[0].trim_end_matches(".cpp"));
-        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
-        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
-    }
-    // The observer that does not instantiate alone: accepted, and it
-    // verifies (no observer makes the instantiation that would differ:
-    // what the rename does not see, `spec/edits.md` §9.4).
-    let r =
-        end_to_end("wp127-dep-two-alone", &files, &["pattern.cpp"], &["n", "S", "f"], "g", &right);
+fn wp139_dependent_call_found_by_adl() {
+    let text = "namespace m { struct A {}; int h(A) { return 1; } }\ntemplate <class T> int call(T t) { return h(t); }\nint u() { return call(m::A()); }\n";
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end("wp139-adl", &files, &["main.cpp"], &["m", "h"], "k", &right);
     assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    assert_eq!((r.edits.len(), r.exempt), (2, 1), "{r:?}");
+}
+
+/// The files of the two-observer cases: the pattern in a header, one
+/// observer per instantiation, and one that does not instantiate.
+fn wp139_observers() -> [(&'static str, Vec<u8>); 4] {
+    let header = format!("{WP139_CLASSES}template <class T> int call(T t) {{ return t.f(); }}\n");
+    [
+        ("t.h", header.into_bytes()),
+        ("s.cpp", b"#include \"t.h\"\nint us() { return call(n::S<int>()); }\n".to_vec()),
+        ("r.cpp", b"#include \"t.h\"\nint ur() { return call(n::R()); }\n".to_vec()),
+        ("none.cpp", b"#include \"t.h\"\nint un() { return n::S<int>().f(); }\n".to_vec()),
+    ]
+}
+
+/// Item 1: two observers that instantiate differently (`replace` in one,
+/// `keep` in the other) disagree at reduce, in both orders: `contested`.
+/// Three observers of which one does not instantiate: the same. The
+/// mutation "`keep` not claimed when no instantiation binds a subject"
+/// makes the second observer `unresolved`, the edit accepted, and its
+/// instantiation `call<n::R>` fail to compile (`R` has no `g`).
+#[test]
+fn wp139_two_observers_that_instantiate_differently_are_contested() {
+    let files = wp139_observers();
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    for mains in [
+        vec!["s.cpp", "r.cpp"],
+        vec!["r.cpp", "s.cpp"],
+        vec!["s.cpp", "none.cpp", "r.cpp"],
+        vec!["none.cpp", "r.cpp", "s.cpp"],
+    ] {
+        let n = format!("wp139-two-{}", mains.join("-").replace(".cpp", ""));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
+        assert_eq!(causes(&r), ["Contested"], "{n}: {r:?}");
+        // The refusal names the specialisation that bound the name to the
+        // subject, and the observer that made it (item 5).
+        assert!(
+            r.instances.iter().any(|i| i.starts_with("refused t.h:") && i.ends_with("x1")),
+            "{n}: {r:?}"
+        );
+    }
+    // The observer that instantiates with a subject and the one that does
+    // not instantiate: `replace` and `unresolved`, accepted, and verified
+    // in both (the second makes no instantiation that could differ).
+    for mains in [["s.cpp", "none.cpp"], ["none.cpp", "s.cpp"]] {
+        let n = format!("wp139-live-{}", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        assert_eq!(r.instances.len(), 1, "{n}: {r:?}");
+        assert!(r.instances[0].ends_with(" x1"), "{n}: {r:?}");
+    }
+}
+
+/// Items 3 and 5 over observers: the specialisation each observer made,
+/// with the number of observers that made it, joined at reduce. Two
+/// observers that both instantiate `call<n::S<int>>` give one instance of
+/// two observers; the mutation "the specialisations of the first observer
+/// only" gives one.
+#[test]
+fn wp139_instances_are_counted_over_observers() {
+    let mut files = wp139_observers().to_vec();
+    files.push(("s2.cpp", b"#include \"t.h\"\nint us2() { return call(n::S<int>()); }\n".to_vec()));
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    for mains in [["s.cpp", "s2.cpp"], ["s2.cpp", "s.cpp"]] {
+        let n = format!("wp139-count-{}", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        assert_eq!(r.instances.len(), 1, "{n}: {r:?}");
+        assert!(r.instances[0].starts_with("edited t.h:"), "{n}: {r:?}");
+        assert!(r.instances[0].ends_with(" [n::S::f()] x2"), "{n}: {r:?}");
+    }
+}
+
+/// Item 4: under `dependent: refuse` the name every instantiation binds
+/// to a subject is refused, `refuse(instantiated)` (item 8: not
+/// `mixed_instances`), the refusing form of WP-127; a name no
+/// instantiation binds to a subject is claimed as under `offer`. The
+/// mutation "the flag ignored" accepts the first.
+#[test]
+fn wp139_dependent_refuse_is_the_refusing_form() {
+    let text = format!(
+        "{WP139_CLASSES}template <class T> int call(T t) {{ return t.f(); }}\nint u() {{ return call(n::S<int>()); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end_with(
+        "wp139-refuse",
+        &files,
+        &["main.cpp"],
+        &["n", "S", "f"],
+        "g",
+        Dependent::Refuse,
+        "c++20",
+        &right,
+    );
+    assert_eq!(r.refusals, ["SiteRefused instantiated n::S::f()"], "{r:?}");
+    assert!(r.instances.iter().all(|i| i.starts_with("refused main.cpp:")), "{r:?}");
+    assert_eq!(r.instances.len(), 1, "{r:?}");
+    let kept = r.kept;
+    let text = text.replace("call(n::S<int>())", "call(n::R())");
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end_with(
+        "wp139-refuse-elsewhere",
+        &files,
+        &["main.cpp"],
+        &["n", "S", "f"],
+        "g",
+        Dependent::Refuse,
+        "c++20",
+        &right,
+    );
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    // The pattern's name kept, beside the declarations of `Base` and `R`.
+    assert_eq!(r.kept, kept + 1, "{r:?}");
+}
+
+/// The wrong edit beside the right one: the pattern's name edited, the
+/// instantiation's member left as it was (`n::S::f` declared under its
+/// old name in the post-image) does not compile, so the run is not
+/// verified. What the exemption of the holder leaves checked
+/// (`spec/edits.md` §9.4): every instantiation.
+#[test]
+fn wp139_an_instantiation_left_behind_is_not_verified() {
+    let text = format!(
+        "{WP139_CLASSES}template <class T> int call(T t) {{ return t.f(); }}\nint u() {{ return call(n::S<int>()); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        end_to_end("wp139-left-behind", &files, &["main.cpp"], &["n", "S", "f"], "g", &|post| {
+            edit_back(post, "main.cpp", "int g() { return 1; }", "int f() { return 1; }");
+        })
+    }));
+    assert!(failed.is_err(), "the post-image with `S::f` left compiles");
 }
 
 /// `docs/wp/WP-127.md` item 1 (was WP-119's known mismatch F2): the
@@ -2026,4 +2300,376 @@ fn wp127_second_using_declarator_introduced_arm() {
     let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
     let r = end_to_end("wp127-second-using", &files, &["main.cpp"], &["n", "B2", "f"], "g", &right);
     assert_eq!(causes(&r), ["MixedFollower"], "{r:?}");
+}
+
+/// `docs/wp/WP-139.md` item 7, end to end: the shapes of
+/// `followers::tests::hiding_signature_shapes` (a ref-qualifier on one
+/// side, an explicit object parameter on either side or both, a trailing
+/// requires-clause on either side or both, in a class template's
+/// instantiation), in both member orders, renamed from the base's `f` and
+/// from the derived class's. Each is refused, or is accepted and verifies.
+#[test]
+fn wp139_hiding_shapes_refused_or_verified_both_orders() {
+    let shapes: [(&str, &str, &str, &str, &str); 8] = [
+        ("ref-on-base", "struct B { void f() &; };", "struct D : B", "using B::f;", "void f();"),
+        ("ref-on-derived", "struct B { void f(); };", "struct D : B", "using B::f;", "void f() &;"),
+        (
+            "object-on-base",
+            "struct B { void f(this B&); };",
+            "struct D : B",
+            "using B::f;",
+            "void f();",
+        ),
+        (
+            "object-on-derived",
+            "struct B { void f(); };",
+            "struct D : B",
+            "using B::f;",
+            "void f(this D&);",
+        ),
+        (
+            "object-both",
+            "struct B { void f(this B&); };",
+            "struct D : B",
+            "using B::f;",
+            "void f(this D&);",
+        ),
+        (
+            "requires-on-base",
+            "template <class T> struct B { void f() requires (sizeof(T) > 0); };",
+            "struct D : B<int>",
+            "using B<int>::f;",
+            "void f();",
+        ),
+        (
+            "requires-on-derived",
+            "struct B { void f(); };",
+            "template <class T> struct D : B",
+            "using B::f;",
+            "void f() requires (sizeof(T) > 0);",
+        ),
+        (
+            "requires-on-both",
+            "template <class T> struct B { void f() requires (sizeof(T) > 0); };",
+            "template <class T> struct D : B<int>",
+            "using B<int>::f;",
+            "void f() requires (sizeof(T) > 1);",
+        ),
+    ];
+    let mut accepted = 0;
+    for (name, base, head, using, m) in shapes {
+        for after in [true, false] {
+            let body = if after { format!("{using} {m}") } else { format!("{m} {using}") };
+            let d = if head.starts_with("template") { "n::D<int>" } else { "n::D" };
+            let text = format!(
+                "namespace n {{\n{base}\n{head} {{ {body} }};\n}}\nint u() {{ {d} d; (void)d; return 0; }}\n"
+            );
+            let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+            for class in ["B", "D"] {
+                let n = format!(
+                    "wp139-hiding-{name}-{}-{class}",
+                    if after { "after" } else { "before" }
+                );
+                let target = ["n", class, "f"];
+                let r = end_to_end_with(
+                    &n,
+                    &files,
+                    &["main.cpp"],
+                    &target,
+                    "g",
+                    Dependent::Offer,
+                    "c++23",
+                    &right,
+                );
+                if r.refusals.is_empty() {
+                    assert!(r.differences.is_empty(), "{n}: accepted and not verified: {r:?}");
+                    accepted += 1;
+                }
+            }
+        }
+    }
+    // Not every shape is refused: the test reaches verification.
+    assert!(accepted > 0);
+}
+
+/// The classes of the item 6 cases: `WP139_CLASSES` with a nested class
+/// `f2` in `S`, a class template `Q` whose nested class has a static
+/// member `z`, and static and non-static data members.
+const WP139_MORE: &str = "namespace n {\nstruct Base { int f() { return 2; } static int s() { return 0; } };\ntemplate <class T> struct S : Base { int f() { return 1; } static int s() { return 1; } template <class U> int t() { return 0; } struct f2 { int k = 0; }; using base = Base; int v = 4; static int sv; };\ntemplate <class T> int S<T>::sv = 5;\ntemplate <class T> struct Q { struct f2 { static int z; }; };\ntemplate <class T> int Q<T>::f2::z = 6;\nstruct R { int f() { return 3; } static int s() { return 3; } template <class U> int t() { return 3; } int f2() { return 7; } };\n}\n";
+
+/// `docs/wp/WP-139.md` item 6 and the shapes beside it, read from Kiln's
+/// table (`spec/landed/edits/WP-139.md`, "What Kiln records"): the name,
+/// the target, the new name, the pattern and use, and what the run gives:
+/// `true`, accepted and verified with the pattern's name edited; `false`,
+/// accepted and verified with it kept.
+type Shape = (&'static str, &'static [&'static str], &'static str, bool);
+
+const WP139_SHAPES: [Shape; 12] = [
+    // A nested-name-specifier's component (`base`, a type: its row is no
+    // subject and decides nothing) and the name after it (`s`, `Base::s`).
+    (
+        "nns-component",
+        &["n", "Base", "s"],
+        "template <class T> int call() { return T::base::s(); }\nint u() { return call<n::S<int>>(); }\n",
+        true,
+    ),
+    // A type name named like the old name: `typename T::f2` is `S<int>`'s
+    // class, no subject; renaming `R::f2()` keeps it (and `R::f2` is
+    // renamed where it is declared).
+    (
+        "type-name",
+        &["n", "R", "f2"],
+        "template <class T> int call() { typename T::f2 x; return x.k; }\nint u() { return call<n::S<int>>(); }\n",
+        false,
+    ),
+    // A mem-initializer's argument.
+    (
+        "mem-initializer",
+        &["n", "S", "s"],
+        "template <class T> struct M { int x; M() : x(T::s()) {} };\nint u() { return M<n::S<int>>().x; }\n",
+        true,
+    ),
+    (
+        "nsdmi",
+        &["n", "S", "s"],
+        "template <class T> struct M { int x = T::s(); };\nint u() { M<n::S<int>> m; return m.x; }\n",
+        true,
+    ),
+    (
+        "static-assert",
+        &["n", "S", "s"],
+        "template <class T> int call() { static_assert(sizeof(T::s()) > 0); return 0; }\nint u() { return call<n::S<int>>(); }\n",
+        true,
+    ),
+    (
+        "noexcept",
+        &["n", "S", "f"],
+        "template <class T> void call(T t) noexcept(noexcept(t.f())) { }\nint u() { call(n::S<int>()); return 0; }\n",
+        true,
+    ),
+    (
+        "explicit-instantiation",
+        &["n", "S", "f"],
+        "template <class T> int call(T t) { return t.f(); }\ntemplate int call<n::S<int>>(n::S<int>);\nint u() { return 0; }\n",
+        true,
+    ),
+    (
+        "lambda-in-template",
+        &["n", "S", "f"],
+        "template <class T> int call(T t) { auto l = [&] { return t.f(); }; return l(); }\nint u() { return call(n::S<int>()); }\n",
+        true,
+    ),
+    (
+        "friend-defined-in-class",
+        &["n", "S", "f"],
+        "template <class T> struct F { friend int fr(F, T t) { return t.f(); } };\nint u() { return fr(F<n::S<int>>(), n::S<int>()); }\n",
+        true,
+    ),
+    (
+        "dependent-base-qualified",
+        &["n", "S", "f"],
+        "template <class T> struct D : T { int g() { return D::f(); } };\nint u() { return D<n::S<int>>().g(); }\n",
+        true,
+    ),
+    (
+        "overloaded-arrow",
+        &["n", "S", "f"],
+        "template <class T> int call(T t) { return t->f(); }\nstruct PP { n::S<int> s; n::S<int>* operator->() { return &s; } };\nint u() { return call(PP()); }\n",
+        true,
+    ),
+    (
+        "pointer-to-member-argument",
+        &["n", "S", "f"],
+        "template <class T, int (T::*)()> struct P {};\ntemplate <class T> int call() { P<T, &T::f> p; (void)p; return 0; }\nint u() { return call<n::S<int>>(); }\n",
+        true,
+    ),
+];
+
+/// Item 6: each shape that WP-127's join by token location missed, and
+/// those beside it, now read from Kiln's table: accepted, verified, and the
+/// pattern's name edited (or kept, for a type named like the old name).
+#[test]
+fn wp139_shapes_the_join_missed_verify() {
+    let mut wrong = Vec::new();
+    for (name, target, pattern, edited) in WP139_SHAPES {
+        let text = format!("{WP139_MORE}{pattern}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp139-shape-{name}");
+        let r = end_to_end(&n, &files, &["main.cpp"], target, "h", &right);
+        let at_pattern = r.instances.iter().any(|i| i.starts_with("edited "));
+        if !(r.refusals.is_empty()
+            && r.differences.is_empty()
+            && r.unresolved == 0
+            && at_pattern == edited)
+        {
+            wrong.push(format!("{n}: {r:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Item 6: data members read through a dependent name (`t.v`, `T::sv`)
+/// have their rows in Kiln's table (the entity `n::S<int>::v`, `::sv`),
+/// but a data member is no target of this rename (§9.1): refused at the
+/// target.
+#[test]
+fn wp139_data_members_are_refused_at_the_target() {
+    for (member, pattern) in [
+        (
+            "v",
+            "template <class T> int call(T t) { return t.v; }\nint u() { return call(n::S<int>()); }\n",
+        ),
+        (
+            "sv",
+            "template <class T> int call() { return T::sv; }\nint u() { return call<n::S<int>>(); }\n",
+        ),
+    ] {
+        let text = format!("{WP139_MORE}{pattern}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp139-data-{member}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", member], "h", &right);
+        assert_eq!(r.refusals, [format!("SubjectUnsupported n::S::{member}")], "{n}: {r:?}");
+    }
+}
+
+/// Item 6: a template name (`t.template t<int>()`). Kiln's table has its
+/// row (the entity `n::S<int>::t<int>()`, `found` the member template), but
+/// a member template is no target of this rename (§9.1): refused at the
+/// target, before row 2 is read.
+#[test]
+fn wp139_template_name_is_refused_at_the_target() {
+    let text = format!(
+        "{WP139_MORE}template <class T> int call(T t) {{ return t.template t<int>(); }}\nint u() {{ return call(n::S<int>()); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end("wp139-template-name", &files, &["main.cpp"], &["n", "S", "t"], "g", &right);
+    assert_eq!(r.refusals, ["SubjectUnsupported n::S::t"], "{r:?}");
+}
+
+/// Item 6, where Kiln's table has no row: a dependent name in a default
+/// template argument (`template <class T, int = sizeof(T::s())>`), which
+/// the call `call<n::R>()` substitutes. The name is `unresolved` (and
+/// residue `dependent`); the rename is accepted, and the post-image, whose
+/// `T::s` names nothing in `R`, does not compile: verification fails
+/// loudly, never `verified` (the harness's post-image parse asserts no
+/// error). "For Kiln" in `spec/landed/edits/WP-139.md`; the same shape
+/// where the old name has a fallback is
+/// `wp139_finding_no_row_with_a_fallback_verifies`.
+#[test]
+fn wp139_no_row_fails_verification_loudly() {
+    let text = format!(
+        "{WP139_MORE}template <class T, int = sizeof(T::s())> int call() {{ return 0; }}\nint u() {{ return call<n::R>(); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        end_to_end("wp139-no-row", &files, &["main.cpp"], &["n", "R", "s"], "h", &right)
+    }));
+    let Err(e) = failed else { panic!("the post-image compiled: {:?}", failed.unwrap()) };
+    let m = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(m.contains("main.cpp has errors"), "{m}");
+}
+
+/// FINDING (for the supervisor, `docs/wp/WP-139.md` Handback): the shape
+/// with no row in Kiln's table, where the old name has a fallback. With
+/// `n::S<int>` (whose base `Base` declares a static `s`), renaming `n::S::s`
+/// leaves `T::s` in the default template argument, which in the post-image
+/// binds `Base::s`: the binding moved, and the run is accepted and
+/// verified, because neither the rename nor verification sees the
+/// substitution of a default template argument. This test records the
+/// behaviour at the pin; it is to be turned around when Kiln records the
+/// row ("For Kiln").
+#[test]
+fn wp139_finding_no_row_with_a_fallback_verifies() {
+    let text = format!(
+        "{WP139_MORE}template <class T, int = sizeof(T::s())> int call() {{ return 0; }}\nint u() {{ return call<n::S<int>>(); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r =
+        end_to_end("wp139-no-row-fallback", &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
+    assert!(r.refusals.is_empty() && r.differences.is_empty(), "{r:?}");
+    assert_eq!(r.unresolved, 1, "{r:?}");
+}
+
+/// FINDING (Handback): the new name captured at an instantiation. In
+/// `template <class T> struct D : T { int g() { return this->f(); } }`,
+/// renaming `n::S::f` to `g` edits `this->f()` (every instantiation binds
+/// it to the subject), and in the post-image `this->g()` finds `D::g`
+/// itself. The rename does not check what the new name finds in the
+/// instantiation; verification does, and the run is not verified.
+#[test]
+fn wp139_new_name_captured_in_an_instantiation_is_not_verified() {
+    let text = format!(
+        "{WP139_CLASSES}template <class T> struct D : T {{ int g() {{ return this->f(); }} }};\nint u() {{ return D<n::S<int>>().g(); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end("wp139-captured", &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+    assert!(r.refusals.is_empty(), "{r:?}");
+    assert!(!r.differences.is_empty(), "the captured name verified: {r:?}");
+}
+
+/// FINDING (Handback): a dependent name whose enclosing declaration Kiln
+/// records as the translation unit: in an alias template, and in a
+/// requires-clause. Every instantiation binds the name to the subject, so
+/// it is edited, but there is no holder (§9.4, "The holder") and no
+/// `changed` entry: the pattern's unit (`A`, `call`) differs, and the run
+/// is not verified. Accepted and not verified, loudly; never `verified`.
+/// "For Kiln" in `spec/landed/edits/WP-139.md`.
+#[test]
+fn wp139_finding_no_holder_is_not_verified() {
+    for (name, pattern) in [
+        (
+            "alias-template",
+            "template <class T> using A = decltype(T::s());\nint u() { A<n::S<int>> a = 0; return a; }\n",
+        ),
+        (
+            "requires-clause",
+            "template <class T> requires (sizeof(T::s()) > 0) int call() { return 0; }\nint u() { return call<n::S<int>>(); }\n",
+        ),
+    ] {
+        let text = format!("{WP139_MORE}{pattern}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp139-no-holder-{name}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "s"], "h", &right);
+        assert!(r.refusals.is_empty() && r.exempt == 0, "{n}: {r:?}");
+        assert!(r.instances.iter().any(|i| i.starts_with("edited ")), "{n}: {r:?}");
+        assert!(!r.differences.is_empty(), "{n}: verified: {r:?}");
+    }
+}
+
+/// `docs/wp/WP-139.md` "Tests": every accepted rename is verified. Each
+/// directory in which row 2 of §9.4 now edits a dependent name (a
+/// `dependent name` entry in `changed`), a function's rename without
+/// arguments, run end to end: accepted, and verified.
+#[test]
+fn wp139_directories_edited_on_instances_verify() {
+    let mut checked = Vec::new();
+    for case in cases() {
+        let expect = std::fs::read_to_string(case.dir.join("expect.txt")).unwrap_or_default();
+        if is_pending(&case)
+            || case.kind != TargetKind::Function
+            || !case.args.is_empty()
+            || !expect.lines().any(|l| l.contains(" dependent name "))
+        {
+            continue;
+        }
+        let files: Vec<(&str, &[u8])> =
+            case.files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
+        let target: Vec<&str> =
+            case.target.iter().map(|c| std::str::from_utf8(c).unwrap()).collect();
+        let new = std::str::from_utf8(&case.new_name).unwrap();
+        let n = format!("wp139-dir-{}", case.name);
+        let r = end_to_end_with(
+            &n,
+            &files,
+            &["main.cpp"],
+            &target,
+            new,
+            case.dependent,
+            "c++20",
+            &right,
+        );
+        assert!(r.refusals.is_empty() && r.differences.is_empty(), "{n}: {r:?}");
+        checked.push(case.name);
+    }
+    assert!(checked.len() >= 5, "{checked:?}");
 }

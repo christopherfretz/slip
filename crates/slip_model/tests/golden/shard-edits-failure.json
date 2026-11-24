@@ -67,7 +67,8 @@
       "groups": [],
       "reports": [],
       "changed": [],
-      "renamed": []
+      "renamed": [],
+      "instances": []
     }
   }
 }

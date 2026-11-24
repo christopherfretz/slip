@@ -1,11 +1,11 @@
-# pending
-# needs: K-e, Kiln stage 4 (WP-1933): per instantiated specialisation, the entity a dependent name resolved to (not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"), or the offering form of spec/landed/edits/WP-127.md if it is ruled in; until then refused (WP-127, the refusing form)
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
-  fc2d99d6 follower unsupported rule=yes n::S<int>::f() of=32ae9afe
+  089ac656 seed - rule=yes n::S::f()
+  fb97e1db follower - rule=yes n::S<int>::f() of=089ac656
 links:
 claims:
-  main.cpp:2:36+1 replace "g" t0 votes=1 none [32ae9afe]
-  main.cpp:3:36+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:2:36+1 replace "g" t0 votes=1 none [089ac656]
+  main.cpp:3:36+1 replace "g" t0 votes=1 none [089ac656]
 changed:
-  1e64a270 main.cpp:3:36+1 dependent name f
+  cd2ece07 main.cpp:3:36+1 dependent name f
+instances:
+  main.cpp:3:36+1 e5ebe759 n::t<n::S<int>>(n::S<int>) [089ac656]

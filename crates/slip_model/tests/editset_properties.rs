@@ -274,6 +274,7 @@ fn gen_set(r: &mut Lcg) -> EditSet {
         } else {
             Vec::new()
         },
+        instances: Vec::new(),
     }
 }
 
@@ -492,6 +493,7 @@ fn crossing_checks_agree_with_every_pair() {
             failures: Vec::new(),
             unparsed: Vec::new(),
             counters: Vec::new(),
+            instances: Vec::new(),
         };
         let want = brute_geometry(&x);
         found[match want {

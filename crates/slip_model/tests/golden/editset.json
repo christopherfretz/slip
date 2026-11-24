@@ -1,6 +1,6 @@
 {
   "kind": "EDTS",
-  "version": 1,
+  "version": 2,
   "sections": {
     "set": {
       "scheme": 1,
@@ -334,6 +334,61 @@
         {
           "name": "reduce.edits",
           "value": 3
+        }
+      ],
+      "instances": [
+        {
+          "instance": {
+            "place": {
+              "file": 0,
+              "lo": 10,
+              "hi": 20
+            },
+            "spec": null,
+            "display": "call<(lambda)>",
+            "subjects": [
+              "1010101010101010101010101010101010101010101010101010101010101010"
+            ]
+          },
+          "observers": 1,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+          ]
+        },
+        {
+          "instance": {
+            "place": {
+              "file": 0,
+              "lo": 10,
+              "hi": 20
+            },
+            "spec": "3030303030303030303030303030303030303030303030303030303030303030",
+            "display": "call<n::S<int>>",
+            "subjects": [
+              "1010101010101010101010101010101010101010101010101010101010101010"
+            ]
+          },
+          "observers": 2,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          ]
+        },
+        {
+          "instance": {
+            "place": {
+              "file": 0,
+              "lo": 40,
+              "hi": 45
+            },
+            "spec": "3131313131313131313131313131313131313131313131313131313131313131",
+            "display": "call<n::R>",
+            "subjects": []
+          },
+          "observers": 1,
+          "first": [
+            "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+          ]
         }
       ]
     }

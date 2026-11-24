@@ -204,7 +204,7 @@ offset.
 
 ## 3. The transform request
 
-Kind `TRFM`, version 1, deterministic. One required section `transform`
+Kind `TRFM`, version 2, deterministic. One required section `transform`
 (id 1):
 
 ```
@@ -219,8 +219,20 @@ TransformKind := rename = 1 | script = 2
 Rename := target:   list<bytes>     §9.1: the qualified name, outermost component first; at least one
           kind:     TargetKind
           new_name: bytes           an identifier
+          dependent: Dependent      §9.4: what row 2 does with a name every instantiation binds to a subject
 
 TargetKind := any = 0 | function = 1 | variable = 2
+
+Dependent := offer = 0 | refuse = 1
+```
+
+`dependent` (since version 2, `docs/wp/WP-139.md`): `offer` edits the
+name (the default), `refuse` refuses it, `refuse(instantiated)` (§9.4).
+A version-1 request is refused (`model.md` §2, `UnsupportedVersion`):
+it has no `dependent`, and reading it as `offer` would change what a
+request written before the offering form asked for.
+
+```
 
 Script := id:      digest           the `TransformId` of api.md §2.2
           file:    path             the transform's source file, as given
@@ -255,7 +267,8 @@ this is the refusal of `api.md` §2.2, which is stated by request id.
 
 ## 4. Claims: the `edits` section
 
-Section 17 of a shard of phase `map` (`model.md` §8). Present iff the
+Section 32 of a shard of phase `map` (`model.md` §8; it was 17 before
+its payload gained `instances`, `docs/wp/WP-139.md`). Present iff the
 job carried a transform and the outcome is `ok`. It is what one run of
 the transform over this observer produced: its claims and what goes with
 them, or the record that the run failed.
@@ -272,6 +285,7 @@ Edits := scheme:    uv               1
          reports:   list<Report>     §4.5
          changed:   list<Changed>    §4.5
          renamed:   list<Rule>       §4.5
+         instances: list<Instance>   §4.5
 ```
 
 Every entry of `files` is also in the shard's `inputs` with the same size
@@ -357,12 +371,21 @@ Piece := literal = 0: bytes                         not empty
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
-        | directive = 10
+        | directive = 10 | instantiated = 11
 
 MacroSite := name_start: uv          offset, in the claim's file, of the name token of the outermost
                                       macro invocation the bytes are an argument of or were produced by
              name:       bytes       that macro's name
 ```
+
+`mixed_set`, `mixed_instances` and `instantiated` are the rename's
+reasons of §9.2 and §9.4: what a name names is mixed, over the set found
+at the definition or over the instantiations the observer made; or (since
+`docs/wp/WP-139.md`, item 8) every instantiation binds the name to a
+subject and the request asked for the refusing form (`dependent: refuse`,
+§3), where WP-127 said `mixed_instances` of one instance and one subject.
+`instantiated` was added without a change of format version, as a new
+enumeration value is (`model.md` §2).
 
 **Pieces** are those of `api.md` §7.1, and mean what it says:
 
@@ -467,6 +490,12 @@ Severity := note = 0 | review = 1 | error = 2
 Changed := key:    KeyId             a unit whose digest is meant to differ
           place:  Place             lo < hi: the bytes whose edit is the reason
           reason: bytes
+
+Instance := place:    Place          lo < hi: a dependent name's token in the pattern, the place of a claim
+            spec:     opt<KeyId>     the specialisation whose instantiation bound the name; absent if it has no key
+            display:  str            the specialisation as a person would write it; for reports only
+            subjects: list<KeyId>    the subjects the name denotes there; sorted, no two equal; empty: a
+                                     declaration that is no subject
 ```
 
 A note, a report's message and a declaration's reason are `bytes`, not
@@ -488,6 +517,18 @@ run's texts (§4.6) are `str`: the host and Kiln's renderer make them.
   two different programs compare equal (`verify.md` §2.1), so a rule
   whose edits were rejected costs a reported difference and nothing
   else.
+
+- `instances` (`docs/wp/WP-139.md`) is the evidence of a rename's row-2
+  claims (§9.4): one entry per claim at a dependent name that is not
+  `unresolved` and per specialisation the observer made that is
+  evidence there. It is sorted by `(place, spec, display, subjects)`, an
+  absent `spec` first, and has no two equal entries. Its place is that of
+  a claim of the section (the rename writes it so; the format does not
+  check it, and reduce keeps an instance only at an accepted edit or a
+  refused site, §6). A programmable transform makes none (§4.8).
+  It says nothing to reduce's outcome of a site: reduce carries it to the
+  edit set (§6) for the report (§10.5) and for what a refusal was made
+  on.
 
 A report of severity `error` says the transform could not do its job in
 this observer. §8.5 says what it does to the result.
@@ -544,7 +585,7 @@ the job.
 | Rule | Offset | JSON path |
 |---|---|---|
 | `scheme` is 1 | the field | `sections.edits.scheme` |
-| with a `failure`: the seven lists are empty and `files` has at most one entry | the first byte of the first list that is not, in field order | that list |
+| with a `failure`: the eight lists are empty and `files` has at most one entry | the first byte of the first list that is not, in field order | that list |
 | with a `failure`: `refusal.subject`, if present, is within its file (`file` an index of `files`, `lo <= hi <= size`); `files` is empty unless `refusal.subject` is present | the `subject` field's opt tag; the `files` count | `sections.edits.failure.refusal.subject`; `sections.edits.files` |
 | `files` strictly ascending by path | that `FileRef`'s first byte | `sections.edits.files[i]` |
 | `subjects` strictly ascending by `id` | that subject's first byte | `sections.edits.subjects[i]` |
@@ -562,6 +603,8 @@ the job.
 | `reports` strictly ascending; a place within its file; `severity` at most 2 | that report's first byte | `sections.edits.reports[i]` |
 | `changed` strictly ascending; a place within its file and not empty | that entry's first byte | `sections.edits.changed[i]` |
 | `renamed` strictly ascending by the bytes of the encoded `(parent, kind, name, disc)` | that rule's first byte | `sections.edits.renamed[i]` |
+| `instances` strictly ascending; a place within its file and not empty | that instance's first byte | `sections.edits.instances[i]` |
+| an instance's `subjects` strictly ascending | the `subjects` field | `sections.edits.instances[i].subjects` |
 
 Checked in this order, the claim rules for each claim in turn. That a
 subject of a claim or a link names a subject of the shard, that a
@@ -901,7 +944,7 @@ the store by `slip_cli` and over a vector by tests.
 
 ## 6. The edit set
 
-Kind `EDTS`, version 1, deterministic. One required section `set` (id 1).
+Kind `EDTS`, version 2, deterministic. One required section `set` (id 1).
 The **edit set id** is the container's content id.
 
 ```
@@ -925,6 +968,7 @@ EditSet := scheme:     uv                    1
            failures:   list<Failed>          sorted by (kind, message, place), no two equal in that key
            unparsed:   list<digest>          observers without an `ok` shard; in plan order
            counters:   list<Counter>         §6.3; sorted by name
+           instances:  list<Seen>            §9.4, §10.5; sorted by `instance` as §4.5 sorts instances, no two equal
 
 Basis    := observer: digest, shard: opt<digest>      in plan order; `shard` the content id, absent if unparsed
 SetState := accepted = 0 | refused = 1
@@ -950,6 +994,10 @@ Reported := report: Report           §4.5, its place in this set's `files`
 
 Failed   := failure: Failure         §4.6; `rendered` and `refusal` those of the first observer
             observers: uv
+            first:     list<digest>
+
+Seen     := instance: Instance       §4.5, its place in this set's `files`
+            observers: uv            the observers whose shard has it
             first:     list<digest>
 
 Refusal := cause:     Cause
@@ -996,6 +1044,15 @@ observers is one record with a count (`api.md` §2.8 rule 3).
 A refused edit set keeps every list but `edits` and `groups`: they are
 the report.
 
+`instances` (since version 2, `docs/wp/WP-139.md`) joins the shards'
+instances (§4.5) by the whole record, with the observers that have it.
+Reduce keeps those whose place is the range of an accepted edit or of a
+refusal of a site; the others (at a site that made no edit and was not
+refused, or whose claims went another way) say nothing a reader acts
+on. A version-1 edit set is refused (`model.md` §2, `UnsupportedVersion`):
+it has no `instances`, and the report it gives would lack the section of
+§10.5.
+
 ### 6.1 Invariants
 
 The rows are checked in order. Within a row, its lists in field order,
@@ -1025,6 +1082,7 @@ row's rules and messages).
 | a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
 | the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
 | `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit; a refused set has a refusal | the `state` field | `sections.set.state` |
+| `instances` strictly ascending by `instance`; each place the range of an edit or of a refusal of a site; an instance's `subjects` strictly ascending; `first` as above | that record, its `subjects`, its `first` | `sections.set.instances[i]`, `….instance.subjects`, `….first` |
 
 Not checked by the format: the order of `unparsed` and of a `first`
 list (plan order, which needs the plan), the values of `observers` and
@@ -2009,7 +2067,7 @@ identifier is part of the pattern's digest (`digest.md` §8).
 | The name is | The front end gives | Claim |
 |---|---|---|
 | the unqualified callee of a dependent call | the declarations `S` found at the definition | `S` not empty and all subjects: `replace`. `S` not empty and none a subject: `keep`. Mixed: `refuse(mixed_set)`. `S` empty: next row |
-| any other dependent name (`T::f`, `x.f`, `x->f`, a call found only by argument-dependent lookup) | per instantiated specialisation, the entity the name resolved to | every one a subject: `replace`. None a subject: `keep`. Mixed: `refuse(mixed_instances)`. Not instantiated in this observer, or the front end has no such record: `unresolved` |
+| any other dependent name (`T::f`, `x.f`, `x->f`, a call found only by argument-dependent lookup, `this->f` with a dependent base) | per instantiated specialisation, the entity the name resolved to | every one a subject: `replace` (`refuse(instantiated)` under `dependent: refuse`, §3). None a subject, and one a declaration named like the old name: `keep`. Mixed: `refuse(mixed_instances)`. No instantiation is evidence: `unresolved` |
 
 A `replace` here has a literal piece, and with it the shard has one
 `changed` entry (§4.5): `key` the unit whose stream holds the name (the
@@ -2019,47 +2077,87 @@ name token, `reason` `dependent name <old name>`. Reduce puts the key in
 key to exempt (it is keyed by content, or its key is indeterminate) gets
 no entry: the edit is claimed, and verification reports the unit.
 
-Read precisely (`docs/wp/WP-073.md`):
+**Why row 2 edits on the instantiations the run saw** (the offering
+form, `docs/wp/WP-139.md`; the supervisor's ruling of 2026-11-23 on
+`spec/landed/edits/WP-127.md`, "The offering form"):
 
+- The guarantee of a run is over its observers, for every reference: a
+  translation unit outside the run that calls `S::f` directly breaks as
+  one that instantiates `call` with another class does. A dependent
+  name is not a different promise; it is a place where that limit
+  shows.
+- Verification proves it for what the run saw: every specialisation an
+  observer made before is made again and binds the renamed entity, or
+  the run is not verified (`derived_changed`, a unit added or removed,
+  an instantiation that no longer parses).
+- Refusing instead makes the rename of any member that a template calls
+  through its parameter impossible, where the evidence to do it
+  correctly is in hand.
+
+`dependent: refuse` (§3, `--dependent=refuse`, §10.1) keeps the
+refusing form of `docs/wp/WP-127.md` for a run whose observers are known
+not to be the program (a library's own tests): a name every
+instantiation binds to a subject is `refuse(instantiated)`; the other
+outcomes are as under `offer`.
+
+Read precisely (`docs/wp/WP-073.md`, `docs/wp/WP-139.md`):
+
+- **Row 2 is the front end's table.** Kiln's per-specialisation entries
+  (`kiln/spec/ast.md` §18.9, `WrittenRefs::specs()`; one row per pattern
+  entry and specialisation the observer made, with the `entity` the name
+  denotes there), read through `slip_kiln::written::instances`. Nothing
+  else: the join of WP-127 (an instantiation's expression at the name
+  token) is gone and is not a second source. A shape for which the table
+  has no row is `unresolved` (the next bullets; the shapes found are in
+  `spec/landed/edits/WP-139.md`, "For Kiln").
+- **What "binds" is.** A row with an `entity` binds the name to it. A
+  row without one (the name stayed dependent in a partially substituted
+  pattern, a member of an unknown specialisation) is not evidence, nor
+  is the absence of a row (not instantiated in this observer, or a shape
+  the table does not record); the name is `unresolved` unless another
+  row decides it.
 - **Which entity a declaration or a resolution is** is decided as for a
-  written reference (§9.3): taken to its origin (`api.md` §5.5) and to
-  the digest's entity, then looked up among the observer's subjects. A
-  member of an instantiated class resolved to in row 2 is therefore the
-  member of the template, and a claim names that subject.
+  written reference (§9.3): through its using-shadow, taken to its
+  origin (`api.md` §5.5) and to the digest's entity, then looked up among
+  the observer's subjects. A member of an instantiated class resolved to
+  in row 2 is therefore the member of the template, and a claim names
+  that subject. An entity not named like the old name is no subject and
+  counts among those that do not bind one, but alone it makes no `keep`:
+  it is the table's row for something this rename does not read (a type
+  a nested-name-specifier names), not evidence that the name means
+  something else.
 - **"Every one", "none" and "mixed"** are over what this observer gives:
-  the set `S` in row 1, and in row 2 every instantiation of the pattern
-  the observer made. Two observers that instantiate differently make
-  different claims at one site, and reduce sees the disagreement (§5.4).
-- **`subjects` of the claim**: for a `replace` or a `refuse`, the subjects
-  among the entities of `S` (row 1) or among those resolved to (row 2);
-  none for a `keep` or an `unresolved`.
+  the set `S` in row 1, and in row 2 every row of the pattern's entry,
+  one per specialisation the observer made. Two observers that
+  instantiate differently make different claims at one site (`replace`
+  and `keep`, in either order), and reduce sees the disagreement:
+  `contested` (§5.4). An observer that does not instantiate claims
+  `unresolved`, which joins with the other's `replace` (§5.4): the edit
+  is made and verified in the observer that instantiates.
+- **`subjects` of the claim**: for a `replace` or a `refuse`, the
+  subjects among the entities of `S` (row 1) or among those resolved to
+  (row 2); none for a `keep` or an `unresolved`.
+- **Instances.** Each row that is evidence at a row-2 claim that is not
+  `unresolved` is an instance of the shard (§4.5): the claim's place,
+  the specialisation's key and display, the subjects it binds the name
+  to. Reduce joins them over observers, with the number of observers
+  that made each specialisation, and keeps those at an accepted edit or
+  at a refusal of a site (§6): the report's section of names edited on
+  instances (§10.5), and the specialisations a refusal was made on.
 - **The holder** is `Keys::unit_of` the entry's enclosing declaration
   (the front end's innermost declaration whose extent holds the name);
   its key is `Keys::key_id` of that unit. No entry when the name has no
   enclosing declaration, no unit holds it, or the unit has no key. A
   `replace` that `slip_kiln::sites` turns into a `refuse` (a name in a
   macro body) edits nothing and gets no entry.
-- **At this pin** neither row has what it needs from the front end (the
+- **A dependent using-declarator** (`using T::f;`) is not claimed by
+  row 2: what it names is §9.2's (the mixed follower of its
+  instantiations), and its name stays `unresolved`.
+- **Row 1 at this pin** has not what it needs from the front end (the
   join from a dependent entry to the declarations found at the
-  definition; per-specialisation entries): every dependent name spelled
-  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`),
-  except as the next bullet says.
-- **Bound by an instantiation: refused** (`docs/wp/WP-127.md` item 2,
-  the refusing form). The front end builds an instantiation's
-  expression at the place of the pattern's: the `MemberExpr` of `t.f()`
-  in `call<n::S<int>>`, the `DeclRefExpr` of `T::f()` and of `&T::f`,
-  has the dependent entry's name token as its location. A dependent
-  name some expression at whose name token refers to a subject (taken
-  to its origin and its entity, as above) is claimed
-  `refuse(mixed_instances)` with those subjects: the pattern's one name
-  is that of every instantiation, those other observers make and those
-  no observer makes included, and the rename does not edit it. Two
-  observers of which one instantiates refuse (the refusal is one
-  observer's). What it costs: a rename of a member that a function
-  template calls through its parameter is refused wherever an observer
-  instantiates the call with the renamed class. Offering the edit when
-  every instantiation of every observer binds the name to a subject is
-  the proposal of `spec/landed/edits/WP-127.md`, not built.
+  definition, `docs/requests/KR1-amendment-1.md` §2): a name row 1 would
+  decide is read by row 2 when an instantiation resolved it, and is
+  `unresolved` otherwise (`spec/landed/edits/WP-073.md`).
 
 This is where rename guesses, and where it leans on verification most:
 
@@ -2068,6 +2166,11 @@ This is where rename guesses, and where it leans on verification most:
   that is not a subject. The post-image then selects something else in
   that specialisation. Its derived unit differs (`derived_changed`), and
   the run is not verified.
+- A row-2 `replace` is proved for the specialisations the observers
+  made, and for no other: one made only by a translation unit outside
+  the run (a dependent project, a header-only user) is not checked. The
+  report lists each name edited this way with the specialisations seen
+  (§10.5).
 - An `unresolved` name that should have changed leaves an instantiation
   that does not parse, or one that resolves differently, in every
   observer that instantiates it. If no observer instantiates it, nothing
@@ -2078,6 +2181,17 @@ This is where rename guesses, and where it leans on verification most:
   every spelled piece (§9.3). An error in a dependent name of an exempt
   pattern that no observer instantiates is not detected. The report lists
   every exempt unit with the place and the reason.
+- Known limits at this pin (`spec/landed/edits/WP-139.md`, "Findings").
+  A row-2 `replace` does not ask what `new_name` finds in the
+  instantiation: a member of the instantiating class named `new_name`
+  (`this->g()` in `D : T`, `D::g`) captures it, and verification fails
+  the run. A dependent name in an alias template or a requires-clause has
+  no holder (the front end encloses it by the translation unit): its
+  `replace` gets no `changed` entry, the pattern's unit differs, and the
+  run is not verified. A dependent name in a default template argument
+  has no row: `unresolved`; its post-image fails to compile, or, when the
+  old name has another declaration to fall back on, binds it and is
+  **verified**: the one silent case found, for the supervisor.
 
 ### 9.5 Refusals
 
@@ -2150,7 +2264,7 @@ pub fn run(transform: &Transform, unit: &slip_kiln::Unit<'_>, keys: &mut slip_di
            files: &dyn Fn(kiln::source::FileId) -> Option<FileRef>) -> Result<Edits, String>;
 ```
 
-It reads the subject through five things and nothing else of the front
+It reads the subject through six things and nothing else of the front
 end's tables:
 
 | From | What |
@@ -2160,7 +2274,8 @@ end's tables:
 | `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range of a name's span, or none: Kiln's `editable_file_range` (§2.2), which needs Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
 | `Unit::pp_record` | the macros the unit defines, for `name_taken` (§9.5) |
-| the AST's expressions and lookup tables (`docs/wp/WP-127.md`) | the declaration an instantiation's `DeclRefExpr` or `MemberExpr` at a dependent name's token refers to (§9.4); the members a class declares under a name (`Ast::lookup_local`) and a using-declaration's qualifier, for what it names (§9.2) |
+| `slip_kiln::written::instances` (`docs/wp/WP-139.md`) | Kiln's per-specialisation table (`kiln/spec/ast.md` §18.9): for a dependent entry, each specialisation the observer made and the entity the name denotes there (§9.4) |
+| the AST's lookup tables (`docs/wp/WP-127.md`) | the members a class declares under a name (`Ast::lookup_local`) and a using-declaration's qualifier, for what it names (§9.2) |
 
 `run` is a function of the unit: two parses of the same inputs give equal
 `Edits`. It returns `Err` for a unit parsed without `ParseOptions::written`
@@ -2188,6 +2303,8 @@ exactly one file of its kind in the store, as for `--plan` (`exec.md`
      `TransformId` in the request (`docs/wp/WP-092.md`). `--indivisible`
      sets the request's flag. The budgets are the defaults of `api.md`
      §2.5.
+   - `--dependent offer|refuse` (a rename; default `offer`) sets the
+     request's `dependent` (§3, §9.4).
    - `--owned` and `--readonly` are made real paths.
 3. Takes a new round (§8) and runs the phase of `exec.md` §5 with jobs
    that carry the request's id (`Job.transform`).
@@ -2295,8 +2412,33 @@ finding <kind> <name>: <n> observer(s), first <main file>[: <path>:<line>:<colum
 stale <display>: still declared under its old name in <main file>
 spelling <why>: <path>:<line>:<column>: meant <key, first 16 digits>[, found <name>] (<n> observer(s))
 exempt <key, first 16 digits> <reason>: <path>:<line>:<column>[ (not in force)]
+instances: <n> edited, <n> refused; a specialisation made only outside the run is not checked
+instance <edited|refused> <path>:<line>:<column>: <display of the specialisation>: <displays of the subjects, ", "-separated | another declaration> (<n> observer(s), first <main file>)
 residue <category>: <path>:<line>:<column>
 ```
+
+**Names edited on instances** (`docs/wp/WP-139.md` item 3). The
+`instances:` heading and its `instance` lines are printed when the edit
+set has instances (§6): one line per specialisation seen at a dependent
+name the rename decided by row 2 of §9.4, `edited` where the set edits
+the name, `refused` where a site refusal stands there (the
+specialisations a `mixed_instances` or `instantiated` refusal, or a
+`contested` one, was made on: item 5). The heading counts the places.
+The observer count is the number of observers whose shard made that
+specialisation there.
+
+They are residue of their own kind: what the run's evidence for the edit
+was, and where it stops. They are not `dependent` (§8.4: a name no
+instantiation decided), are not in the result's `residue` line, and do
+not change the result's state. The reason: the claim verified (§9.6) is
+over the run's observers, for every reference, and a specialisation
+made only outside the run is the same limit as a direct call of the
+renamed entity from a translation unit outside the run, which no state
+reports either; every specialisation an observer made is made again in
+the post-image and compared (§9.4), so within the claim nothing is left
+unchecked. Making it residue of §8.4 would turn every rename of a
+member a template calls into `verified_with_residue`, a state that then
+says nothing.
 
 `finding` lines are the run report of `verify.md` §7, at most 64 groups.
 Of each other kind at most 200 lines are printed; a list that is cut is

@@ -11,12 +11,12 @@ use std::path::Path;
 
 use slip_model::container::{TRAILER_LEN, Writer};
 use slip_model::edits::{
-    Failure, FailureKind, HostRefusal, MacroSite, Piece, Place, Reason, Report, Role, Severity,
-    SourcePlace, Subject, tiers,
+    Failure, FailureKind, HostRefusal, Instance, MacroSite, Piece, Place, Reason, Report, Role,
+    Severity, SourcePlace, Subject, tiers,
 };
 use slip_model::editset::{
-    Basis, Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, SetState, basis_id, cross,
-    properly_inside, share_byte, within,
+    Basis, Cause, Edit, EditSet, Exempt, Failed, Refusal, Reported, Seen, SetState, basis_id,
+    cross, properly_inside, share_byte, within,
 };
 use slip_model::formats::{JsonFormError, content_id, dump, transform_run_names, undump};
 use slip_model::hash::{content_digest, tagged_digest};
@@ -216,9 +216,9 @@ impl Raw {
 }
 
 /// The version this crate writes of a kind of this file: `RSLT` is at 2
-/// (WP-111), the others at 1.
+/// (WP-111), `EDTS` at 2 (WP-139), the others at 1.
 fn version_of(kind: [u8; 4]) -> u32 {
-    if kind == *b"RSLT" { 2 } else { 1 }
+    if kind == *b"RSLT" || kind == *b"EDTS" { 2 } else { 1 }
 }
 
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
@@ -369,6 +369,20 @@ fn raw_set(x: &EditSet) -> Raw {
         r.mark(format!("{S}.counters[{i}]"));
         r.mark(format!("{S}.counters[{i}].name"));
         r.e.str(&c.name).uv(c.value);
+    }
+    r.e.count(x.instances.len());
+    for (i, s) in x.instances.iter().enumerate() {
+        let at = format!("{S}.instances[{i}]");
+        r.mark(at.clone());
+        let n = &s.instance;
+        r.place(&n.place);
+        r.opt(n.spec.as_ref(), |r, k| {
+            r.e.digest(k);
+        });
+        r.e.str(&n.display);
+        r.mark(format!("{at}.instance.subjects"));
+        r.digests(&n.subjects);
+        r.counts(&at, s.observers, &s.first);
     }
     r
 }
@@ -785,6 +799,34 @@ fn sample() -> EditSet {
             Counter { name: "api.unresolved_spelling_matches".to_owned(), value: 3 },
             Counter { name: "reduce.edits".to_owned(), value: 3 },
         ],
+        // WP-139: at an edit (two specialisations, one without a key) and
+        // at a site refusal (a declaration that is no subject).
+        instances: vec![
+            seen(place(0, 10, 20), None, "call<(lambda)>", &[d(0x10)], 1),
+            seen(place(0, 10, 20), Some(d(0x30)), "call<n::S<int>>", &[d(0x10)], 2),
+            seen(place(0, 40, 45), Some(d(0x31)), "call<n::R>", &[], 1),
+        ],
+    }
+}
+
+/// An instance of an edit set (WP-139), first `observers` observers of
+/// `0xa0` up.
+fn seen(
+    p: Place,
+    spec: Option<Digest>,
+    display: &str,
+    subjects: &[Digest],
+    observers: u64,
+) -> Seen {
+    Seen {
+        instance: Instance {
+            place: p,
+            spec,
+            display: display.to_owned(),
+            subjects: subjects.to_vec(),
+        },
+        observers,
+        first: (0..observers).map(|i| d(0xa0 + u8::try_from(i).unwrap())).collect(),
     }
 }
 
@@ -803,6 +845,8 @@ fn refused() -> EditSet {
             Refusal { subject: Some(d(0x10)), ..refusal(Cause::NameTaken, None, 0, 0) },
             refusal(Cause::NoEdit, None, 0, 0),
         ],
+        // Their places were an edit and a site refusal of `sample`.
+        instances: Vec::new(),
         ..sample()
     }
 }
@@ -1015,7 +1059,7 @@ fn run() -> TransformRun {
 // Hand-written files (spec/model.md §2, §5; spec/edits.md §6, §7.1, §8.5,
 // §10.6), derived from the grammar and commented per field.
 
-const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  01 00 00 00"; // magic, EDTS, version 1
+const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  02 00 00 00"; // magic, EDTS, version 2
 const HEADER_OVLY: &str = "53 4c 49 50 1a 0a 00 00  4f 56 4c 59  01 00 00 00"; // magic, OVLY, version 1
 const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  02 00 00 00"; // magic, RSLT, version 2
 const HEADER_RUNT: &str = "53 4c 49 50 1a 0a 00 00  52 55 4e 54  01 00 00 00"; // magic, RUNT, version 1
@@ -1047,13 +1091,14 @@ fn small_set() -> EditSet {
         failures: Vec::new(),
         unparsed: Vec::new(),
         counters: Vec::new(),
+        instances: Vec::new(),
     }
 }
 
 fn small_set_bytes() -> Vec<u8> {
     reseal(hex(&[
         HEADER_EDTS,
-        "01 c3 01",         // section set, 195 bytes:            @16
+        "01 c4 01",         // section set, 196 bytes:            @16
         "01",               //   scheme 1                          @19
         &rep("11", 32),     //   plan
         "00",               //   round 0
@@ -1073,9 +1118,9 @@ fn small_set_bytes() -> Vec<u8> {
         "01 01",            //     observers 1, votes 1
         "01",               //     first: 1
         &rep("66", 32),
-        "00 00 00 00 00 00 00 00 00", // groups, changed, kept, unresolved, refusals, reports, failures, unparsed, counters
-        "00",                         // end
-        TRAILER,                      // the BLAKE3 of the rest, written by reseal
+        "00 00 00 00 00 00 00 00 00 00", // groups, changed, kept, unresolved, refusals, reports, failures, unparsed, counters, instances
+        "00",                            // end
+        TRAILER,                         // the BLAKE3 of the rest, written by reseal
     ]))
 }
 
@@ -1197,7 +1242,7 @@ fn small_run_bytes() -> Vec<u8> {
 #[test]
 fn bytes_exact() {
     let set = small_set_bytes();
-    assert_eq!(set.len(), 16 + 3 + 195 + 1 + 32);
+    assert_eq!(set.len(), 16 + 3 + 196 + 1 + 32);
     assert_eq!(small_set().to_bytes(), set);
     assert_eq!(raw_file(&small_set()), set);
     assert_eq!(EditSet::from_bytes(&set).unwrap(), small_set());
@@ -1529,7 +1574,8 @@ fn json_members() {
             "reports",
             "failures",
             "unparsed",
-            "counters"
+            "counters",
+            "instances"
         ]
     );
     let first = |name: &str| s.get(name).unwrap().as_array().unwrap()[0].clone();
@@ -2540,6 +2586,8 @@ fn set_state() {
     // The refusals of a site leave a set accepted.
     for cause in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
         let mut x = sample();
+        // The instance at the site refusal `sample` had.
+        x.instances.truncate(2);
         x.refusals = vec![Refusal {
             reason: if cause == Cause::SiteRefused { Reason::Pasted } else { Reason::None },
             ..refusal(cause, Some(0), 50, 55)
@@ -2733,7 +2781,12 @@ fn set_file_index_and_edits_of() {
     assert_eq!(x.edits_of(1), &x.edits[2..3]);
     assert!(x.edits_of(2).is_empty(), "the last file, with no edit");
     assert!(x.edits_of(3).is_empty());
-    let y = EditSet { edits: x.edits[2..].to_vec(), groups: Vec::new(), ..sample() };
+    let y = EditSet {
+        edits: x.edits[2..].to_vec(),
+        groups: Vec::new(),
+        instances: Vec::new(),
+        ..sample()
+    };
     assert!(y.edits_of(0).is_empty(), "the first file, with no edit");
     assert_eq!(y.edits_of(1), &y.edits[..]);
     assert!(refused().edits_of(0).is_empty());
@@ -3273,4 +3326,66 @@ fn basis_id_encoding() {
     assert_ne!(basis_id(&[a]), basis_id(&[a, a]));
     // Not the digest of another tag.
     assert_ne!(basis_id(&[a, b]), tagged_digest("slip.observer.v1", &encoded));
+}
+
+// spec/edits.md §6.1, the instances row (WP-139): strictly ascending; each
+// place the range of an edit or of a refusal of a site; subjects strictly
+// ascending; `first` as every `first`.
+#[test]
+fn set_instances() {
+    let what = broken(|x| x.instances.swap(0, 1), "sections.set.instances[1]");
+    assert_eq!(what, "instances are not strictly ascending");
+    broken(|x| x.instances[1] = x.instances[0].clone(), "sections.set.instances[1]");
+    // A kept range, the range of no edit, and a contested range are not
+    // site refusals of `site_refused`, but `contested` is of a site.
+    for (p, ok) in [(place(0, 30, 33), false), (place(0, 10, 19), false), (place(1, 10, 12), true)]
+    {
+        let mut x = sample();
+        x.instances[2].instance.place = p;
+        x.instances.sort_by(|a, b| a.instance.cmp(&b.instance));
+        if ok {
+            x.validate().unwrap();
+        } else {
+            let i = x.instances.iter().position(|s| s.instance.place == p).unwrap();
+            let what = rejected(&x, &format!("sections.set.instances[{i}]"));
+            assert_eq!(
+                what,
+                "an instance's place is the range of no edit and of no refusal of a site"
+            );
+        }
+    }
+    let what = broken(
+        |x| x.instances[0].instance.subjects = vec![d(0x11), d(0x10)],
+        "sections.set.instances[0].instance.subjects",
+    );
+    assert_eq!(what, "an instance's subjects are not strictly ascending");
+    broken(|x| x.instances[0].first.push(d(0xa1)), "sections.set.instances[0].first");
+    // A refused set keeps the instances at its site refusals.
+    let mut x = refused();
+    x.refusals.insert(2, sample().refusals[1].clone());
+    x.instances = vec![seen(place(0, 40, 45), Some(d(0x31)), "call<n::R>", &[], 1)];
+    x.validate().unwrap();
+}
+
+// spec/edits.md §6 (WP-139): `EDTS` is at version 2, which has
+// `instances`; version 1 is refused, from bytes (`UnsupportedVersion` at
+// the version field) and from JSON (at `version`).
+#[test]
+fn set_version_1_is_refused() {
+    let bytes = small_set_bytes();
+    assert_eq!(&bytes[12..16], &[2, 0, 0, 0]);
+    EditSet::from_bytes(&bytes).unwrap();
+    let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
+    for v in [1u32, 3] {
+        let mut w = Writer::new(*b"EDTS", v);
+        w.section(1, payload);
+        assert_eq!(
+            error(EditSet::from_bytes(&w.finish())),
+            (ErrorKind::UnsupportedVersion, 12),
+            "{v}"
+        );
+    }
+    let mut j = small_set().to_json();
+    set(&mut j, &["version"], Value::Int(1));
+    assert_eq!(EditSet::from_json(&j).unwrap_err().path, "version");
 }

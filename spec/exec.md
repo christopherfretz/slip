@@ -974,10 +974,12 @@ slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]�
            [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
 slip map   (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            (--from <qualified name> --to <identifier> [--kind function|variable]
+            [--dependent offer|refuse]
             | --transform <file.cpp> [--transform-arg <option>]… [--indivisible])
            --owned <path>… [--readonly <path>]…
            [the store, selection, memory, timeout and worker options of `parse`]
 slip rename --from <qualified name> --to <identifier> [--kind function|variable]
+           [--dependent offer|refuse]
            (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            --owned <path>… [--readonly <path>]…
            [--write | --patch <file>] [--relative-to <dir>] [--report <file>]

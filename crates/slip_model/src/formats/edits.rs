@@ -1,4 +1,5 @@
-//! The `edits` section, id 17 of a map shard (`spec/edits.md` §4). Work
+//! The `edits` section, id 32 of a map shard (`spec/edits.md` §4; 17 until
+//! WP-139 added `instances`, `spec/model.md` §8). Work
 //! package WP-060; the invariants are `spec/edits.md` §4.7, the order of
 //! checks and the messages `spec/landed/edits/WP-060.md` §4, the JSON form
 //! its §2.
@@ -6,8 +7,9 @@
 use std::collections::BTreeSet;
 
 use crate::edits::{
-    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place,
-    Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, subject_flags, tiers,
+    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Instance, Link, MacroSite, Piece,
+    Place, Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, subject_flags,
+    tiers,
 };
 use crate::json::Value;
 use crate::keys::{DUPLICATE_RULE, Rule};
@@ -24,7 +26,7 @@ use super::common::{
 use super::declared::{json_rule, read_rule};
 
 /// The section id (`spec/model.md` §8).
-pub(super) const ID: u64 = 17;
+pub(super) const ID: u64 = 32;
 
 impl Enumeration for Role {
     const TABLE: &'static [(Self, u64, &'static str)] = &[
@@ -61,11 +63,12 @@ impl Enumeration for Reason {
         (Reason::MixedSet, 8, "mixed_set"),
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
+        (Reason::Instantiated, 11, "instantiated"),
     ];
     const UNLISTED: &'static str = "unlisted Reason value";
     const EXPECTED: &'static str = "expected one of \"none\", \"macro_body\", \"pasted\", \
          \"crossing\", \"not_a_file\", \"not_owned\", \"file_recoded\", \"not_plain\", \
-         \"mixed_set\", \"mixed_instances\", \"directive\"";
+         \"mixed_set\", \"mixed_instances\", \"directive\", \"instantiated\"";
 }
 
 impl Enumeration for Severity {
@@ -119,7 +122,7 @@ impl FailureKind {
 // ---------------------------------------------------------------------------
 // Invariants (spec/edits.md §4.7, in the table's order)
 
-/// The eight lists after `failure`, in field order.
+/// The nine lists after `failure`, in field order.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum List {
     Files = 0,
@@ -130,10 +133,20 @@ pub(super) enum List {
     Reports = 5,
     Changed = 6,
     Renamed = 7,
+    Instances = 8,
 }
 
-const LIST_NAMES: [&str; 8] =
-    ["files", "subjects", "links", "claims", "groups", "reports", "changed", "renamed"];
+const LIST_NAMES: [&str; 9] = [
+    "files",
+    "subjects",
+    "links",
+    "claims",
+    "groups",
+    "reports",
+    "changed",
+    "renamed",
+    "instances",
+];
 
 /// Where an invariant is violated: a field or element of the section.
 #[derive(Clone, Copy, Debug)]
@@ -159,6 +172,8 @@ pub(super) enum Loc {
     Report(usize),
     Changed(usize),
     Renamed(usize),
+    Instance(usize),
+    InstanceSubjects(usize),
     RefusalSubject,
 }
 
@@ -188,6 +203,8 @@ impl Loc {
             Loc::Report(i) => format!("{S}.reports[{i}]"),
             Loc::Changed(i) => format!("{S}.changed[{i}]"),
             Loc::Renamed(i) => format!("{S}.renamed[{i}]"),
+            Loc::Instance(i) => format!("{S}.instances[{i}]"),
+            Loc::InstanceSubjects(i) => format!("{S}.instances[{i}].subjects"),
         }
     }
 }
@@ -254,6 +271,7 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
             (List::Reports, e.reports.len()),
             (List::Changed, e.changed.len()),
             (List::Renamed, e.renamed.len()),
+            (List::Instances, e.instances.len()),
         ];
         if let Some(&(l, _)) = lens.iter().find(|(_, n)| *n != 0) {
             return Some((Loc::List(l), "a failed run has a list that is not empty"));
@@ -352,6 +370,30 @@ pub(super) fn violation(e: &Edits, cx: Context) -> Option<(Loc, &'static str)> {
             }
         }
         last = Some(m);
+    }
+    instance_violation(&e.files, &e.instances)
+}
+
+/// The rules of `instances` (§4.7, added by WP-139), over the whole list:
+/// strictly ascending, each place a non-empty range of `files`, each
+/// `subjects` strictly ascending.
+pub(super) fn instance_violation(
+    files: &[FileRef],
+    instances: &[Instance],
+) -> Option<(Loc, &'static str)> {
+    for (i, x) in instances.iter().enumerate() {
+        if i > 0 && instances[i - 1] >= *x {
+            return Some((Loc::Instance(i), "instances are not strictly ascending"));
+        }
+        if !within(files, &x.place) || x.place.lo == x.place.hi {
+            return Some((Loc::Instance(i), "an instance's place is empty or not within its file"));
+        }
+        if ascending(&x.subjects).is_some() {
+            return Some((
+                Loc::InstanceSubjects(i),
+                "an instance's subjects are not strictly ascending",
+            ));
+        }
     }
     None
 }
@@ -602,13 +644,38 @@ pub(super) fn encode(e: &mut Encoder, x: &Edits) {
     for r in &x.renamed {
         r.encode(e);
     }
+    e.count(x.instances.len());
+    for i in &x.instances {
+        enc_instance(e, i);
+    }
+}
+
+pub(super) fn enc_instance(e: &mut Encoder, i: &Instance) {
+    enc_place(e, &i.place);
+    enc_opt(e, i.spec.as_ref(), |e, k| {
+        e.digest(k);
+    });
+    e.str(&i.display).count(i.subjects.len());
+    for k in &i.subjects {
+        e.digest(k);
+    }
+}
+
+/// An `Instance` and the offset of its `subjects`.
+pub(super) fn dec_instance(d: &mut Decoder<'_>) -> Result<(Instance, usize)> {
+    let place = dec_place(d)?;
+    let spec = dec_opt(d, Decoder::digest)?;
+    let display = d.str()?.to_owned();
+    let at = d.offset();
+    let subjects = dec_list(d, None, Decoder::digest)?;
+    Ok((Instance { place, spec, display, subjects }, at))
 }
 
 /// File offsets of the fields an invariant can name.
 #[derive(Debug, Default)]
 pub(super) struct Offsets {
     section: usize,
-    lists: [usize; 8],
+    lists: [usize; 9],
     file: Vec<usize>,
     subject: Vec<[usize; 4]>,
     link: Vec<usize>,
@@ -617,6 +684,7 @@ pub(super) struct Offsets {
     report: Vec<usize>,
     changed: Vec<usize>,
     renamed: Vec<usize>,
+    instance: Vec<[usize; 2]>,
     refusal_subject: usize,
 }
 
@@ -656,6 +724,8 @@ impl Offsets {
             Loc::Report(i) => self.report[i],
             Loc::Changed(i) => self.changed[i],
             Loc::Renamed(i) => self.renamed[i],
+            Loc::Instance(i) => self.instance[i][0],
+            Loc::InstanceSubjects(i) => self.instance[i][1],
             Loc::RefusalSubject => self.refusal_subject,
         }
     }
@@ -799,6 +869,13 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
     })?;
     o.lists[List::Renamed as usize] = d.offset();
     let renamed = dec_list(d, Some(&mut o.renamed), Rule::decode)?;
+    o.lists[List::Instances as usize] = d.offset();
+    let instances = dec_list(d, None, |d| {
+        let start = d.offset();
+        let (x, at) = dec_instance(d)?;
+        o.instance.push([start, at]);
+        Ok(x)
+    })?;
     let edits = Edits {
         scheme,
         transform,
@@ -811,6 +888,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
         reports,
         changed,
         renamed,
+        instances,
     };
     Ok((edits, o))
 }
@@ -818,7 +896,7 @@ pub(super) fn decode(d: &mut Decoder<'_>) -> Result<(Edits, Offsets)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const FIELDS: [&str; 11] = [
+const FIELDS: [&str; 12] = [
     "scheme",
     "transform",
     "failure",
@@ -830,6 +908,7 @@ const FIELDS: [&str; 11] = [
     "reports",
     "changed",
     "renamed",
+    "instances",
 ];
 const FAILURE: [&str; 5] = ["kind", "message", "place", "rendered", "refusal"];
 const SOURCE_PLACE: [&str; 3] = ["file", "line", "column"];
@@ -845,6 +924,7 @@ const MACRO: [&str; 2] = ["name_start", "name"];
 const SPELLED: [&str; 2] = ["key", "text"];
 const REPORT: [&str; 4] = ["place", "severity", "message", "attached"];
 const CHANGED: [&str; 3] = ["key", "place", "reason"];
+pub(super) const INSTANCE: [&str; 4] = ["place", "spec", "display", "subjects"];
 
 pub(super) fn record<const N: usize>(fields: [&str; N], values: [Value; N]) -> Value {
     object(fields.into_iter().zip(values).collect())
@@ -915,6 +995,28 @@ pub(super) fn json_macro(m: Option<&MacroSite>) -> Value {
     json_opt(m, |m| record(MACRO, [json_uv(m.name_start), json_bytes(&m.name)]))
 }
 
+pub(super) fn json_instance(i: &Instance) -> Value {
+    record(
+        INSTANCE,
+        [
+            json_place(&i.place),
+            json_opt(i.spec.as_ref(), json_digest),
+            Value::Str(i.display.clone()),
+            json_digests(&i.subjects),
+        ],
+    )
+}
+
+pub(super) fn read_instance(v: &Value, at: &At<'_>) -> JResult<Instance> {
+    let [place, spec, display, subjects] = read_record(v, at, INSTANCE)?;
+    Ok(Instance {
+        place: read_place(place, &at.key("place"))?,
+        spec: read_opt(spec, &at.key("spec"), read_digest)?,
+        display: read_string(display, &at.key("display"))?,
+        subjects: read_list(subjects, &at.key("subjects"), read_digest)?,
+    })
+}
+
 pub(super) fn json_report(r: &Report) -> Value {
     record(
         REPORT,
@@ -978,6 +1080,7 @@ pub(super) fn render(x: &Edits) -> Value {
             Value::Array(reports),
             Value::Array(changed),
             Value::Array(x.renamed.iter().map(json_rule).collect()),
+            Value::Array(x.instances.iter().map(json_instance).collect()),
         ],
     )
 }
@@ -1099,6 +1202,7 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
         reports,
         changed,
         renamed,
+        instances,
     ] = read_record(v, at, FIELDS)?;
     let scheme = read_uv(scheme, &at.key("scheme"))?;
     let transform = read_digest(transform, &at.key("transform"))?;
@@ -1141,5 +1245,6 @@ pub(super) fn read(v: &Value, at: &At<'_>) -> JResult<Edits> {
             })
         })?,
         renamed: read_list(renamed, &at.key("renamed"), read_rule)?,
+        instances: read_list(instances, &at.key("instances"), read_instance)?,
     })
 }

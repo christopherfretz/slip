@@ -5,10 +5,10 @@
 use crate::Digest;
 use crate::json::Value;
 use crate::transform::{
-    Ownership, Rename, Script, TargetKind, Transform, TransformKind, is_canonical, is_identifier,
-    is_keyword,
+    Dependent, Ownership, Rename, Script, TargetKind, Transform, TransformKind, is_canonical,
+    is_identifier, is_keyword,
 };
-use crate::wire::{Decoder, Encoder};
+use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 
 use super::common::{
     Enumeration, JResult, Result, dec_enum, dec_list, dec_opt, enc_enum, json_bytes, json_digest,
@@ -39,6 +39,35 @@ impl Enumeration for TargetKind {
     const UNLISTED: &'static str = "unlisted TargetKind value";
     const EXPECTED: &'static str = "expected one of \"any\", \"function\", \"variable\"";
 }
+
+impl Enumeration for Dependent {
+    const TABLE: &'static [(Self, u64, &'static str)] =
+        &[(Dependent::Offer, 0, "offer"), (Dependent::Refuse, 1, "refuse")];
+    const UNLISTED: &'static str = "unlisted Dependent value";
+    const EXPECTED: &'static str = "expected one of \"offer\", \"refuse\"";
+}
+
+impl Dependent {
+    /// The name of `spec/edits.md` §3 (`offer`, `refuse`), as the command
+    /// line spells it.
+    pub fn name(self) -> &'static str {
+        Enumeration::name(self)
+    }
+
+    /// The value the command line's `--dependent <name>` names.
+    pub fn from_name(name: &str) -> Option<Dependent> {
+        Self::TABLE.iter().find(|(_, _, n)| *n == name).map(|(v, _, _)| *v)
+    }
+}
+
+/// The first version read: version 2 (`docs/wp/WP-139.md`) added
+/// `dependent` to `Rename`, and no reader of version 1 is kept before a
+/// release (`spec/edits.md` §3): a version-1 request read as `offer` would
+/// be a second encoding of one value, with another content id.
+const SINCE: u32 = 2;
+
+/// The message of a version this reader no longer reads.
+const OLD_VERSION: &str = "container version older than supported";
 
 // ---------------------------------------------------------------------------
 // Invariants
@@ -171,6 +200,7 @@ pub(super) fn encode(t: &Transform, extras: &[Extra<'_>]) -> Vec<u8> {
             enc_list(&mut e, &r.target);
             enc_enum(&mut e, r.kind);
             e.bytes(&r.new_name);
+            enc_enum(&mut e, r.dependent);
         }
     }
     match &t.script {
@@ -222,6 +252,9 @@ fn dec_bytes_list(d: &mut Decoder<'_>, offsets: &mut Vec<usize>) -> Result<Vec<V
 /// The request, its unknown ignorable sections and its content id.
 pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)> {
     let opened = open(bytes, Transform::KIND, Transform::VERSION, [TRANSFORM])?;
+    if opened.version < SINCE {
+        return Err(Error::new(ErrorKind::UnsupportedVersion, 12, OLD_VERSION));
+    }
     let [section] = opened.sections;
     let mut d = super::required(section, opened.end, "transform request has no transform section")?;
     let mut o = Offsets::default();
@@ -237,7 +270,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)
         let target = dec_bytes_list(d, &mut o.target_at)?;
         let kind = dec_enum(d)?;
         o.new_name = d.offset();
-        Ok(Rename { target, kind, new_name: d.bytes()?.to_vec() })
+        let new_name = d.bytes()?.to_vec();
+        Ok(Rename { target, kind, new_name, dependent: dec_enum(d)? })
     })?;
     o.script = d.offset();
     let script = dec_opt(&mut d, |d| {
@@ -282,6 +316,7 @@ pub(super) fn render(t: &Transform, extras: &[Extra<'_>]) -> Value {
                     ("target", json_list(&r.target)),
                     ("kind", json_enum(r.kind)),
                     ("new_name", json_bytes(&r.new_name)),
+                    ("dependent", json_enum(r.dependent)),
                 ])
             }),
         ),
@@ -305,6 +340,13 @@ pub(super) fn render(t: &Transform, extras: &[Extra<'_>]) -> Value {
 /// The request and the unknown ignorable sections of a JSON rendering.
 pub(super) fn read(v: &Value) -> JResult<(Transform, OwnedExtras)> {
     let s = read_container(v, Transform::KIND, Transform::VERSION, &NAMES)?;
+    if s.version < SINCE {
+        let have = s.version;
+        return Err(At::Root.key("version").error(format!(
+            "unsupported version {have}; this reader supports {SINCE} to {}",
+            Transform::VERSION
+        )));
+    }
     let [Some(section)] = s.known else {
         unreachable!("read_container returns every required section")
     };
@@ -322,11 +364,13 @@ pub(super) fn read(v: &Value) -> JResult<(Transform, OwnedExtras)> {
     };
     let indivisible = read_bool(indivisible, &at.key("indivisible"))?;
     let rename = read_opt(rename, &at.key("rename"), |v, at| {
-        let [target, kind, new_name] = read_record(v, at, ["target", "kind", "new_name"])?;
+        let [target, kind, new_name, dependent] =
+            read_record(v, at, ["target", "kind", "new_name", "dependent"])?;
         Ok(Rename {
             target: read_list(target, &at.key("target"), read_bytes)?,
             kind: read_enum(kind, &at.key("kind"))?,
             new_name: read_bytes(new_name, &at.key("new_name"))?,
+            dependent: read_enum(dependent, &at.key("dependent"))?,
         })
     })?;
     let script = read_opt(script, &at.key("script"), |v, at| {

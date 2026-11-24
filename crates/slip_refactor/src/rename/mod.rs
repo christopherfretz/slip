@@ -15,7 +15,7 @@
 //!    ([`subjects::flag_unreachable`], [`subjects::flag_name_taken`]).
 //! 4. The claims: every declaration named like the old name
 //!    ([`decls::claim`]), every written reference whose referent is
-//!    ([`refs::claim`]), and every dependent name ([`dependent::claim`]).
+//!    ([`refs::claim`]), and every dependent name ([`dependent::claim_all`]).
 //! 5. The section: derivations joined into claims (§4.3), files indexed,
 //!    `Edits::normalise`.
 
@@ -133,14 +133,11 @@ pub(crate) fn run(
 
     decls::claim(&mut ctx);
     refs::claim(&mut ctx, &hits);
-    let dependent = written::dependent_names(unit);
-    let bound = dependent::bound(&ctx, &dependent);
-    for name in &dependent {
-        dependent::claim(&mut ctx, name, &bound);
-    }
+    dependent::claim_all(&mut ctx);
 
-    let Ctx { subjects, claims, changed, .. } = ctx;
-    let (files, claims) = claims.finish(files, main)?;
+    let Ctx { subjects, claims, mut changed, .. } = ctx;
+    let (files, claims, claimed_changed, instances) = claims.finish(files, main)?;
+    changed.extend(claimed_changed);
     let (subjects, links) = subjects.finish(unit.ast());
     let mut edits = Edits {
         scheme: SCHEME,
@@ -154,6 +151,7 @@ pub(crate) fn run(
         reports: Vec::new(),
         changed,
         renamed: Vec::new(),
+        instances,
     };
     edits.normalise();
     Ok((edits, looked))

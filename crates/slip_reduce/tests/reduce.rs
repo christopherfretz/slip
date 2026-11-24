@@ -610,6 +610,57 @@ fn changed_in_force_shares_a_byte() {
     assert_eq!(counter(set, "reduce.changed.in_force"), 1);
 }
 
+/// §6 (WP-139): instances are joined over observers by the whole record,
+/// with the observers that have it, and kept only at the range of an
+/// accepted edit or of a refusal of a site: not at a `keep`, nor at an edit
+/// rejected.
+#[test]
+fn instances_joined_and_kept_at_edits_and_site_refusals() {
+    let s = Some(d(0x30));
+    let r = reduce_set(vec![
+        ShardB::new(0)
+            .seed(d(1))
+            .claim(the_edit(A, 0, 1, "g").subjects(&[d(1)]))
+            .instance((A, 0, 1), s, "call<S<int>>", &[d(1)])
+            .claim(keep(A, 20, 21))
+            .instance((A, 20, 21), Some(d(0x33)), "call<R>", &[]),
+        ShardB::new(1)
+            .seed(d(1))
+            .claim(the_edit(A, 0, 1, "g").subjects(&[d(1)]))
+            .instance((A, 0, 1), s, "call<S<int>>", &[d(1)])
+            .instance((A, 0, 1), Some(d(0x31)), "call<S<long>>", &[d(1)])
+            .instance((A, 0, 1), None, "call<(lambda)>", &[d(1)]),
+        ShardB::new(2)
+            .seed(d(1))
+            .claim(refuse(A, 10, 11).reason(Reason::MixedInstances).subjects(&[d(1)]))
+            .instance((A, 10, 11), Some(d(0x32)), "call<R>", &[])
+            .instance((A, 10, 11), s, "call<S<int>>", &[d(1)]),
+    ]);
+    let set = &r.edits;
+    // The refusal of the site at 10 refuses the set; the edit at 0 is
+    // kept in it, as a refused set keeps its edits (§6).
+    assert_eq!(causes(set), vec![Cause::SiteRefused], "{:?}", set.refusals);
+    let got: Vec<_> = set
+        .instances
+        .iter()
+        .map(|x| {
+            let i = &x.instance;
+            (i.place.lo, i.spec, i.display.as_str(), x.observers, x.first.clone())
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (0, None, "call<(lambda)>", 1, vec![observer(1)]),
+            (0, s, "call<S<int>>", 2, vec![observer(0), observer(1)]),
+            (0, Some(d(0x31)), "call<S<long>>", 1, vec![observer(1)]),
+            (10, s, "call<S<int>>", 1, vec![observer(2)]),
+            (10, Some(d(0x32)), "call<R>", 1, vec![observer(2)]),
+        ]
+    );
+    set.validate().unwrap();
+}
+
 fn reduce_set(shards: Vec<ShardB>) -> slip_reduce::Reduced {
     run(&script(), &Store::of(shards), "declared").unwrap()
 }
@@ -767,7 +818,7 @@ fn input_no_edits_section() {
 /// it (`spec/edits.md` §4.7), so reduce does not check it again.
 #[test]
 fn input_other_scheme() {
-    let bytes = rewrite(&plain(1).to_bytes(), 17, |p| {
+    let bytes = rewrite(&plain(1).to_bytes(), 32, |p| {
         assert_eq!(p[0], 1, "the payload opens with uv(scheme)");
         let mut p = p.to_vec();
         p[0] = 2;

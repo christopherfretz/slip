@@ -320,6 +320,15 @@ pub(crate) fn fold(
             Key::Changed { key: c.key, place: site_of(edits, &c.place), reason: c.reason.clone() };
         put(records, key, Val::Sample(Sample::one(index)))?;
     }
+    for i in &edits.instances {
+        let key = Key::Instance {
+            place: site_of(edits, &i.place),
+            spec: i.spec,
+            display: i.display.clone(),
+            subjects: i.subjects.clone(),
+        };
+        put(records, key, Val::Sample(Sample::one(index)))?;
+    }
     joined.rules.extend(edits.renamed.iter().cloned());
     for s in &edits.subjects {
         let mine = SubjectJoin::of_record(s, index);

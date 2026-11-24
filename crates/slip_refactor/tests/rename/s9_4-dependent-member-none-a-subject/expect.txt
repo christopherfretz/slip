@@ -1,5 +1,3 @@
-# pending
-# needs: K-e, Kiln stage 4 (WP-1933): per instantiated specialisation, the entity a dependent name resolved to (not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"); until then unresolved
 subjects:
   85f5d4ed seed - rule=yes n::S::f()
   d53c5070 seed - rule=yes n::S::f(int)
@@ -13,3 +11,7 @@ claims:
   main.cpp:4:51+1 keep t0 votes=1 none
   main.cpp:4:59+1 keep t0 votes=1 none
 changed:
+instances:
+  main.cpp:4:43+1 1162e9f7 n::t<n::R>(n::R, n::R *) []
+  main.cpp:4:51+1 1162e9f7 n::t<n::R>(n::R, n::R *) []
+  main.cpp:4:59+1 1162e9f7 n::t<n::R>(n::R, n::R *) []

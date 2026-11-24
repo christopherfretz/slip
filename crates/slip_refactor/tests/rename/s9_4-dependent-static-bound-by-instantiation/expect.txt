@@ -5,5 +5,8 @@ links:
 claims:
   main.cpp:2:26+1 keep t0 votes=1 none
   main.cpp:3:49+1 replace "g" t0 votes=1 none [089ac656]
-  main.cpp:5:43+1 refuse t0 votes=1 mixed_instances [089ac656]
+  main.cpp:5:43+1 replace "g" t0 votes=1 none [089ac656]
 changed:
+  a6d41c21 main.cpp:5:43+1 dependent name f
+instances:
+  main.cpp:5:43+1 673b6267 call<n::S<int>>() [089ac656]

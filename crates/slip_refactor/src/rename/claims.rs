@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use slip_kiln::kiln::source::{FileId, Span};
 use slip_kiln::sites::{Located, Sites};
 use slip_model::FileRef;
-use slip_model::edits::{Claim, KeyId, MacroSite, Piece, Reason, Stance};
+use slip_model::edits::{Changed, Claim, Instance, KeyId, MacroSite, Piece, Place, Reason, Stance};
 
 /// How a replacement is written (§9.3 "The pieces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,13 +60,43 @@ pub(crate) struct Claims {
     old: Vec<u8>,
     new: Vec<u8>,
     derivations: BTreeMap<(u32, u32, Stance), Derivation>,
+    /// `changed` entries (§4.5) for the `replace` of a span: placed at its
+    /// range by [`Claims::finish`], dropped if the span has no located
+    /// `replace` (§9.4: "A `replace` that `slip_kiln::sites` turns into a
+    /// `refuse` … gets no entry").
+    changed: Vec<((u32, u32), KeyId, Vec<u8>)>,
+    /// Instances (§4.5) of the claim of a span: placed at its range by
+    /// [`Claims::finish`], dropped if the span has no claim with a range.
+    instances: Vec<((u32, u32), Instance)>,
 }
+
+/// What [`Claims::finish`] gives: the files, the claims, the `changed`
+/// entries and the instances, each with its file an index of the files.
+pub(crate) type Finished = (Vec<FileRef>, Vec<Claim>, Vec<Changed>, Vec<Instance>);
 
 impl Claims {
     /// No derivation yet; `old` is the spelling `sites` checks a name
     /// token against, `new` the text of every piece.
     pub fn new(old: &[u8], new: &[u8]) -> Claims {
-        Claims { old: old.to_vec(), new: new.to_vec(), derivations: BTreeMap::new() }
+        Claims {
+            old: old.to_vec(),
+            new: new.to_vec(),
+            derivations: BTreeMap::new(),
+            changed: Vec::new(),
+            instances: Vec::new(),
+        }
+    }
+
+    /// The unit `key` is meant to differ because the name token `name`,
+    /// claimed `replace`, is edited (§4.5, §9.4).
+    pub fn changed(&mut self, name: Span, key: KeyId, reason: Vec<u8>) {
+        self.changed.push(((name.lo.to_raw(), name.hi.to_raw()), key, reason));
+    }
+
+    /// `instance` is evidence of the claim of the name token `name`; its
+    /// place is set to the claim's range.
+    pub fn instance(&mut self, name: Span, instance: Instance) {
+        self.instances.push(((name.lo.to_raw(), name.hi.to_raw()), instance));
     }
 
     /// The name token `name` denotes `subjects` and becomes the new name,
@@ -201,12 +231,23 @@ impl Claims {
         self,
         files: &dyn Fn(FileId) -> Option<FileRef>,
         main: FileId,
-    ) -> Result<(Vec<FileRef>, Vec<Claim>), String> {
+    ) -> Result<Finished, String> {
         // The piece of each replaced range, over all its derivations.
         let mut pieces: BTreeMap<(FileId, u64, u64), Written> = BTreeMap::new();
         for d in self.derivations.values() {
             if let (Stance::Replace, Some(at), Some(w)) = (d.stance, d.at, d.written) {
                 pieces.entry(at).and_modify(|have| *have = have.join(w)).or_insert(w);
+            }
+        }
+        // The located range of each span, of a `replace` and of any claim.
+        let mut replaced: BTreeMap<(u32, u32), (FileId, u64, u64)> = BTreeMap::new();
+        let mut claimed: BTreeMap<(u32, u32), (FileId, u64, u64)> = BTreeMap::new();
+        for (&(lo, hi, stance), d) in &self.derivations {
+            if let Some(at) = d.at.filter(|a| a.1 < a.2) {
+                if stance == Stance::Replace {
+                    replaced.insert((lo, hi), at);
+                }
+                claimed.entry((lo, hi)).or_insert(at);
             }
         }
         let mut index: BTreeMap<FileId, u64> = BTreeMap::new();
@@ -246,7 +287,23 @@ impl Claims {
                 notes: Vec::new(),
             });
         }
-        Ok((refs, claims))
+        // Every range below is a claim's, so its file is indexed.
+        let place = |at: (FileId, u64, u64)| {
+            index.get(&at.0).map(|&file| Place { file, lo: at.1, hi: at.2 })
+        };
+        let changed = self
+            .changed
+            .into_iter()
+            .filter_map(|(span, key, reason)| {
+                Some(Changed { key, place: place(*replaced.get(&span)?)?, reason })
+            })
+            .collect();
+        let instances = self
+            .instances
+            .into_iter()
+            .filter_map(|(span, i)| Some(Instance { place: place(*claimed.get(&span)?)?, ..i }))
+            .collect();
+        Ok((refs, claims, changed, instances))
     }
 }
 
@@ -289,7 +346,8 @@ mod tests {
                 c.refuse(&sites, name, &[], Reason::MixedInstances);
                 c.refuse(&sites, name, &[], Reason::MixedSet);
                 c.refuse(&sites, name, &[], Reason::MixedInstances);
-                let (_, claims) = c.finish(&|f| sites.file_ref(f), u.main_file().unwrap()).unwrap();
+                let (_, claims, ..) =
+                    c.finish(&|f| sites.file_ref(f), u.main_file().unwrap()).unwrap();
                 claims.iter().map(|c| (c.stance, c.reason)).collect::<Vec<_>>()
             })
             .unwrap();
