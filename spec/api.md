@@ -1226,9 +1226,14 @@ recorded. Version 0 has two spellings.
    specialisation, a member of an instantiated class) can never be
    spelled at a reference: the name written there is checked against the
    origin of what it denotes (rule 5), never against `E`, so the
-   spelling could not hold. Where the conditions above hold for a
+   spelling could not hold: a name without template arguments can
+   assert only an origin. Where the conditions above hold for a
    reference and `E` is not its own origin, `replace` throws
-   `unsupported`, naming `E`; the transform spells the origin. (At a
+   `unsupported`, naming `E` and saying to spell the origin instead
+   (reached by `lookup` in `parent_of(E)`, §6.1 rule 8). The origin's
+   key is not recorded under a piece that holds `E`: that would give a
+   spelling whose check is weaker than what the transform holds, and a
+   spelling that could not be checked is not given (rule 5). (At a
    name range that names declarations only, the record is an identifier
    with no key, as above, and nothing is checked against `E`.)
 2. **Fully qualified.** Otherwise the text is `::` followed by the

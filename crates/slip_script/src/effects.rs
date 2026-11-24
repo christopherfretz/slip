@@ -647,8 +647,9 @@ impl Host<'_> {
             message: format!(
                 "{} is made from {} (§5.5), and a name written for it is checked against that \
                  origin, never against it, so its spelling could not hold (§7.2 rule 5): spell \
-                 the origin",
+                 the origin {} instead (found today by `lookup` in its parent, §6.1 rule 8)",
                 self.subject.display(Value::Entity(e)),
+                self.subject.display(Value::Entity(origin)),
                 self.subject.display(Value::Entity(origin))
             ),
             place: Some(r),
