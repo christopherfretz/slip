@@ -1,5 +1,0 @@
-use 4 via 1 direct 1
-use 5 via 0 direct 1
-collisions 1
-indeterminate f2()
-indeterminate h()

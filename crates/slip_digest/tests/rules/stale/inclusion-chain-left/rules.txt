@@ -1,0 +1,5 @@
+# WP-111 review F2 (the reviewer's zz-inclchain-b): own2.h is owned and unedited, declares
+# legacy::f(int), and this observer includes it only through read-only dep.h, so f is a
+# dependency entity by the per-inclusion rule alone. It is counted as an owned member is:
+# left in legacy, not kept, direct (spec/verify.md §9.2). Its pair: inclusion-chain-moved.
+relocate legacy => :: acme

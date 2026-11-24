@@ -298,7 +298,6 @@ fn result_of(
         tally,
         agreement: Vec::new(),
         unused: Vec::new(),
-        unchecked: Vec::new(),
         spellings: result::Spellings { obligations, passed: obligations, failed: Vec::new() },
         residue: Vec::new(),
         exempt: Vec::new(),

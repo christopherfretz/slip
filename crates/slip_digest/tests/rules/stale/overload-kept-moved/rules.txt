@@ -1,0 +1,2 @@
+# WP-111 item 5: as overload-kept, listed in kept but moved in this observer: kept_via 1, stale (with overload-kept, the same key reached through the rule here and directly there).
+relocate legacy => :: acme

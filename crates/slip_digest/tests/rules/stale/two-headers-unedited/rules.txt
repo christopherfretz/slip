@@ -1,0 +1,2 @@
+# WP-111 item 5, observer 2 of 2 (with two-headers-edited): this observer includes the header that was not edited (f) and an edited one (h): legacy::f is owned and left behind, not kept: direct 1, stale. The run is not verified.
+relocate legacy => :: acme

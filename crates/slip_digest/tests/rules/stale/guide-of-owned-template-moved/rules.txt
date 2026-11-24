@@ -1,0 +1,2 @@
+# WP-111 review F4: guide-of-owned-template-left with the guide moved with its template: via.
+relocate legacy => :: acme

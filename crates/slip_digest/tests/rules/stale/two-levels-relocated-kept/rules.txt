@@ -1,0 +1,3 @@
+# WP-111 item 1: as two-levels-relocated, with acme::impl::d listed in kept (moved although kept): kept_via for both rules; legacy::detail::k still direct for both.
+relocate legacy => :: acme
+relocate legacy::detail => acme :: impl

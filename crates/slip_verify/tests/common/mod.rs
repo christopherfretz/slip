@@ -247,7 +247,11 @@ impl Run {
         }
         inputs.sort_by(|a, b| a.path.cmp(&b.path));
         if !self.declared.rules().is_empty() {
-            s.rule_use = Some(RuleUse { rules: self.declared.rules().id(), uses: uses.to_vec() });
+            s.rule_use = Some(RuleUse {
+                rules: self.declared.rules().id(),
+                uses: uses.to_vec(),
+                kept: vec![],
+            });
         }
         if let Some(o) = self.overlay.as_ref().filter(|o| !o.spellings.is_empty()) {
             s.spellings = Some(section(o, &inputs, &[], &[]));
@@ -310,7 +314,12 @@ impl Run {
 
 /// A use of rule `rule`.
 pub fn used(rule: u64, via: u64, direct: u64) -> Use {
-    Use { rule, via, direct }
+    Use { rule, via, direct, kept_via: 0 }
+}
+
+/// A use of namespace rule `rule` with its `kept_via` (§9.2).
+pub fn used_kept(rule: u64, via: u64, direct: u64, kept_via: u64) -> Use {
+    Use { rule, via, direct, kept_via }
 }
 
 /// Compares `actual` with `tests/golden/<dir>/<name>`; `SLIP_BLESS=1`
@@ -458,7 +467,6 @@ pub fn result_of(
         tally: c.tally,
         agreement: c.agreement.clone(),
         unused: c.unused.clone(),
-        unchecked: c.unchecked.clone(),
         spellings: c.spellings.clone(),
         residue: residue.to_vec(),
         exempt: vec![],

@@ -1,0 +1,5 @@
+# WP-111 review F3, a stated limit (spec/verify.md §9.2, Open questions): TU-local entities of
+# one name in two translation units, one left in legacy (this observer: helper, internal
+# linkage, not kept, direct) and one moved (tu-local-moved-kept). The program is correct, yet
+# one observer is stale whether or not the key is kept: the run fails closed.
+relocate legacy => :: acme
