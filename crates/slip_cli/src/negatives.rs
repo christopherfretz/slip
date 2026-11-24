@@ -140,9 +140,8 @@ pub fn record(places: Vec<Vec<u8>>, inputs: &[FileRef]) -> Result<Found, String>
         let real = std::fs::canonicalize(Path::new(OsStr::from_bytes(&path)))
             .ok()
             .map(PathBuf::into_os_string);
-        let by_path = real.and_then(|r| {
-            inputs.binary_search_by(|f| f.path.as_slice().cmp(r.as_bytes())).ok()
-        });
+        let by_path = real
+            .and_then(|r| inputs.binary_search_by(|f| f.path.as_slice().cmp(r.as_bytes())).ok());
         let input = match by_path {
             Some(i) => i as u64,
             None => match identity(&path).and_then(|id| by_id.get(&id)) {
@@ -238,8 +237,8 @@ pub fn found_moved(
     let seen: Vec<(bool, Option<(u64, u64)>)> = inputs
         .iter()
         .map(|f| {
-            let outside = !(crate::verify_job::as_recorded(&f.path)
-                && resolver.under_subject(&f.path));
+            let outside =
+                !(crate::verify_job::as_recorded(&f.path) && resolver.under_subject(&f.path));
             if outside {
                 (true, identity(&f.path))
             } else {

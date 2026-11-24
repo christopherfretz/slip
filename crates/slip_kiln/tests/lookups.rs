@@ -707,7 +707,10 @@ fn found_has_include_and_include_next() {
 #[test]
 fn found_embed_the_path_read() {
     let d = Dir::new("found-embed");
-    d.write("a.cpp", "#if __has_embed(<f.bin>)\n#endif\nconst char k[] = {\n#embed \"g.bin\"\n};\n");
+    d.write(
+        "a.cpp",
+        "#if __has_embed(<f.bin>)\n#endif\nconst char k[] = {\n#embed \"g.bin\"\n};\n",
+    );
     d.write("d2/g.bin", "x");
     d.write("d2/f.bin", "y");
     let (d1, d2) = (d.at("d1"), d.at("d2"));

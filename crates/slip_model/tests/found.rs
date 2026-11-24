@@ -239,10 +239,8 @@ fn found_f6_two_or_more() {
 
 #[test]
 fn found_f7_classes_ascending() {
-    let mut s = map_shard(Some(Found {
-        places: Vec::new(),
-        classes: vec![vec![2, 3], vec![0, 1]],
-    }));
+    let mut s =
+        map_shard(Some(Found { places: Vec::new(), classes: vec![vec![2, 3], vec![0, 1]] }));
     let mut inputs = s.inputs.take().unwrap();
     inputs.push(FileRef { path: b"/s/d.h".to_vec(), size: 9, content: d(2) });
     s.inputs = Some(inputs);
@@ -291,5 +289,8 @@ fn found_encoding_rules() {
     assert_eq!(e.offset, payload_at(&bytes) + 7);
     let good = b"\x02\x00\x03/ab\x00\x02\x01c\x01\x00";
     let back = Shard::from_bytes(&sealed_with(&s, good)).unwrap();
-    assert_eq!(back.found, Some(Found { places: vec![place(b"/ab", 0), place(b"/ac", 1)], classes: vec![] }));
+    assert_eq!(
+        back.found,
+        Some(Found { places: vec![place(b"/ab", 0), place(b"/ac", 1)], classes: vec![] })
+    );
 }

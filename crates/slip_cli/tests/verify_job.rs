@@ -2231,7 +2231,10 @@ fn o2_link_to_a_found_header_retargeted() {
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
     let b = &tree.base;
-    assert_eq!(reason(&v), led(&b.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+    assert_eq!(
+        reason(&v),
+        led(&b.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h"))
+    );
     check_post_shard(&v);
 }
 
@@ -2317,7 +2320,10 @@ fn n2_place_under_the_subject_root_retargeted() {
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
     let (s, b) = (&tree.subject, &tree.base);
-    assert_eq!(reason(&v), led(&s.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+    assert_eq!(
+        reason(&v),
+        led(&s.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h"))
+    );
 }
 
 // The place spelled through the subject root, `s/../lnk/cfg.h` (the
