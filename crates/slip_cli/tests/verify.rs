@@ -715,6 +715,38 @@ fn s7_1_strict_names_on_the_command_line() {
     assert_eq!(g[0].get("kind").unwrap().as_str(), Some("names_changed"), "{report:?}");
 }
 
+// spec/verify.md §4.4, spec/digest.md §9 "The names digest" (WP-125 item
+// 2): a function template passes its `__PRETTY_FUNCTION__` on, and the
+// post-image respells its parameter type (`decltype(ns::S::value)` to
+// `decltype(::ns::S::value)`, which the instantiation's string prints).
+// Nothing is declared and every unit's digest is equal, so the run is
+// `verified`; the report notes the one instantiation, by its key's name.
+#[test]
+fn s4_4_names_note_for_a_respelled_template_parameter() {
+    let f = Fixture::new("respelled-template");
+    let pre = "namespace ns { struct S { static int value; }; }\n\
+               void take(const char *);\n\
+               template <class T> void h(T, decltype(ns::S::value)) { take(__PRETTY_FUNCTION__); }\n\
+               void u() { h(1, 1); }\n";
+    f.write("s/u0.cpp", pre);
+    f.write("post/u0.cpp", &pre.replace("decltype(ns::", "decltype(::ns::"));
+    f.db(&["u0.cpp"]);
+    let plan = f.parse();
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let (out, report) = f.verify_report(&plan, &img);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(u64_at(&report, "names_changed.total"), 1, "{report:?}");
+    let notes: Vec<&str> =
+        out.stdout.lines().filter(|l| l.starts_with("note: name-derived string changed: ")).collect();
+    assert_eq!(notes.len(), 1, "{out:?}");
+    assert!(
+        notes[0].starts_with("note: name-derived string changed: h<int>(int, int) @ "),
+        "{out:?}"
+    );
+    assert_eq!(get(&report, "findings.groups").as_array().unwrap().len(), 0, "{report:?}");
+}
+
 // spec/verify.md §2.3 `m(P')`: a `relocate` whose parent is named as the
 // post-image has it (`fresh`, which only the post-images declare) is
 // resolved through the post-images' records: the class moved into the

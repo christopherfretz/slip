@@ -1,0 +1,3 @@
+# pending
+# needs: kiln (a local class's or closure's __PRETTY_FUNCTION__ prints the enclosing function's parameter types desugared, `g(int)` for clang's `g(decltype(ns::S::value))`; spec/landed/digest/WP-125.md "For Kiln")
+changed g(int)
