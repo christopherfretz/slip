@@ -372,10 +372,11 @@ pub(crate) fn cxx_fold_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     match BinaryOp::from_u8(n.aux) {
         Some(op) => {
             s.tag(binary_op::row(&op));
-            // Kiln records no definition-context operator set for a fold
-            // (`oper_lookups`): what an overloadable operator finds at
-            // instantiation is not in the digest (digest-kinds §4.4
-            // "Spellings", rule 9).
+            // Kiln records a fold's definition-context operator set
+            // (`oper_lookups`, WP-2625; written by the record OperLookups)
+            // but this walk still treats what an overloadable operator
+            // finds at instantiation as outside the digest (digest-kinds
+            // §4.4 "Spellings", rule 9): fail closed until WP-138.
             if crate::expr_profile::fold_left_out(w, op) {
                 s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
             }

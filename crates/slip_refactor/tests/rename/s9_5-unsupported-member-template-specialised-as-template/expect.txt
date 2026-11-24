@@ -1,10 +1,10 @@
 subjects:
-  6c4b12e5 follower - rule=yes n::S<char>::g of=cfa0d1f5
-  cfa0d1f5 seed unsupported rule=yes n::S::g
+  ab0f31a7 follower - rule=yes n::S<char>::g of=d96276aa
+  d96276aa seed unsupported rule=yes n::S::g
 links:
 claims:
-  main.cpp:1:69+1 replace "h" t0 votes=1 none [cfa0d1f5]
+  main.cpp:1:69+1 replace "h" t0 votes=1 none [d96276aa]
   main.cpp:2:45+1 keep t0 votes=1 none
   main.cpp:3:26+1 keep t0 votes=1 none
-  main.cpp:3:50+1 replace spell(cfa0d1f5, "h") t0 votes=1 none [cfa0d1f5]
+  main.cpp:3:50+1 replace spell(d96276aa, "h") t0 votes=1 none [d96276aa]
 changed:

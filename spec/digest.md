@@ -207,7 +207,7 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`913a490bb` (WP-101; its `kiln_ast` is that of `83566cc47`, WP-044) it
+`4a83f6e3c` (WP-066) it
 still holds: what Kiln added since (the definition-context operator sets,
 the names of an overloaded member access, the shadows of a
 using-declaration, the owner of a closure, the checked mark of an
@@ -226,7 +226,7 @@ the preprocessor's and not the AST's.
 | The value of an immediate invocation inside a default argument, computed at its first use | `resolved` unit |
 | A function's deferred exception specification, once resolved | `resolved` unit; which functions can be deferred is a rule of `digest-kinds.md` §11.2 |
 | A deduced return type of a template member | `resolved` unit `definition` of the instantiation |
-| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `913a490bb` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
+| A variable's evaluated constant value (`eval`), default-argument immediate values. At Kiln `4a83f6e3c` `eval` is written when Kiln checks the declaration's initialiser: with the declaration, or, for one made by instantiation, when a use instantiates it (`digest-kinds.md` §11.3) | `resolved` unit |
 | A class's key function; `dtor_delete`, `dtor_delete_this` (set when a virtual destructor is defined, which for an implicit or defaulted one is on use), `inheriting_ctor`, `inherited_ctor` (set when Kiln declares the inheriting constructor, on use) cold maps | `resolved` unit of the class or function |
 | The values of the temporaries a variable's initialiser extends | with the variable's value, in its `resolved` unit |
 | "vtable used" marks | not in the AST: nothing to digest |
@@ -473,7 +473,53 @@ above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
 keyed: the same namespace can have two keys in one walk, one for its
 owned members and one for its dependency members, and its own unit has
-the key of its own ownership. Every site that writes a key (a unit's
+the key of its own ownership.
+
+**A namespace's unit in each view** (WP-140). A namespace is owned iff
+none of its openings lies in a read-only file (`verify.md` §2.1); its
+own unit is keyed in that view. It has a unit in the **other** view too
+when it **holds something** there: an entity that is not a namespace
+keyed with it as its namespace parent in that view (a function, a class,
+a variable, and the content-keyed using-directive, alias,
+using-declaration or `static_assert` written in an opening), or a nested
+namespace keyed under it in that view that itself holds something there,
+at any depth. The **owned view** applies the rules along the chain; the
+**dependency view** applies none. An opening alone gives no view: an
+empty owned opening, one that holds only empty nested namespaces, or one
+that holds only an explicit specialisation (keyed under its template, not
+under the namespace) holds nothing (WP-140 review F3, the definition of
+`docs/wp/WP-141.md` Addendum A4; fixtures `tests/rules/views/untouched-*`).
+The unit in the other view is written only when its key differs from the
+namespace's own key, so that a table that maps nothing adds none (and the
+dedup below is not relied on). It has the namespace's **one digest**, the
+digest of its own unit (every opening: the `inline` bit and the
+attributes of the whole chain), and the own unit's cause. The digest is
+not per view: a fact that one view's openings hold (an `inline` written
+only by the dependency, a `[[deprecated]]` added by an owned opening)
+changes what the other view's members mean
+(`spec/landed/digest/WP-140.md`, why option A, a digest per view, was
+rejected; fixtures `tests/rules/views/inline-reopened-plain`,
+`deprecated-owned-opening`, `deprecated-dependency-opening`). Its cost:
+an attribute that applies only to the declarations of its own opening
+(`visibility`) changes both views' units, and fails closed
+(`views/visibility-owned-opening`). So a move into a namespace that a
+dependency also opens compares the owned view's unit with the pre-image's
+namespace (`verify.md` §2.1). A view unit is **named** by the name its
+key denotes and the namespace it is a part of: `legacy (the owned part of
+acme)`, `acme (the dependency's part of acme)` (review F4), in findings,
+record errors and `slip units`, and `slip declare` takes that name.
+**Units are only added**: no key, digest or cause of another unit moves
+(no member's key, and not the own unit's), and no pre-image (digested
+under the empty table) has a unit in a view. The view key's cause and a
+view key that cannot be formed are guards: a namespace key's cause and
+errors are made of its names' and its parents', the same namespaces' in
+either view, so the view key's are the own key's, which the own unit
+already has (`units::view_units`). A **reference** to a namespace (an
+alias's target, a using-directive, a qualifier, a using-declaration's
+key) writes the namespace's own key, in any view (`verify.md` "Open
+questions" lists every such place).
+
+Every site that writes a key (a unit's
 own, a reference from another unit's stream, a parent, a
 specialisation's template name) takes it through the one mapping, so an
 entity and every reference to it agree (WP-110). With `R` empty none of
@@ -1251,7 +1297,21 @@ number: the number exists to void recorded baselines, and there is none
 to void. It is 2 since WP-113 (the row `enclosing`, `spec/digest-kinds.md`
 §1.7); WP-107's rule 9 (an aligned typedef is written as sugar,
 `spec/digest-kinds.md` §4.2) landed in it the same day, before a baseline
-of scheme 2 was recorded.
+of scheme 2 was recorded. WP-140 (a namespace's unit in each view,
+§3.4) changes no stream, key or table row and no existing unit: it adds,
+to a post-image digested under a table that maps a namespace's chain, a
+unit for each namespace that holds something in its other view. Which
+comparisons that can change, and how: the pre-image's namespace unit
+that had no partner (`removed legacy`) gets one, so that difference
+becomes equal when the digests agree, or `changed` when they do not (an
+attribute or `inline` of the namespace's openings); a view unit with no
+partner is `added`, which happens only in an observer that already
+differs (an owned entity keyed under it has no partner either: a
+pre-image entity under `legacy` implies a unit `legacy`); a view unit
+whose key is another unit's with a different digest is a collision,
+indeterminate (fails closed). No comparison goes from a difference of a
+member to equal. No baseline of scheme 2 is recorded, so it shares the
+number.
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the
@@ -1259,7 +1319,9 @@ of scheme 2 was recorded.
   derives from (the template, the class, the function). The single `tu`
   group holds the order unit and every namespace: a namespace is reopened
   wherever its members are, and which file opens it first is not a fact
-  about it. Builtins are in the derived group with the empty path.
+  about it. A namespace's unit in a view that is not its own (§3.4,
+  WP-140) is there too, beside its own unit. Builtins are in the derived
+  group with the empty path.
 - The file of a declaration is the file of its location, or of the
   outermost macro expansion that produced it. A **subject path** is the real
   path of that file, with the root of a post-image mapped back to the root

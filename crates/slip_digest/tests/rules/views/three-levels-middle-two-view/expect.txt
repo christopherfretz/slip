@@ -1,0 +1,4 @@
+# Row (d): three levels where only the middle one has two view keys: top (opened by dep.h, but no
+# rule on it, so one key), top::acme (opened by dep.h and by owned code), top::acme::inner (owned only).
+# WP-140: one unit added, top::acme's in the owned view (top::legacy): equal, via 1.
+use 1 via 1 direct 0

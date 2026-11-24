@@ -1824,12 +1824,10 @@ fn g5_line_name() {
 }
 
 // F7 (re-check): an absolute `__has_include` of a file under the subject
-// root; the edit adds the file. Kiln's lookup log does not record an
-// absolute name (Kiln `spec/pp.md`), so L1 cannot see the probe: §5.1
-// "What remains outside". When the log has it, `Lookups::of` lists the
-// name where it is and L1 refuses, with no new code.
+// root; the edit adds the file. Kiln's lookup log records an absolute
+// name since Kiln WP-2620 (in the pin since WP-066), so `Lookups::of`
+// lists the name where it is and L1 refuses, with no new code.
 #[test]
-#[ignore = "needs: kiln (absolute names in the lookup log)"]
 fn f7_absolute_has_include() {
     let tree = Tree::new("f7", &[]);
     let main = format!(
@@ -2478,11 +2476,11 @@ fn n2_map_shard_without_found() {
 }
 
 // An absolute name the front end first read through another spelling:
-// Kiln's log does not record a lookup by an absolute name (Kiln WP-2620),
-// and `Lookups::read` holds the first spelling only, so the absolute place
-// is in no record and its link retargeted is not seen.
+// `Lookups::read` holds the first spelling only, but Kiln's log records a
+// lookup by an absolute name since Kiln WP-2620 (in the pin since
+// WP-066), so the absolute place is in `found` and its link retargeted is
+// seen.
 #[test]
-#[ignore = "needs: kiln (the lookup log to record absolute names, Kiln WP-2620)"]
 fn n2_absolute_name_first_read_through_another_spelling() {
     let tree = Tree::new("n2-absolute", &[]);
     let abs = tree.base.join("lnk/cfg.h");
@@ -3184,6 +3182,130 @@ fn s2_1_rule_on_a_dependency_entity_not_verified() {
     assert_eq!(r.unused(), [0]);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     assert_eq!(exit_status(r.verdict()), 1);
+}
+
+// WP-140 row (e), §2.1, §9.2: a relocation of `old` into `fresh`, which a
+// read-only header also opens, over two observers: `u0` includes that
+// header itself, `u1` sees its opening of `fresh` only through another
+// read-only header. `fresh` has a unit in the owned view (keyed `old`, the
+// namespace's one digest), so each observer is `verified`, with the same
+// counts (`via` 1: the owned view's key matched the rule), and the run is
+// verified. Until WP-140 each was `mismatch` (`removed old`, `via` 0).
+#[test]
+fn wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/w.h\"\nnamespace old { inline int f1() { return 1; } }\nint u1() { return old::f1(); }\n";
+    let tree = Tree::new(
+        "wp140-two-observers",
+        &[
+            ("dep/d.h", "namespace fresh { struct D {}; }\n"),
+            ("dep/w.h", "#include \"d.h\"\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        let u = v.rule_use.as_ref().unwrap();
+        assert_eq!(
+            u.uses,
+            [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]
+        );
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
+// WP-140 review F3: observers the edit did not touch that open the
+// dependency's `fresh` only to specialise its template, or with an empty
+// opening, hold nothing owned there: no owned view, so each is verified
+// beside the observer that moves `old` (before the fix, `added fresh`).
+#[test]
+fn wp140_untouched_observers_that_open_the_dependency_namespace() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/d.h\"\nnamespace fresh { template <> struct Trait<int> { static const int v = 2; }; }\nint u1() { return fresh::Trait<int>::v; }\n";
+    let u2 = "#include \"dep/d.h\"\nnamespace fresh { }\nint u2() { return sizeof(fresh::D); }\n";
+    let tree = Tree::new(
+        "wp140-untouched",
+        &[
+            (
+                "dep/d.h",
+                "namespace fresh { struct D {}; template <class T> struct Trait { static const int v = 1; }; }\n",
+            ),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+            ("u2.cpp", u2),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for (main, via) in [("u0.cpp", 1), ("u1.cpp", 0), ("u2.cpp", 0)] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        // A rule an observer did not use has no `Use` there.
+        let want: Vec<_> = (via > 0)
+            .then_some(slip_model::agreement::Use { rule: 0, via, direct: 0, kept_via: 0 })
+            .into_iter()
+            .collect();
+        assert_eq!(v.rule_use.as_ref().unwrap().uses, want, "{main}");
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
+// WP-140 review F1, pending WP-146: ownership differs between observers.
+// `dep/d.h` declares `old::hook`, which u1 defines; u1 does not include the
+// header, so there `hook` is owned and moves with `old` to `fresh::hook`,
+// while u0, which includes it, calls the dependency's `old::hook`. Each
+// observer is verified alone and the run is `Verified` today, but the
+// program no longer links (`old::hook` has no definition). The run must
+// not be verified. Rules cases `views/hook-definer-without-dependency`
+// and `hook-user-with-dependency` hold each observer's answer.
+#[test]
+#[ignore = "pending: WP-146 (ownership differs between observers, a wrong verified)"]
+fn wp146_ownership_differs_between_observers_is_not_verified() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0() + old::hook(1); }\n";
+    let u1 = "namespace old { int hook(int x) { return x; } }\n";
+    let tree = Tree::new(
+        "wp146-hook",
+        &[
+            ("dep/d.h", "namespace old { int hook(int); }\nnamespace fresh { struct D {}; }\n"),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+        ],
+    );
+    write(
+        &tree.post.join("u0.cpp"),
+        "#include \"dep/d.h\"\nnamespace fresh { inline int f0() { return 0; } }\nint u0() { return fresh::f0() + old::hook(1); }\n",
+    );
+    write(&tree.post.join("u1.cpp"), &u1.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for main in ["u0.cpp", "u1.cpp"] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::NotVerified, "{}", r.error_lines());
 }
 
 // WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An

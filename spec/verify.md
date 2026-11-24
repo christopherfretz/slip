@@ -285,13 +285,38 @@ came from, and nothing about the rest:
   (pitfall row N34).
 - A dependency that itself opens `acme`, before and after, has the same
   keys in both images, and the owned members of `acme` are still mapped:
-  their keys agree. The namespace's own unit is not: the post-image's
-  `acme` is keyed as the dependency's namespace, so the pre-image's unit
-  `legacy` has no partner, the run reports `removed legacy`, and the rule
-  is used by no level (`via 0`). A correct move into a namespace that a
-  dependency opens therefore does not verify today: a stated limit,
-  `docs/wp/WP-140.md` ("Open questions"; fixtures
-  `stale/dependency-opens-target-moved` and `-kept-moved`).
+  their keys agree. The namespace's own unit is the dependency's (one
+  opening is read-only), keyed `acme`; and since owned entities are keyed
+  under it, it also has a unit **in the owned view**, keyed `legacy` under the rule,
+  with the namespace's one digest (`digest.md` §3.4 "A namespace's unit
+  in each view", WP-140). That unit is the pre-image's `legacy`'s
+  partner, and the rule is used by it (`via`, §9.2). So a correct move
+  into a namespace that a dependency opens verifies
+  (`tests/rules/stale/dependency-opens-target-moved`, `tests/rules/views/`,
+  pitfall row N46), in every observer alike: one that does not include
+  the dependency has `acme` owned and mapped, the same unit
+  (`views/target-opened-observer-without-dependency`, and two observers
+  that reach the dependency's opening through different headers,
+  `views/observer-direct`, `observer-through-header` and
+  `crates/slip_cli/tests/verify_job.rs`
+  `wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers`).
+  The digest is the namespace's, over every opening, in both views: an
+  owned opening that adds `[[deprecated]]`, or a dependency's `inline`
+  that the pre-image's namespace did not have, is a difference
+  (`views/deprecated-owned-opening`, `deprecated-dependency-opening`,
+  `inline-reopened-plain`); so is an attribute that applies to its own
+  opening only (`visibility`), which fails closed
+  (`views/visibility-owned-opening`). The owned view exists where the
+  namespace holds something owned, not where an owned opening merely
+  stands: an observer the edit did not touch that opens the dependency's
+  `acme` only to specialise its template, or with an empty opening, is
+  equal (`views/untouched-specialisation`, `untouched-empty-opening`,
+  `verify_job.rs`
+  `wp140_untouched_observers_that_open_the_dependency_namespace`; review
+  F3), and an empty `legacy {}` moved there is a removal ("Open
+  questions"). A reference to the namespace writes its own key, the
+  dependency's: "Open questions", "References to a namespace that two
+  views key".
 - An owned declaration made through a dependency's macro
   (`LEGACY_DECLARE(Mine)` invoked in an owned file) is owned: its
   expansion location is owned, and its name `Mine` is spelled in the
@@ -1354,11 +1379,13 @@ observer's command never holds an `@` word; only a command given to
 `slip verify` by other means can.
 
 **What remains outside.** A post tree written while step 1 runs is not
-seen until G3, which runs only when there is a finding to localise. Kiln's
-lookup log does not record a lookup of an absolute name
-(`kiln_pp/src/resolver.rs:132`, `:161`): a failed `__has_include` or
-`__has_embed` of an absolute name under a subject root is not seen (one
-that succeeds is a read, which G1 sees). The log does not name the
+seen until G3, which runs only when there is a finding to localise.
+Since Kiln WP-2620 (in the pin since WP-066) the lookup log records a
+lookup of an absolute name, found (`Found::Absolute`, or `Found::Embed`
+for `#embed`) or not (`Found::Missing`; Kiln `kiln_pp/src/resolver.rs:130-145`),
+and `slip_kiln::Lookups` lists it where it is, so L1 sees a failed
+`__has_include` or `__has_embed` of an absolute name under a subject
+root. The log does not name the
 `--embed-dir` directories; L1 takes them from Kiln's driver
 (`Args::embed_dirs`) and treats every one as tried. The driver's own
 probes of the toolchain (the GCC installation, the resource directory)
@@ -1374,32 +1401,27 @@ form: `-fprebuilt-module-path` and the standard module's directory
 miss a file the two images spell differently. The command itself is the
 plan's (§8, "The command").
 
-Two holes are known and pinned by tests that wait (`#[ignore = "needs:
-…"]`, `crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
-recording a lookup of an absolute name (Kiln WP-2620; Kiln has been asked
-to):
+Two holes were pinned by tests that waited (`#[ignore = "needs: …"]`,
+`crates/slip_cli/tests/verify_job.rs`), both of Kiln's log not
+recording a lookup of an absolute name. Kiln's log records it since Kiln
+WP-2620 (in the pin since WP-066), and both are closed with no new code:
 
 - **An absolute name looked for and not found** (F7 of the re-check):
-  `#if __has_include("<s>/new.h")` with an edit that adds `new.h`. Kiln's
-  log does not record it (Kiln `spec/pp.md`, "Lookup log").
-  `slip_kiln::Lookups` already lists an absolute name where it
-  is, whatever the form, so L1 refuses it with no new code once the log
-  holds it. Test: `f7_absolute_has_include`; the absolute name is then
-  also a negative input (`crates/slip_kiln/tests/lookups.rs`
-  `missed_absolute_name`, waiting too).
+  `#if __has_include("<s>/new.h")` with an edit that adds `new.h`.
+  `slip_kiln::Lookups` lists an absolute name where it is, whatever the
+  form, so L1 refuses it. Test: `f7_absolute_has_include`; the absolute
+  name is also a negative input (`crates/slip_kiln/tests/lookups.rs`
+  `missed_absolute_name`).
 - **An absolute name found, through a link retargeted since, when the
   front end first read its file through another spelling**: `#include
   <cfg.h>` found in `ext-a`, then `#include "/b/lnk/cfg.h"` with `lnk ->
   ext-a`, retargeted after the map phase to a directory with another
-  `cfg.h`. The second lookup is in no log, and `Lookups::read` holds the
-  file's first spelling only, so the place `/b/lnk/cfg.h` is not in the
-  shard's `found` (`model.md` §8.8) and N2 does not see it move. An
-  absolute name that is its file's first spelling is a place of `found`
-  and is checked. `Lookups::found` lists an absolute name once the log
-  holds it, so N2 refuses it with no new code. Test:
+  `cfg.h`. The second lookup is in the log, so `Lookups::found` lists
+  the place `/b/lnk/cfg.h` in the shard's `found` (`model.md` §8.8) and
+  N2 sees it move. Test:
   `n2_absolute_name_first_read_through_another_spelling`.
 
-  But for these two, every way for the map parse's files to be no longer
+  With these two closed, every way for the map parse's files to be no longer
   the ones a lookup reaches is refused: a file deleted, changed, made a
   link to another (its real path is no longer its own), or shadowed by
   one that appeared, in a directory that was absent or a duplicate of a
@@ -2614,10 +2636,25 @@ a difference). Pinned by `tests/rules/stale/tu-local-left`,
 **Unused rules.** A rule with every count 0 in every observer whose
 `rule_use` is folded (§9.3: those `verified` or `mismatch`) names an
 entity no such observer has. It is reported with the run, like an
-exemption no observer needed (§2.2), and changes no verdict. A rule used
-only in `unverifiable` observers is listed unused; when any observer is
+exemption no observer needed (§2.2), and changes no verdict: a rule that matches
+nothing changes no key (`digest.md` §3.4, "A rule that matches nothing
+changes nothing"), so it cannot make a comparison equal; what it can do
+is hide a typo, which the report's line shows (WP-140 item 3). A rule used
+only in `unverifiable` observers is listed unused, and a `kept` key
+seen only there is listed with 0 observers; when any observer is
 `unverifiable` the text says over how many observers the fold ran (§9.4).
-So is a `kept` key seen only there listed with 0 observers.
+
+**A namespace used through its owned view** (WP-140). A dependency
+namespace that owned code opens, or that has an owned member, has a unit
+in the owned view (`digest.md` §3.4); when that unit is written (its key
+differs from the namespace's own), the rule that matched its key counts
+`via` once for the namespace, however many owned openings it has
+(`tests/rules/views/two-owned-openings`). Before WP-140 that key was only
+a level of its members' chains and the rule had `via 0`, which read as
+unused in an observer whose every owned member of the namespace moved
+(`tests/rules/stale/dependency-opens-target-moved`: `via 1` now). Its
+members' `direct` and `kept_via` are as above: the owned view's key is
+the level their chain climbs.
 
 ### 9.3 What is added to the run (§7)
 
@@ -3028,15 +3065,17 @@ comparison of digests alone.
 written-reference table records with a name range (§10.2 rule 5). A use
 of the same bytes elsewhere — the same macro argument substituted twice,
 or the same header entered twice — that the table does not record, or
-records without a range, cannot veto. At this pin those are: a
-designator (`.x = 1`); a using-declaration's name (`using a::x;`); a
-type-constraint's concept (`template <a::C T>`); a friend's elaborated
-name (`friend struct a::x;`); an explicit instantiation's or
-specialisation's target (`template int a::t<int>(int);`); and a use made
-by token pasting (`x##_`), which has no name range. (A plain elaborated
-name, `struct x s;`, is recorded as a type name and takes part.) Each
-shape has a pending test in `crates/slip_digest/tests/spelling.rs`
-(`s10_7_hole_*`); the hole closes as Kiln records them
+records without a range, cannot veto. At this pin that is a use made by
+token pasting (`x##_`), which has no name range. Kiln's written-reference
+table stage 3 (Kiln WP-1932, in the pin since WP-066) records the
+shapes that were in the hole with it: a designator (`.x = 1`), a
+using-declaration's name (`using a::x;`), a type-constraint's concept
+(`template <a::C T>`), a friend's elaborated name (`friend struct
+a::x;`), an explicit instantiation's or specialisation's target
+(`template int a::t<int>(int);`). (A plain elaborated name, `struct x
+s;`, is recorded as a type name and takes part.) Each shape has a test in
+`crates/slip_digest/tests/spelling.rs` (`s10_7_hole_*`); the pasted use's
+is pending, until Kiln records a range for it
 (`spec/landed/verify/WP-096.md`, "For Kiln").
 
 ## Tests
@@ -3105,7 +3144,8 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
 - `crates/slip_kiln/tests/lookups.rs` — what Kiln's lookup log holds, each
   form through a real parse: `#include` both forms, `#include_next`,
   `__has_include`, `__has_include_next`, `#embed`, `__has_embed`,
-  `-include`; `-imacros` not accepted; an absolute name not recorded; a
+  `-include`; `-imacros` not accepted; an absolute name recorded, found
+  or not; a
   lookup after five thousand; a lookup from another directory; the
   toolchain's directories in the list.
 - `crates/slip_cli/tests/locate.rs` — §6.1 through the task: names from
@@ -3224,20 +3264,91 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
   translation unit only (a `kept` given per file, as above, or an entity
   of internal linkage told apart by its unit) would let it be declared
   with a namespace rule; until then it fails closed.
-- **A move into a namespace that a dependency opens** (§2.1, "So `acme`
-  mapped to `legacy`"; `docs/wp/WP-140.md`). Relocating `legacy` into
-  `acme` when a read-only header also opens `acme` maps every owned
-  member, but the post-image's `acme` is keyed as the dependency's
-  namespace, so the unit `legacy` has no partner: `removed legacy`, and
-  the rule's `via` is 0. The move is correct and does not verify; it
-  fails closed. The fixtures `rules/stale/dependency-opens-target-moved`
-  and `dependency-opens-target-kept-moved` hold today's answer.
-- **Ownership differs between observers** (§2.1). An entity the
-  dependency declares only in a header some observers do not include is
-  owned in those and a dependency entity in the others. Each comparison
-  is consistent with itself; whether the run should compare ownership
-  across observers (a count per key is too much; a count per rule of
-  entities reached both ways is not exact) is open.
+- **References to a namespace that two views key** (WP-140; §2.1,
+  "A dependency that itself opens `acme`"; `digest.md` §3.4). A
+  namespace with a unit in each view keeps **one** key wherever it is
+  written as a reference: its own, which for a namespace a dependency
+  opens is the dependency's, unmapped. Nothing in the post-image says
+  which pre-image namespace an owned reference meant, and a reference to
+  a dependency's namespace by the dependency's name is what rule 1
+  already promises. So after relocating `legacy` into `acme`, an owned
+  reference that named `legacy` and now names `acme` writes `acme`,
+  the pre-image wrote `legacy`, and the holding unit differs. The move is
+  correct and fails closed; the motivating migration meets this
+  wherever owned code aliases, `using namespace`s, or qualifies a
+  dependent name with the moved namespace. Where it is written (every
+  path that reaches `write_ref` or `write_canonical_nns` with a
+  namespace), with fixtures in `crates/slip_digest/tests/rules/views/`:
+
+  - an alias's target (`namespace L = legacy;`): held by the alias, own
+    key, one per unit; `changed L` (`alias-redirected`).
+  - a using-directive's target: held by the directive, keyed by content
+    (the target is the key), one per unit; `removed <using_directive
+    legacy>`, `added <using_directive acme>` (`directive-redirected`).
+  - a using-declaration's qualifier (`using legacy::g;`): held by the
+    using-declaration, keyed by content, one per unit; removed and added
+    (`using-declaration-redirected`).
+  - a qualifier written in a body, of a name not resolved at the
+    definition (a dependent call `legacy::h(t)` with more than one `h`,
+    a dependent-scope reference, a member-overload qualifier): held by
+    the function, own key, any number per unit; `changed f`
+    (`qualifier-dependent-overloaded`). Resolved at the definition (one
+    callee, `qualifier-dependent-redirected`; a non-dependent call,
+    `qualifier-non-dependent-in-template`), the callee is written, not
+    the qualifier, and it verifies; so does a qualifier whose next level
+    is a type (`dependent-type-redirected`, `member-qualifier-spelled`).
+  - a qualifier in a signature's profile (`decltype(legacy::h(t))`):
+    held by the function, whose key the profile is part of, any number
+    per key; removed and added (`profile-qualifier-overloaded`; with one
+    `h`, `profile-qualifier-redirected` verifies).
+  - a qualifier in a type (`typename legacy::X<T>::type`, a dependent
+    template name): held by whatever unit writes the type, own key or
+    content as that unit is; differs where the namespace level is
+    written, as above.
+  - a reflection (`^^legacy`): unsupported, indeterminate either way.
+  - a spelling (`spelled-nns`, the own spelling of a qualifier): writes
+    a named namespace's identifier, not its key, and nothing for a
+    namespace level of the own spelling; not affected.
+
+  What a user can declare today: `changed L` for the alias, and a
+  declared removal with `created` for a unit keyed by content
+  (`removed <using_directive legacy>`, `created <using_directive acme>`):
+  both verify, `crates/slip_cli/tests/verify.rs`
+  `wp140_redirected_references_declared`. A function whose body differs
+  is declared `changed` the same way; one whose profile differs needs a
+  removal and a `created` of its two signatures. Each declaration is per
+  unit, so the cost grows with the references, not the namespaces. A
+  key that names which pre-image namespace an owned reference meant
+  (the post-image cannot say, above) or a rule form that states it for
+  a set of files is open: `docs/wp/WP-141.md`.
+- **Ownership differs between observers** (§2.1): **a demonstrated wrong
+  `verified`** (WP-140 review F1; to be fixed by `docs/wp/WP-146.md`). An
+  entity the dependency declares only in a header some observers do not
+  include is owned in those and a dependency entity in the others. The
+  dependency's `dep/d.h` declares `old::hook`; `u1.cpp` defines it and
+  does not include the header, so there `hook` is owned and moves with
+  `old` to `fresh::hook`; `u0.cpp` includes the header and calls the
+  dependency's `old::hook`, which stays. Each observer is verified, and
+  the run is `Verified`, but the program no longer links: nothing defines
+  `old::hook`. Source: `crates/slip_cli/tests/verify_job.rs`
+  `wp146_ownership_differs_between_observers_is_not_verified` (pending,
+  expects `NotVerified`), and each observer's answer in
+  `crates/slip_digest/tests/rules/views/hook-definer-without-dependency`
+  and `hook-user-with-dependency`. Whether the run should compare
+  ownership across observers (a count per key is too much; a count per
+  rule of entities reached both ways is not exact) is WP-146's.
+- **An empty namespace moved into one a dependency opens** (WP-140
+  review F3). A pre-image `namespace legacy {}` that holds nothing, moved
+  to `namespace acme {}` that a dependency opens, holds nothing in the
+  post-image either, so `acme` has no owned view and the pre-image's
+  `legacy` has no partner: `removed legacy`
+  (`crates/slip_digest/tests/rules/views/empty-owned-opening`). The user
+  declares the removal: `removed legacy` beside the `relocate`, which
+  `slip declare` takes today and which verifies
+  (`crates/slip_cli/tests/verify.rs`
+  `wp140_empty_opening_moved_is_a_declared_removal`). The same holds of an
+  owned opening that holds only a forward declaration of a dependency
+  entity (`owned/owned-forward-then-dependency`).
 - **Indeterminate units cost a second parse.** Every group with an
   indeterminate unit is in `G` (§4.1), so an observer that has one needs
   unit lists even when nothing changed. Proposed: a map shard stores the
@@ -3321,9 +3432,9 @@ shape has a pending test in `crates/slip_digest/tests/spelling.rs`
 - **The tree image rewrites commands** (§5.1). G1, L1, G6, G4 and O2 make it
   safe; how often a word it does not resolve costs an `unverifiable` on
   real build trees is to be seen on the corpus. The overlay (KF2)
-  rewrites nothing. Kiln could close the two gaps L1 has: record
-  lookups of absolute names, and name the `--embed-dir` directories in
-  the log.
+  rewrites nothing. Kiln could close the gap L1 still has: name the
+  `--embed-dir` directories in the log (lookups of absolute names are
+  recorded since Kiln WP-2620).
 - **In place.** The identity image compares the tree as it is with the
   map shards, and can only answer `verified` or, through G2,
   `unverifiable`. A copy of the pre-image kept at map time (or the

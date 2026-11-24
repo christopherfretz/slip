@@ -7,8 +7,8 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`913a490bb`, Kiln's `main`, whose `kiln_ast` and `kiln_abi`
-are those of `83566cc47`; first written against `4bfd999da`); the facts were first collected in
+submodule pins (`4a83f6e3c`, Kiln's `main`, since WP-066,
+`spec/landed/digest-kinds/WP-066.md`; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -383,8 +383,8 @@ declaration of the chain: attributes (the union, as §10.1 orders it),
 default arguments and default template arguments (each from the
 declaration that gives it), the exception specification (from the
 declaration the walk reads, §11.2), `inline`, `constexpr`
-and `constinit` (set if any declaration sets them), language linkage and
-module ownership (from the first declaration). A row merged in another way
+and `constinit` (set if any declaration sets them) and language linkage
+(from the first declaration). A row merged in another way
 says so in its note.
 
 ### 2.4 Declarations walked in place
@@ -1444,8 +1444,11 @@ The rest of profile mode:
      rounding mode a unit's spellings were written under is in its digest.
   9. *Folds.* A `CXXFoldExpr` over an operator other than `.*` finds its
      operator's candidates at instantiation, from the operands' types and
-     the definition context; Kiln keeps no `oper_lookups` set for it
-     (`For Kiln` in `spec/landed/digest-kinds/WP-041.md`). In profile mode
+     the definition context. Since Kiln WP-2625 Kiln keeps the fold's
+     definition-context set in `oper_lookups`, which is written and left
+     out like a dependent operator's (rule 6; `OperLookups`); what the
+     operator finds beyond it is still not read (`For WP-138` in
+     `spec/landed/digest-kinds/WP-066.md`). In profile mode
      and in the full walk it is `Unaccounted("spelling/fold-operator")`,
      and it raises the mark, when some declaration in the translation unit
      that is not a member function (a function template's pattern
@@ -2168,7 +2171,7 @@ Further rules:
 | `Namespace` | flag | in | tag 258 |  |
 | `NamespaceAlias` | flag | in | tag 259 |  |
 | `LinkageSpec` | flag | out | - | transparent: the language is written by each declaration inside (`ScopeData`, `aux-lang`) |
-| `Export` | flag | out | - | transparent: module ownership is written by each declaration inside (`DeclMisc`, `0-module-ownership`) |
+| `Export` | flag | out | - | transparent: module ownership is written by the module table (`ModuleTable` `points`) for each declaration inside |
 | `Empty` | written | out | - | declares nothing |
 | `FileScopeAsm` | flag | in | tag 263 |  |
 | `UsingDirective` | flag | in | tag 264 |  |
@@ -2313,7 +2316,7 @@ Further rules:
 | `0-access` | flag | in | enum Access | bits 0-1 |
 | `0-friend` | flag | in | enum FriendKind | bits 2-3; `Undeclared` only if every declaration of the entity is: the entity is then found by argument-dependent lookup alone |
 | `0-local-extern` | flag | in | bit | set only if every declaration of the entity is at block scope |
-| `0-module-ownership` | flag | in | enum ModuleOwnership | bits 5-7, from the first declaration |
+| `0-reserved` | bookkeeping | out | - | bits 5-7, zero: they held the module ownership until Kiln WP-2477, which keeps a declaration's owner in `ModuleTable` (`points`, §13); a declaration with one of them set is `Unaccounted("DeclMisc/0-reserved")` |
 | `0-name-independent` | flag | in | bit |  |
 | `0-linkage-cache` | bookkeeping | demand | - | §11 |
 | `0-visibility-cache` | bookkeeping | demand | - | §11 |
@@ -2340,18 +2343,6 @@ Further rules:
 | `None` | flag | in | tag 1 |  |
 | `Declared` | written | out | as None | a friend declaration of an entity declared elsewhere: the befriending is in the class's `Friend` unit |
 | `Undeclared` | flag | in | tag 3 |  |
-
-### `kiln_ast::decl::ModuleOwnership`
-
-`kind=enum; pin=extra`
-
-| Row | Class | Decision | Encoding | Note |
-|---|---|---|---|---|
-| `Unowned` | flag | in | tag 1 |  |
-| `Visible` | flag | in | tag 2 |  |
-| `VisibleWhenImported` | flag | in | tag 3 |  |
-| `ReachableWhenImported` | flag | in | tag 4 |  |
-| `ModulePrivate` | flag | in | tag 5 |  |
 
 ### `kiln_ast::decl::PayloadClass`
 
@@ -2469,6 +2460,7 @@ A function's stream also holds its language linkage (`ScopeData`,
 | `0-storage-inherited` | written | out | - | whether the storage class was written here or inherited from the first declaration; `0-storage` is the fact |
 | `0-not-selected` | flag | in | bit |  |
 | `0-return-deduced` | flag | in | bit | in `definition` for a function of the definition class (§11.9) |
+| `0-exc-spec-computed` | written | out | - | bit 25 (Kiln WP-2505): the exception specification was computed from a deferral (an implicit or defaulted special member, a defaulted comparison, an inheriting constructor), not written. Sema sets it when it resolves the deferral, which use may trigger; the resolved specification is the fact (§11.2). Kiln's only readers are its module images and `Ast::exception_spec_computed`, which no part of code generation or of sema's decisions calls |
 
 ### `kiln_ast::decl::FnStorage`
 
@@ -2951,6 +2943,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `compound_literal` | entity | unsupported | - | the implicit variable of a file-scope compound literal has no name to key it by; a GNU extension in C++ |
 | `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
 | `closure_owner` | entity | in | keyed | the declaration whose text holds a closure's lambda-expression when that is not the closure's context: the parent of the closure's key (§10.4, digest §4.3); `docs/wp/WP-040.md` implements it, and until then a closure is `Pending(Area::Local)` |
+| `written_ns` | entity | out | - | the namespace opening a namespace-scope declaration belongs to when it is not `ctx` (Kiln WP-2725, `kiln_ast/src/decl.rs:1786`): the latest opening when a qualified declarator's qualifier named the namespace, the one an explicit specialisation of a function template is written in. Its one reader is code generation's walk for visibility (`kiln_codegen/src/visibility.rs:455-464`), and what that walk gives is the row `enclosing` (§1.7 item 3), which starts at the same opening |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -3736,6 +3729,7 @@ Rules the rows refer to:
 | `BuiltinBitCastExpr.b` | entity | in | type* | as `ImplicitCastExpr.b` |
 | `InitListExpr.a` | child | in | child* | runs of one node: the count of runs, then for each its length and the node once; a GNU range designator's initialiser is one node in every slot it fills |
 | `InitListExpr.b` | child | in | record InitListExtra | index into `init_lists` |
+| `InitListExpr.bits-designated` | written | out | - | bit 4 (Kiln WP-2350): a list without braces of its own that a designator opens (`.a.y = 3`'s list of `a`); it has no written extent. The list's elements and designators are the fact |
 | `DesignatedInitExpr.a` | child | in | child | the initialiser; the designators are `ColdExprData` `designators` |
 | `CXXConstructExpr.bits-had-multiple-candidates` | bookkeeping | out | - | bit 6: the constructor chosen is the fact (digest §6) |
 | `CXXConstructExpr.aux` | flag | in | record ConstructInfo |  |
@@ -4414,6 +4408,23 @@ those parts as written into the unit's list, as profile mode's units do
 | `Index.index` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
 | `Index.elem_size` | value | in | uv |  |
 
+### `kiln_ast::expr::OffsetofNode`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Base` | flag | in | tag 1 |  |
+| `Base.class` | entity | in | ref | the base class stepped through |
+| `Field` | flag | in | tag 2 |  |
+| `Field.field` | entity | in | ref | the member |
+| `Field.start` | location | out | - |  |
+| `Field.end` | location | out | - |  |
+| `Index` | flag | in | tag 3 |  |
+| `Index.position` | child | in | uv | the position of the index in `OffsetOfExpr.a`, where it is written |
+| `Index.start` | location | out | - |  |
+| `Index.end` | location | out | - |  |
+
 ### `kiln_ast::expr::InitListExtra`
 
 `kind=struct; pin=schema`
@@ -4493,6 +4504,8 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `offsetof_pattern-type` | type | in | type? | a value-dependent `OffsetOfExpr`: the operand type |
 | `offsetof_pattern-components` | name | in | enum OffsetofComponent* | its designator as written |
 | `offsetof_layout` | value | in | enum OffsetofStep* |  |
+| `offsetof_designator-type` | type | in | type? | a non-dependent `OffsetOfExpr`: the operand type (Kiln WP-2360, `kiln_ast/src/expr.rs:1554`) |
+| `offsetof_designator-nodes` | name | in | enum OffsetofNode* | its designator as resolved: the bases stepped through, the members, the indices |
 | `splice_args` | value | unsupported | - | reflection (§12) |
 | `default_arg_rewritten` | child | in | child? | the initialiser rebuilt for this use |
 | `fp_round` | flag | in | enum FpRound? |  |
@@ -4589,6 +4602,7 @@ and a value can only name values interned before it, so this ends.
 | `Pointer.offset` | value | in | uv |  |
 | `Pointer.designated` | type | in | type? |  |
 | `Pointer.past` | flag | in | bool |  |
+| `Pointer.unions` | entity | in | ref* | the members of unions the designator path enters that are not their union's default member, outermost first (Kiln WP-2200, `kiln_ast/src/consts/value.rs:487`): `&u.b` against `&u.a` of `union { int a; int b; } u`; canonical |
 | `MemberPtr` | bookkeeping | out | - | not a tag: the `ValueKind` of the same name gives the tag |
 | `MemberPtr.ty` | type | in | type |  |
 | `MemberPtr.member` | entity | in | ref |  |
@@ -4817,6 +4831,16 @@ rule 8) the rows are written as the table says.
 | `relocs` | bookkeeping | out | - | arena |
 | `padding` | bookkeeping | out | - | arena |
 | `unions` | bookkeeping | out | - | arena |
+| `upaths` | bookkeeping | out | - | arena: the union paths (`UnionPath`), spans of `paths` |
+
+### `kiln_ast::consts::UpathRec`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `start` | bookkeeping | out | - | arena |
+| `len` | bookkeeping | out | - | arena |
 
 ### `kiln_ast::consts::ConstStore`
 
@@ -4826,6 +4850,7 @@ rule 8) the rows are written as the table says.
 |---|---|---|---|---|
 | `pools` | bookkeeping | out | - |  |
 | `table` | bookkeeping | out | - | the intern table; not stored (`snap(skip)`) |
+| `upath_ix` | bookkeeping | out | - | the union paths' intern table; not stored (`snap(skip)`) |
 
 ## 9. Templates and specialisations
 
@@ -5474,14 +5499,15 @@ translation unit is done, and an implicit one is built checked; a node
 the walk reaches without the bit makes its unit indeterminate
 (`Unaccounted`). An argument that depends on a template parameter keeps
 its deferred form under its own per-kind bit (`flags-priority-dependent`,
-`MODE.flags-deferred`) on a checked node.
+`MODE.flags-deferred`, `ALIGN_VALUE.flags-value-dependent`) on a checked
+node.
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `kind` | flag | in | enum AttrKind |  |
 | `syntax` | flag | in | enum AttrSyntax | `[[...]]`, `__attribute__`, a keyword, `__declspec` or a pragma: code generation tells `__attribute__((noreturn))` from `[[noreturn]]` by it |
 | `flags-implicit` | flag | in | bit | bit 0: added by sema, not written. An attribute from `#pragma clang attribute` is stored as written, without this bit (`kiln_sema` `pragma_attr.rs:503-518`) |
-| `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it at one site, for an `ASM_LABEL` |
+| `flags-inherited` | bookkeeping | out | - | bit 1: a copy from an earlier declaration, which the list rule leaves out. Kiln sets it for an inherited `ASM_LABEL` and, since WP-2476, for a parameter's attribute copied from the corresponding parameter of the previous declaration |
 | `flags-gnu-scoped` | written | out | - | bit 3: written with the `gnu::` scope |
 | `flags-checked` | bookkeeping | out | - | bit 6: the declaration checks ran on the node; set on every node of a finished translation unit, and a node without it makes the unit indeterminate (rule above) |
 | `loc` | location | out | - |  |
@@ -5492,6 +5518,7 @@ its deferred form under its own per-kind bit (`flags-priority-dependent`,
 | `CONSTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
 | `DESTRUCTOR.flags-priority-dependent` | flag | in | bit | bit 2: the priority is value-dependent |
 | `MODE.flags-deferred` | flag | in | bit | bit 2: applies at instantiation |
+| `ALIGN_VALUE.flags-value-dependent` | flag | in | bit | bit 2: the alignment is value-dependent (Kiln WP-2476, `kiln_ast/src/attr.rs:884-888`), so `a` is the expression |
 | `GSL_OWNER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
 | `GSL_POINTER.flags-has-type` | flag | in | bit | bit 2: a type argument was written |
 | `DIAGNOSE_IF.flags-error` | flag | in | bit | bit 2: the diagnostic is an error, not a warning |
@@ -5564,7 +5591,8 @@ its deferred form under its own per-kind bit (`flags-priority-dependent`,
 | `FUNCTION_RETURN.a` | flag | in | uv | 1 thunk-extern, 0 keep |
 | `ASSUME_ALIGNED.a` | value | in | uv | the alignment, folded |
 | `ASSUME_ALIGNED.b` | value | in | uv | the offset, folded |
-| `ALIGN_VALUE.a` | value | in | uv |  |
+| `ALIGN_VALUE.a-alignment` | value | in | uv? | when `flags-value-dependent` is clear: the alignment |
+| `ALIGN_VALUE.a-expression` | child | in | child? | when it is set: the expression |
 | `CODE_ALIGN.a` | value | in | uv |  |
 | `ARM_LOCALLY_STREAMING.b` | location | out | - | the keyword's index and offsets of its strings from `loc` |
 | `ARM_NEW.a` | flag | in | uv | bit 0 ZA, bit 1 ZT0 |
@@ -6270,6 +6298,7 @@ not written: a digest is relative to its command (digest §1 rule 8).
 | `symbols` | bookkeeping | out | - | `Interner` |
 | `inst` | bookkeeping | out | - | `InstantiationMeter` |
 | `decl_extents` | location | out | - | `DeclExtents`: the extents of each declaration as written, off unless a client turns it on |
+| `split_greaters` | location | out | - | the `>` tokens split off a `>>`, `>=` or `>>=` to close a template argument list, by location (Kiln WP-2542, `kiln_ast/src/ast.rs:110`): where a token ends, which no unit holds |
 
 `Ast` `written_refs`, the table of references as written, is transient
 and has no descriptor; like `decl_extents` it records positions only and
@@ -6284,6 +6313,9 @@ is off unless a client turns it on, so neither is written.
 | `on` | bookkeeping | out | - | whether extents are recorded |
 | `rows` | location | out | - |  |
 | `index` | bookkeeping | out | - | by declaration: its row |
+| `more` | location | out | - | the later rows of a declaration written more than once under one `DeclId` (Kiln WP-2470) |
+| `modules` | location | out | - | `ModuleDeclExtent`: the module and import declarations as written (Kiln WP-2091); what they declare is in `ModuleTable` (§13) |
+| `attrs` | location | out | - | `WrittenAttr`: the attributes written on an explicit instantiation, as written (Kiln WP-2541); the attributes the walk reads are the specialisation's own list (§10.1) |
 
 ### `kiln_ast::decl_extents::DeclExtent`
 
@@ -6298,6 +6330,42 @@ is off unless a client turns it on, so neither is written.
 | `body` | location | out | - |  |
 | `specs_end` | location | out | - |  |
 | `end` | location | out | - | which token ends the declaration text |
+
+### `kiln_ast::decl_extents::ModuleDeclExtent`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `full` | location | out | - |  |
+| `export` | location | out | - |  |
+| `keyword` | location | out | - |  |
+| `name` | location | out | - |  |
+| `partition` | location | out | - |  |
+| `attrs` | location | out | - |  |
+| `semi` | location | out | - |  |
+| `before` | location | out | - | the next declaration's index when it was recorded: a position |
+| `kind` | location | out | - | which kind of declaration the extent is of; the declaration itself is in `ModuleTable` (§13) |
+
+### `kiln_ast::decl_extents::ModuleDeclKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Module` | location | out | - |  |
+| `Import` | location | out | - |  |
+| `HeaderImport` | location | out | - |  |
+
+### `kiln_ast::decl_extents::WrittenAttr`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | location | out | - | of a row of the extents table, recorded only when a client turns it on |
+| `syntax` | location | out | - | of a row of the extents table, recorded only when a client turns it on |
+| `span` | location | out | - |  |
 
 ### `kiln_ast::decl_extents::DeclEnd`
 
@@ -6581,9 +6649,13 @@ mode), since Kiln records it on the declaration that holds the
 initialiser
 (`tests/resolved/value/instantiated-static-member`, `variable-template`,
 `instantiated-out-of-line`). For any other variable the check runs with
-the declaration and a later use does not make the unit appear. An in-class `static const int x = 1;` is never evaluated, used or not, so
-it has no `value` unit, while the same constant initialised on its
-out-of-line definition has one ("Open questions").
+the declaration and a later use does not make the unit appear. An
+in-class `static const int x = 1;` is evaluated when it is checked, as
+the out-of-line form is, so it has a `value` unit, used or not (Kiln
+WP-2504, `kiln_sema/src/class/members.rs:560-570`, in the pin since
+WP-066; at `913a490bb` it was never evaluated and had none:
+`tests/differ/_/in-class-static-const-value-through-another-unit`,
+`tests/resolved/value/in-class-static`).
 
 A block-scope variable (not a block-scope `extern`) has no unit, and its
 uses read its value without writing it (`DeclRefExpr` `non_odr_use_constant`).
@@ -7112,13 +7184,11 @@ below. What they left open:
   functions left `Deferred` in numbers, the fix is a stored mark from
   Kiln, or widening the class to every member function and every friend
   defined in a class, at the cost of a resolved unit for each.
-- **Evaluation of in-class static constants** (§11.3). Kiln records
-  `eval` for `const int S::x = 1;` at its declaration and never for the
-  in-class `static const int x = 1;`, so the two ways of writing one
-  constant differ by the resolved unit `value`
-  (`tests/equal/_/var-init-in-class-or-out-of-line`, pending). The fix is
-  Kiln evaluating both alike, or a rule that writes no `value` for a
-  constant whose value the variable's own unit already determines.
+- **Evaluation of in-class static constants** (§11.3): closed. Kiln
+  WP-2504 (in the pin since WP-066) records `eval` for the in-class
+  `static const int x = 1;` as for `const int S::x = 1;`, so the two
+  ways of writing one constant have one `value` unit
+  (`tests/equal/_/var-init-in-class-or-out-of-line`).
 
 ### Defaults inside a template template parameter's head
 
@@ -7202,16 +7272,6 @@ of a reported difference.
   list and of an `AttributedStmt` by the end of the translation unit, so
   only a node no list reaches could be unchecked, and the walk reaches
   nodes through lists.
-- **`offsetof` names neither its class nor its member** (§7). Kiln's
-  node of a non-dependent `offsetof` keeps the index expressions and the
-  folded offset; the operand type and the member path are dropped. Two
-  expressions with one value digest equal although they name different
-  things: another class of the same layout, another member at the same
-  offset (two members of a union), the same member through another
-  base. A transformation that changes which class an `offsetof` names
-  without changing the offset is not seen. Kiln is asked to keep the
-  operand type and the resolved designator (request KQ1 amendment 1,
-  §7); `differ/_/offsetof-other-class-same-layout` waits on it.
 - **A using-declaration and a member of the same name** (§5). In a
   class, a member declared after `using Bs::f;` against before it
   (`struct D : Bs { using Bs::f; int f(long); };` and the two swapped)

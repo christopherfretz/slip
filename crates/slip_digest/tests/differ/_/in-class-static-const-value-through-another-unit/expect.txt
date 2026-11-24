@@ -1,0 +1,3 @@
+changed other::N
+derived-changed other::N::<value>
+derived-changed S::k::<value>

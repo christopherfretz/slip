@@ -119,15 +119,15 @@ fn s2_8_each_failure_kind_its_cause_and_place_then_a_normal_run() {
             "unhandled exception of type 'mine'",
             "throw mine{3}",
         ),
-        // Thrown in `<slip/meta.h>`, and Kiln gives no call stack of an
-        // uncaught exception: the place is the entry's (KN5 of the
-        // Handback; `s2_8_pending_the_place_of_a_refusal_is_the_call`).
+        // Thrown in `<slip/meta.h>`: the place is the transform's call
+        // that was refused, from Kiln's call stack of an uncaught
+        // exception (KN5 of the Handback, in the pin since WP-066).
         (
             "refused",
             small,
             FailureKind::Uncaught,
             "an uncaught slip::error; the most recent refusal was: extent_of",
-            "consteval void transform() {",
+            "(void)slip::extent_of(slip::lookup",
         ),
         // §3.5 rule 5: Kiln's own check of the primitive's buffers is not
         // a host failure (§3.5 rule 4).
@@ -223,10 +223,10 @@ fn s2_8_uncaught_slip_error_has_the_hosts_message_and_place() {
             f.message,
             format!("an uncaught slip::error; the most recent refusal was: {EXTENT_OF}")
         );
-        // The entry's place: see `s2_8_pending_the_place_of_a_refusal_is_the_call`.
+        // The refused call's place (`s2_8_the_place_of_a_refusal_is_the_call`).
         assert_eq!(
             at(f.place.as_ref()),
-            Some(("refused.cpp".to_owned(), line_of("consteval void transform() {")))
+            Some(("refused.cpp".to_owned(), line_of("(void)slip::extent_of(slip::lookup")))
         );
         let refusal = f.refusal.as_ref().expect("the refusal");
         assert_eq!((refusal.errc, refusal.place), (2, Some(foo_name)));
@@ -294,12 +294,12 @@ fn s2_8_uncaught_other_types() {
     });
 }
 
-// M3 of the review, pending a call stack of an uncaught exception from
-// Kiln (KN5 of the Handback): the place of an uncaught `slip::error` is
-// the line of the transform that made the refused call, not the entry.
+// M3 of the review, since Kiln gives the call stack of an uncaught
+// exception (KN5 of the Handback, in the pin since WP-066): the place of
+// an uncaught `slip::error` is the line of the transform that made the
+// refused call, not the entry.
 #[test]
-#[ignore = "needs: Kiln KN5 (the call stack of an uncaught exception)"]
-fn s2_8_pending_the_place_of_a_refusal_is_the_call() {
+fn s2_8_the_place_of_a_refusal_is_the_call() {
     with("refused_at", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("refused")).unwrap();
         let f = failure(&o);
@@ -310,12 +310,13 @@ fn s2_8_pending_the_place_of_a_refusal_is_the_call() {
     });
 }
 
-// M1 of the review, pending Kiln WP-2480 (the type of an uncaught
-// exception, qualified, and which object was thrown): the three cases in
-// which the rule "the most recent refusal, if the type is named `error`"
-// is wrong (`spec/api.md` §2.8 rule 3). Each asserts the right result.
+// M1 of the review: the three cases in which the rule "the most recent
+// refusal, if the type is `slip::error`" was wrong (`spec/api.md` §2.8
+// rule 3). Each asserts the right result. Kiln WP-2480 (in the pin since
+// WP-066) names the type qualified, which fixes the second; the other two
+// need Slip to read which object was thrown (WP-138).
 #[test]
-#[ignore = "needs: Kiln WP-2480"]
+#[ignore = "needs: WP-138 (the thrown object, Kiln WP-2480)"]
 fn m1_rethrowing_an_older_slip_error_reports_its_refusal() {
     with("rethrow_older", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("rethrow_older")).unwrap();
@@ -325,7 +326,6 @@ fn m1_rethrowing_an_older_slip_error_reports_its_refusal() {
 }
 
 #[test]
-#[ignore = "needs: Kiln WP-2480"]
 fn m1_an_error_of_another_namespace_has_no_refusal() {
     with("own_ns", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("own_error")).unwrap();
@@ -335,7 +335,7 @@ fn m1_an_error_of_another_namespace_has_no_refusal() {
 }
 
 #[test]
-#[ignore = "needs: Kiln WP-2480"]
+#[ignore = "needs: WP-138 (the thrown object, Kiln WP-2480)"]
 fn m1_a_type_derived_from_slip_error_carries_its_refusal() {
     with("derived", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("derived")).unwrap();

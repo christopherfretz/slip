@@ -1,8 +1,10 @@
 subjects:
-  32ae9afe seed - rule=yes n::S::f()
-  4fafa1b6 follower unreachable rule=yes n::S<long>::f() of=32ae9afe
-  5e9f1f3e follower unreachable rule=yes n::S<char>::f() of=32ae9afe
+  089ac656 seed - rule=yes n::S::f()
+  271e2816 follower unreachable rule=yes n::S<char>::f() of=089ac656
+  da925178 follower unreachable rule=yes n::S<long>::f() of=089ac656
 links:
 claims:
-  main.cpp:1:50+1 replace "g" t0 votes=1 none [32ae9afe]
+  main.cpp:1:50+1 replace "g" t0 votes=1 none [089ac656]
+  main.cpp:2:24+1 replace "g" t0 votes=1 none [089ac656]
+  main.cpp:3:31+1 replace "g" t0 votes=1 none [089ac656]
 changed:

@@ -1,0 +1,6 @@
+# The same with two overloads of h: an unresolved lookup, whose qualifier is written (expr_nns,
+# canonical: a reference to the namespace).
+# WP-140: the qualifier writes acme's own key, the pre-image's legacy's: changed f, fails closed
+# (references keep the namespace's own key, spec/verify.md "Open questions").
+changed template <class> int f(type-parameter-0-0)
+use 1 via 1 direct 0

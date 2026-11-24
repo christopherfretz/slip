@@ -764,9 +764,12 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             stack.extend([P::Opt(id(n.a())), P::Expr(t), P::Expr(f)]);
         }
         K::CXXFoldExpr => {
-            // Kiln records no definition-context operator set for a fold
-            // (`oper_lookups`): what an overloadable operator finds at
-            // instantiation is not in the digest (rule 9).
+            // The fold's definition-context operator set (`oper_lookups`,
+            // Kiln WP-2625) is left out as a dependent operator's is.
+            oper_left_out(w, e);
+            // What an overloadable operator finds at instantiation beyond
+            // that set stays outside the digest (rule 9; fail closed until
+            // WP-138 reads the set in its place).
             if BinaryOp::from_u8(aux).is_some_and(|o| fold_left_out(w, o)) {
                 s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
                 raise_unlisted(w);
