@@ -143,12 +143,11 @@ impl Shards for Probe {
                 *self.made_dir.lock().unwrap() = Some(p);
             }
         }
-        if nth == 1 && self.plan.panic_at == Some(index) {
-            panic!("the store panics at index {index}");
-        }
-        if nth == 2 && self.plan.panic_again_at == Some(index) {
-            panic!("the store panics again at index {index}");
-        }
+        assert!(nth != 1 || self.plan.panic_at != Some(index), "the store panics at index {index}");
+        assert!(
+            nth != 2 || self.plan.panic_again_at != Some(index),
+            "the store panics again at index {index}"
+        );
         if self.plan.fail_at == Some(index) {
             return Err("the store cannot read it".into());
         }
