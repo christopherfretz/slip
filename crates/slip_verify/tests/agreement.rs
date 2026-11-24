@@ -1298,7 +1298,12 @@ fn s5_5_unchanged_is_decided_by_the_report() {
     );
     let mut partial = ids(&[]);
     partial.remove(b"/s/c.h".as_slice());
-    wrong_with(&no_rules, Some(partial), map_shard(0x10, &[]), "the overlay's /s/c.h has no identity");
+    wrong_with(
+        &no_rules,
+        Some(partial),
+        map_shard(0x10, &[]),
+        "the overlay's /s/c.h has no identity",
+    );
     // Another file with an identity of its own is not an overlay file.
     let mut r = report_with(&no_rules, Some(ids(&[("/s/d.h", (1, 4))])));
     r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &["/s/d.h"]));

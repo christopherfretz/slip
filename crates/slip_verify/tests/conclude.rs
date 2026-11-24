@@ -364,7 +364,13 @@ fn s8_4_a_scan_that_did_not_run_is_incomplete() {
 /// with `overlay`: the state alone, conclude's state, and whether the
 /// result permits anything.
 fn verifies(set: &EditSet, report: &Report, overlay: Option<&Overlay>) -> (State, State, bool) {
-    let f = Facts { set, selected: 2, report: Some(report), allow_unparsed: false, scan: Scan::Done(&[]) };
+    let f = Facts {
+        set,
+        selected: 2,
+        report: Some(report),
+        allow_unparsed: false,
+        scan: Scan::Done(&[]),
+    };
     let c = conclude(&f, overlay);
     let r = result_of(&c, set, false, false, &[]);
     assert_eq!(r.validate(), Ok(()));
@@ -521,8 +527,13 @@ fn s7_3_report_independent_of_call_order() {
             r.add_at(*pos, &sh.observer, main, Some(sh), common::MAP_OK);
         }
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
-        let f =
-            Facts { set: &s, selected: 4, report: Some(&r), allow_unparsed: false, scan: Scan::Done(&[]) };
+        let f = Facts {
+            set: &s,
+            selected: 4,
+            report: Some(&r),
+            allow_unparsed: false,
+            scan: Scan::Done(&[]),
+        };
         let c = conclude(&f, Some(&o));
         assert_eq!(c.state, State::NotVerified);
         let result = result_of(&c, &s, false, false, &[]);
@@ -1109,8 +1120,13 @@ fn s8_5_tally_counts_observers_and_error_reports_only() {
     s.reports.insert(0, review);
     s.validate().unwrap();
     let (report1, _) = report(RunVerdict::Verified, &s);
-    let f =
-        Facts { set: &s, selected: 2, report: Some(&report1), allow_unparsed: false, scan: Scan::Done(&[]) };
+    let f = Facts {
+        set: &s,
+        selected: 2,
+        report: Some(&report1),
+        allow_unparsed: false,
+        scan: Scan::Done(&[]),
+    };
     let t = tally(&f);
     assert_eq!((t.failed_runs, t.error_reports), (3, 1));
     assert_eq!(state(&f), State::VerifiedWithResidue);
@@ -1184,8 +1200,13 @@ fn s9_2_namespace_rule_stale_permits_nothing() {
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
         assert!(!json.contains("unchecked"), "{json}");
         assert!(!r.to_text().contains("not checked"));
-        let f =
-            Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: true, scan: Scan::Done(&[]) };
+        let f = Facts {
+            set: &s,
+            selected: 2,
+            report: Some(&r),
+            allow_unparsed: true,
+            scan: Scan::Done(&[]),
+        };
         let c = conclude(&f, Some(&o));
         assert_eq!(state(&f), c.state);
         let result = result_of(&c, &s, false, true, &[]);

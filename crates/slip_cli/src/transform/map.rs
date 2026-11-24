@@ -294,7 +294,29 @@ pub(crate) fn main(a: &MapArgs, out: &mut dyn Write, err: &mut dyn Write) -> com
     drop(published);
     let (_, counts) = mapped.map_err(failure)?;
     published_record.map_err(failure)?;
-    let code =
-        if counts.not_ok == 0 && counts.failed_runs == 0 { status::OK } else { status::FINDINGS };
-    Ok(code.max(s.plan_code))
+    Ok(status_of_map(&counts).max(s.plan_code))
+}
+
+/// `map`'s status (§10.5): 0 when every selected observer is `ok` and no
+/// run of the transform failed (§4.6), else 1.
+fn status_of_map(counts: &MapCounts) -> u8 {
+    if counts.not_ok == 0 && counts.failed_runs == 0 { status::OK } else { status::FINDINGS }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // §10.5 (WP-076 fix round, F1): a failed run of a programmable
+    // transform makes `map` status 1, as a not-`ok` observer does. (The
+    // shipped `slip` runs no programmable transform: tested here.)
+    #[test]
+    fn s10_5_map_status() {
+        let c =
+            |not_ok, failed_runs| MapCounts { selected: 3, ok: 3 - not_ok, not_ok, failed_runs };
+        assert_eq!(status_of_map(&c(0, 0)), status::OK);
+        assert_eq!(status_of_map(&c(1, 0)), status::FINDINGS);
+        assert_eq!(status_of_map(&c(0, 1)), status::FINDINGS);
+        assert_eq!(status_of_map(&c(1, 1)), status::FINDINGS);
+    }
 }

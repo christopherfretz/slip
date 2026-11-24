@@ -1158,7 +1158,10 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
         return None;
     }
     t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
-    t.write("src/b.cpp", &format!("#define B_SIDE\n#include \"{spelled}\"\nint g() {{ return k(); }}\n"));
+    t.write(
+        "src/b.cpp",
+        &format!("#define B_SIDE\n#include \"{spelled}\"\nint g() {{ return k(); }}\n"),
+    );
     t.db(&["src/a.cpp", "src/b.cpp"]);
     let plan = t.plan("store");
     let out = rename(&t, &plan, &[]);
@@ -1190,8 +1193,17 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
     std::fs::write(t.path("none.decl"), Declared::none().to_bytes()).unwrap();
     std::fs::write(t.path("k.edts"), set.to_bytes()).unwrap();
     let out = t.slip(&[
-        "check", "--plan", &plan, "--round", "1", "--edits", "k.edts", "--declared", "none.decl",
-        "--store", "store",
+        "check",
+        "--plan",
+        &plan,
+        "--round",
+        "1",
+        "--edits",
+        "k.edts",
+        "--declared",
+        "none.decl",
+        "--store",
+        "store",
     ]);
     let id = out.id("result");
     let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
@@ -1301,9 +1313,8 @@ fn s8_5_an_interrupted_map_is_not_unparsed() {
     // started is unparsed.
     let missing: Vec<&String> = order[2..].iter().collect();
     for extra in [&[][..], &["--allow-unparsed"][..]] {
-        let mut args = vec![
-            "check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store",
-        ];
+        let mut args =
+            vec!["check", "--plan", &plan, "--round", "1", "--edits", &edits, "--store", "store"];
         args.extend_from_slice(extra);
         let check = t.slip(&args);
         assert_eq!(check.code(), Some(3), "{extra:?}: {check:?}");
@@ -1358,8 +1369,17 @@ fn s10_2_a_given_declaration_exempts_only_what_the_set_derives() {
     let with = |name: &str, d: &Declared| {
         std::fs::write(t.path(name), d.to_bytes()).unwrap();
         t.slip(&[
-            "check", "--plan", &plan, "--round", "1", "--edits", "x.edts", "--declared", name,
-            "--store", "store",
+            "check",
+            "--plan",
+            &plan,
+            "--round",
+            "1",
+            "--edits",
+            "x.edts",
+            "--declared",
+            name,
+            "--store",
+            "store",
         ])
     };
     let rules = derived.rules().rules().to_vec();
@@ -1407,4 +1427,162 @@ fn s8_4_a_file_is_scanned_once_by_identity() {
         "{out:?}"
     );
     assert_eq!(out.stdout.lines().last(), Some("state verified"), "{out:?}");
+}
+
+// ----- what the scan reads (§8.4; WP-076 fix round, should-fix 2) ----------
+
+// §8.4: the main files of unparsed observers are scanned, as files no
+// observer read, only with `--allow-unparsed`, and only the owned ones.
+// `src/c.inl` (owned, an extension the walk does not take) and
+// `lib/d.cpp` (not owned) do not parse; both spell `f`.
+#[test]
+fn s8_4_unparsed_mains_are_scanned_with_allow_unparsed() {
+    let t = Tree::three_files("unparsed-mains");
+    t.write("src/c.inl", "int f(int);\nint broken( {\n");
+    t.write("lib/d.cpp", "int f(int);\nint broken( {\n");
+    let dir = t.root.to_str().unwrap();
+    let unit = |file: &str, extra: &str| {
+        format!(
+            "{{\"directory\": \"{dir}\", \"file\": \"{file}\", \"command\": \"clang++ {extra}-std=c++17 -c {file}\"}}"
+        )
+    };
+    let db = [
+        unit("src/a.cpp", ""),
+        unit("src/b.cpp", ""),
+        unit("src/c.inl", "-x c++ "),
+        unit("lib/d.cpp", ""),
+    ];
+    t.write("cdb.json", &format!("[\n{}\n]\n", db.join(",\n")));
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(out.value("map:"), Some("selected 4, ok 2, not ok 2, failed runs 0"), "{out:?}");
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "without --allow-unparsed no main is scanned: {out:?}"
+    );
+    let out = rename(&t, &plan, &["--allow-unparsed", "--relative-to", "."]);
+    let residue: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("residue ")).collect();
+    assert_eq!(residue.len(), 1, "{out:?}");
+    assert!(residue[0].ends_with(": src/c.inl:1:5"), "{out:?}");
+}
+
+// §8.4: an included file that is not owned is not scanned. `b.cpp`
+// includes `lib/l.h`, which spells `f` in a comment.
+#[test]
+fn s8_4_a_file_read_but_not_owned_is_not_scanned() {
+    let t = Tree::three_files("read-not-owned");
+    t.write("lib/l.h", "#pragma once\n// calls f\n");
+    t.write("src/b.cpp", "#include \"h.h\"\n#include \"../lib/l.h\"\nint g() { return f(2); }\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "{out:?}"
+    );
+    assert_eq!(out.stdout.lines().last(), Some("state verified"), "{out:?}");
+}
+
+// §8.4: the walk follows no symbolic link (`src/link` leads to `lib`,
+// whose `x.h` declares `f`), and takes no file of a `--readonly` entry
+// (`src/ro/r.h` declares `f`).
+#[test]
+fn s8_4_the_walk_follows_no_link_and_skips_readonly() {
+    let t = Tree::three_files("walk-scope");
+    t.write("lib/x.h", "int f(int);\n");
+    std::os::unix::fs::symlink(t.path("lib"), t.path("src/link")).unwrap();
+    std::os::unix::fs::symlink(t.path("lib/x.h"), t.path("src/x.h")).unwrap();
+    t.write("src/ro/r.h", "int f(int);\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--readonly", "src/ro"]);
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "{out:?}"
+    );
+    assert_eq!(out.stdout.lines().last(), Some("state verified"), "{out:?}");
+    // Without `--readonly`, `r.h` is an owned file: the scan finds it.
+    let out = rename(&t, &plan, &[]);
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 1; mentions 0"),
+        "{out:?}"
+    );
+}
+
+// ----- the round's selection (§8.5, decision 9; should-fix 2) --------------
+
+// §8.5: the stages over a round mapped with `--only`: `check`'s result is
+// partial, and `apply` writes it only with `--allow-partial`. Decision 9:
+// `check` with a selection other than the round's is refused.
+#[test]
+fn s8_5_check_of_a_partial_round() {
+    let t = Tree::three_files("partial-stages");
+    t.write("src/c.cpp", "int c() { return 3; }\n");
+    t.db(&["src/a.cpp", "src/b.cpp", "src/c.cpp"]);
+    let plan = t.plan("store");
+    let only = ["--only", "a.cpp", "--only", "b.cpp"];
+    let map = t.slip(
+        &[
+            &["map", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src"][..],
+            &["--store", "store"],
+            &only,
+        ]
+        .concat(),
+    );
+    assert_eq!(map.code(), Some(0), "{map:?}");
+    let reduce = t.slip(&["reduce", "--plan", &plan, "--round", "1", "--store", "store"]);
+    let edits = reduce.id("edits");
+    let check = |extra: &[&str]| {
+        t.slip(
+            &[
+                &["check", "--plan", &plan, "--round", "1", "--edits", &edits][..],
+                &["--store", "store"],
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let other = check(&["--only", "a.cpp"]);
+    assert_eq!(other.code(), Some(3), "{other:?}");
+    assert!(!other.has_line("result "), "{other:?}");
+    let out = check(&only);
+    assert_eq!(out.stdout.lines().last(), Some("state verified"), "{out:?}");
+    let id = out.id("result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    assert!(TransformResult::from_bytes(&bytes).unwrap().partial);
+    let before = t.snapshot();
+    let apply = t.slip(&["apply", "--result", &id, "--write", "--store", "store"]);
+    assert_eq!(apply.code(), Some(1), "{apply:?}");
+    assert_eq!(t.snapshot(), before);
+    let apply =
+        t.slip(&["apply", "--result", &id, "--write", "--allow-partial", "--store", "store"]);
+    assert_eq!(apply.code(), Some(0), "{apply:?}");
+    assert_eq!(t.read("src/h.h"), POST_H);
+}
+
+// §8.4: the scan reads a file of the edit set only as the set names it: a
+// file changed since the map phase is an error naming it. (Through the
+// command, apply refuses such a set first, `stale file`; the scan's own
+// check is tested on the function.)
+#[test]
+fn s8_4_the_scan_refuses_a_file_changed_since_the_map_phase() {
+    use slip_cli::transform::residue::{extensions, residue};
+    let t = Tree::three_files("residue-stale");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &[]);
+    let set = edit_set(&t, "store", &out.id("edits"));
+    let trfm = t.path("store").join("transforms").join(format!("{}.trfm", out.id("transform")));
+    let transform = slip_model::Transform::from_bytes(&std::fs::read(trfm).unwrap()).unwrap();
+    let ext = extensions(None);
+    assert!(residue(&transform, &set, &[], &[], &ext, 1).is_ok());
+    t.write("src/h.h", "#pragma once\nint f(int); \n");
+    let e = residue(&transform, &set, &[], &[], &ext, 1).unwrap_err().to_string();
+    assert!(
+        e.ends_with(
+            "h.h: the file is not the one the edit set names (it changed after the map phase)"
+        ),
+        "{e}"
+    );
 }

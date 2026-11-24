@@ -214,10 +214,7 @@ fn wait_published(
         if left.is_zero() {
             break;
         }
-        p = changed
-            .wait_timeout(p, left)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+        p = changed.wait_timeout(p, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
 }
 

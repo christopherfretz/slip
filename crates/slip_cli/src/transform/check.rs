@@ -160,9 +160,8 @@ impl Identities {
         if let Some(id) = self.0.get(path) {
             return *id;
         }
-        let id = std::fs::metadata(std::ffi::OsStr::from_bytes(path))
-            .ok()
-            .map(|m| (m.dev(), m.ino()));
+        let id =
+            std::fs::metadata(std::ffi::OsStr::from_bytes(path)).ok().map(|m| (m.dev(), m.ino()));
         self.0.insert(path.to_vec(), id);
         id
     }
@@ -215,10 +214,13 @@ fn map_pass(input: &CheckInput<'_>, overlay: &Overlay) -> Result<Pass, CommandEr
         pass.ok.push(ok);
         // By path, or else by identity; an input that cannot be looked up
         // gets a job, which reads it itself (WP-076 decision 2).
-        pass.read_overlay.push(ok && (all_read || inputs.iter().any(|f| {
-            overlay.find(&f.path).is_some()
-                || ids.of(&f.path).is_none_or(|id| overlaid.contains(&id))
-        })));
+        pass.read_overlay.push(
+            ok && (all_read
+                || inputs.iter().any(|f| {
+                    overlay.find(&f.path).is_some()
+                        || ids.of(&f.path).is_none_or(|id| overlaid.contains(&id))
+                })),
+        );
         if !ok {
             pass.unparsed_mains.push(o.main.path.clone());
         }
