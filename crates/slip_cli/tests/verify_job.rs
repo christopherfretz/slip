@@ -3026,6 +3026,49 @@ fn wp140_relocation_into_a_namespace_a_dependency_opens_over_two_observers() {
     assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
 }
 
+// WP-140 review F3: observers the edit did not touch that open the
+// dependency's `fresh` only to specialise its template, or with an empty
+// opening, hold nothing owned there: no owned view, so each is verified
+// beside the observer that moves `old` (before the fix, `added fresh`).
+#[test]
+fn wp140_untouched_observers_that_open_the_dependency_namespace() {
+    use slip_verify::run::RunVerdict;
+    let u0 = "#include \"dep/d.h\"\nnamespace old { inline int f0() { return 0; } }\nint u0() { return old::f0(); }\n";
+    let u1 = "#include \"dep/d.h\"\nnamespace fresh { template <> struct Trait<int> { static const int v = 2; }; }\nint u1() { return fresh::Trait<int>::v; }\n";
+    let u2 = "#include \"dep/d.h\"\nnamespace fresh { }\nint u2() { return sizeof(fresh::D); }\n";
+    let tree = Tree::new(
+        "wp140-untouched",
+        &[
+            (
+                "dep/d.h",
+                "namespace fresh { struct D {}; template <class T> struct Trait { static const int v = 1; }; }\n",
+            ),
+            ("u0.cpp", u0),
+            ("u1.cpp", u1),
+            ("u2.cpp", u2),
+        ],
+    );
+    write(&tree.post.join("u0.cpp"), &u0.replace("old", "fresh"));
+    let params = tree.params(declared_of(&tree, rename_ns("fresh", "old"), &["dep"]));
+    let mut shards = Vec::new();
+    for (main, via) in [("u0.cpp", 1), ("u1.cpp", 0), ("u2.cpp", 0)] {
+        let o = tree.observer_of(main, &[]);
+        tree.map(&o);
+        let v = tree.verify_with(&o, &params).unwrap();
+        assert_eq!(kind(&v), VerdictKind::Verified, "{main}: {}", reason(&v));
+        // A rule an observer did not use has no `Use` there.
+        let want: Vec<_> = (via > 0)
+            .then_some(slip_model::agreement::Use { rule: 0, via, direct: 0, kept_via: 0 })
+            .into_iter()
+            .collect();
+        assert_eq!(v.rule_use.as_ref().unwrap().uses, want, "{main}");
+        shards.push((o, v));
+    }
+    let r = run_report(&tree, &params, &shards);
+    assert_eq!(r.verdict(), RunVerdict::Verified, "{}", r.error_lines());
+    assert_eq!((r.stale(), r.unused()), (&[][..], vec![]));
+}
+
 // WP-111 review, mutant R5: the job walks with `Declared.kept` (§9.2). An
 // owned member left in `old` counts `direct` unless its key is kept; kept,
 // it counts none and its key is seen. A job that passed no kept key would

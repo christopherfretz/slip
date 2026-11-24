@@ -1,0 +1,5 @@
+# WP-140 review F3 (A4): an alias written in the owned opening counts, as the directive.
+added acme
+added acme::O
+removed acme::O
+use 3 via 1 direct 0

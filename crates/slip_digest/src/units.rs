@@ -694,25 +694,31 @@ fn fallback_key(
 }
 
 /// The units of namespaces in a view that is not their own ownership
-/// (`spec/digest.md` §3.4 "Ownership", `spec/verify.md` §2.1 rule 2;
-/// WP-140), after every other unit is written and tainted.
+/// (`spec/digest.md` §3.4 "A namespace's unit in each view",
+/// `spec/verify.md` §2.1 rule 2; WP-140), after every other unit is
+/// written and tainted.
 ///
-/// A namespace `N` has a unit under the key of each view in which it has
-/// an opening or a member: the owned view (rules along the chain, `true`)
-/// if one of its declarations lies in an owned file
-/// (`Walk::in_owned_file`) or an owned entity is keyed with `N` as its
-/// namespace parent; the dependency view (no rule, `false`) if one lies
-/// in no owned file or a dependency entity is keyed under `N`. One of the
-/// two is `N`'s own ownership, whose key is `N`'s own key and whose unit
-/// is `N`'s own unit. For the other, a unit is written here when the view
-/// exists and its key differs from `N`'s own key (equal keys are one
-/// unit, and none is written: the dedup of `groups::build` is not relied
-/// on). Its digest is `N`'s own unit's, made of every opening (the inline
-/// bit and the attributes of the whole chain): the digest is not per
-/// view, or a fact one view's openings hold would be lost in the other's
-/// unit (`spec/landed/digest/WP-140.md`, option A). Its cause is the own
-/// unit's, merged with the view key's. A view whose key cannot be formed
-/// makes the own unit indeterminate with its cause.
+/// A namespace `N` is owned iff none of its openings lies in a read-only
+/// file (`Walk::owned`); its own unit is keyed in that view. It has a unit
+/// in the other view too when it **holds something** there: an entity
+/// that is not a namespace keyed with `N` as its namespace parent in that
+/// view (`OwnedState::member_views`: a function, a class, a variable, and
+/// the content-keyed using-directive, alias, using-declaration or
+/// `static_assert` written in an opening), or a nested namespace keyed
+/// under `N` in that view that itself holds something there
+/// (`OwnedState::nested_views`, transitively). An opening alone is not
+/// enough: an empty owned opening, or one that holds only an explicit
+/// specialisation (keyed under its template, not under `N`), holds
+/// nothing (WP-140 review F3; the same definition as `docs/wp/WP-141.md`
+/// Addendum A4). The unit is written when its key differs from `N`'s own
+/// key (equal keys would be one unit; the dedup of `groups::build` is not
+/// relied on). Its digest is `N`'s own unit's, made of every opening (the
+/// inline bit and the attributes of the whole chain): the digest is not
+/// per view, or a fact one view's openings hold would be lost in the
+/// other's unit (`spec/landed/digest/WP-140.md`, why option A was
+/// rejected). Its cause is the own unit's, merged with the view key's. A
+/// view whose key cannot be formed makes the own unit indeterminate with
+/// its cause.
 ///
 /// A reference to `N` (an alias's target, a using-directive, a qualifier,
 /// a reflection) still writes `N`'s own key (`spec/verify.md` "Open
@@ -733,17 +739,16 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
         let Some(e) = u.entity else { continue };
         views.push((i, e));
     }
+    let mut nested: std::collections::HashMap<(DeclId, bool), Vec<DeclId>> =
+        std::collections::HashMap::new();
+    for &(n, b, m) in &w.owned_state.nested_views {
+        nested.entry((n, b)).or_default().push(m);
+    }
     for (i, e) in views {
         let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
         let view = !w.owned(e);
-        let by_member = w.owned_state.member_views.contains(&(e, view));
-        if !by_member {
-            let chain = w.chain(e);
-            let by_opening = chain.len() <= REDECL_LIMIT
-                && chain.into_iter().any(|d| w.in_owned_file(d) == view);
-            if !by_opening {
-                continue;
-            }
+        if !holds(&w.owned_state.member_views, &nested, e, view) {
+            continue;
         }
         match w.view_key(e, view) {
             KeyRes::Key { id, cause, .. } => {
@@ -767,6 +772,33 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
             }
         }
     }
+}
+
+/// Whether the namespace `n` holds something in `view` (`view_units`):
+/// an entity that is not a namespace keyed under it in that view, or a
+/// nested namespace that does, at any depth (the namespaces of a
+/// translation unit nest without a cycle; `seen` bounds the search all
+/// the same).
+fn holds(
+    members: &std::collections::HashSet<(DeclId, bool)>,
+    nested: &std::collections::HashMap<(DeclId, bool), Vec<DeclId>>,
+    n: DeclId,
+    view: bool,
+) -> bool {
+    let mut stack = vec![n];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(x) = stack.pop() {
+        if !seen.insert(x) {
+            continue;
+        }
+        if members.contains(&(x, view)) {
+            return true;
+        }
+        if let Some(children) = nested.get(&(x, view)) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    false
 }
 
 /// Makes the unit around each declaration of a kind without a key kind

@@ -1,0 +1,8 @@
+# WP-140 review F3 (A4): a using-declaration written in the owned opening counts, as the
+# directive (its shadow too).
+added acme
+added acme::<shadow other::o()>
+added acme::<using other::o>
+removed acme::<shadow other::o()>
+removed acme::<using other::o>
+use 3 via 1 direct 0
