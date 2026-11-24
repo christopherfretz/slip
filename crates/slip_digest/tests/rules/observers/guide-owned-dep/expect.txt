@@ -1,0 +1,3 @@
+# WP-146 ruling 2, F3: an owned deduction guide of a dependency's template (it stays beside it).
+made fresh::m
+fixed T old::Box

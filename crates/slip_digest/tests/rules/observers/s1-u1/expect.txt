@@ -1,0 +1,2 @@
+# WP-146 stage 1. S1, the hook pair: the owned definer, without d.h.
+made fresh::hook(int)

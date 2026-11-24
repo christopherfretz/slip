@@ -1,0 +1,2 @@
+# WP-146 stage 1. S10, the mirror: the observer that includes the dependency's e.h (fresh::g).
+fixed M fresh::g(int)

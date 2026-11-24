@@ -1,0 +1,2 @@
+# WP-146 stage 1. S5, a namespace: the dependency's observer (old opened by d.h).
+fixed T old::D

@@ -1,0 +1,2 @@
+# WP-146 stage 1. S19, internal linkage: the dependency's static helper.
+lists empty

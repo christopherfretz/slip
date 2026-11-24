@@ -1,0 +1,2 @@
+# WP-146 stage 1. S15, a limit: no observer includes the dependency's d.h.
+made fresh::Both

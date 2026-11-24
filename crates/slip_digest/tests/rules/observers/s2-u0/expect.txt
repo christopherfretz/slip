@@ -1,0 +1,3 @@
+# WP-146 stage 1. S2, a class the dependency forward-declares: the dependency's observer.
+fixed T old::W
+fixed T old::take(old::W *)
