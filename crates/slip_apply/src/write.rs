@@ -3,7 +3,7 @@
 //! every operation is tested. The sequence of operations and what an
 //! interruption at each leaves are `spec/landed/edits/WP-063.md` §5.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use slip_model::Digest;
@@ -12,7 +12,7 @@ use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay};
 use slip_model::transform::{Ownership, is_canonical};
 
-use crate::journal::{Journal, JournalEntry, parent, staged_name};
+use crate::journal::{Journal, JournalEntry, parent};
 
 /// What `write` needs to know of a path (`Tree::stat`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +72,12 @@ pub trait Tree {
     fn remove(&self, path: &[u8]) -> io::Result<()>;
     /// Makes the names in `dir` durable.
     fn sync_dir(&self, dir: &[u8]) -> io::Result<()>;
+    /// The names of the entries of directory `dir`, byte for byte as the
+    /// file system keeps them (`read_dir`); `None` when there is no
+    /// directory at `dir`. On a volume that finds a name in another case
+    /// or normalisation, these are the one spelling the name has
+    /// (`spec/edits.md` §2.1, "One spelling").
+    fn names(&self, dir: &[u8]) -> io::Result<Option<Vec<Vec<u8>>>>;
 }
 
 /// Blobs by content digest (`spec/edits.md` §10.4).
@@ -119,6 +125,15 @@ pub enum Refused {
     /// `recover`: the journal names a path the ownership does not own.
     /// Nothing was changed and the journal is kept.
     JournalNotOwned(Vec<u8>),
+    /// The path is not spelled as the file system spells it: a component
+    /// of it is not, byte for byte, a name its directory lists, yet a
+    /// listed name differs from it only in case, or the path finds a file
+    /// or directory (a volume that matches names without regard to case
+    /// or normalisation). `on_disk`: the path with
+    /// that component as its directory lists it, when a name of the
+    /// listing differs from it only in case. Checked before any ownership
+    /// decision, by `write`, `recover` and [`check_owned`].
+    NotCanonical { path: Vec<u8>, on_disk: Option<Vec<u8>> },
 }
 
 /// What `write` and `recover` fail with.
@@ -175,6 +190,106 @@ fn check_ownership(o: &Ownership) -> Result<(), WriteError> {
     }
     if let Some(e) = o.readonly.iter().find(|e| o.owned.contains(e)) {
         return bad(format!("{:?} is both owned and readonly", String::from_utf8_lossy(e)));
+    }
+    Ok(())
+}
+
+/// The one-spelling check (`spec/edits.md` §2.1): each directory's names
+/// listed once per call of `write`, `recover` or `check_owned`.
+struct Spelling<'t> {
+    tree: &'t dyn Tree,
+    dirs: BTreeMap<Vec<u8>, Option<BTreeSet<Vec<u8>>>>,
+}
+
+impl<'t> Spelling<'t> {
+    fn new(tree: &'t dyn Tree) -> Spelling<'t> {
+        Spelling { tree, dirs: BTreeMap::new() }
+    }
+
+    fn names(&mut self, dir: &[u8]) -> Result<Option<&BTreeSet<Vec<u8>>>, Fail> {
+        if !self.dirs.contains_key(dir) {
+            let listed = self.tree.names(dir).map_err(io_at(dir))?;
+            self.dirs.insert(dir.to_vec(), listed.map(|n| n.into_iter().collect()));
+        }
+        Ok(self.dirs[dir].as_ref())
+    }
+
+    /// `Ok` when every component of `path` (a canonical absolute path),
+    /// from `/` down, is a name its directory lists, or when a component
+    /// is missing (no listed name differs from it only in case and `stat`
+    /// finds nothing: the checks that follow find it missing).
+    /// `NotCanonical` when a component is not listed but a listed name
+    /// differs from it only in case, or `stat` finds something there.
+    fn check(&mut self, path: &[u8]) -> Result<(), Fail> {
+        let mut at = 0; // `path[..at]`: the directory checked so far.
+        while at < path.len() {
+            let start = at + 1;
+            let end =
+                path[start..].iter().position(|&b| b == b'/').map_or(path.len(), |i| start + i);
+            let dir: &[u8] = if at == 0 { b"/" } else { &path[..at] };
+            let name = &path[start..end];
+            let Some(names) = self.names(dir)? else { return Ok(()) };
+            if names.contains(name) {
+                at = end;
+                continue;
+            }
+            // A listed name that differs only in case is refused whether
+            // or not the path finds it: some volumes (FUSE host mounts)
+            // answer a lookup in another case one time and not the next.
+            // Otherwise (another normalisation, say) the path is refused
+            // when `stat` (`lstat`) finds something there.
+            let folded = fold(name);
+            let other = names.iter().find(|n| fold(n) == folded).cloned();
+            if other.is_none() && self.tree.stat(&path[..end]).map_err(io_at(path))?.is_none() {
+                return Ok(());
+            }
+            let on_disk = other.map(|n| {
+                let mut p = path[..start].to_vec();
+                p.extend_from_slice(&n);
+                p.extend_from_slice(&path[end..]);
+                p
+            });
+            return Err(Refused::NotCanonical { path: path.to_vec(), on_disk }.into());
+        }
+        Ok(())
+    }
+}
+
+/// A name with its case folded, for naming the spelling on disk only.
+fn fold(name: &[u8]) -> String {
+    String::from_utf8_lossy(name).to_lowercase()
+}
+
+/// What `--write` checks of the paths alone, for every overlay file whose
+/// `post` differs from its `pre`, in path order, before it touches
+/// anything (`spec/edits.md` §7.3 step 1, §7.2): the ownership is valid,
+/// each path has the one spelling of §2.1 (`NotCanonical`), and is owned
+/// (`NotOwned`). `--patch` asks it too, so that a patch never carries
+/// what `--write` refuses.
+pub fn check_owned(
+    overlay: &Overlay,
+    ownership: &Ownership,
+    tree: &dyn Tree,
+) -> Result<(), WriteError> {
+    check_ownership(ownership)?;
+    let mut spelling = Spelling::new(tree);
+    for f in overlay.files.iter().filter(|f| f.pre != f.post) {
+        spelled_and_owned(&f.path, ownership, &mut spelling).map_err(|f| match f {
+            Fail::Refused(r) => WriteError::Refused(r),
+            Fail::Io(p, e) => io_error(&p, &e, false),
+        })?;
+    }
+    Ok(())
+}
+
+fn spelled_and_owned(
+    path: &[u8],
+    ownership: &Ownership,
+    spelling: &mut Spelling<'_>,
+) -> Result<(), Fail> {
+    spelling.check(path)?;
+    if !ownership.is_owned(path) {
+        return Err(Refused::NotOwned(path.to_vec()).into());
     }
     Ok(())
 }
@@ -343,20 +458,7 @@ pub fn write(
             "the overlay id is not the content id of the overlay".to_string(),
         ));
     }
-    let j = Journal {
-        overlay: overlay_id,
-        files: overlay
-            .files
-            .iter()
-            .filter(|f| f.pre != f.post)
-            .map(|f| JournalEntry {
-                path: f.path.clone(),
-                staged: staged_name(&f.path, overlay_id),
-                pre: f.pre,
-                post: f.post,
-            })
-            .collect(),
-    };
+    let j = Journal::of_write(overlay, overlay_id);
     if j.files.is_empty() {
         return Ok(0);
     }
@@ -370,7 +472,11 @@ pub fn write(
         Fail::Io(p, e) => io_error(&p, &e, false),
     };
 
-    // 1. Check.
+    // 1. Check: first every path's spelling and ownership, then the files.
+    let mut spelling = Spelling::new(tree);
+    for f in &j.files {
+        spelled_and_owned(&f.path, ownership, &mut spelling).map_err(fail)?;
+    }
     let mut modes = Vec::with_capacity(j.files.len());
     for f in &j.files {
         modes.push(check(f, ownership, tree, false).map_err(fail)?.0.mode);
@@ -594,7 +700,9 @@ fn at_dir(d: &[u8]) -> impl FnOnce(io::Error) -> (Vec<u8>, io::Error) + '_ {
 /// returning every file to the pre-image. `None` when there is no
 /// journal. `ownership` is the one the write was given: a journal naming a
 /// path it does not own is refused (`JournalNotOwned`) before anything is
-/// touched, and kept. Idempotent, and safe to interrupt.
+/// touched, and kept; so is a journal naming a path not spelled as the
+/// file system spells it (`NotCanonical`, checked first). Idempotent, and
+/// safe to interrupt.
 pub fn recover(
     ownership: &Ownership,
     tree: &dyn Tree,
@@ -606,6 +714,13 @@ pub fn recover(
         return Ok(None);
     };
     let j = Journal::from_bytes(&bytes).map_err(WriteError::Journal)?;
+    let mut spelling = Spelling::new(tree);
+    for f in &j.files {
+        spelling.check(&f.path).map_err(|f| match f {
+            Fail::Refused(r) => WriteError::Refused(r),
+            Fail::Io(p, e) => io_error(&p, &e, true),
+        })?;
+    }
     if let Some(f) = j.files.iter().find(|f| !ownership.is_owned(&f.path)) {
         return Err(WriteError::Refused(Refused::JournalNotOwned(f.path.clone())));
     }

@@ -26,7 +26,8 @@ pub use build::{POST_MAX, build, build_into, plan};
 pub use patch::{CONTEXT, MYERS_CELLS, MYERS_WORK, patch};
 pub use splice::splice;
 pub use write::{
-    Blobs, JOURNAL_PATH, JournalStore, Recovered, Refused, Stat, Tree, WriteError, recover, write,
+    Blobs, JOURNAL_PATH, JournalStore, Recovered, Refused, Stat, Tree, WriteError, check_owned,
+    recover, write,
 };
 
 /// The pre-image: the file system, or a map in tests.

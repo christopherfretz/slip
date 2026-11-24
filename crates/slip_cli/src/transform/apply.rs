@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use slip_apply::{ApplyError, Refused, WriteError};
 use slip_exec::signals;
@@ -38,7 +39,9 @@ pub enum Applied {
     /// nothing written. The result's state.
     NotPermitted(State),
     /// The write was refused (§7.3 step 1 or 4, or the re-check before a
-    /// rename): the tree is as it was.
+    /// rename): the tree is as it was. Or the patch was (a path `--write`
+    /// would refuse by its ownership or spelling, or a stale file): no
+    /// patch was written.
     Refused(Refused),
 }
 
@@ -54,7 +57,24 @@ pub fn refused_name(r: &Refused) -> (&'static str, &[u8]) {
         Refused::ReadOnly(p) => ("read_only", p),
         Refused::OwnerChanged(p) => ("owner_changed", p),
         Refused::JournalNotOwned(p) => ("journal_not_owned", p),
+        Refused::NotCanonical { path, .. } => ("not_canonical", path),
     }
+}
+
+/// The text after `refused <name>: ` of a refusal: its path, and for
+/// `not_canonical` the spelling on disk.
+fn refused_detail(r: &Refused) -> Vec<u8> {
+    let (_, path) = refused_name(r);
+    let mut line = path.to_vec();
+    if let Refused::NotCanonical { on_disk, .. } = r {
+        line.extend_from_slice(b" is not spelled as on disk");
+        if let Some(d) = on_disk {
+            line.extend_from_slice(b" (");
+            line.extend_from_slice(d);
+            line.push(b')');
+        }
+    }
+    line
 }
 
 /// A result and its edit set, read and checked against their ids.
@@ -91,16 +111,18 @@ fn ownership_of(store: &Store, id: Digest) -> Result<Ownership, CommandError> {
 
 /// §7.2 or §7.3 for the published result `result_id`, once
 /// `slip_verify::conclude::permits` has said yes for `allow`. The
-/// ownership `--write` checks is the request's (`result.transform`, which
-/// `permits` checked is the set's), and the overlay must be the result's
-/// and of its set. Writes `written <n> file(s)` or `patch <path>` to `out`
-/// when done.
+/// ownership both actions check is the request's (`result.transform`,
+/// which `permits` checked is the set's), and the overlay must be the
+/// result's and of its set. `--patch` refuses what `--write` refuses by
+/// path (`slip_apply::check_owned`: not owned, not spelled as on disk)
+/// and a stale file. Writes `written <n> file(s)` or `patch <path>` to
+/// `out` when done.
 ///
 /// `Input` errors: anything missing from the store or not the file its id
 /// names; for `--write`, a failed operation (with the journal named when
-/// one is left) or a journal already there; for `--patch`, a stale file, a
-/// name a patch cannot carry, or a patch that cannot be written. `Usage`
-/// for `--patch` with an overlay file outside `relative_to`.
+/// one is left) or a journal already there; for `--patch`, a name a patch
+/// cannot carry, or a patch that cannot be written. `Usage` for `--patch`
+/// with an overlay file outside `relative_to`.
 pub fn apply_result(
     store: &Store,
     result_id: Digest,
@@ -117,9 +139,9 @@ pub fn apply_result(
         unreachable!("permits says yes only to a result of a state that has an overlay")
     };
     let overlay = load_overlay(store, overlay_id, result.edits)?;
+    let ownership = ownership_of(store, result.transform)?;
     match action {
         ApplyAction::Write => {
-            let ownership = ownership_of(store, result.transform)?;
             let written = slip_apply::write(
                 &overlay,
                 overlay_id,
@@ -138,7 +160,14 @@ pub fn apply_result(
             }
         }
         ApplyAction::Patch(file) => {
-            write_patch(store, &overlay, file, relative_to)?;
+            match slip_apply::check_owned(&overlay, &ownership, &slip_apply::fs::DiskTree) {
+                Ok(()) => {}
+                Err(WriteError::Refused(r)) => return Ok(Applied::Refused(r)),
+                Err(e) => return Err(write_error(store, e)),
+            }
+            if let Some(r) = write_patch(store, &overlay, file, relative_to)? {
+                return Ok(Applied::Refused(r));
+            }
             let _ = out.write_all(b"patch ");
             let _ = out.write_all(&args::os_bytes(file.as_os_str()));
             let _ = writeln!(out);
@@ -170,20 +199,82 @@ fn write_error(store: &Store, e: WriteError) -> CommandError {
         }
         WriteError::Invalid(m) => CommandError::Input(format!("apply: {m}")),
         WriteError::Refused(r) => {
-            let (name, path) = refused_name(&r);
-            CommandError::Input(format!("{}: refused: {name}", lossy(path)))
+            let (name, _) = refused_name(&r);
+            CommandError::Input(format!("refused {name}: {}", lossy(&refused_detail(&r))))
         }
     }
 }
 
+/// The temporary of the patch being written, which the signal path
+/// removes (SIGINT, SIGTERM) with the store's `tmp/` entries.
+static PATCH_TMP: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The signal path's part for the patch: removes its temporary, if one is
+/// being written. Never blocks on the lock (the main thread holds it only
+/// to set or clear the name).
+fn remove_patch_tmp() {
+    if let Ok(mut slot) = PATCH_TMP.try_lock()
+        && let Some(p) = slot.take()
+    {
+        let _ = fs::remove_file(p);
+    }
+}
+
+fn set_patch_tmp(p: Option<PathBuf>) {
+    if let Ok(mut slot) = PATCH_TMP.lock() {
+        *slot = p;
+    }
+}
+
+/// The name of the temporary of a patch to `file` by process `pid`:
+/// `.<name>.slip-tmp.<pid>` beside it.
+fn patch_tmp(file: &Path, pid: u32) -> Option<PathBuf> {
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(file.file_name()?);
+    tmp_name.push(format!(".slip-tmp.{pid}"));
+    Some(file.with_file_name(tmp_name))
+}
+
+/// The temporaries of patches to `file` that another process left beside
+/// it (killed by SIGKILL, or still running): reported by the command, not
+/// removed (whether their process is alive cannot be told portably).
+fn patch_leftovers(file: &Path) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let (Some(name), Some(mine)) = (file.file_name(), patch_tmp(file, std::process::id())) else {
+        return Vec::new();
+    };
+    let mut prefix = b".".to_vec();
+    prefix.extend_from_slice(name.as_bytes());
+    prefix.extend_from_slice(b".slip-tmp.");
+    let dir = match file.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.file_name())
+        .filter(|n| {
+            n.as_bytes()
+                .strip_prefix(prefix.as_slice())
+                .is_some_and(|pid| !pid.is_empty() && pid.iter().all(u8::is_ascii_digit))
+        })
+        .map(|n| file.with_file_name(n))
+        .filter(|p| *p != mine)
+        .collect();
+    found.sort();
+    found
+}
+
 /// §7.2: the patch written to a temporary file beside `file` and renamed
-/// to it, so that `file` is the whole patch or is left as it was.
+/// to it, so that `file` is the whole patch or is left as it was. `Some`:
+/// a file is not the pre-image (`stale_file`), and no patch was written.
 fn write_patch(
     store: &Store,
     overlay: &Overlay,
     file: &Path,
     relative_to: Option<&Path>,
-) -> Result<(), CommandError> {
+) -> Result<Option<Refused>, CommandError> {
     use std::os::unix::ffi::OsStrExt;
     let dir = match relative_to {
         None => None,
@@ -203,28 +294,40 @@ fn write_patch(
             )));
         }
     }
-    let name = file.file_name().ok_or_else(|| {
+    let tmp = patch_tmp(file, std::process::id()).ok_or_else(|| {
         CommandError::Usage(format!("`--patch`: `{}` is not a file name", file.display()))
     })?;
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(format!(".slip-tmp.{}", std::process::id()));
-    let tmp = file.with_file_name(tmp_name);
     let io_failure = |p: &Path, e: &io::Error| CommandError::Input(format!("{}: {e}", p.display()));
+    // Named for the signal path before it exists: a signal between the
+    // create and the set would otherwise leave it.
+    set_patch_tmp(Some(tmp.clone()));
     let created = fs::OpenOptions::new().write(true).create_new(true).open(&tmp);
-    let handle = created.map_err(|e| io_failure(&tmp, &e))?;
+    let handle = match created {
+        Ok(h) => h,
+        Err(e) => {
+            // Not ours (`AlreadyExists`), or not made: not to be removed.
+            set_patch_tmp(None);
+            return Err(io_failure(&tmp, &e));
+        }
+    };
     let mut sink = io::BufWriter::new(handle);
     let blobs =
         |id: Digest| -> io::Result<Vec<u8>> { slip_apply::Blobs::get(&StoreBlobs(store), id) };
     let made = slip_apply::patch(overlay, &DiskFiles, &blobs, dir_bytes.as_deref(), &mut sink);
-    let finished = made.map_err(patch_error).and_then(|()| {
-        let handle = sink.into_inner().map_err(|e| io_failure(&tmp, e.error()))?;
-        handle.sync_all().map_err(|e| io_failure(&tmp, &e))?;
-        fs::rename(&tmp, file).map_err(|e| io_failure(file, &e))
-    });
-    if finished.is_err() {
+    let finished = match made {
+        Err(ApplyError::StaleFile(p)) => Ok(Some(Refused::StaleFile(p))),
+        Err(e) => Err(patch_error(e)),
+        Ok(()) => (|| {
+            let handle = sink.into_inner().map_err(|e| io_failure(&tmp, e.error()))?;
+            handle.sync_all().map_err(|e| io_failure(&tmp, &e))?;
+            fs::rename(&tmp, file).map_err(|e| io_failure(file, &e))?;
+            Ok(None)
+        })(),
+    };
+    if !matches!(finished, Ok(None)) {
         let _ = fs::remove_file(&tmp);
     }
+    set_patch_tmp(None);
     finished
 }
 
@@ -232,8 +335,8 @@ fn inside(path: &[u8], dir: &[u8]) -> bool {
     dir == b"/" || matches!(path.strip_prefix(dir), Some([b'/', rest @ ..]) if !rest.is_empty())
 }
 
-/// An error of `slip_apply::patch` as an input error (status 3, §10.5: "a
-/// stale file").
+/// An error of `slip_apply::patch` other than a stale file (a refusal,
+/// `write_patch`) as an input error (status 3).
 fn patch_error(e: ApplyError) -> CommandError {
     match e {
         ApplyError::StaleFile(p) => CommandError::Input(format!(
@@ -262,7 +365,21 @@ pub(crate) fn main(
     };
     // Exclusive: a store with a journal is refused (`StoreError::UnfinishedWrite`).
     let store = commands::open_store(&dir, exec_store::Access::Exclusive)?;
-    signals::install(Box::new(exec_store::cleanup_on_signal(&store)));
+    let clean_store = exec_store::cleanup_on_signal(&store);
+    signals::install(Box::new(move || {
+        remove_patch_tmp();
+        clean_store();
+    }));
+    if let ApplyAction::Patch(file) = &a.action {
+        for p in patch_leftovers(file) {
+            let _ = writeln!(
+                err,
+                "slip: {}: the temporary of a patch by another run (killed, or still running); \
+                 not removed",
+                p.display()
+            );
+        }
+    }
     let result_id = find_result(&store, prefix)?;
     let (result, _) = load_result(&store, result_id).map_err(failure)?;
     let _ = writeln!(out, "result {result_id}");
@@ -272,12 +389,11 @@ pub(crate) fn main(
     let applied = apply_result(&store, result_id, &a.action, a.relative_to.as_deref(), allow, out)
         .map_err(failure)?;
     let asked = if a.action == ApplyAction::Write { "--write" } else { "--patch" };
+    // §10.5: the status says what apply did, not the result's verdict: 0
+    // when what was asked was done (whatever state the options permitted),
+    // 1 when it was refused and nothing was written.
     match applied {
-        Applied::Written(_) | Applied::Patch(_) => {
-            // §10.5: a `verified_with_residue` result written under the
-            // options that permit it has something to report.
-            Ok(if result.state == State::Verified { status::OK } else { status::FINDINGS })
-        }
+        Applied::Written(_) | Applied::Patch(_) => Ok(status::OK),
         Applied::NotPermitted(state) => {
             let _ = writeln!(
                 err,
@@ -288,9 +404,9 @@ pub(crate) fn main(
             Ok(status::FINDINGS)
         }
         Applied::Refused(r) => {
-            let (name, path) = refused_name(&r);
+            let (name, _) = refused_name(&r);
             let _ = write!(err, "slip: refused {name}: ");
-            let _ = err.write_all(path);
+            let _ = err.write_all(&refused_detail(&r));
             let _ = writeln!(err, "; nothing was written");
             Ok(status::FINDINGS)
         }
@@ -324,23 +440,43 @@ fn find_result(store: &Store, prefix: &str) -> commands::Result<Digest> {
 /// was given that request's ownership (`apply_result` checked that the
 /// overlay is the result's and of its set, and `permits` that the result's
 /// request is the set's), so this is the ownership of the run that wrote
-/// the journal (`spec/landed/edits/WP-063.md` §7).
-fn ownership_of_journal(store: &Store, overlay_id: Digest) -> Result<Ownership, CommandError> {
+/// the journal (`spec/landed/edits/WP-063.md` §7). And the journal must be
+/// exactly the one a write of that overlay publishes
+/// (`slip_apply::journal::Journal::of_write`: the same files, `pre`,
+/// `post` and staged names): a journal naming a file its overlay does not
+/// change would have `recover` write a blob the write never replaced.
+///
+/// `Err(Ok(m))`: the journal is not its overlay's; `Err(Err(e))`: a link
+/// cannot be read.
+fn ownership_of_journal(
+    store: &Store,
+    j: &slip_apply::journal::Journal,
+) -> Result<Ownership, Result<String, CommandError>> {
     let overlay = read_checked(
         store,
         Object::Overlay,
-        &overlay_id,
+        &j.overlay,
         "the journal's overlay",
         Overlay::from_bytes,
-    )?;
+    )
+    .map_err(Err)?;
+    if slip_apply::journal::Journal::of_write(&overlay, j.overlay) != *j {
+        return Err(Ok(format!(
+            "{}: the journal is not the one a write of its overlay {} makes (other files, \
+             images or staged names); nothing was changed, the journal is kept",
+            store.journal_path().display(),
+            j.overlay
+        )));
+    }
     let set = read_checked(
         store,
         Object::EditSet,
         &overlay.edits,
         "the overlay's edit set",
         EditSet::from_bytes,
-    )?;
-    ownership_of(store, set.transform)
+    )
+    .map_err(Err)?;
+    ownership_of(store, set.transform).map_err(Err)
 }
 
 /// `slip apply --recover` (§7.3): status 0 when the tree is the
@@ -358,11 +494,12 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
     };
     let j = slip_apply::journal::Journal::from_bytes(&bytes)
         .map_err(|m| Failure::Input(format!("{}: {m}", store.journal_path().display())))?;
-    let ownership = ownership_of_journal(&store, j.overlay).map_err(|e| match e {
-        CommandError::Input(m) => Failure::Input(format!(
+    let ownership = ownership_of_journal(&store, &j).map_err(|e| match e {
+        Ok(m) => Failure::Input(m),
+        Err(CommandError::Input(m)) => Failure::Input(format!(
             "{m}; the ownership of the unfinished write cannot be found, the journal is kept"
         )),
-        e => failure(e),
+        Err(e) => failure(e),
     })?;
     let recovered =
         slip_apply::recover(&ownership, &slip_apply::fs::DiskTree, &StoreBlobs(&store), &journal);
@@ -377,6 +514,13 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
                 "{}: refused: journal_not_owned: the journal names a file the write's request \
                  does not own; nothing was changed, the journal is kept",
                 lossy(&p)
+            )));
+        }
+        Err(WriteError::Refused(r @ Refused::NotCanonical { .. })) => {
+            return Err(Failure::Input(format!(
+                "refused not_canonical: {}: the journal names a path not spelled as on disk; \
+                 nothing was changed, the journal is kept",
+                lossy(&refused_detail(&r))
             )));
         }
         Err(e) => return Err(failure(write_error(&store, e))),

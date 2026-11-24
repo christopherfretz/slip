@@ -337,6 +337,7 @@ impl Fx {
     }
 
     /// The shard of `observer` for round `round` of the request `request`.
+    #[allow(clippy::too_many_lines, reason = "one record, field by field")]
     fn shard(&self, observer: Digest, round: u64, request: Digest, s: &S) -> Shard {
         let mut names: Vec<&str> = s.claims.iter().map(|c| c.path).collect();
         names.extend(s.reports.iter().filter_map(|r| r.0.map(|p| p.0)));
@@ -436,6 +437,9 @@ impl Fx {
             binding: None,
             rule_use: None,
             spellings: None,
+            names: None,
+            negatives: None,
+            found: None,
         }
     }
 
@@ -579,7 +583,6 @@ impl Fx {
             tally,
             agreement: vec![],
             unused: vec![],
-            unchecked: vec![],
             spellings: Spellings::default(),
             residue: vec![],
             exempt: vec![],
@@ -915,8 +918,8 @@ fn s7_2_apply_verified_patch() {
 /// §8.5 through `apply`: each reason of a `verified_with_residue` needs
 /// its own option; a `partial` result needs `--allow-partial`; no option
 /// permits another state. Refused means status 1, nothing written, no
-/// patch file; permitted means written (status 1 for a result with
-/// residue, §10.5).
+/// patch file; permitted means written, status 0 whatever the state the
+/// options permitted (§10.5: the status says what apply did).
 #[test]
 #[allow(clippy::too_many_lines, reason = "one table of cases")]
 fn s8_5_apply_permits_table() {
@@ -1060,20 +1063,20 @@ fn s8_5_apply_permits_table() {
             assert!(!patch.exists(), "{}", case.what);
         }
         if let Some(enough) = case.enough {
-            let code = i32::from(case.state != State::Verified);
             let out = apply_patch(&fx, &id, &patch, enough);
-            out.expect(code);
+            out.expect(0);
             assert!(patch.exists(), "{}", case.what);
             let out = apply_write(&fx, &id, enough);
-            out.expect(code);
+            out.expect(0);
             assert!(out.value("written").is_some(), "{}: {out:#?}", case.what);
             assert!(!fx.tree_is_pre(), "{}", case.what);
         }
     }
 }
 
-/// §7.3 step 1, §10.5: a file changed since the result: the write is
-/// refused (`stale_file`, status 1) and the tree is left as it is.
+/// §7.3 step 1, §7.2, §10.5: a file changed since the result: the write
+/// and the patch are refused (`stale_file`, status 1), the tree is left
+/// as it is and no patch is written.
 #[test]
 fn s7_3_apply_stale_file_refused() {
     let (fx, set, overlay) = agreed("stale", Fx::rename);
@@ -1085,9 +1088,10 @@ fn s7_3_apply_stale_file_refused() {
     assert_eq!((fx.read("h.h").as_str(), fx.read("a.cc").as_str()), (H, A), "nothing replaced");
     assert_eq!(fx.read("b.cc"), "changed\n");
     assert!(!fx.store().journal_path().exists());
-    // §10.5: for `--patch` a stale file is an input error.
     let patch = fx.root.join("p.patch");
-    apply_patch(&fx, &r, &patch, &[]).expect(3);
+    let out = apply_patch(&fx, &r, &patch, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains("refused stale_file: "), "{out:#?}");
     assert!(!patch.exists());
 }
 
@@ -1259,21 +1263,20 @@ fn s7_3_recover_reports_and_keeps_the_journal() {
 /// it does not own is refused (status 3) with nothing changed.
 #[test]
 fn s7_3_recover_refuses_a_journal_not_owned() {
-    let (fx, _, overlay_id) = agreed("recover-not-owned", Fx::rename);
+    let (fx, set, overlay_id) = agreed("recover-not-owned", Fx::rename);
+    // The journal of a write of a hand-made overlay with a file outside
+    // the request's ownership (`write` would refuse it; `recover` must
+    // too).
     let outside = fx.root.join("t.cc");
     fs::write(&outside, "int t;\n").unwrap();
-    let pre = content(b"int t;\n");
-    let post = content(b"int u;\n");
-    let path = outside.as_os_str().as_bytes().to_vec();
-    let j = Journal {
-        overlay: overlay_id,
-        files: vec![JournalEntry { staged: staged_name(&path, overlay_id), path, pre, post }],
-    };
+    let (_, foreign) = hand(&fx, set, &[(bytes_of(&outside), b"int t;\n", b"int u;\n")]);
+    let j = Journal::of_write(&fx.overlay_of(foreign), foreign);
     fx.put_journal(&j.to_bytes());
     let out = fx.slip(&["apply", "--recover"]);
     out.expect(3);
     assert!(out.stderr.contains("journal_not_owned"), "{out:#?}");
     assert!(fx.store().journal_path().exists());
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "int t;\n");
     // A journal whose overlay the store does not have: the ownership
     // cannot be found, the journal is kept.
     let j = Journal {
@@ -1300,6 +1303,323 @@ fn s7_3_recover_refuses_a_journal_not_owned() {
     out.expect(3);
     assert!(out.stderr.contains("the journal is kept"), "{out:#?}");
     assert!(fx.tree_is_pre());
+}
+
+/// A path as bytes.
+fn bytes_of(p: &Path) -> Vec<u8> {
+    p.as_os_str().as_bytes().to_vec()
+}
+
+/// A hand-made overlay of edit set `set` over `entries` (path, pre, post),
+/// its blobs published, and a verified result on it: the result id and
+/// the overlay id. `write` and `--patch` must refuse what such an overlay
+/// carries that the edit set's could not.
+fn hand(fx: &Fx, set: Digest, entries: &[(Vec<u8>, &[u8], &[u8])]) -> (String, Digest) {
+    let store = fx.store();
+    let mut files: Vec<OverlayFile> = entries
+        .iter()
+        .map(|(p, pre, post)| {
+            store.publish_blob(pre).unwrap();
+            store.publish_blob(post).unwrap();
+            OverlayFile { path: p.clone(), pre: content(pre), post: content(post) }
+        })
+        .collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let overlay = Overlay { edits: set, files, spellings: vec![] };
+    let id = store.publish_object(Object::Overlay, &overlay.to_bytes()).unwrap();
+    (fx.publish_result(&fx.result(set, Some(id), State::Verified)), id)
+}
+
+impl Fx {
+    fn overlay_of(&self, id: Digest) -> Overlay {
+        Overlay::from_bytes(&self.store().read_object(Object::Overlay, &id).unwrap().unwrap())
+            .unwrap()
+    }
+
+    /// The fixture's volume finds a name in another case (this workspace's
+    /// host mount does; most Linux file systems do not).
+    fn case_insensitive(&self) -> bool {
+        let p = self.root.join("CaseProbe");
+        fs::write(&p, "x").unwrap();
+        let found = self.root.join("caseprobe").exists();
+        fs::remove_file(&p).unwrap();
+        found
+    }
+
+    /// The names of `src/` that are staged files of a write.
+    fn staged_left(&self) -> Vec<String> {
+        fs::read_dir(self.root.join("src"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".slip-"))
+            .collect()
+    }
+}
+
+/// Says which kind of volume the one-spelling tests ran on; with
+/// `SLIP_TEST_VOLUME` set (`case-insensitive` or `case-sensitive`), fails
+/// unless it is that kind, so that a run can require the tests that need
+/// a case-insensitive volume to have run rather than skipped.
+#[test]
+fn s2_1_the_volume_of_the_tests() {
+    let fx = Fx::new("volume");
+    let kind = if fx.case_insensitive() { "case-insensitive" } else { "case-sensitive" };
+    eprintln!("the volume of {} is {kind}", fx.root.display());
+    if let Ok(want) = std::env::var("SLIP_TEST_VOLUME") {
+        assert_eq!(kind, want, "the volume is not the kind `SLIP_TEST_VOLUME` asks for");
+    }
+}
+
+/// The skip of a test that needs a volume that finds a name in another
+/// case: `true` (and a line saying so) when the fixture's volume does not.
+fn skip_unless_case_insensitive(fx: &Fx, test: &str) -> bool {
+    if fx.case_insensitive() {
+        return false;
+    }
+    eprintln!(
+        "{test}: skipped: {} is on a case-sensitive volume, where another case is another \
+         name (no file is found under it)",
+        fx.root.display()
+    );
+    true
+}
+
+/// §2.1 "one spelling", §7.3 step 1, §7.2: on a volume that finds names
+/// in any case, a directory spelled in another case than on disk (the
+/// request owns `src/` and carves out `src/vendor` read-only; the overlay
+/// names `src/Vendor/x.h`) is refused, `not_canonical`, naming the
+/// spelling on disk, by `--write` and `--patch`: status 1, nothing
+/// written. The control: the exact spelling is `not_owned`.
+#[test]
+fn s2_1_another_case_of_a_readonly_directory_refused() {
+    let fx = Fx::new("case-readonly");
+    if skip_unless_case_insensitive(&fx, "s2_1_another_case_of_a_readonly_directory_refused") {
+        return;
+    }
+    let mut request = fx.rename();
+    request.ownership.readonly = vec![bytes_of(&fx.root.join("src/vendor"))];
+    let (_, set, out) = fx.reduced(&request, &agreeing());
+    out.expect(0);
+    fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
+    let x = fx.root.join("src/vendor/x.h");
+    fs::write(&x, "int v;\n").unwrap();
+    let (r, _) = hand(&fx, set, &[(bytes_of(&x), b"int v;\n", b"int w;\n")]);
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains(&format!("refused not_owned: {}", x.display())), "{out:#?}");
+
+    let other = fx.root.join("src/Vendor/x.h");
+    let (r, _) = hand(&fx, set, &[(bytes_of(&other), b"int v;\n", b"int w;\n")]);
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    let want = format!(
+        "refused not_canonical: {} is not spelled as on disk ({})",
+        other.display(),
+        x.display()
+    );
+    assert!(out.stderr.contains(&want), "{out:#?}");
+    assert_eq!(out.value("written"), None);
+    assert_eq!(fs::read_to_string(&x).unwrap(), "int v;\n");
+    assert!(!fx.store().journal_path().exists());
+    let patch = fx.root.join("p.patch");
+    let out = apply_patch(&fx, &r, &patch, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains(&want), "{out:#?}");
+    assert!(!patch.exists());
+}
+
+/// §2.1 "one spelling": a file name in another case (`src/A.cc` for
+/// `src/a.cc`) is refused, `not_canonical`; the tree is untouched.
+#[test]
+fn s2_1_a_file_name_in_another_case_refused() {
+    let (fx, set, _) = agreed("case-file", Fx::rename);
+    if skip_unless_case_insensitive(&fx, "s2_1_a_file_name_in_another_case_refused") {
+        return;
+    }
+    let (r, _) = hand(&fx, set, &[(bytes_of(&fx.src("A.cc")), A.as_bytes(), b"int z;\n")]);
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    let want = format!(
+        "refused not_canonical: {} is not spelled as on disk ({})",
+        fx.src("A.cc").display(),
+        fx.src("a.cc").display()
+    );
+    assert!(out.stderr.contains(&want), "{out:#?}");
+    assert!(fx.tree_is_pre());
+}
+
+/// §2.1 "one spelling", §7.3 step 1: one file named by two spellings in
+/// one overlay is refused by the spelling check, before anything is
+/// staged: no staged file, no journal, the file its pre-image.
+#[test]
+fn s2_1_two_spellings_of_one_file_refused_before_staging() {
+    let (fx, set, _) = agreed("case-two", Fx::rename);
+    if skip_unless_case_insensitive(&fx, "s2_1_two_spellings_of_one_file_refused_before_staging") {
+        return;
+    }
+    let a = A.as_bytes();
+    let (r, _) =
+        hand(&fx, set, &[(fx.real("a.cc"), a, b"one\n"), (bytes_of(&fx.src("A.cc")), a, b"two\n")]);
+    let out = apply_write(&fx, &r, &[]);
+    out.expect(1);
+    assert!(
+        out.stderr.contains(&format!("refused not_canonical: {}", fx.src("A.cc").display())),
+        "{out:#?}"
+    );
+    assert!(fx.tree_is_pre());
+    assert_eq!(fx.staged_left(), Vec::<String>::new());
+    assert!(!fx.store().journal_path().exists());
+}
+
+/// §7.2: `--patch` refuses what `--write` refuses by path: a hand-made
+/// overlay with a file outside the request's ownership gives no patch,
+/// status 1, `not_owned`.
+#[test]
+fn s7_2_patch_refuses_a_file_not_owned() {
+    let (fx, set, _) = agreed("patch-not-owned", Fx::rename);
+    let outside = fx.root.join("t.cc");
+    fs::write(&outside, "int t;\n").unwrap();
+    let (r, _) = hand(&fx, set, &[(bytes_of(&outside), b"int t;\n", b"int u;\n")]);
+    let patch = fx.root.join("p.patch");
+    let out = apply_patch(&fx, &r, &patch, &[]);
+    out.expect(1);
+    assert!(out.stderr.contains(&format!("refused not_owned: {}", outside.display())), "{out:#?}");
+    assert!(!patch.exists());
+    assert_eq!(out.value("patch"), None);
+}
+
+/// §7.2: a temporary of a patch that another run left beside the patch
+/// (a run killed by SIGKILL, which no cleanup can follow) is reported and
+/// left; this run's patch is written all the same.
+#[test]
+fn s7_2_patch_reports_a_temporary_left_by_another_run() {
+    let (fx, set, overlay) = agreed("patch-leftover", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    let patch = fx.root.join("p.patch");
+    let left = fx.root.join(".p.patch.slip-tmp.1");
+    fs::write(&left, "partial").unwrap();
+    let out = apply_patch(&fx, &r, &patch, &[]);
+    out.expect(0);
+    assert!(
+        out.stderr.contains(&format!("slip: {}: the temporary of a patch", left.display())),
+        "{out:#?}"
+    );
+    assert!(left.exists());
+    assert!(patch.exists());
+}
+
+/// §7.3, `--recover`: a journal whose overlay is real but whose files are
+/// not the ones a write of that overlay journals (a file the overlay does
+/// not change; an entry's `pre` altered) is refused, status 3, nothing
+/// changed, the journal kept.
+#[test]
+fn s7_3_recover_refuses_a_journal_not_of_its_overlay() {
+    let (fx, _, overlay_id) = agreed("recover-not-bound", Fx::rename);
+    let c = fx.src("c.cc");
+    fs::write(&c, "new\n").unwrap();
+    fx.store().publish_blob(b"old\n").unwrap();
+    let path = bytes_of(&c);
+    let j = Journal {
+        overlay: overlay_id,
+        files: vec![JournalEntry {
+            staged: staged_name(&path, overlay_id),
+            path,
+            pre: content(b"old\n"),
+            post: content(b"new\n"),
+        }],
+    };
+    fx.put_journal(&j.to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("the journal is not the one a write of its overlay"), "{out:#?}");
+    assert_eq!(fs::read_to_string(&c).unwrap(), "new\n");
+    assert!(fx.store().journal_path().exists());
+
+    let mut j = journal_of(&fx, overlay_id, &fx.overlay_of(overlay_id));
+    fs::write(fx.src("a.cc"), Fx::post(A)).unwrap();
+    j.files[0].pre = content(b"int other;\n");
+    fx.store().publish_blob(b"int other;\n").unwrap();
+    fx.put_journal(&j.to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("the journal is not the one a write of its overlay"), "{out:#?}");
+    assert_eq!(fx.read("a.cc"), Fx::post(A), "nothing changed");
+    assert!(fx.store().journal_path().exists());
+}
+
+/// §2.1 "one spelling", §7.3: `--recover` checks the spelling of every
+/// path its journal names before anything: a journal (of a hand-made
+/// overlay) naming `src/A.cc` is refused, status 3, the journal kept.
+#[test]
+fn s7_3_recover_refuses_a_path_not_spelled_as_on_disk() {
+    let (fx, set, _) = agreed("recover-case", Fx::rename);
+    if skip_unless_case_insensitive(&fx, "s7_3_recover_refuses_a_path_not_spelled_as_on_disk") {
+        return;
+    }
+    let other = fx.src("A.cc");
+    fs::write(fx.src("a.cc"), "int z;\n").unwrap();
+    let (_, id) = hand(&fx, set, &[(bytes_of(&other), A.as_bytes(), b"int z;\n")]);
+    fx.put_journal(&Journal::of_write(&fx.overlay_of(id), id).to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("refused not_canonical: "), "{out:#?}");
+    assert_eq!(fx.read("a.cc"), "int z;\n", "nothing changed");
+    assert!(fx.store().journal_path().exists());
+}
+
+/// §10.5, `exec.md` §8.5: a `--result` prefix that two results share is
+/// an input error naming both; nothing is written.
+#[test]
+fn s10_5_apply_result_prefix_of_two() {
+    let (fx, set, overlay) = agreed("prefix", Fx::rename);
+    let mut seen = std::collections::HashMap::new();
+    let mut hit = None;
+    for i in 0..5000u64 {
+        let mut r = fx.result(set, Some(overlay), State::VerifiedWithResidue);
+        r.residue.push(Residue {
+            category: Category::Dependent,
+            file: fx.real("a.cc"),
+            lo: 0,
+            hi: 1,
+            line: 1 + i,
+            column: 1,
+        });
+        let id = fx.publish_result(&r);
+        if let Some(other) = seen.insert(id[..4].to_owned(), id.clone()) {
+            hit = Some((id[..4].to_owned(), other, id));
+            break;
+        }
+    }
+    let (prefix, a, b) = hit.expect("two results with one 4-digit prefix");
+    let out = apply_write(&fx, &prefix, &["--allow-residue"]);
+    out.expect(3);
+    assert!(out.stderr.contains("2 results have an id starting with it"), "{out:#?}");
+    assert!(out.stderr.contains(&a) && out.stderr.contains(&b), "{out:#?}");
+    assert!(fx.tree_is_pre());
+}
+
+/// `exec.md` §2.2, decision 1 of the landed file: reduce reads the shards
+/// of the observers the round's map phase selected, no others. Here the
+/// map run record selects `a.cc`'s observer only; `b.cc`'s has a shard of
+/// an older round and none of this one: the edit set is `a.cc`'s alone,
+/// with nothing unparsed.
+#[test]
+fn s2_2_reduce_reads_the_selected_observers_only() {
+    let fx = Fx::new("selected");
+    let plan = fx.plan();
+    let request = fx.rename();
+    let mut shards = agreeing();
+    let b = shards.pop().unwrap();
+    fx.round(&plan, 0, &request, &[(b.0, S { edits: false, ..b.1 })]);
+    fx.round(&plan, ROUND, &request, &shards);
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(0);
+    let set = fx.edit_set(out.digest("edits"));
+    assert_eq!(set.unparsed, Vec::<Digest>::new(), "{out:#?}");
+    assert!(
+        out.lines().contains(&"edit 2 in 2 file(s); shared 0; most observers 1; nested 0"),
+        "{out:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

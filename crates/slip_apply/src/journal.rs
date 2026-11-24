@@ -60,6 +60,27 @@ pub(crate) fn parent(path: &[u8]) -> &[u8] {
 }
 
 impl Journal {
+    /// The journal a write of `overlay` (id `overlay_id`) publishes: one
+    /// entry per overlay file whose `post` differs from its `pre`, in the
+    /// overlay's (path) order, with its staged name. `recover`'s caller
+    /// compares a journal with it to know that the journal is that write's.
+    pub fn of_write(overlay: &slip_model::overlay::Overlay, overlay_id: Digest) -> Journal {
+        Journal {
+            overlay: overlay_id,
+            files: overlay
+                .files
+                .iter()
+                .filter(|f| f.pre != f.post)
+                .map(|f| JournalEntry {
+                    path: f.path.clone(),
+                    staged: staged_name(&f.path, overlay_id),
+                    pre: f.pre,
+                    post: f.post,
+                })
+                .collect(),
+        }
+    }
+
     /// The record's bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = Encoder::new();
