@@ -1,11 +1,11 @@
 subjects:
-  34817475 candidate - rule=yes n::D<type-parameter-0-0 *>::f()
   599ef791 seed - rule=yes n::B::f()
-  e47e1b88 follower - rule=yes n::D<int *>::f() of=34817475
+  7ef285e3 follower - rule=yes n::D<int *>::f() of=ef39ba51
+  ef39ba51 candidate - rule=yes n::D<type-parameter-0-0 *>::f()
 links:
-  34817475 599ef791
+  599ef791 ef39ba51
 claims:
   main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
-  main.cpp:4:44+1 replace "g" t0 votes=1 none [34817475]
-  main.cpp:6:27+1 replace spell(34817475, "g") t0 votes=1 none [34817475]
+  main.cpp:4:44+1 replace "g" t0 votes=1 none [ef39ba51]
+  main.cpp:6:27+1 replace spell(ef39ba51, "g") t0 votes=1 none [ef39ba51]
 changed:

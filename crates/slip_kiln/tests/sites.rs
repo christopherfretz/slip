@@ -155,7 +155,7 @@ fn off(src: &str, ctx: &str, word: &str) -> usize {
     c + w
 }
 
-fn written() -> ParseOptions {
+fn written() -> ParseOptions<'static> {
     let mut o = ParseOptions::default();
     o.written = true;
     o
@@ -482,6 +482,10 @@ fn forms(name: &str, src: &str, ctx: &str, word: &str) -> (Named, Named) {
     })
 }
 
+// A redeclaration's declarator-id is also a written reference, of role
+// `Redecl`, to the entity it redeclares (Kiln WP-1932 stage 3): the
+// definition `S::~S`, `void n::f`, the explicit specialisation `f<int>`
+// below give the same name twice, one answer each.
 #[test]
 fn names_of_a_destructor() {
     let src = "struct S { ~S(); };\nS::~S() {}\nvoid g(S *p) { p->~S(); }\n";
@@ -489,10 +493,10 @@ fn names_of_a_destructor() {
         let lo = off(src, ctx, "S");
         let (decls, refs) = forms("dtor", src, ctx, "S");
         let want = vec![("S".to_owned(), at("main.cpp", lo, "S", T0, None))];
-        if ctx == "p->~S()" {
-            assert_eq!((decls, refs), (vec![], want), "{ctx}");
-        } else {
-            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+        match ctx {
+            "p->~S()" => assert_eq!((decls, refs), (vec![], want), "{ctx}"),
+            "~S() {}" => assert_eq!((decls, refs), (want.clone(), want), "{ctx}"),
+            _ => assert_eq!((decls, refs), (want, vec![]), "{ctx}"),
         }
     }
 }
@@ -541,7 +545,7 @@ fn names_of_a_template_id() {
         let (decls, refs) = forms("tid", src, ctx, "f");
         let want = vec![("f".to_owned(), at("main.cpp", lo, "f", T0, None))];
         if decl {
-            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+            assert_eq!((decls, refs), (want.clone(), want), "{ctx}: a redeclaration");
         } else {
             assert_eq!((decls, refs), (vec![], want), "{ctx}");
         }
@@ -556,7 +560,7 @@ fn names_of_a_qualified_declarator() {
         let (decls, refs) = forms("qual", src, ctx, "f");
         let want = vec![("f".to_owned(), at("main.cpp", lo, "f", T0, None))];
         if decl {
-            assert_eq!((decls, refs), (want, vec![]), "{ctx}");
+            assert_eq!((decls, refs), (want.clone(), want), "{ctx}: a redeclaration");
         } else {
             assert_eq!((decls, refs), (vec![], want), "{ctx}");
         }

@@ -2125,17 +2125,19 @@ mod tests {
     // definition's own list, then the count of the other declarations'
     // non-empty lists and each of them, first declaration first, then the
     // annotations; read from any of the declarations, the same bytes.
+    // `maybe_undef`, which no redeclaration inherits: since Kiln WP-2476 a
+    // differing `noescape` is conflicting types, as in clang.
     #[test]
     fn s10_1_param_chain_order() {
-        let src = "void f(int *p __attribute__((noescape)));\n\
+        let src = "void f(int *p __attribute__((maybe_undef)));\n\
                    void f(int *p);\n\
                    void f(int *p __attribute__((unused)) __attribute__((unused)));\n\
-                   void f(int *p __attribute__((noescape))) {}";
+                   void f(int *p __attribute__((maybe_undef))) {}";
         let want = bytes(|s| {
             s.opt(true).count(1);
-            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            head(s, attr_kind::MAYBE_UNDEF, GNU, &[false]);
             s.count(2).count(1);
-            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            head(s, attr_kind::MAYBE_UNDEF, GNU, &[false]);
             s.count(2);
             head(s, attr_kind::UNUSED, GNU, &[false]);
             head(s, attr_kind::UNUSED, GNU, &[false]);
@@ -2146,12 +2148,12 @@ mod tests {
         }
         // No definition: every list is among the others.
         let src =
-            "void f(int *p __attribute__((unused)));\nvoid f(int *p __attribute__((noescape)));";
+            "void f(int *p __attribute__((unused)));\nvoid f(int *p __attribute__((maybe_undef)));";
         let want = bytes(|s| {
             s.opt(false).count(2).count(1);
             head(s, attr_kind::UNUSED, GNU, &[false]);
             s.count(1);
-            head(s, attr_kind::NOESCAPE, GNU, &[false]);
+            head(s, attr_kind::MAYBE_UNDEF, GNU, &[false]);
             no_annotations_of_param(s);
         });
         assert_eq!(param_bytes(src, "c++20", "p", 1), (want, None));
@@ -2218,23 +2220,43 @@ mod tests {
     }
 
     // §10.1 last paragraph (WP-100 decision 4): an instantiated
-    // declaration's attributes are written as found. Kiln gives an
-    // instantiated function's parameters only their Swift ABI attributes
-    // (kiln_sema templ/subst/decls.rs `param_infos`); when this fails,
-    // Kiln instantiates the others, and the explicit instantiation in
-    // `differ/_/param-attr-template-*` changes too.
+    // declaration's attributes are written as found. Since Kiln WP-2476 an
+    // instantiated function's parameter has the attributes of the pattern's
+    // parameter (kiln_sema templ/subst/decls.rs `param_infos`), inherited
+    // ones included: the explicit instantiation in
+    // `differ/_/param-attr-template-first-declaration` changes with them.
+    // An attribute written on the definition's parameter alone is not on
+    // the instantiation's, where clang 19 puts it (`For Kiln` in
+    // `spec/landed/digest-kinds/WP-066.md`); when this fails, Kiln puts it
+    // there, and `differ/_/param-attr-template-definition` changes too.
     #[test]
-    fn kiln_does_not_instantiate_parameter_attributes() {
-        let src = "template<class T> void f(T *p __attribute__((nonnull)));\n\
-                   template<class T> void f(T *p __attribute__((nonnull))) {}\n\
-                   template void f<int>(int *);";
-        with_walk(src, "c++20", |w| {
-            let ast = w.ast;
-            let ps = params_named(w, "p");
-            assert_eq!(ps.len(), 3, "two patterns' and the instantiation's");
-            let has = |p: DeclId| ast.lists.iter::<AttrId>(ast.attrs.of_decl(p)).count();
-            assert_eq!((has(ps[0]), has(ps[1])), (1, 1));
-            assert_eq!(has(ps[2]), 0, "Kiln now instantiates a parameter's attributes");
-        });
+    fn kiln_instantiates_parameter_attributes() {
+        let count = |src: &str| {
+            let mut got = Vec::new();
+            with_walk(src, "c++20", |w| {
+                let ast = w.ast;
+                let ps = params_named(w, "p");
+                assert_eq!(ps.len(), 3, "two patterns' and the instantiation's");
+                got = ps
+                    .iter()
+                    .map(|&p| ast.lists.iter::<AttrId>(ast.attrs.of_decl(p)).count())
+                    .collect();
+            });
+            got
+        };
+        let first = count(
+            "template<class T> void f(T *p __attribute__((nonnull)));\n\
+             template<class T> void f(T *p) {}\n\
+             template void f<int>(int *);",
+        );
+        assert_eq!(first, [1, 1, 1], "inherited by the definition, instantiated from it");
+        let definition = count(
+            "template<class T> void f(T *p);\n\
+             template<class T> void f(T *p __attribute__((nonnull))) {}\n\
+             template void f<int>(int *);",
+        );
+        // Kiln defect (For Kiln, `spec/landed/digest-kinds/WP-066.md`):
+        // clang 19 instantiates the definition's attribute onto f<int>.
+        assert_eq!(definition, [0, 1, 0], "the definition's attribute is not instantiated");
     }
 }

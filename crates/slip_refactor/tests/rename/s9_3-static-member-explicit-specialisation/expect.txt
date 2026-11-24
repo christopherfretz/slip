@@ -1,12 +1,12 @@
 subjects:
-  622d051c seed - rule=yes n::S::v
-  d27b78ae follower - rule=yes n::S<long>::v of=622d051c
-  e84a2c77 follower - rule=yes n::S<int>::v of=622d051c
+  1a299696 follower - rule=yes n::S<int>::v of=ca7a693b
+  b27ff1df follower - rule=yes n::S<long>::v of=ca7a693b
+  ca7a693b seed - rule=yes n::S::v
 links:
 claims:
-  main.cpp:1:56+1 replace "w" t0 votes=1 none [622d051c]
-  main.cpp:2:30+1 replace "w" t0 votes=1 none [622d051c]
-  main.cpp:3:25+1 replace "w" t0 votes=1 none [622d051c]
-  main.cpp:4:20+1 replace spell(622d051c, "w") t0 votes=1 none [622d051c]
-  main.cpp:4:36+1 replace spell(622d051c, "w") t0 votes=1 none [622d051c]
+  main.cpp:1:56+1 replace "w" t0 votes=1 none [ca7a693b]
+  main.cpp:2:30+1 replace "w" t0 votes=1 none [ca7a693b]
+  main.cpp:3:25+1 replace "w" t0 votes=1 none [ca7a693b]
+  main.cpp:4:20+1 replace spell(ca7a693b, "w") t0 votes=1 none [ca7a693b]
+  main.cpp:4:36+1 replace spell(ca7a693b, "w") t0 votes=1 none [ca7a693b]
 changed:

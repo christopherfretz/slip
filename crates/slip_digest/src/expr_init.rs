@@ -186,7 +186,8 @@ pub(crate) fn init_list_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 }
 
 fn init_list_rows(w: &Walk<'_>, s: &mut Stream, e: ExprId, n: &Node, out: &mut Vec<R>) {
-    check_bits(s, n, 0, Cause::Unaccounted("ExprNode/InitListExpr.bits"));
+    // `bits-designated` is `out` (Kiln WP-2350).
+    check_bits(s, n, bit(ExprFlags::DESIGNATED), Cause::Unaccounted("ExprNode/InitListExpr.bits"));
     check_aux(s, n, 0, Cause::Unaccounted("ExprNode/InitListExpr.aux"));
     child_runs(w, s, out, n.a, Cause::Unaccounted("ExprNode/InitListExpr.a"));
     let &InitListExtra { array_filler, union_field, rbrace: _ } = w.ast.exprs.init_list(e);
@@ -1539,15 +1540,12 @@ mod tests {
 
     /// A designated list in a template keeps its written form
     /// (`ColdExprData` `syntactic_list`, written by `expr::cold`). Kiln
-    /// records one for every level of a nested list, each built afresh
-    /// (`kiln_sema` templ/actions.rs:2092, from init.rs:2114): only the
-    /// innermost initialiser is a node of two levels, so back-references
-    /// (digest §4.3, WP-049) leave the bytes quadratic in the nesting.
-    /// The measure, and the count of lists that makes it so: `n` levels
-    /// are `n + 1` semantic lists and `(n + 1)(n + 2) / 2` written ones.
-    /// When Kiln shares a level's written form with the level around it
-    /// (`docs/wp/WP-049.md` Handback, "For Kiln") the count fails, and
-    /// this test asserts linear growth instead.
+    /// records one for every level of a nested list; since Kiln WP-2478
+    /// an inner written list is the very node of the inner level's own
+    /// written form (`docs/wp/WP-049.md` Handback, "For Kiln"), so `n`
+    /// levels are `n + 1` semantic lists and `n + 1` written ones, and the
+    /// bytes grow linearly in the nesting (they were quadratic: every
+    /// level copied all those below it).
     #[test]
     fn nested_designated_lists() {
         let nested = |n: usize| {
@@ -1560,6 +1558,7 @@ mod tests {
             lines.push(format!("template <class T> struct A {{ static inline N{n} w = {e}; }};"));
             lines.join("\n")
         };
+        let mut sizes = Vec::new();
         for n in [1, 2, 3, 4, 8, 12] {
             let src = nested(n);
             let files = [("main.cpp", src.as_str())];
@@ -1579,8 +1578,12 @@ mod tests {
                 (lists, s.as_bytes().len())
             });
             println!("{n} nested: {lists} lists; outermost {bytes} bytes");
-            assert_eq!(lists, n + 1 + (n + 1) * (n + 2) / 2, "{n} nested");
+            assert_eq!(lists, 2 * (n + 1), "{n} nested");
+            sizes.push(bytes);
         }
+        // Per level, from 8 to 12 levels against from 1 to 4: linear.
+        let (low, high) = ((sizes[3] - sizes[0]) / 3, (sizes[5] - sizes[4]) / 4);
+        assert!(high <= 2 * low, "bytes per level {low} (1-4) against {high} (8-12): {sizes:?}");
     }
 
     /// Scans the sources of every pair test for a node the walk reaches

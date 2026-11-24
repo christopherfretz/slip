@@ -203,7 +203,7 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, cx: &mut Ctx) {
             w.write_type(s, ty);
             variant(s, null_kind::row(&kind), null_name(kind));
         }
-        Scalar::Pointer { ty, base, offset, designated, past } => {
+        Scalar::Pointer { ty, base, offset, designated, past, unions } => {
             variant(s, value_kind::POINTER, "ValueKind/Pointer");
             w.write_type(s, ty);
             let named = write_base(w, s, base, cx);
@@ -220,6 +220,12 @@ fn write_scalar(w: &mut Walk<'_>, s: &mut Stream, x: Scalar<'_>, cx: &mut Ctx) {
                 None => w.write_type_opt(s, designated),
             }
             s.bool(past);
+            // `Pointer.unions`: `ref*`, the union members the designator
+            // enters off their unions' default members, outermost first
+            // (Kiln WP-2200; canonical, so equal pointers have equal
+            // lists).
+            let ast = w.ast;
+            w.write_refs(s, ast.consts.union_path(unions));
         }
         Scalar::MemberPtr { ty, member, kind, derived, path } => {
             variant(s, value_kind::MEMBER_PTR, "ValueKind/MemberPtr");
@@ -430,6 +436,7 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 offset: _,
                 designated: _,
                 past: _,
+                unions: _,
             }) => Some(origin),
             _ => None,
         };
@@ -440,6 +447,7 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 offset: _,
                 designated: _,
                 past: _,
+                unions: _,
             }) => Some(lit),
             _ => None,
         };
@@ -474,6 +482,7 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 offset: _,
                 designated: _,
                 past: _,
+                unions: _,
             }) = ast.consts.scalar(l)
             else {
                 continue;
@@ -970,7 +979,8 @@ fn children(w: &Walk<'_>, v: ConstValueId, out: &mut Vec<ConstValueId>) {
 /// The constant a scalar's base names, if any.
 fn scalar_child(x: &Scalar<'_>, out: &mut Vec<ConstValueId>) {
     match *x {
-        Scalar::Pointer { ty: _, base, offset: _, designated: _, past: _ } => match base {
+        Scalar::Pointer { ty: _, base, offset: _, designated: _, past: _, unions: _ } => match base
+        {
             PtrBase::Const(c) => out.push(c),
             PtrBase::Decl(_)
             | PtrBase::Function(_)
@@ -1055,7 +1065,7 @@ mod tests {
     use std::sync::Arc;
 
     use slip_kiln::kiln::ast::consts::{
-        ConstValue, FloatKind, IntBits, MemberKind, NullKind, PtrBase, Scalar,
+        ConstValue, FloatKind, IntBits, MemberKind, NullKind, PtrBase, Scalar, UnionPath,
     };
     use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, DeclMisc, NewDecl, Payload};
     use slip_kiln::kiln::ast::names::DeclName;
@@ -1115,10 +1125,11 @@ mod tests {
         w.ast.consts.ids().filter(|&v| pick(&w.ast.consts.get(v))).collect()
     }
 
-    /// The rows of `Pointer` after its base: `offset`, `designated`, `past`
-    /// for a pointer at offset 0 with no designated type.
+    /// The rows of `Pointer` after its base: `offset`, `designated`, `past`,
+    /// `unions` for a pointer at offset 0 with no designated type, entering
+    /// no union by a member other than its default.
     fn plain_tail(s: &mut Stream) {
-        s.uv(0).opt(false).bool(false);
+        s.uv(0).opt(false).bool(false).count(0);
     }
 
     // digest-kinds §8 `Scalar` `Int.bits`: the normalised words, each
@@ -1362,6 +1373,7 @@ mod tests {
             offset,
             designated: None,
             past: false,
+            unions: UnionPath::NONE,
         };
         let a = ast.consts.push_scalar(mk(16)).expect("a pointer");
         let b = ast.consts.push_scalar(mk(32)).expect("a pointer");
@@ -1369,7 +1381,7 @@ mod tests {
             let mut want = Stream::new();
             want.tag(value_kind::POINTER);
             w.write_type(&mut want, ty);
-            want.tag(ptr_base::ABSOLUTE).uv(16).opt(false).bool(false);
+            want.tag(ptr_base::ABSOLUTE).uv(16).opt(false).bool(false).count(0);
             let got = written(w, a);
             assert_eq!(got.as_bytes(), want.as_bytes());
             assert_eq!(got.cause(), None);
@@ -1391,6 +1403,7 @@ mod tests {
             offset: 0,
             designated: None,
             past: false,
+            unions: UnionPath::NONE,
         };
         let lm = ast.consts.push_scalar(mk(plus, minus, 8)).expect("a difference");
         let ml = ast.consts.push_scalar(mk(minus, plus, 8)).expect("a difference");
@@ -1565,6 +1578,7 @@ mod tests {
                     offset: 0,
                     designated: None,
                     past: false,
+                    unions: UnionPath::NONE,
                 })
                 .expect("a pointer")
         };
@@ -1594,7 +1608,14 @@ mod tests {
         let l = label(&mut ast);
         let at = |ast: &mut Ast, base| {
             ast.consts
-                .push_scalar(Scalar::Pointer { ty, base, offset: 0, designated: None, past: false })
+                .push_scalar(Scalar::Pointer {
+                    ty,
+                    base,
+                    offset: 0,
+                    designated: None,
+                    past: false,
+                    unions: UnionPath::NONE,
+                })
                 .expect("a pointer")
         };
         let inner = at(&mut ast, PtrBase::Decl(l));
@@ -1657,6 +1678,7 @@ mod tests {
                     offset: 0,
                     designated: None,
                     past: false,
+                    unions: UnionPath::NONE,
                 });
             }
             v.expect("a value")
@@ -1735,6 +1757,7 @@ mod tests {
                     offset: 8,
                     designated: None,
                     past: false,
+                    unions: UnionPath::NONE,
                 })
                 .expect("a pointer")
         };

@@ -52,6 +52,9 @@ pub(crate) fn seeds(ctx: &mut Ctx<'_, '_, '_>) -> (Vec<WrittenRef>, u64) {
     let mut looked = 0u64;
     for r in written::written_refs(unit) {
         looked += 1;
+        if !rename_role(r.role) {
+            continue;
+        }
         let o = written::origin(unit, r.referent);
         if decls::name_of(ast, o) == Some(ctx.old) {
             consider(ctx, &mut memo, o, r.referent);
@@ -59,6 +62,29 @@ pub(crate) fn seeds(ctx: &mut Ctx<'_, '_, '_>) -> (Vec<WrittenRef>, u64) {
         }
     }
     (hits, looked)
+}
+
+/// The roles the rename's rows read (§9.3): those Kiln recorded before
+/// its written-reference table stage 3 (WP-1932, in the pin since WP-066).
+/// The names stage 3 records (a using-declarator, a using-directive's or
+/// namespace alias's namespace, an elaborated or friend reference, a
+/// specialisation target, a concept name, a designator, a redeclaration's
+/// qualified name) are reached as before: through `decl_names`, the
+/// followers, or `unreachable`. Serving them from the table is WP-138's
+/// (`spec/landed/edits/WP-066.md`, "For WP-138").
+fn rename_role(role: written::Role) -> bool {
+    use written::Role as R;
+    match role {
+        R::Expr | R::Member | R::Type | R::Template | R::Nns | R::Base | R::MemInit => true,
+        R::UsingDecl
+        | R::UsingDirective
+        | R::NamespaceAlias
+        | R::Elaborated
+        | R::SpecTarget
+        | R::Concept
+        | R::Designator
+        | R::Redecl => false,
+    }
 }
 
 /// Adds the entity of `origin` as a seed if it is one; `decl` is the

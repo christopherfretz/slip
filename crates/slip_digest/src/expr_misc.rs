@@ -16,8 +16,8 @@
 //! the interner's length before it is read.
 
 use slip_kiln::kiln::ast::expr::{
-    ArrayTraitExtra, ExprFlags, ExprKind, GenericControl, OffsetofComponent, OffsetofStep,
-    PredefinedKind, SourceLocKind, SuspendKind, TraitKind, TypeTrait, TypeidOperand,
+    ArrayTraitExtra, ExprFlags, ExprKind, GenericControl, OffsetofComponent, OffsetofNode,
+    OffsetofStep, PredefinedKind, SourceLocKind, SuspendKind, TraitKind, TypeTrait, TypeidOperand,
 };
 use slip_kiln::kiln::ast::{DeclId, ExprId, HeapSize, ListId, QualType, RawId, StmtId};
 use slip_kiln::kiln::source::Loc;
@@ -27,8 +27,8 @@ use crate::Cause;
 use crate::expr::{Node, check_aux, check_bits, child, child_opt, expr_list, node};
 use crate::stream::{FlagWord, Stream};
 use crate::tables::{
-    Row, generic_control, offsetof_component, offsetof_step, predefined_kind, source_loc_kind,
-    suspend_kind, trait_kind, type_trait, typeid_operand,
+    Row, generic_control, offsetof_component, offsetof_node, offsetof_step, predefined_kind,
+    source_loc_kind, suspend_kind, trait_kind, type_trait, typeid_operand,
 };
 use crate::walk::Walk;
 
@@ -379,6 +379,30 @@ pub(crate) fn offsetof_layout(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
             OffsetofStep::Index { index, elem_size } => {
                 index_position(w, s, e, index, Cause::Unaccounted("OffsetofStep/Index.index"));
                 s.uv(elem_size);
+            }
+        }
+    }
+}
+
+/// `ColdExprData` `offsetof_designator-nodes` (§7.4) of `e`, which has an
+/// `offsetof_designator` entry: `enum OffsetofNode*` (`expr::child`
+/// wrote `offsetof_designator-type`).
+pub(crate) fn offsetof_nodes(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let ast = w.ast;
+    let nodes: &[OffsetofNode] = ast.exprs.offsetof_designator(e).map_or(&[], |(_, n)| n);
+    s.count(nodes.len());
+    for n in nodes {
+        s.tag(offsetof_node::row(n));
+        match *n {
+            OffsetofNode::Base { class } => w.write_ref(s, class),
+            OffsetofNode::Field { field, start: _, end: _ } => w.write_ref(s, field),
+            OffsetofNode::Index { position, start: _, end: _ } => {
+                let words: &[u32] =
+                    ListId::try_new(node(w, e).a).map_or(&[], |l| w.ast.lists.get(l));
+                if position as usize >= words.len() {
+                    s.indeterminate(Cause::Unaccounted("OffsetofNode/Index.position"));
+                }
+                s.uv(u64::from(position));
             }
         }
     }

@@ -237,17 +237,18 @@ fn dash_imacros_is_not_accepted() {
     assert_eq!((status, l), (Status::Rejected, None));
 }
 
-// An absolute name is not recorded (Kiln `kiln_pp/src/resolver.rs:132`):
-// a failed `__has_include` of one is invisible to guard L1. Pinned so
-// that the day Kiln records it, this says so (`spec/verify.md` §5.3).
+// An absolute name is recorded since Kiln WP-2620 (`Found::Absolute`,
+// `Found::Missing`), with the name as written: a failed `__has_include` of
+// one is tried where it is (`spec/verify.md` §5.3), and missed
+// (`missed_absolute_name`).
 #[test]
-fn absolute_name_not_recorded() {
+fn absolute_name_recorded() {
     let d = Dir::new("absolute");
     let gone = d.at("gone.h");
     d.write("a.cpp", &format!("#if __has_include(\"{gone}\")\n#endif\n"));
     let (status, l) = d.lookups("", &[]);
     assert_eq!(status, Status::Ok);
-    assert!(!l.tried.iter().any(|(_, n)| n.ends_with("gone.h")), "{l:?}");
+    assert!(l.tried.iter().any(|(at, n)| at == "/" && *n == gone), "{l:?}");
 }
 
 // A lookup after the first few thousand is recorded (the log is not cut).
@@ -646,7 +647,6 @@ fn missed_duplicate_directory_holding_the_name() {
 // N-h. An absolute name: Kiln's log does not record it yet (Kiln
 // WP-2620): when it does, its own path is the negative of a false answer.
 #[test]
-#[ignore = "needs: kiln (WP-2620: absolute names in the lookup log)"]
 fn missed_absolute_name() {
     let d = Dir::new("missed-absolute");
     let gone = d.at("gone.h");

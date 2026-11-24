@@ -1,12 +1,12 @@
 subjects:
-  2d185c42 follower - rule=yes n::F<int>::f of=bf0bb291
-  73b90cd7 follower - rule=yes n::F::f of=bceee8a5
-  b58b740e follower - rule=yes n::F<int>::f of=bceee8a5
+  0be94406 follower - rule=yes n::F<int>::f of=3ac7cacd
+  0c5ae157 follower - rule=yes n::F<int>::f of=bceee8a5
+  3ac7cacd follower - rule=yes n::F::f of=bceee8a5
+  6d5f8107 follower - rule=yes n::F::f of=bceee8a5
   bceee8a5 seed - rule=yes n::Base::f()
-  bf0bb291 follower - rule=yes n::F::f of=bceee8a5
 links:
 claims:
   main.cpp:2:20+1 replace "g" t0 votes=1 none [bceee8a5]
-  main.cpp:3:50+1 replace "g" t0 votes=1 none [bf0bb291]
+  main.cpp:3:50+1 replace "g" t0 votes=1 none [3ac7cacd]
   main.cpp:5:26+1 replace spell(bceee8a5, "g") t0 votes=1 none [bceee8a5]
 changed:

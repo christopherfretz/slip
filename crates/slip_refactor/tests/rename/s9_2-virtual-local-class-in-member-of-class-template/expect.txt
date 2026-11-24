@@ -1,10 +1,10 @@
 subjects:
   599ef791 seed - rule=yes n::B::f()
-  7e1974bb candidate - rule=yes S::t()::L::f()
+  868719a2 candidate - rule=yes S::t()::L::f()
 links:
-  599ef791 7e1974bb
+  599ef791 868719a2
 claims:
   main.cpp:1:39+1 replace "g" t0 votes=1 none [599ef791]
-  main.cpp:2:64+1 replace "g" t0 votes=1 none [7e1974bb]
-  main.cpp:2:90+1 replace spell(7e1974bb, "g") t0 votes=1 none [7e1974bb]
+  main.cpp:2:64+1 replace "g" t0 votes=1 none [868719a2]
+  main.cpp:2:90+1 replace spell(868719a2, "g") t0 votes=1 none [868719a2]
 changed:

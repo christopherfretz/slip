@@ -233,14 +233,16 @@ an action entry once per match (§9); nothing here prevents it.
 4. Cancellation is only for shutting a worker down. A cancelled run has no
    result at all.
 5. **The thread and the stack of a run.** A compiled transform is run
-   only on the thread that compiled it. At this Kiln revision a run on
-   another thread is checked against the compiling thread's stack guard:
+   only on the thread that compiled it. Before Kiln WP-2410 a run on
+   another thread was checked against the compiling thread's stack guard:
    a run that instantiates (reflection's `substitute` and what reads its
-   result, at any depth) fails there with "stack exhausted" by the
-   history of the threads, and the flag is sticky, so every later run of
-   the unit fails too. The host therefore refuses a run on another thread
-   before it reaches Kiln, as an error of the worker that ends nothing;
-   Kiln WP-2410 lifts this. The compiling thread has a stack of 256 MiB:
+   result, at any depth) failed there with "stack exhausted" by the
+   history of the threads, and the flag was sticky, so every later run of
+   the unit failed too. The host refuses a run on another thread before
+   it reaches Kiln, as an error of the worker that ends nothing. Kiln
+   WP-2410, in the pin since WP-066, checks the running thread's guard
+   (`crates/slip_kiln/tests/session.rs` `kn1_…`); lifting the rule is
+   WP-138's (`spec/landed/edits/WP-066.md`). The compiling thread has a stack of 256 MiB:
    with the template depth of §2.1 rule 1, each recursion a run can drive
    (constexpr calls, which the evaluator keeps off the native stack and
    the depth budget bounds; class, variable, function and alias template
@@ -328,14 +330,16 @@ A run **completes** or **fails**.
    offending value denotes, if it denotes one. The same failure in many
    subject units is shown once with a count and one example unit.
    **The refusal reported** is the run's most recent, when the type of
-   the uncaught exception is named `error`: Kiln gives the type of an
-   uncaught exception as written, unqualified, and not which object was
-   thrown. This is wrong in three cases, until Kiln WP-2480: a transform
-   that rethrows an older `slip::error` after a newer refusal (the newer
-   is reported); a class of the transform's named `error` in any scope,
-   thrown after a refusal (reported as a `slip::error` with that
-   refusal); a class derived from `slip::error` (reported with no
-   refusal). The message is never parsed out of Kiln's rendering.
+   the uncaught exception is `slip::v0::error`: since Kiln WP-2480 (in the
+   pin since WP-066) Kiln gives the type fully qualified, as
+   `display_string_of` spells it (before, as written and unqualified, so
+   a class of the transform's named `error` in any scope was taken for
+   it). Slip still does not ask which object was thrown, so this is wrong
+   in two cases: a transform that rethrows an older `slip::error` after a
+   newer refusal (the newer is reported); a class derived from
+   `slip::error` (reported with no refusal). Reading the thrown object,
+   which Kiln now gives, is WP-138's. The message is never parsed out of
+   Kiln's rendering.
 4. A subject unit whose run failed has not been examined. Slip must not
    apply the edits of a Slip run in which a run failed unless told to.
    Such a Slip run is at best `verified_with_residue`

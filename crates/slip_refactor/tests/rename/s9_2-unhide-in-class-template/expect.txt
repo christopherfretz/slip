@@ -1,21 +1,21 @@
 subjects:
-  0c0ea3d4 candidate - rule=yes n::D::f()
-  1be1d190 follower - rule=yes n::D::f of=36cceb9c
+  0f0c051c follower - rule=yes n::D<int>::f of=36cceb9c
+  2587087a follower - rule=yes n::D::f of=36cceb9c
   36cceb9c seed - rule=yes n::B::f(int)
+  44f9fb4f follower - rule=yes n::D::f of=599ef791,c59c794c
   599ef791 seed - rule=yes n::B::f()
-  75a70dd7 follower - rule=yes n::D::f of=36cceb9c
-  8e046f8d follower - rule=yes n::D<int>::f() of=0c0ea3d4
-  9490abe2 follower - rule=yes n::D<int>::f of=1be1d190
-  a033eb8d follower - rule=yes n::D<int>::f of=0c0ea3d4,599ef791
-  ac8d0c7b follower - rule=yes n::D::f of=0c0ea3d4,599ef791
-  f862b918 follower - rule=yes n::D<int>::f of=36cceb9c
+  87b3f90a follower - rule=yes n::D::f of=36cceb9c
+  91d7e426 follower - rule=yes n::D<int>::f() of=c59c794c
+  a6b4f390 follower - rule=yes n::D<int>::f of=2587087a
+  b539ea11 follower - rule=yes n::D<int>::f of=599ef791,c59c794c
+  c59c794c candidate - rule=yes n::D::f()
 links:
-  0c0ea3d4 599ef791
+  599ef791 c59c794c
 claims:
   main.cpp:2:25+1 replace "g" t0 votes=1 none [599ef791]
   main.cpp:2:35+1 replace "g" t0 votes=1 none [36cceb9c]
-  main.cpp:3:44+1 replace "g" t0 votes=1 none [1be1d190]
-  main.cpp:3:52+1 replace "g" t0 votes=1 none [0c0ea3d4]
-  main.cpp:5:26+1 replace spell(0c0ea3d4, "g") t0 votes=1 none [0c0ea3d4]
+  main.cpp:3:44+1 replace "g" t0 votes=1 none [2587087a]
+  main.cpp:3:52+1 replace "g" t0 votes=1 none [c59c794c]
+  main.cpp:5:26+1 replace spell(c59c794c, "g") t0 votes=1 none [c59c794c]
   main.cpp:5:33+1 replace spell(36cceb9c, "g") t0 votes=1 none [36cceb9c]
 changed:

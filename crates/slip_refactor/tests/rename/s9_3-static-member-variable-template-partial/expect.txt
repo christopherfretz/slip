@@ -1,11 +1,11 @@
 subjects:
-  1d71dcf1 seed - rule=yes n::C::v
+  80bc433f seed - rule=yes n::C::v
 links:
 claims:
-  main.cpp:1:62+1 replace "w" t0 votes=1 none [1d71dcf1]
-  main.cpp:1:105+1 replace "w" t0 votes=1 none [1d71dcf1]
-  main.cpp:2:29+1 replace "w" t0 votes=1 none [1d71dcf1]
-  main.cpp:3:24+1 replace spell(1d71dcf1, "w") t0 votes=1 none [1d71dcf1]
-  main.cpp:3:40+1 replace spell(1d71dcf1, "w") t0 votes=1 none [1d71dcf1]
-  main.cpp:3:56+1 replace spell(1d71dcf1, "w") t0 votes=1 none [1d71dcf1]
+  main.cpp:1:62+1 replace "w" t0 votes=1 none [80bc433f]
+  main.cpp:1:105+1 replace "w" t0 votes=1 none [80bc433f]
+  main.cpp:2:29+1 replace "w" t0 votes=1 none [80bc433f]
+  main.cpp:3:24+1 replace spell(80bc433f, "w") t0 votes=1 none [80bc433f]
+  main.cpp:3:40+1 replace spell(80bc433f, "w") t0 votes=1 none [80bc433f]
+  main.cpp:3:56+1 replace spell(80bc433f, "w") t0 votes=1 none [80bc433f]
 changed:
