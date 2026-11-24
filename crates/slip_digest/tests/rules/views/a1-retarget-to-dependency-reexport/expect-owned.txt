@@ -1,0 +1,10 @@
+# Every file owned.
+added acme::Dep
+removed acme
+removed acme::<shadow std::string>
+removed acme::<shadow template <class> type-parameter-0-0 && std::forward(type-parameter-0-0 &&)>
+removed acme::<shadow template <class> type-parameter-0-0 && std::forward(type-parameter-0-0 &)>
+removed acme::<using std::forward>
+removed acme::<using std::string>
+removed acme::Dep
+use 1 via 1 direct 0

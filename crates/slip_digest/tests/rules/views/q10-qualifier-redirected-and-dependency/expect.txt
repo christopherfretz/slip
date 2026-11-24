@@ -1,0 +1,4 @@
+# Q10 (O1): a body with Q1 and Q2 together.
+# Pinned as it is before WP-141's build.
+changed template <class> int f(type-parameter-0-0)
+use 1 via 1 direct 0

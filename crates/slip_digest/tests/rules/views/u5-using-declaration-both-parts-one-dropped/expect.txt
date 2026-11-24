@@ -1,0 +1,6 @@
+# U5 (O2): U4 with using legacy::k; dropped.
+# Pinned as it is before WP-141's build.
+added <using acme::k>
+removed <shadow legacy::k(legacy::Old)>
+removed <using legacy::k>
+use 1 via 1 direct 0

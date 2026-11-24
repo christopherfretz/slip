@@ -1,0 +1,6 @@
+# A1 (O1): the same through an owned namespace legacy { using namespace std; }.
+# Pinned as it is before WP-141's build.
+added <using acme::string>
+changed template <class> type-parameter-0-0 g(type-parameter-0-0)
+removed <using legacy::string>
+use 1 via 1 direct 0

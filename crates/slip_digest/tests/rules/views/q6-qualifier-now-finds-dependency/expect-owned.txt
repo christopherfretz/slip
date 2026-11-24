@@ -1,0 +1,8 @@
+# Every file owned.
+added acme::Dep
+added acme::g(acme::Dep)
+changed template <class> int f(type-parameter-0-0)
+removed acme
+removed acme::Dep
+removed acme::g(acme::Dep)
+use 1 via 1 direct 0

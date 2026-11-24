@@ -1,0 +1,4 @@
+# T4 (O2): C4 with using namespace legacy; at the end of the file.
+# Pinned as it is before WP-141's build.
+added <using_directive acme>
+use 1 via 1 direct 0

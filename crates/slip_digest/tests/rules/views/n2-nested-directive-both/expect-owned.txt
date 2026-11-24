@@ -1,0 +1,8 @@
+# Every file owned.
+added acme::Dep
+added acme::detail::d()
+removed acme
+removed acme::Dep
+removed acme::detail
+removed acme::detail::d()
+use 1 via 1 direct 0

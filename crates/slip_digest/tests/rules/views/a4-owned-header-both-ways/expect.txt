@@ -1,0 +1,6 @@
+# A4 (O1): one owned header own.h entered through a read-only includer and directly.
+# Pinned as it is before WP-141's build.
+added acme::g(int)
+changed u()
+removed legacy::g(int)
+use 1 via 1 direct 0

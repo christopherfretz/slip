@@ -1,0 +1,6 @@
+# Q4 (O1): legacy::g(t) becomes other::g(t), the same found set through a re-export in other.
+# Pinned as it is before WP-141's build.
+added other::<using acme::g>
+changed template <class> int f(type-parameter-0-0)
+removed other::<using legacy::g>
+use 1 via 1 direct 0

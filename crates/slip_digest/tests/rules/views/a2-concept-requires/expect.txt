@@ -1,0 +1,4 @@
+# A2 (O1): legacy::Small<T> becomes acme::Small<T> (requires).
+# Pinned as it is before WP-141's build.
+changed template <class> requires legacy::Small<T> int f(type-parameter-0-0)
+use 1 via 1 direct 0

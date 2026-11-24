@@ -1,0 +1,4 @@
+# U4 (O2): k in both parts: using legacy::k; becomes using acme::k; using legacy::k;
+# Pinned as it is before WP-141's build.
+added <using acme::k>
+use 1 via 1 direct 0

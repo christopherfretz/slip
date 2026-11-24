@@ -1,0 +1,3 @@
+# Q3 (O2): an untouched legacy::h(t), h the dependency's.
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

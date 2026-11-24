@@ -1,0 +1,7 @@
+# Q5 (O2): legacy::h(t) becomes acme::h(t) with an owned namespace acme { using legacy::h; } (created).
+# Pinned as it is before WP-141's build.
+added acme::<shadow legacy::h(legacy::Old)>
+added acme::<shadow legacy::h(long)>
+added acme::<using legacy::h>
+changed template <class> int f(type-parameter-0-0)
+use 1 via 1 direct 0

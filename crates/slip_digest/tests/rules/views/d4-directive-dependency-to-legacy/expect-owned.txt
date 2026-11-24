@@ -1,0 +1,8 @@
+# Every file owned.
+added <using_directive legacy>
+added acme::Dep
+changed d
+removed <using_directive acme>
+removed acme
+removed acme::Dep
+use 1 via 1 direct 2

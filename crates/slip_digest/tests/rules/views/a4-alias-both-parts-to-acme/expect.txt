@@ -1,0 +1,4 @@
+# A4 (O2): the alias named both parts; becomes = acme;, uses of the dependency's part respelled legacy::h.
+# Pinned as it is before WP-141's build.
+changed L
+use 1 via 1 direct 0

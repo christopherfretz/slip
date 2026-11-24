@@ -1,0 +1,6 @@
+# A2 (O1): legacy::Small<T> becomes acme::Small<T> (static-assert).
+# Pinned as it is before WP-141's build.
+added S::<static_assert>
+changed S
+removed S::<static_assert>
+use 1 via 1 direct 0
