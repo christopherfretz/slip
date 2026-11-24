@@ -1092,6 +1092,35 @@ walk order, after the use's rows:
   declaration, is judged by these rules with the values Kiln recorded for
   it there (the declaration's context), as a `SourceLocExpr` written there
   is.
+- A body written in place inside an expression (a closure type's members
+  at its lambda-expression, the members of a local class declared in such
+  a body or anywhere else: whatever `local_type` writes) is an evaluation
+  context of its own, also inside a `ConstantExpr`: a use in it is judged
+  by (a) to (d) as in any body, not as an operand of the invocation
+  around the lambda-expression (`pass([] { log(); })`, a consteval
+  constructor taking `+[] { log(); }`). The reason: the body runs where it
+  is called, not where the constant is evaluated, and the constant's value
+  is the closure, not a name. Where the constant's value also holds a name
+  the body passes on, feeding it is at worst a note too many, never a
+  wrong equal.
+- A use the walk writes by value (`by_value` raised, above: inside a
+  constant the walk does not see the result of, such as an immediate
+  invocation in a default argument, which Kiln evaluates per use and has
+  no value for at the declaration) writes every builtin it reaches as (c),
+  fed for none, as a `SourceLocExpr` there is written by value (WP-115's
+  known cost C1).
+- What a default reaches does not depend on the use: it is computed once
+  per translation unit for each default expression (the shared one, and
+  each rebuilt one) and memoised; a nested default is composed from its
+  own answer. A default met again while it is being walked (a default
+  that reaches itself, which is ill-formed: "recursive evaluation of
+  default argument") contributes nothing the second time, and an answer
+  that met one is not memoised, so every answer is the same wherever the
+  walk began. The walk is bounded by the defaults' sizes. A default whose
+  own expression has more than 65,536 nodes, or a nesting of more than
+  65,536 defaults, makes the unit holding the use indeterminate,
+  `Unsupported("default/reach-limit")` (§10): the walk never gives up
+  silently.
 
 A `__func__` or `__PRETTY_FUNCTION__` in a default is none of these: Kiln
 records no value of it at a use (its value is its declaration context's,
@@ -1124,7 +1153,9 @@ this spec says:
 - its entity's declarations are given different visibilities by the
   namespace openings around them (`digest-kinds.md` §1.7 items 4-5), so a
   symbol's visibility depends on where each use is
-  (`visibility_by_use`, WP-113).
+  (`visibility_by_use`, WP-113);
+- it holds a use of a default too large for the walk to follow
+  (`Unsupported("default/reach-limit")`, §9 "Defaults at a use").
 
 **No unit vanishes.** An entity that §2.1 makes a unit and whose key
 cannot be formed (an unexpected parent or name, a cycle, a kind whose key

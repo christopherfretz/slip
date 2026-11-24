@@ -228,25 +228,85 @@ pub(crate) enum Reach {
     Consumed,
 }
 
-/// The bound on the defaults one use reaches through nested defaults and
-/// on the depth of the walk (a default cannot reach itself; the bound
-/// only keeps a malformed tree from looping).
-const REACH_LIMIT: usize = 4096;
+/// The immediate invocations above a source-location builtin, inside the
+/// default being walked: none, only `std::source_location::current`
+/// once, or anything else (digest §9 "Defaults at a use", (a) to (c)).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Under {
+    /// The operand of no immediate invocation.
+    Nothing,
+    /// The argument of one immediate invocation, of
+    /// `std::source_location::current`.
+    Current,
+    /// Any other nesting of immediate invocations.
+    Other,
+}
 
-/// The source-location builtins of kind `Function` or `SourceLocStruct`
-/// that the default of the use `e` (a `CXXDefaultArgExpr` or
-/// `CXXDefaultInitExpr`) reaches, through nested defaults, in walk order,
-/// each with its [`Reach`]. A `PredefinedExpr` reached is none of them:
-/// Kiln records no value of it at a use, its value is its declaration
-/// context's and is written where the default is (digest §9).
-pub(crate) fn default_reach(w: &Walk<'_>, e: ExprId) -> Vec<(SourceLocKind, Reach)> {
-    let mut out = Vec::new();
-    let mut stack = Vec::new();
-    let mut budget = REACH_LIMIT;
-    if let Some(d) = default_of(w, e) {
-        reach(w, d, &mut stack, &mut out, &mut budget);
+impl Under {
+    /// `self` (the invocations around a default's use) followed by
+    /// `inner` (those inside the default, around the builtin).
+    fn then(self, inner: Under) -> Under {
+        match (self, inner) {
+            (Under::Nothing, x) => x,
+            (Under::Current, Under::Nothing) => Under::Current,
+            _ => Under::Other,
+        }
     }
-    out
+
+    /// Entering a `ConstantExpr`, of `current` or not.
+    fn enter(self, current: bool) -> Under {
+        self.then(if current { Under::Current } else { Under::Other })
+    }
+
+    fn reach(self) -> Reach {
+        match self {
+            Under::Nothing | Under::Current => Reach::Passed,
+            Under::Other => Reach::Consumed,
+        }
+    }
+}
+
+/// What one default reaches, in walk order: each source-location builtin
+/// of kind `Function` or `SourceLocStruct`, with the invocations above it
+/// inside the default (nested defaults included). `Err` with the cause
+/// where the walk gave up ([`REACH_LIMIT`]).
+pub(crate) type Reached = Result<std::rc::Rc<[(SourceLocKind, Under)]>, Cause>;
+
+/// The nodes one default's own expression may have (nested defaults are
+/// each counted on their own), and the nesting of defaults: past either,
+/// the use is indeterminate, `Unsupported("default/reach-limit")`. Each
+/// default is walked once per translation unit (memoised by
+/// [`Walk::default_reach`]), so the bound only refuses a default too
+/// large to be anything a program writes; it is never shared between
+/// defaults.
+pub(crate) const REACH_LIMIT: usize = 1 << 16;
+
+/// The cause of a default past [`REACH_LIMIT`].
+pub(crate) const REACH_LIMIT_CAUSE: Cause = Cause::Unsupported("default/reach-limit");
+
+/// The source-location builtins the default of the use `e` (a
+/// `CXXDefaultArgExpr` or `CXXDefaultInitExpr`) reaches, through nested
+/// defaults, in walk order, each with its [`Reach`]. A `PredefinedExpr`
+/// reached is none of them: Kiln records no value of it at a use, its
+/// value is its declaration context's and is written where the default
+/// is (digest §9).
+pub(crate) fn default_reach(
+    w: &mut Walk<'_>,
+    e: ExprId,
+) -> Result<Vec<(SourceLocKind, Reach)>, Cause> {
+    default_reach_within(w, e, REACH_LIMIT)
+}
+
+/// [`default_reach`] with `limit` for [`REACH_LIMIT`] (a test lowers it).
+fn default_reach_within(
+    w: &mut Walk<'_>,
+    e: ExprId,
+    limit: usize,
+) -> Result<Vec<(SourceLocKind, Reach)>, Cause> {
+    let Some(d) = default_of(w, e) else { return Ok(Vec::new()) };
+    let mut walking = Vec::new();
+    let (found, _) = reach_default(w, d, &mut walking, limit);
+    Ok(found?.iter().map(|&(k, u)| (k, u.reach())).collect())
 }
 
 /// The default a use `e` evaluates: the one rebuilt for it, else the
@@ -262,49 +322,84 @@ fn default_of(w: &Walk<'_>, e: ExprId) -> Option<ExprId> {
     x.default_arg_rewritten(e).or(shared)
 }
 
-/// [`default_reach`] of the expression `e`, under the immediate
-/// invocations `stack` (each: whether it is `std::source_location::current`).
+/// What the default expression `d` reaches, and whether that answer is
+/// its own: false when it met a default already being walked
+/// (`walking`, a default that reaches itself, which contributes nothing
+/// the second time), since the answer then depends on where the walk
+/// began and is not memoised. A default is walked once per translation
+/// unit otherwise; `limit` bounds its own nodes.
+fn reach_default(
+    w: &mut Walk<'_>,
+    d: ExprId,
+    walking: &mut Vec<ExprId>,
+    limit: usize,
+) -> (Reached, bool) {
+    if let Some(r) = w.default_reach.get(&d) {
+        return (r.clone(), true);
+    }
+    if walking.contains(&d) {
+        return (Ok(std::rc::Rc::from(Vec::new())), false);
+    }
+    if walking.len() >= REACH_LIMIT {
+        return (Err(REACH_LIMIT_CAUSE), true);
+    }
+    walking.push(d);
+    let mut out = Vec::new();
+    let mut budget = limit;
+    let mut own = true;
+    let r = reach(w, d, Under::Nothing, &mut out, &mut budget, walking, &mut own, limit);
+    walking.pop();
+    let found: Reached = r.map(|()| std::rc::Rc::from(out));
+    if own {
+        w.default_reach.insert(d, found.clone());
+    }
+    (found, own)
+}
+
+/// [`reach_default`] of the expression `e`, under the invocations `under`.
+#[allow(clippy::too_many_arguments, reason = "the walk's state, threaded through the recursion")]
 fn reach(
-    w: &Walk<'_>,
+    w: &mut Walk<'_>,
     e: ExprId,
-    stack: &mut Vec<bool>,
-    out: &mut Vec<(SourceLocKind, Reach)>,
+    under: Under,
+    out: &mut Vec<(SourceLocKind, Under)>,
     budget: &mut usize,
-) {
+    walking: &mut Vec<ExprId>,
+    own: &mut bool,
+    limit: usize,
+) -> Result<(), Cause> {
     if *budget == 0 {
-        return;
+        return Err(REACH_LIMIT_CAUSE);
     }
     *budget -= 1;
-    let x = &w.ast.exprs;
+    let ast = w.ast;
+    let x = &ast.exprs;
     match x.get(e).kind() {
         ExprKind::SourceLocExpr => {
             let kind = source_loc(node(w, e).aux);
             if let Some(k @ (SourceLocKind::Function | SourceLocKind::SourceLocStruct)) = kind {
-                let passed = match stack.as_slice() {
-                    [] | [true] => Reach::Passed,
-                    _ => Reach::Consumed,
-                };
-                out.push((k, passed));
+                out.push((k, under));
             }
-            return;
+            return Ok(());
         }
         ExprKind::CXXDefaultArgExpr | ExprKind::CXXDefaultInitExpr => {
             if let Some(d) = default_of(w, e) {
-                reach(w, d, stack, out, budget);
+                let (found, mine) = reach_default(w, d, walking, limit);
+                *own &= mine;
+                out.extend(found?.iter().map(|&(k, u)| (k, under.then(u))));
             }
-            return;
+            return Ok(());
         }
         ExprKind::ConstantExpr => {
-            stack.push(is_source_location_current(w, e));
-            reach(w, x.operand(e), stack, out, budget);
-            stack.pop();
-            return;
+            let inner = under.enter(is_source_location_current(w, e));
+            return reach(w, x.operand(e), inner, out, budget, walking, own, limit);
         }
         _ => {}
     }
-    for c in x.children(e, &w.ast.lists) {
-        reach(w, c, stack, out, budget);
+    for c in x.children(e, &ast.lists) {
+        reach(w, c, under, out, budget, walking, own, limit)?;
     }
+    Ok(())
 }
 
 /// `e`, a `ConstantExpr`, is the immediate invocation of
@@ -374,7 +469,18 @@ pub(crate) fn default_use_names(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     }
     let ast = w.ast;
     let Some(&values) = ast.exprs.cold.source_loc.get(e) else { return };
-    let reached = default_reach(w, e);
+    // Where the walk writes name-derived values by value (`by_value`:
+    // the use is inside a constant the walk does not see the result of),
+    // what the default passes on is written by value too, as (c).
+    let by_value = w.by_value > 0;
+    let reached = match default_reach(w, e) {
+        Ok(r) if by_value => r.into_iter().map(|(k, _)| (k, Reach::Consumed)).collect(),
+        Ok(r) => r,
+        Err(c) => {
+            s.indeterminate(c);
+            return;
+        }
+    };
     if reached.is_empty() {
         return;
     }
@@ -1032,6 +1138,39 @@ fn pseudo_object_expr_of(w: &mut Walk<'_>, s: &mut Stream, n: Node) {
         s.indeterminate(Cause::Unaccounted("ExprNode/PseudoObjectExpr.b"));
     }
     s.uv(u64::from(n.b));
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use slip_kiln::kiln::ast::ExprId;
+    use slip_kiln::kiln::ast::expr::{ExprKind, SourceLocKind};
+
+    use super::{REACH_LIMIT_CAUSE, Reach, default_reach_within};
+    use crate::decl_func::tests::with_walk;
+
+    // digest §9 "Defaults at a use": a default past the bound on its own
+    // nodes is `Unsupported("default/reach-limit")`, never an empty
+    // answer; under the bound, the builtin after the large part is reached.
+    #[test]
+    fn a_default_past_the_limit_is_a_cause() {
+        let src = "struct T { int a[4]; const char *p; };\n\
+                   void big(T t = {{0, 0, 0, 0}, __builtin_FUNCTION()});\n\
+                   void f() { big(); }\n";
+        with_walk(src, |w| {
+            let n = u32::try_from(w.ast.exprs.len()).unwrap();
+            let uses: Vec<ExprId> = (1..=n)
+                .filter_map(ExprId::try_new)
+                .filter(|&e| w.ast.exprs.get(e).kind() == ExprKind::CXXDefaultArgExpr)
+                .collect();
+            assert_eq!(uses.len(), 1);
+            assert_eq!(default_reach_within(w, uses[0], 3), Err(REACH_LIMIT_CAUSE));
+            w.default_reach.clear();
+            assert_eq!(
+                default_reach_within(w, uses[0], 1000),
+                Ok(vec![(SourceLocKind::Function, Reach::Passed)])
+            );
+        });
+    }
 }
 
 #[cfg(test)]

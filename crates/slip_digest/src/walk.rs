@@ -297,8 +297,14 @@ pub(crate) struct Walk<'a> {
     /// The `ConstantExpr`s the walk is inside (digest §9 "Defaults at a
     /// use"): a use of a default under one is an operand of an immediate
     /// invocation evaluated where it is written, whose value is written
-    /// as every constant is, and contributes nothing more.
+    /// as every constant is, and contributes nothing more. Set to 0 around
+    /// a local or closure type's stream (`local::local_type`): its
+    /// members' bodies are evaluation contexts of their own.
     pub in_constant: u32,
+    /// What each default expression reaches (digest §9 "Defaults at a
+    /// use"), by the default's `ExprId`: it does not depend on the use,
+    /// so each default is walked once (`expr_misc::reach_default`).
+    pub default_reach: HashMap<slip_kiln::kiln::ast::ExprId, crate::expr_misc::Reached>,
     /// [`Walk::const_memo`] for the content digests computed with
     /// [`Walk::by_value`] above 0.
     pub const_memo_by_value: HashMap<u32, Hashed>,
@@ -377,6 +383,7 @@ impl<'a> Walk<'a> {
             name_values: None,
             by_value: 0,
             in_constant: 0,
+            default_reach: HashMap::new(),
             const_memo_by_value: HashMap::new(),
             rule_use: None,
             names: None,
