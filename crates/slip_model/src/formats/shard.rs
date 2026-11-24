@@ -1,6 +1,6 @@
 //! The shard, kind `SHRD` (`spec/model.md` §8), with the sections of M2
 //! (`edits`, `binding`, `rule_use`, `spellings`; work package WP-060) and
-//! `negatives` (work package WP-117).
+//! `negatives` (work package WP-117) and `found` (work package WP-135).
 
 use crate::json::Value;
 use crate::verdict::VerdictKind;
@@ -13,7 +13,7 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, names,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
     negatives, open, read_container, render_container, seal, spellings, verdict,
 };
 
@@ -29,6 +29,7 @@ const RULE_USE: u64 = agreement::RULE_USE;
 const SPELLINGS: u64 = spellings::ID;
 const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
+const FOUND: u64 = found::ID;
 
 use super::MESSAGE_MAX;
 
@@ -51,6 +52,7 @@ enum Loc {
     /// A shard with `digests` and no `names`: at the `digests` payload.
     NoNames,
     Negatives(negatives::Loc),
+    Found(found::Loc),
 }
 
 impl Loc {
@@ -69,6 +71,7 @@ impl Loc {
             Loc::Names(l) => l.path(),
             Loc::NoNames => "sections.names".to_owned(),
             Loc::Negatives(l) => l.path(),
+            Loc::Found(l) => l.path(),
         }
     }
 }
@@ -167,6 +170,11 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
     {
         return Some((Loc::Negatives(l), what));
+    }
+    if let Some(f) = &s.found
+        && let Some((l, what)) = found::violation(f, phase, s.inputs.as_ref().map(Vec::len))
+    {
+        return Some((Loc::Found(l), what));
     }
     None
 }
@@ -268,6 +276,14 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(rule_use) = &rule_use {
         sections.push((RULE_USE, rule_use));
     }
+    let found = s.found.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        found::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(found) = &found {
+        sections.push((FOUND, found));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -289,7 +305,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::VERSION,
         [
             HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
-            NEGATIVES, RULE_USE,
+            NEGATIVES, RULE_USE, FOUND,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -309,6 +325,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         names,
         negatives,
         rule_use,
+        found,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -408,6 +425,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (found, found_at) = match found {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = found::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -424,6 +449,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         spellings,
         names,
         negatives,
+        found,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -459,6 +485,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("a negatives violation without negatives"),
                 |o| o.of(l),
             ),
+            Loc::Found(l) => found_at
+                .as_ref()
+                .map_or_else(|| unreachable!("a found violation without found"), |o| o.of(l)),
         };
         return Err(malformed(at, what));
     }
@@ -468,7 +497,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 12] = [
+const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -481,6 +510,7 @@ const SECTION_NAMES: [SectionName; 12] = [
     SectionName { id: NAMES, name: "names", required: false },
     SectionName { id: NEGATIVES, name: "negatives", required: false },
     SectionName { id: RULE_USE, name: "rule_use", required: false },
+    SectionName { id: FOUND, name: "found", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -536,6 +566,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(r) = &s.rule_use {
         sections.push(("rule_use", agreement::render_rule_use(r)));
     }
+    if let Some(x) = &s.found {
+        sections.push(("found", found::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -558,6 +591,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         names,
         negatives,
         rule_use,
+        found,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -603,6 +637,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let names = names.map(|v| names::read(v, &sections.key("names"))).transpose()?;
     let negatives =
         negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
+    let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -619,6 +654,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         spellings,
         names,
         negatives,
+        found,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

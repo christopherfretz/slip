@@ -133,8 +133,10 @@ pub(crate) fn run(
 
     decls::claim(&mut ctx);
     refs::claim(&mut ctx, &hits);
-    for name in written::dependent_names(unit) {
-        dependent::claim(&mut ctx, &name);
+    let dependent = written::dependent_names(unit);
+    let bound = dependent::bound(&ctx, &dependent);
+    for name in &dependent {
+        dependent::claim(&mut ctx, name, &bound);
     }
 
     let Ctx { subjects, claims, changed, .. } = ctx;

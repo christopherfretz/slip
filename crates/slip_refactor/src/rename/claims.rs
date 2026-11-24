@@ -123,7 +123,6 @@ impl Claims {
     /// `reason` (one of §4.2's that `sites` does not give: `mixed_set`,
     /// `mixed_instances`). Its range is the token's when `sites` locates
     /// it, else the range of `sites`' own refusal.
-    #[allow(dead_code, reason = "for docs/wp/WP-073.md (mixed_set, mixed_instances)")]
     pub fn refuse(
         &mut self,
         sites: &Sites<'_, '_>,

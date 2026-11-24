@@ -1,10 +1,14 @@
 //! The cost of the map shard's negative inputs (work package WP-117,
-//! `spec/landed/verify/WP-117.md` "Costs"): not part of the gate.
+//! `spec/landed/verify/WP-117.md` "Costs") and of its found lookups (work
+//! package WP-135, `spec/landed/verify/WP-135.md` "Cost"): not part of the
+//! gate.
 
 use std::fmt::Write as _;
 use std::os::unix::ffi::OsStrExt;
 use std::time::Instant;
 
+use slip_cli::image::Image;
+use slip_cli::negatives::found_moved;
 use slip_cli::worker::map_observer;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin};
 
@@ -123,6 +127,27 @@ fn measure_negatives_on_a_unit() {
             " negatives={} dirs={dirs} section={} B (in the shard) flat={flat} front={front} grouped={grouped}",
             n.len(),
             total - without,
+        )
+        .expect("a String");
+    }
+    // The found lookups (work package WP-135, `spec/model.md` §8.8): the
+    // places, the classes, the section's bytes in the shard, and guard
+    // N2 over them now (no root: every input is outside, so (ii) looks at
+    // every input; the unit's own tree, unchanged, so it passes).
+    if let (Some(f), Some(inputs)) = (&shard.found, &shard.inputs) {
+        let without = slip_model::Shard { found: None, ..shard.clone() }.to_bytes().len();
+        let paths: Vec<Vec<u8>> = f.places.iter().map(|p| p.path.clone()).collect();
+        let (flat, front, _) = sizes(&paths);
+        let image = Image::identity();
+        let t1 = Instant::now();
+        let refused = found_moved(&mut image.resolver(), f, inputs);
+        write!(
+            line,
+            " found: places={} classes={} section={} B (in the shard) flat={flat} front={front} n2={:.3}s refused={refused:?}",
+            f.places.len(),
+            f.classes.len(),
+            total - without,
+            t1.elapsed().as_secs_f64(),
         )
         .expect("a String");
     }

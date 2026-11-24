@@ -29,6 +29,7 @@ fn map_shard(negatives: Option<Vec<Vec<u8>>>) -> Shard {
         spellings: None,
         names: None,
         negatives,
+        found: None,
     }
 }
 

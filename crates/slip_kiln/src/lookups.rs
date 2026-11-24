@@ -60,6 +60,16 @@ pub struct Lookups {
     /// every lookup in the list, but for a `<...>` name when only
     /// `-iquote` names it.
     pub missed: Vec<(String, String)>,
+    /// Each place `(directory, name)` where a recorded lookup **found** its
+    /// file, unique, in the order first seen (work package WP-135): the
+    /// file Kiln opened is `directory/name` as the log spells it (Kiln
+    /// `HeaderSearch::lookup` opens `join_path(dir, name)`), the includer's
+    /// directory for a hit beside the includer (`Found::Includer`; `.` when
+    /// the log names no includer, Kiln's own rule), the search list's entry
+    /// for a hit in the list (`Found::Dir`); for `#embed` and `__has_embed`,
+    /// `(".", path)` with the path read (`Found::Embed`); for an absolute
+    /// name, `("/", name)` (Kiln's log does not record one yet).
+    pub found: Vec<(String, String)>,
     /// The name of every buffer read from disk and of every consulted path
     /// (each of the shard's `inputs`, as spelled when it was read).
     pub read: Vec<String>,
@@ -139,6 +149,7 @@ impl Lookups {
         let absent = place_absent(&list, log.angled_start as usize, &driver.dirs, &absent_paths);
         let mut tried = Places::default();
         let mut missed = Places::default();
+        let mut found = Places::default();
         for l in &log.lookups {
             // An absolute name is tried where it is, whatever the form
             // (Kiln's log does not record one yet: `spec/verify.md` §5.1,
@@ -147,20 +158,27 @@ impl Lookups {
                 tried.push("/", &l.name);
                 if matches!(l.found, Found::Missing) {
                     missed.push("/", &l.name);
+                } else {
+                    found.push("/", &l.name);
                 }
                 continue;
             }
             if l.form == LookupForm::Embed {
                 embed(l, log, &driver.embed_dirs, &mut tried, &mut missed);
+                if let Found::Embed { path } = &l.found {
+                    found.push(".", path);
+                }
                 continue;
             }
             if let Some(i) = l.includer {
                 tried.push(dir(log, i), &l.name);
                 if l.found == Found::Includer {
+                    found.push(dir(log, i), &l.name);
                     continue;
                 }
                 missed.push(dir(log, i), &l.name);
             } else if l.found == Found::Includer {
+                found.push(".", &l.name);
                 continue;
             }
             let start = match (l.form, l.after) {
@@ -180,6 +198,9 @@ impl Lookups {
                 }
                 _ => None,
             };
+            if let Found::Dir { dir: d, .. } = l.found {
+                found.push(dir(log, d), &l.name);
+            }
             let end = hit.map_or(log.list.len(), |h| h + 1);
             for &d in &log.list[start..end] {
                 tried.push(dir(log, d), &l.name);
@@ -193,7 +214,13 @@ impl Lookups {
                 }
             }
         }
-        let mut out = Lookups { list, tried: tried.out, missed: missed.out, ..Lookups::default() };
+        let mut out = Lookups {
+            list,
+            tried: tried.out,
+            missed: missed.out,
+            found: found.out,
+            ..Lookups::default()
+        };
         for file in fe.sm.file_ids() {
             let read = match fe.sm.file_origin(file) {
                 FileOrigin::Virtual => false,

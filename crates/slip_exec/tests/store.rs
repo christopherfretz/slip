@@ -88,6 +88,7 @@ fn shard(observer: Digest, phase: Phase, round: u64) -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 

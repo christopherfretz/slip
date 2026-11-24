@@ -555,6 +555,7 @@ impl ShardB {
             spellings: None,
             names: None,
             negatives: None,
+            found: None,
         }
     }
 }

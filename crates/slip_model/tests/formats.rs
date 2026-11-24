@@ -139,6 +139,7 @@ fn sample_shard() -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -163,6 +164,7 @@ fn failed_shard() -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 
@@ -468,6 +470,7 @@ fn small_shard() -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 
