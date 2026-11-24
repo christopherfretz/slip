@@ -1,0 +1,4 @@
+# A function template called with explicit arguments and by deduction.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

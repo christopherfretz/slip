@@ -1,0 +1,4 @@
+# `&f`, `&a::f`, and `&C::m` for a member function.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

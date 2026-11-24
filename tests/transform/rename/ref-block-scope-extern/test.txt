@@ -1,0 +1,4 @@
+# Block-scope declarations of the function and an `extern` variable of the same scope renamed as their own target (R11).
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified
