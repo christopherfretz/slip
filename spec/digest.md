@@ -1510,7 +1510,9 @@ marks are missing): the shard goldens of `crates/slip_model` are blessed
 again with the package; `bench/baselines` and the corpus invariants are
 the supervisor's to record again. WP-155's fix round changed which units
 are marked (below), not the format; no baseline of scheme 3 was recorded,
-so it shares the number.
+so it shares the number. WP-141 landed beside it saying "`scheme` stays
+2" (`spec/landed/digest/WP-141.md`): written before this move, it reads
+as "no move of its own"; its changes are under 3 for the same reason.
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). The entities read are
 the variables (`DeclKind::Var`) and functions that are not local (a

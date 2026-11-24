@@ -40,14 +40,6 @@ const ROUND: u64 = 1;
 /// (WP-114: also in a run with a tree image and no rule).
 const BINDING: Binding = Binding { overlay: None, declared: Digest([0x02; 32]), pre: 0 };
 
-/// The six counters of §7.2 by kind before WP-155, the two it added
-/// zero, and `verify.findings`, sorted.
-fn counters(by_kind: [u64; 6]) -> Vec<Counter> {
-    let mut all = [0; 8];
-    all[..6].copy_from_slice(&by_kind);
-    counters_all(all)
-}
-
 /// The eight counters of §7.2 by kind (WP-155 added `derived_only_pre`
 /// and `derived_only_post`, last), and `verify.findings`, sorted.
 fn counters_all(by_kind: [u64; 8]) -> Vec<Counter> {
@@ -370,6 +362,9 @@ fn s7_state_of_a_shard_that_cannot_be_believed_is_failed() {
 #[test]
 fn s7_1_derived_only_findings() {
     use FindingKind::{DerivedOnlyPost, DerivedOnlyPre};
+    const WHY: &str = "in this translation unit (the translation unit emits it unreferenced: \
+        its initialiser or destructor runs, or it is a `constructor`, `destructor` or `used` \
+        function or variable)";
     let ok = |s: &Shard| state(Some(s), MAP_OK);
     let pre = Finding {
         post: None,
@@ -398,9 +393,6 @@ fn s7_1_derived_only_findings() {
     assert_eq!(j.get("findings").unwrap().get("total").unwrap().as_u64(), Some(3));
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     let t = r.to_text();
-    const WHY: &str = "in this translation unit (the translation unit emits it unreferenced: \
-        its initialiser or destructor runs, or it is a `constructor`, `destructor` or `used` \
-        function or variable)";
     let says_pre = format!("  says `Reg<int>::r` is no longer instantiated {WHY}\n");
     let says_post = format!("  says `Tr<lib::X>::r` is now instantiated {WHY}\n");
     assert!(t.contains(&says_pre), "{t}");

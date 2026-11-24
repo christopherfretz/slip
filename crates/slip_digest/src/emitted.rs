@@ -201,7 +201,7 @@ fn plain_type(w: &Walk<'_>, q: QualType) -> bool {
 /// written in the source) is not plainly constant.
 fn plain(w: &Walk<'_>, e: ExprId) -> bool {
     let ast = w.ast;
-    let x = &ast.exprs;
+    let exprs = &ast.exprs;
     let mut work = vec![e];
     let mut seen = 0;
     while let Some(e) = work.pop() {
@@ -209,39 +209,40 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
         if seen > PLAIN_LIMIT {
             return false;
         }
-        match x.get(e).kind() {
+        match exprs.get(e).kind() {
             ExprKind::IntegerLiteral
             | ExprKind::FloatingLiteral
             | ExprKind::CharacterLiteral
             | ExprKind::CXXBoolLiteralExpr
             | ExprKind::CXXNullPtrLiteralExpr
-            | ExprKind::GNUNullExpr => {}
+            | ExprKind::GNUNullExpr
+            | ExprKind::StringLiteral => {}
             ExprKind::UnaryExprOrTypeTraitExpr => {
                 if !matches!(
-                    x.trait_kind(e),
+                    exprs.trait_kind(e),
                     TraitKind::SizeOf | TraitKind::AlignOf | TraitKind::PreferredAlignOf
                 ) {
                     return false;
                 }
             }
-            ExprKind::ParenExpr => work.push(x.operand(e)),
+            ExprKind::ParenExpr => work.push(exprs.operand(e)),
             ExprKind::InitListExpr => {
-                let kids = x.children(e, &ast.lists);
+                let kids = exprs.children(e, &ast.lists);
                 if kids.len() > 1 {
                     return false;
                 }
                 work.extend(kids);
             }
-            ExprKind::UnaryOperator => match x.unary_op(e) {
-                UnaryOp::Plus | UnaryOp::Minus => work.push(x.operand(e)),
+            ExprKind::UnaryOperator => match exprs.unary_op(e) {
+                UnaryOp::Plus | UnaryOp::Minus => work.push(exprs.operand(e)),
                 UnaryOp::AddrOf => {
-                    if !designates(w, x.operand(e)) {
+                    if !designates(w, exprs.operand(e)) {
                         return false;
                     }
                 }
                 _ => return false,
             },
-            ExprKind::ImplicitCastExpr => match x.cast_kind(e) {
+            ExprKind::ImplicitCastExpr => match exprs.cast_kind(e) {
                 CastKind::IntegralCast
                 | CastKind::IntegralToFloating
                 | CastKind::FloatingToIntegral
@@ -250,9 +251,9 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
                 | CastKind::FloatingToBoolean
                 | CastKind::BooleanToSignedIntegral
                 | CastKind::NullToPointer
-                | CastKind::NoOp => work.push(x.operand(e)),
+                | CastKind::NoOp => work.push(exprs.operand(e)),
                 CastKind::ArrayToPointerDecay | CastKind::FunctionToPointerDecay => {
-                    if !designates(w, x.operand(e)) {
+                    if !designates(w, exprs.operand(e)) {
                         return false;
                     }
                 }
@@ -261,12 +262,11 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
             // An enumerator; or, bound to a reference, an object or a
             // function.
             ExprKind::DeclRefExpr => {
-                let d = x.decl(e);
+                let d = exprs.decl(e);
                 if ast.decls.get(d).kind() != DeclKind::EnumConstant && !designates(w, e) {
                     return false;
                 }
             }
-            ExprKind::StringLiteral => {}
             _ => return false,
         }
     }
@@ -278,13 +278,13 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
 /// string literal: its address is a constant.
 fn designates(w: &Walk<'_>, mut e: ExprId) -> bool {
     let ast = w.ast;
-    let x = &ast.exprs;
+    let exprs = &ast.exprs;
     for _ in 0..PLAIN_LIMIT {
-        match x.get(e).kind() {
-            ExprKind::ParenExpr => e = x.operand(e),
+        match exprs.get(e).kind() {
+            ExprKind::ParenExpr => e = exprs.operand(e),
             ExprKind::StringLiteral => return true,
             ExprKind::DeclRefExpr => {
-                let d = x.decl(e);
+                let d = exprs.decl(e);
                 if ast.decls.function(d).is_some() {
                     return true;
                 }
@@ -320,18 +320,18 @@ fn hosts<'w>(w: &'w mut Walk<'_>) -> &'w HashSet<DeclId> {
             {
                 continue;
             }
-            let mut c = ast.decls.get(d).ctx();
+            let mut next = ast.decls.get(d).ctx();
             for _ in 0..CTX_LIMIT {
-                let Some(x) = c else { break };
-                if !set.insert(x) {
+                let Some(up) = next else { break };
+                if !set.insert(up) {
                     break;
                 }
-                let lambda = ast.decls.record(x).and_then(|r| r.lambda);
-                let by = lambda.and_then(|l| ast.exprs.lambdas.get(l).mangling.context);
-                if let Some(v) = by {
-                    set.insert(v);
+                let lambda = ast.decls.record(up).and_then(|r| r.lambda);
+                let by = lambda.and_then(|id| ast.exprs.lambdas.get(id).mangling.context);
+                if let Some(var) = by {
+                    set.insert(var);
                 }
-                c = ast.decls.get(x).ctx();
+                next = ast.decls.get(up).ctx();
             }
         }
         w.emitted_hosts = Some(set);
