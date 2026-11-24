@@ -3347,16 +3347,19 @@ fn n2_one_class_subject_and_outside_post_copy() {
 // after the map phase. Their content checks pass and the post tree's two
 // files are as they were, but a map parse now enters one of them (the
 // identity image's run finds that it does not read `s/b.h` as the map
-// parse did): the map shard is not what a map
-// parse of the pre-image gives now. N2 (ii) at the recorded paths
+// parse did): the map shard is not what a map parse of the pre-image
+// gives now. N2 (ii) at the recorded paths
 // compares every pair, two subject inputs too, and refuses.
 #[test]
 fn n2_two_subject_inputs_made_one_file() {
     let main = MERGE_PRE.replace("<a.h>", "\"a.h\"").replace("<b.h>", "\"b.h\"");
-    let tree = Tree::new("n2-ss-merge", &[("a.cpp", main.as_str()), ("a.h", MERGE_HDR), ("b.h", MERGE_HDR)]);
+    let tree = Tree::new(
+        "n2-ss-merge",
+        &[("a.cpp", main.as_str()), ("a.h", MERGE_HDR), ("b.h", MERGE_HDR)],
+    );
     let o = tree.observer();
-    let m = tree.map(&o);
-    assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+    let map = tree.map(&o);
+    assert_eq!(map.outcome.status, Status::Ok, "{:?}", map.outcome);
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Verified, "pair: {}", reason(&v));
     let (a, b) = (tree.subject.join("a.h"), tree.subject.join("b.h"));
@@ -3402,7 +3405,8 @@ fn n2_first_spelling_moved_by_the_edit() {
 }
 
 const SEL_PRE: &str = "#if USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
-const SEL_POST: &str = "#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
+const SEL_POST: &str =
+    "#if !USE_NEW\nint f() { return 2; }\n#else\nint f() { return 1; }\n#endif\n";
 
 // A `__has_include` hit through a link retargeted since to a directory
 // without the header: refused by N2 (i).
@@ -3420,10 +3424,10 @@ fn n2_has_include_hit_retargeted_to_absent() {
     link("ext-b", &tree.base.join("lnk"));
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
-    let b = &tree.base;
+    let base = &tree.base;
     assert_eq!(
         reason(&v),
-        led(&b.join("lnk/cfg.h"), &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h"))
+        led(&base.join("lnk/cfg.h"), &base.join("ext-b/cfg.h"), &base.join("ext-a/cfg.h"))
     );
 }
 
@@ -3452,8 +3456,8 @@ fn n2_absolute_name_first_spelling() {
     retarget_after_map(&tree, &o, ("#define USE_NEW 0\n", "#define USE_NEW 1\n"), "cfg.h");
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
-    let b = &tree.base;
-    assert_eq!(reason(&v), led(&abs, &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+    let base = &tree.base;
+    assert_eq!(reason(&v), led(&abs, &base.join("ext-b/cfg.h"), &base.join("ext-a/cfg.h")));
 }
 
 // A quote name found beside the includer that is not its file's first
@@ -3470,9 +3474,9 @@ fn n2_includer_second_spelling() {
     retarget_after_map(&tree, &o, cfg, "cfg.h");
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
-    let b = &tree.base;
+    let base = &tree.base;
     let place = tree.subject.join("../lnk/cfg.h");
-    assert_eq!(reason(&v), led(&place, &b.join("ext-b/cfg.h"), &b.join("ext-a/cfg.h")));
+    assert_eq!(reason(&v), led(&place, &base.join("ext-b/cfg.h"), &base.join("ext-a/cfg.h")));
 }
 
 // A header the front end entered, `#embed`ed again by another spelling
@@ -3494,9 +3498,9 @@ fn n2_embed_of_an_entered_header_by_another_spelling() {
     retarget_after_map(&tree, &o, ("//\n", "///\n"), "r.h");
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
-    let b = &tree.base;
+    let base = &tree.base;
     let place = tree.subject.join("../lnk/r.h");
-    assert_eq!(reason(&v), led(&place, &b.join("ext-b/r.h"), &b.join("ext-a/r.h")));
+    assert_eq!(reason(&v), led(&place, &base.join("ext-b/r.h"), &base.join("ext-a/r.h")));
 }
 
 // A place that leads to none of the inputs fails the map task's record.
