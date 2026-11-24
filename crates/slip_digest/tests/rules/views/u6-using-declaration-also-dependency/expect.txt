@@ -1,0 +1,6 @@
+# U6 (O1): U1 where the dependency's acme has a g too.
+# Pinned as it is before WP-141's build.
+added <shadow acme::g(acme::Dep)>
+added <using acme::g>
+removed <using legacy::g>
+use 1 via 1 direct 0

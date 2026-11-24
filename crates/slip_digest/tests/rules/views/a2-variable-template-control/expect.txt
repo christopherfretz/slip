@@ -1,0 +1,3 @@
+# Control for a2-variable-template-qualifier-not-written: the qualifier of an
+# unresolved name is written (legacy::h(t) and legacy::in::h(t) differ).
+changed template <class> int f(type-parameter-0-0)

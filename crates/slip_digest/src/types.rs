@@ -669,6 +669,9 @@ impl Walk<'_> {
     /// canonical form loses nothing there (`spec/landed/digest-kinds/WP-041.md`,
     /// "Fix round 4", the table of callers).
     pub(crate) fn write_canonical_nns(&mut self, s: &mut Stream, n: NnsId) {
+        // R1 (WP-141, `ns_refs.rs`): what the lookup found, for this
+        // qualifier's own level only (a prefix is no R1 site).
+        let found = self.ns_refs.pending.take();
         if !self.enter() {
             s.uv(0).indeterminate(TOO_DEEP);
             return;
@@ -680,7 +683,10 @@ impl Walk<'_> {
             Nns::Global => {}
             Nns::Namespace { prefix: _, ns } | Nns::NamespaceAlias { prefix: _, alias: _, ns } => {
                 let ns = self.ast.resolve_alias(ns);
-                self.write_ref(s, ns);
+                match found {
+                    Some(f) => self.write_ns_found(s, ns, &f),
+                    None => self.write_ref(s, ns),
+                }
             }
             // The prefix of a canonical level is canonical: its caller's
             // reason covers it.

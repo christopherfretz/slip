@@ -1,0 +1,3 @@
+# A2 (addendum 2): the written qualifier of a variable template specialisation is not
+# written: legacy::v<int> and legacy::in::v<int> (in inline) give one digest.
+# Control: a2-variable-template-control.

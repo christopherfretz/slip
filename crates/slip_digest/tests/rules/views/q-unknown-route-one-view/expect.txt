@@ -1,0 +1,2 @@
+# One view key everywhere (no dependency opens acme): R1 is not asked,
+# whatever the route; equal.

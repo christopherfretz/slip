@@ -1,0 +1,4 @@
+# WP-141 ruling (compiler-made members): legacy moved into an owned-only std (no header)
+# under a rule on std. No new-expression, so Kiln makes no std::align_val_t here (this harness
+# does not target AArch64, so there is no std::__va_list either): std has no compiler member, and
+# the pre- and post-image agree. Equal.

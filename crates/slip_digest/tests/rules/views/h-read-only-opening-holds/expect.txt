@@ -1,0 +1,5 @@
+# Second review F2 (p03), Addendum A4: a read-only opening holds even when it holds nothing
+# else (here only a nested namespace): C2's answer when Listed. With every file owned there
+# is no read-only opening: equal.
+added <using_directive acme (the part the rule moves)>
+removed <using_directive legacy>

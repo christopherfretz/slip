@@ -1,0 +1,3 @@
+# N3 (O1): D2 where the dependency's acme has inline namespace v1.
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

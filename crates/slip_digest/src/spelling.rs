@@ -40,7 +40,8 @@ use std::collections::{HashMap, HashSet};
 
 use slip_kiln::Unit;
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::source::{FileId, SourceManager, Span};
+use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::source::{FileId, Loc, SourceManager, Span};
 use slip_kiln::ranges;
 use slip_kiln::written::{self, Role};
 use slip_model::Digest;
@@ -171,6 +172,14 @@ struct Placed {
     /// For a name without a referent: resolution failed, rather than
     /// waiting for an instantiation.
     unresolved: bool,
+    /// Its role.
+    role: Role,
+    /// The start of its name.
+    name_lo: Loc,
+    /// For a reference: the offset, in the range's file, of the first
+    /// token of the whole written name (`WrittenRef::first`), when it is
+    /// in that file.
+    first: Option<u32>,
 }
 
 /// Whether a name of role `role` takes part (§10.2 rule 1): every role
@@ -204,23 +213,28 @@ fn takes_part(role: Role) -> bool {
 /// equal ones the references in the table's order, then the names
 /// without a referent in the table's order).
 fn placed_refs(unit: &Unit<'_>, input: &Input<'_>) -> Vec<Placed> {
+    type Name = (Span, Option<DeclId>, bool, Role, Option<Loc>);
     let sm = unit.sm();
-    let mut names: Vec<(Span, Option<DeclId>, bool)> = written::written_refs(unit)
+    let mut names: Vec<Name> = written::written_refs(unit)
         .into_iter()
         .filter(|r| takes_part(r.role))
-        .map(|r| (r.name, Some(r.referent), false))
+        .map(|r| (r.name, Some(r.referent), false, r.role, Some(r.first)))
         .collect();
     names.extend(
         written::dependent_names(unit)
             .into_iter()
             .filter(|d| takes_part(d.role))
-            .map(|d| (d.name, None, d.unresolved)),
+            .map(|d| (d.name, None, d.unresolved, d.role, None)),
     );
     names.sort_by(|a, b| ranges::unit_order(sm, a.0.lo, b.0.lo));
     let mut paths: HashMap<FileId, Vec<u8>> = HashMap::new();
     let mut out = Vec::new();
-    for (name, referent, unresolved) in names {
+    for (name, referent, unresolved, role, first) in names {
         let Some(fr) = ranges::file_range_of_span(sm, name) else { continue };
+        let first = first
+            .and_then(|f| ranges::file_range(unit, f, f))
+            .filter(|r| r.file == fr.file)
+            .map(|r| r.lo);
         if !text_is_bytes(sm, fr.file) {
             continue;
         }
@@ -228,7 +242,16 @@ fn placed_refs(unit: &Unit<'_>, input: &Input<'_>) -> Vec<Placed> {
         if path.is_empty() {
             continue;
         }
-        out.push(Placed { path: path.clone(), lo: fr.lo, hi: fr.hi, referent, unresolved });
+        out.push(Placed {
+            path: path.clone(),
+            lo: fr.lo,
+            hi: fr.hi,
+            referent,
+            unresolved,
+            role,
+            name_lo: name.lo,
+            first,
+        });
     }
     out
 }
@@ -294,6 +317,16 @@ impl Check<'_, '_> {
                 return Spelling::Fails { found: None, found_name: found_name.to_owned() };
             };
             let origin = written::origin(self.unit, referent);
+            if self.keys.ns_rules()
+                && self.input.ast.decls.get(origin).kind() == DeclKind::Namespace
+            {
+                // A5 (WP-141): a piece that names a namespace.
+                if let Err(found) = self.namespace(placed, p, origin, ob.key) {
+                    let found_name = self.name(found.as_ref(), origin);
+                    return Spelling::Fails { found, found_name };
+                }
+                continue;
+            }
             let found = self.key(origin);
             if found != Some(ob.key) {
                 let found_name = self.name(found.as_ref(), origin);
@@ -301,6 +334,196 @@ impl Check<'_, '_> {
             }
         }
         Spelling::Holds
+    }
+
+    /// A5 (WP-141, `spec/digest.md` §3.4): whether the piece `p`, whose
+    /// origin is namespace `ns`, has key `want`: at an R1 site (the
+    /// qualifier of an unresolved name, of a concept-id, the scope of a
+    /// using-declaration) the single key R1 writes there, never with
+    /// `Ref::views`; at a using-directive's or alias's target a whole
+    /// reading's key; at the qualifier of any other resolved name any view
+    /// key of `ns` (nothing is written there; the next piece decides).
+    /// `Err` with the key found (`None`: none, or not one) when not.
+    fn namespace(
+        &mut self,
+        placed: &[Placed],
+        p: &Placed,
+        ns: DeclId,
+        want: Digest,
+    ) -> Result<(), Option<Digest>> {
+        let ast = self.input.ast;
+        let single = |c: &mut Self, k: Option<Digest>| match k {
+            Some(k) if k == want && !c.walk().collides(&k) => Ok(()),
+            Some(k) => Err(Some(k)),
+            None => Err(None),
+        };
+        match p.role {
+            Role::UsingDirective | Role::NamespaceAlias => {
+                let Some(d) = self.referring_decl(p, ns) else { return Err(None) };
+                let k = self.keys.ns_whole_key(d);
+                single(self, k)
+            }
+            Role::Nns => {
+                // In the qualifier of a using-declaration (whose name
+                // Kiln does not record, §10.7): R1 with its shadows.
+                if let Some(u) = self.using_around(p) {
+                    let found: Vec<DeclId> = ast.using_shadows(u).collect();
+                    let k = self.keys.ns_found_key(ns, &found);
+                    return single(self, k);
+                }
+                // The name this piece qualifies: the nearest reference
+                // after it whose written name starts at or before it, or
+                // an unresolved name before that.
+                let next_ref = placed
+                    .iter()
+                    .filter(|x| x.referent.is_some() && x.path == p.path && x.lo >= p.hi)
+                    .filter(|x| x.first.is_some_and(|f| f <= p.lo))
+                    .min_by_key(|x| x.lo);
+                let next_dep = placed
+                    .iter()
+                    .filter(|x| x.referent.is_none() && x.role == Role::Expr)
+                    .filter(|x| x.path == p.path && x.lo >= p.hi)
+                    .min_by_key(|x| x.lo);
+                if let Some(dep) = next_dep
+                    && next_ref.is_none_or(|r| dep.lo < r.lo)
+                {
+                    let Some(found) = self.unresolved_found(dep.name_lo, ns) else {
+                        return Err(None);
+                    };
+                    let k = self.keys.ns_found_key(ns, &found);
+                    return single(self, k);
+                }
+                let Some(r) = next_ref else { return Err(None) };
+                let Some(referent) = r.referent else { return Err(None) };
+                match r.role {
+                    Role::Concept => {
+                        let k = self.keys.ns_found_key(ns, &[referent]);
+                        single(self, k)
+                    }
+                    Role::UsingDecl => {
+                        let Some(u) = self.using_of(r, referent) else { return Err(None) };
+                        let found: Vec<DeclId> = ast.using_shadows(u).collect();
+                        let k = self.keys.ns_found_key(ns, &found);
+                        single(self, k)
+                    }
+                    _ => {
+                        let keys = self.keys.ns_view_keys(ns);
+                        if keys.contains(&want) && !self.walk().collides(&want) {
+                            Ok(())
+                        } else {
+                            Err(keys.first().copied())
+                        }
+                    }
+                }
+            }
+            _ => {
+                let k = self.key(ns);
+                single(self, k)
+            }
+        }
+    }
+
+    /// The file offset of declaration `d`'s location, with its file.
+    fn decl_offset(&self, d: DeclId) -> Option<(FileId, u32)> {
+        let loc = self.input.ast.decls.get(d).loc();
+        let r = ranges::file_range(self.unit, loc, loc)?;
+        Some((r.file, r.lo))
+    }
+
+    /// The using-directive or namespace alias whose target piece is `p`:
+    /// the last one of the file at or before the piece that names `ns`.
+    fn referring_decl(&self, p: &Placed, ns: DeclId) -> Option<DeclId> {
+        let ast = self.input.ast;
+        let ns = self.keys.entity(ns);
+        let file = self.file_of_placed(p)?;
+        let mut best: Option<(u32, DeclId)> = None;
+        for d in ast.decls.ids() {
+            let k = ast.decls.get(d).kind();
+            if k != DeclKind::UsingDirective && k != DeclKind::NamespaceAlias {
+                continue;
+            }
+            let Some(t) = ast.using_target(d) else { continue };
+            if self.keys.entity(ast.resolve_alias(t)) != ns {
+                continue;
+            }
+            let Some((f, at)) = self.decl_offset(d) else { continue };
+            if f == file && at <= p.lo && best.is_none_or(|(b, _)| at > b) {
+                best = Some((at, d));
+            }
+        }
+        best.map(|(_, d)| d)
+    }
+
+    /// The using-declaration whose name is the reference `r` (to
+    /// `referent`): the last one of the file at or before it that has a
+    /// shadow of `referent`.
+    fn using_of(&self, r: &Placed, referent: DeclId) -> Option<DeclId> {
+        let ast = self.input.ast;
+        let file = self.file_of_placed(r)?;
+        let target = self.keys.entity(ast.strip_shadow(referent));
+        let mut best: Option<(u32, DeclId)> = None;
+        for d in ast.decls.ids() {
+            if ast.decls.get(d).kind() != DeclKind::Using {
+                continue;
+            }
+            if !ast.using_shadows(d).any(|s| self.keys.entity(ast.strip_shadow(s)) == target) {
+                continue;
+            }
+            let Some((f, at)) = self.decl_offset(d) else { continue };
+            if f == file && at <= r.lo && best.is_none_or(|(b, _)| at > b) {
+                best = Some((at, d));
+            }
+        }
+        best.map(|(_, d)| d)
+    }
+
+    /// The using-declaration whose written qualifier holds the piece `p`
+    /// (by its extent, `[qual, name.lo)`, in the piece's file).
+    fn using_around(&self, p: &Placed) -> Option<DeclId> {
+        let ast = self.input.ast;
+        let file = self.file_of_placed(p)?;
+        ast.decls.ids().find(|&d| {
+            ast.decls.get(d).kind() == DeclKind::Using
+                && ast.decl_extent(d).is_some_and(|x| {
+                    x.qual.is_valid()
+                        && ranges::file_range(self.unit, x.qual, x.name.lo)
+                            .is_some_and(|r| r.file == file && r.lo <= p.lo && p.hi <= r.hi)
+                })
+        })
+    }
+
+    /// The found set of the qualified unresolved name whose name starts
+    /// at `name_lo` and whose qualifier names namespace `ns`.
+    fn unresolved_found(&self, name_lo: Loc, ns: DeclId) -> Option<Vec<DeclId>> {
+        use slip_kiln::kiln::ast::ExprId;
+        use slip_kiln::kiln::ast::expr::ExprKind;
+        use slip_kiln::kiln::ast::types::Nns;
+        let ast = self.input.ast;
+        let ns = self.keys.entity(ns);
+        for i in 1..=ast.exprs.len() {
+            let e = ExprId::new(u32::try_from(i).ok()?);
+            let n = ast.exprs.get(e);
+            if n.kind() != ExprKind::UnresolvedLookupExpr || n.loc() != name_lo {
+                continue;
+            }
+            let Some(&q) = ast.templates.expr_nns.get(e) else { continue };
+            let level = match ast.types.nns_view(ast.types.canonical_nns(q)) {
+                Nns::Namespace { prefix: _, ns: x }
+                | Nns::NamespaceAlias { prefix: _, alias: _, ns: x } => {
+                    self.keys.entity(ast.resolve_alias(x))
+                }
+                _ => continue,
+            };
+            if level == ns {
+                return crate::ns_refs::found_list(ast, e);
+            }
+        }
+        None
+    }
+
+    /// The file of a placed name (by its name's start).
+    fn file_of_placed(&self, p: &Placed) -> Option<FileId> {
+        ranges::file_range(self.unit, p.name_lo, p.name_lo).map(|r| r.file)
     }
 
     /// The key of `origin` under the rules, or `None` when it has none or

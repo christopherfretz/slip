@@ -1,0 +1,4 @@
+# V2 (o2): C1 in a header use.h with an owned guard namespace legacy {}.
+# Pinned as it is before WP-141's build.
+added <using_directive acme>
+use 1 via 1 direct 0

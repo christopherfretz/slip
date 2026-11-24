@@ -1,0 +1,8 @@
+# WP-141 (keyed under it, lexical and semantic parents differ): an owned k() in an opening of the dependency's
+# inline acme::v1: keyed under v1 (owned view), which holds; acme holds through it (added legacy (the owned part of acme),
+# and of acme::v1: the units keyed legacy, legacy::v1). Untouched, and a difference: WP-144's case.
+changed u()
+added legacy (the owned part of acme)
+added legacy::v1 (the owned part of acme::v1)
+added acme::v1::k()
+removed acme::v1::k()

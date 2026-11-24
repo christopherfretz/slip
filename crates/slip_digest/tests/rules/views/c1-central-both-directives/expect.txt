@@ -1,0 +1,4 @@
+# C1 (O2, central): using namespace legacy; becomes using namespace acme; using namespace legacy;
+# Pinned as it is before WP-141's build.
+added <using_directive acme>
+use 1 via 1 direct 0

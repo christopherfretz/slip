@@ -1,0 +1,2 @@
+# WP-141 (keyed under it, lexical and semantic parents differ): an owned opening of the dependency's inline
+# acme::v1 that is empty: v1 holds nothing owned, so neither does acme: equal.

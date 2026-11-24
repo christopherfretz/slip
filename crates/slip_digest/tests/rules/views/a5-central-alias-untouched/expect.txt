@@ -1,0 +1,5 @@
+# WP-141 row A5, observer O2: the alias named both parts of legacy; left untouched, the
+# owned use respelled acme::g. Before WP-141: = (a wrong equal, T3).
+# WP-141 build A: chg (the alias names only the part the rule leaves).
+changed L
+use 1 via 1 direct 0

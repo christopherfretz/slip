@@ -1,0 +1,12 @@
+# A4 (O1): one owned header own.h entered through a read-only includer and directly.
+# g has a declaration in a read-only inclusion, so g is a dependency entity (keyed in the
+# dependency view, seen by trace), and acme's owned opening holds nothing owned: by WP-140's
+# F3 an opening alone gives no owned view, so no unit is written under legacy's key. It
+# does not verify either way (fails closed). Two owners: ownership by path or by
+# inclusion is WP-146's rule (WP-144 builds on it); the empty owned view is WP-140's
+# stated limit (views/empty-owned-opening).
+added acme::g(int)
+changed u()
+removed legacy
+removed legacy::g(int)
+use 1 via 0 direct 0

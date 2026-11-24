@@ -1,0 +1,8 @@
+# T4 (O2): C4 with the directive for legacy in another (owned) file, dirs.h.
+# WP-141 build A: a directive for acme in another file does not make the one for legacy
+# whole (the same enclosing namespace entity in the same file), so it names the part
+# the rule leaves.
+added <using_directive acme>
+added <using_directive legacy (the part the rule leaves)>
+removed <using_directive legacy>
+use 1 via 1 direct 0

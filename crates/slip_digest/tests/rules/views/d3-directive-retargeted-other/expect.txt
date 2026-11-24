@@ -1,0 +1,5 @@
+# D3 (O1): using namespace legacy; retargeted to other, which no rule explains.
+# Pinned as it is before WP-141's build.
+added <using_directive other>
+removed <using_directive legacy>
+use 1 via 1 direct 0
