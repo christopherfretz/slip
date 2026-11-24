@@ -1,0 +1,5 @@
+instances: 1 edited, 1 refused; a specialisation made only outside the run is not checked; the run cannot verify a name edited here until dependent names are compared mapped
+instance edited <src>/a.cc:2:9: call<(lambda)>: f (1 observer(s), first <src>/a.cc)
+instance edited <src>/a.cc:2:9: call<n::S<long>>: f (1 observer(s), first <src>/a.cc)
+instance refused <src>/h.h:1:5: call<n::S<int>>: f (1 observer(s), first <src>/a.cc)
+instance refused <src>/h.h:1:5: call<n::R>: another declaration (1 observer(s), first <src>/b.cc)

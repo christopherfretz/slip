@@ -7,7 +7,7 @@
 //! JSON forms and the invariants (§6.1) are in `formats`
 //! (`spec/landed/edits/WP-061.md`).
 
-use crate::edits::{Failure, KeyId, MacroSite, Piece, Place, Reason, Report, Subject};
+use crate::edits::{Failure, Instance, KeyId, MacroSite, Piece, Place, Reason, Report, Subject};
 use crate::hash::{BASIS_TAG, tagged_digest};
 use crate::keys::Rule;
 use crate::wire::Encoder;
@@ -92,6 +92,17 @@ pub struct Exempt {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Reported {
     pub report: Report,
+    pub observers: u64,
+    pub first: Vec<Digest>,
+}
+
+/// A joined instance (§4.5, §6): what one specialisation bound a dependent
+/// name to, over the observers that made it. Added by `docs/wp/WP-139.md`
+/// (items 3 and 5): its place is the range of an edit or of a refusal of a
+/// site of the set, in the set's `files`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Seen {
+    pub instance: Instance,
     pub observers: u64,
     pub first: Vec<Digest>,
 }
@@ -264,6 +275,9 @@ pub struct EditSet {
     pub unparsed: Vec<Digest>,
     /// §6.3; sorted by name.
     pub counters: Vec<Counter>,
+    /// Sorted by the instance, no two equal in it; each at the range of an
+    /// edit or of a refusal of a site. Since version 2 (WP-139).
+    pub instances: Vec<Seen>,
 }
 
 impl EditSet {

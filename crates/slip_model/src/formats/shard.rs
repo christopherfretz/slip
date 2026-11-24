@@ -129,11 +129,6 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     }
     // spec/model.md §8: the sections of M2, in the order of their ids.
     let (phase, status) = (s.phase, s.outcome.status);
-    if let Some(e) = &s.edits
-        && let Some((l, what)) = edits::violation(e, edits::Context { phase, status })
-    {
-        return Some((Loc::Edits(l), what));
-    }
     if s.binding.is_some()
         && let Some((l, what)) = agreement::binding_violation(phase, status)
     {
@@ -176,6 +171,12 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::Found(l), what));
     }
+    // `edits`, id 32 since WP-139: last.
+    if let Some(e) = &s.edits
+        && let Some((l, what)) = edits::violation(e, edits::Context { phase, status })
+    {
+        return Some((Loc::Edits(l), what));
+    }
     None
 }
 
@@ -212,14 +213,6 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         sections.push((INPUTS, inputs));
     }
     sections.push((COUNTERS, counters.as_bytes()));
-    let edits = s.edits.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        edits::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(edits) = &edits {
-        sections.push((EDITS, edits));
-    }
     let digests = s.digests.as_ref().map(|d| {
         let mut e = Encoder::new();
         digests::encode(&mut e, d);
@@ -284,6 +277,15 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(found) = &found {
         sections.push((FOUND, found));
     }
+    // Id 32 since WP-139 (17 retired), so after `found`.
+    let edits = s.edits.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        edits::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(edits) = &edits {
+        sections.push((EDITS, edits));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -304,8 +306,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, EDITS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
-            NEGATIVES, RULE_USE, FOUND,
+            HEADER, OUTCOME, INPUTS, COUNTERS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
+            NEGATIVES, RULE_USE, FOUND, EDITS,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -317,7 +319,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         outcome,
         inputs,
         counters,
-        edits,
         digests,
         verdict,
         binding,
@@ -326,6 +327,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         negatives,
         rule_use,
         found,
+        edits,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -502,7 +504,6 @@ const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
     SectionName { id: COUNTERS, name: "counters", required: true },
-    SectionName { id: EDITS, name: "edits", required: false },
     SectionName { id: DIGESTS, name: "digests", required: false },
     SectionName { id: VERDICT, name: "verdict", required: false },
     SectionName { id: BINDING, name: "binding", required: false },
@@ -511,6 +512,7 @@ const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: NEGATIVES, name: "negatives", required: false },
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: FOUND, name: "found", required: false },
+    SectionName { id: EDITS, name: "edits", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -542,9 +544,6 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
         .map(|c| object(vec![("name", Value::Str(c.name.clone())), ("value", json_uv(c.value))]))
         .collect();
     sections.push(("counters", Value::Array(counters)));
-    if let Some(x) = &s.edits {
-        sections.push(("edits", edits::render(x)));
-    }
     if let Some(d) = &s.digests {
         sections.push(("digests", digests::render(d)));
     }
@@ -569,6 +568,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.found {
         sections.push(("found", found::render(x)));
     }
+    if let Some(x) = &s.edits {
+        sections.push(("edits", edits::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -583,7 +585,6 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         Some(outcome),
         inputs,
         Some(counters),
-        edits,
         digests,
         verdict,
         binding,
@@ -592,6 +593,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         negatives,
         rule_use,
         found,
+        edits,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")

@@ -1,5 +1,5 @@
 //! The transform request `TRFM` (`spec/edits.md` §2.1, §3) and the `edits`
-//! section of a map shard (`spec/edits.md` §4, section 17 of
+//! section of a map shard (`spec/edits.md` §4, section 32 of
 //! `spec/model.md` §8), in binary and JSON form. Work package WP-060; the
 //! offsets, paths and JSON forms pinned here are
 //! `spec/landed/edits/WP-060.md`. Each test names the section it covers.
@@ -9,8 +9,9 @@ use std::path::Path;
 
 use slip_model::container::{TRAILER_LEN, Writer};
 use slip_model::edits::{
-    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place,
-    Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, subject_flags, tiers,
+    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Instance, Link, MacroSite, Piece,
+    Place, Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, subject_flags,
+    tiers,
 };
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::content_digest;
@@ -295,6 +296,21 @@ fn raw_edits(x: &Edits) -> Raw {
         r.mark(format!("{S}.renamed[{i}]"));
         r.rule(rule);
     }
+    r.mark(format!("{S}.instances"));
+    r.e.count(x.instances.len());
+    for (i, n) in x.instances.iter().enumerate() {
+        r.mark(format!("{S}.instances[{i}]"));
+        r.place(&n.place);
+        r.opt(n.spec.as_ref(), |r, k| {
+            r.e.digest(k);
+        });
+        r.e.str(&n.display);
+        r.mark(format!("{S}.instances[{i}].subjects"));
+        r.e.count(n.subjects.len());
+        for k in &n.subjects {
+            r.e.digest(k);
+        }
+    }
     r
 }
 
@@ -327,7 +343,7 @@ fn raw(s: &Shard) -> Vec<u8> {
     }
     w.section(4, e.as_bytes());
     if let Some(x) = &s.edits {
-        w.section(17, raw_edits(x).e.as_bytes());
+        w.section(32, raw_edits(x).e.as_bytes());
     }
     w.finish()
 }
@@ -335,7 +351,7 @@ fn raw(s: &Shard) -> Vec<u8> {
 /// The file offset of the field at `path` in `raw(s)`.
 fn at(s: &Shard, path: &str) -> usize {
     let bytes = raw(s);
-    let base = payload_at(&bytes, 17);
+    let base = payload_at(&bytes, 32);
     let r = raw_edits(s.edits.as_ref().unwrap());
     let (_, off) = r
         .marks
@@ -390,6 +406,7 @@ fn macro_site(name_start: u64, name: &[u8]) -> Option<MacroSite> {
 /// a refuse in a macro body, a refuse in a read-only file, an unresolved
 /// claim, a group, reports with and without a place, a `changed` entry and
 /// two rules.
+#[allow(clippy::too_many_lines, reason = "one record of each kind, written out")]
 fn sample() -> Edits {
     Edits {
         scheme: SCHEME,
@@ -489,6 +506,28 @@ fn sample() -> Edits {
             reason: b"renamed callee".to_vec(),
         }],
         renamed: vec![rule(Parent::Root, b"f", b"g"), rule(Parent::Unit(d(5)), b"h", b"i")],
+        // WP-139: two specialisations at a `replace`, one without a key,
+        // and one at a `keep` binding a declaration that is no subject.
+        instances: vec![
+            Instance {
+                place: place(0, 10, 11),
+                spec: None,
+                display: "call<(lambda)>".to_owned(),
+                subjects: vec![d(0x10)],
+            },
+            Instance {
+                place: place(0, 10, 11),
+                spec: Some(d(0x30)),
+                display: "call<n::S<int>>".to_owned(),
+                subjects: vec![d(0x10)],
+            },
+            Instance {
+                place: place(0, 30, 31),
+                spec: Some(d(0x31)),
+                display: "call<n::R>".to_owned(),
+                subjects: Vec::new(),
+            },
+        ],
     }
 }
 
@@ -518,6 +557,7 @@ fn failed_run() -> Edits {
         reports: Vec::new(),
         changed: Vec::new(),
         renamed: Vec::new(),
+        instances: Vec::new(),
     }
 }
 
@@ -615,7 +655,7 @@ fn small_bytes() -> Vec<u8> {
         "01 00",              // header: observer, map, round 0
         "02 04  00 00 00 00", // outcome: ok, 0, 0, ""
         "04 01  00",          // counters: []
-        "11 8b 01",           // edits, 139 bytes:
+        "20 8c 01",           // edits (32), 140 bytes:
         "01",                 //   scheme 1                       @64
         &rep("44", 32),       //   transform
         "00",                 //   no failure                     @97
@@ -640,7 +680,8 @@ fn small_bytes() -> Vec<u8> {
         "01",             //   reports: 1
         "00 00 01 6d 00", //  no place, note, "m", false   @196
         "00 00",          //   changed [], renamed []       @201
-        "00",             // end                            @203
+        "00",             //   instances []                 @203
+        "00",             // end                            @204
         SMALL_TRAILER,    // the BLAKE3 of the rest, written by reseal
     ]))
 }
@@ -650,7 +691,7 @@ fn small_bytes() -> Vec<u8> {
 #[test]
 fn edits_bytes_exact() {
     let bytes = small_bytes();
-    assert_eq!(bytes.len(), 236);
+    assert_eq!(bytes.len(), 237);
     assert_eq!(small().to_bytes(), bytes);
     assert_eq!(raw(&small()), bytes);
     assert_eq!(Shard::from_bytes(&bytes).unwrap(), small());
@@ -865,7 +906,8 @@ fn edits_json_members() {
             "groups",
             "reports",
             "changed",
-            "renamed"
+            "renamed",
+            "instances"
         ]
     );
     let c = &e.get("claims").unwrap().as_array().unwrap()[1];
@@ -967,7 +1009,7 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 11), // reason
+        (187, 0, 12), // reason
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -994,7 +1036,7 @@ fn edits_unlisted_values() {
             };
             w.section(id, &full[at..at + len]);
         }
-        w.section(17, p);
+        w.section(32, p);
         w.finish()
     };
     assert_eq!(with(&payload), small_bytes());
@@ -1012,11 +1054,11 @@ fn edits_unlisted_values() {
     let short = &payload[..payload.len() - 1];
     assert_eq!(error(Shard::from_bytes(&with(short))).0, ErrorKind::Truncated);
     payload.push(0);
-    assert_eq!(error(Shard::from_bytes(&with(&payload))), (ErrorKind::Malformed, 203));
+    assert_eq!(error(Shard::from_bytes(&with(&payload))), (ErrorKind::Malformed, 204));
     // A failure kind and a subject role out of their tables.
     let mut s = map_shard(failed_run());
     let bytes = s.to_bytes();
-    let base = payload_at(&bytes, 17);
+    let base = payload_at(&bytes, 32);
     assert_eq!(
         error(Shard::from_bytes(&patch(&bytes, base + 34, 0, 6))),
         (ErrorKind::Malformed, base + 34)
@@ -1029,8 +1071,10 @@ fn edits_unlisted_values() {
 
 // spec/edits.md §4.2: every value of `Reason` is written as its number
 // and read back, in binary and in JSON (by its name); the number after
-// the last, 11, is Malformed (`edits_unlisted_values`). `directive` (10)
-// was added by WP-068.
+// the last, 12, is Malformed (`edits_unlisted_values`). `directive` (10)
+// was added by WP-068, `instantiated` (11) by WP-139. (WP-139's fix round
+// added `no_holder` as 12 and its second review dropped it before any
+// release: 12 is unlisted again.)
 #[test]
 fn edits_reason_values() {
     let all = [
@@ -1044,6 +1088,7 @@ fn edits_reason_values() {
         (Reason::MixedSet, 8, "mixed_set"),
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
+        (Reason::Instantiated, 11, "instantiated"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");
@@ -1060,13 +1105,18 @@ fn edits_reason_values() {
     }
 }
 
-// spec/model.md §5 rule 2, §8: section 17 is known; a reader of this crate
-// reads it.
+// spec/model.md §5 rule 2, §8: section 32 is known; a reader of this crate
+// reads it. Section 17, the edits before `instances` (WP-139), is retired:
+// a critical id no reader knows.
 #[test]
 fn edits_section_is_known() {
     let bytes = small_bytes();
-    assert_eq!(payload_at(&bytes, 17), 64);
+    assert_eq!(payload_at(&bytes, 32), 64);
     assert!(Shard::from_bytes(&bytes).unwrap().edits.is_some());
+    let mut old = bytes.clone();
+    assert_eq!(old[61], 0x20);
+    old[61] = 0x11;
+    assert_eq!(error(Shard::from_bytes(&reseal(old))).0, ErrorKind::UnknownSection);
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1191,7 @@ fn edits_failure_lists() {
     failed(|x| x.reports = sample().reports[..1].to_vec(), "sections.edits.reports");
     failed(|x| x.changed = sample().changed, "sections.edits.changed");
     failed(|x| x.renamed = sample().renamed, "sections.edits.renamed");
+    failed(|x| x.instances = sample().instances[..1].to_vec(), "sections.edits.instances");
     // Two files and a claim: the files are reported.
     failed(
         |x| {
@@ -1529,6 +1580,24 @@ fn edits_changed() {
     );
 }
 
+// §4.7, the instances rows (WP-139): strictly ascending; a place within
+// its file and not empty; subjects strictly ascending.
+#[test]
+fn edits_instances() {
+    let what = broken(|x| x.instances.swap(0, 1), "sections.edits.instances[1]");
+    assert_eq!(what, "instances are not strictly ascending");
+    broken(|x| x.instances[1] = x.instances[0].clone(), "sections.edits.instances[1]");
+    for p in [place(0, 30, 30), place(0, 99, 101), place(3, 0, 1)] {
+        let what = broken(|x| x.instances[2].place = p, "sections.edits.instances[2]");
+        assert_eq!(what, "an instance's place is empty or not within its file");
+    }
+    let what = broken(
+        |x| x.instances[0].subjects = vec![d(0x10), d(0x10)],
+        "sections.edits.instances[0].subjects",
+    );
+    assert_eq!(what, "an instance's subjects are not strictly ascending");
+}
+
 // §4.7 row 18: renamed strictly ascending by the encoded (parent, kind,
 // name, disc); an invalid name is refused as a reader refuses it.
 #[test]
@@ -1775,6 +1844,9 @@ fn normalise_other_lists() {
     for c in &mut x.changed {
         remap(&mut c.place.file);
     }
+    for i in &mut x.instances {
+        remap(&mut i.place.file);
+    }
     x.claims.reverse();
     x.groups = vec![vec![5, 4]];
     x.subjects.reverse();
@@ -1786,6 +1858,9 @@ fn normalise_other_lists() {
     x.changed.push(x.changed[0].clone());
     x.renamed.reverse();
     x.renamed.push(x.renamed[0].clone());
+    x.instances.reverse();
+    x.instances.push(x.instances[0].clone());
+    x.instances[1].subjects = vec![d(0x10), d(0x10)];
     x.files.push(x.files[1].clone());
     assert_eq!(normalised(x), sample());
     // The refusal's subject follows its file.
@@ -1961,6 +2036,7 @@ fn rename_request() -> Transform {
             target: vec![b"n".to_vec(), b"f".to_vec()],
             kind: TargetKind::Function,
             new_name: b"g".to_vec(),
+            dependent: slip_model::transform::Dependent::Offer,
         }),
         script: None,
     }
@@ -2006,6 +2082,8 @@ fn raw_transform(t: &Transform) -> (Vec<u8>, Vec<(String, usize)>) {
         r.e.uv(n.kind as u64);
         r.mark(format!("{S}.rename.new_name"));
         r.e.bytes(&n.new_name);
+        r.mark(format!("{S}.rename.dependent"));
+        r.e.uv(n.dependent as u64);
     });
     r.mark(format!("{S}.script"));
     r.opt(t.script.as_ref(), |r, s| {
@@ -2015,7 +2093,7 @@ fn raw_transform(t: &Transform) -> (Vec<u8>, Vec<(String, usize)>) {
         }
         r.e.uv(s.steps).uv(s.bytes).uv(s.depth);
     });
-    let mut w = Writer::new(*b"TRFM", 1);
+    let mut w = Writer::new(*b"TRFM", 2);
     w.section(1, r.e.as_bytes());
     (w.finish(), r.marks)
 }
@@ -2024,8 +2102,8 @@ const RENAME_TRAILER: &str = "00000000000000000000000000000000000000000000000000
 
 fn rename_bytes() -> Vec<u8> {
     reseal(hex(&[
-        "53 4c 49 50 1a 0a 00 00  54 52 46 4d  01 00 00 00", // magic, TRFM, version 1
-        "01 18",                                             // transform, 24 bytes:
+        "53 4c 49 50 1a 0a 00 00  54 52 46 4d  02 00 00 00", // magic, TRFM, version 2
+        "01 19",                                             // transform, 25 bytes:
         "01",                                                //   rename                        @18
         "01  02 2f 73",                                      //   owned ["/s"]                  @19
         "01  06 2f 73 2f 67 65 6e",                          // readonly ["/s/gen"]         @23
@@ -2034,8 +2112,9 @@ fn rename_bytes() -> Vec<u8> {
         "02  01 6e  01 66",                                  //     target ["n", "f"]           @33
         "01",                                                //     function                    @38
         "01 67",                                             //     new_name "g"                @39
-        "00",                                                //   no script                     @41
-        "00",                                                // end                             @42
+        "00",                                                //     dependent offer             @41
+        "00",                                                //   no script                     @42
+        "00",                                                // end                             @43
         RENAME_TRAILER, // the BLAKE3 of the rest, written by reseal
     ]))
 }
@@ -2044,11 +2123,11 @@ fn rename_bytes() -> Vec<u8> {
 #[test]
 fn transform_bytes_exact() {
     let bytes = rename_bytes();
-    assert_eq!(bytes.len(), 75);
+    assert_eq!(bytes.len(), 76);
     assert_eq!(rename_request().to_bytes(), bytes);
     assert_eq!(raw_transform(&rename_request()).0, bytes);
     assert_eq!(Transform::from_bytes(&bytes).unwrap(), rename_request());
-    assert_eq!(content_id(&bytes).unwrap().as_bytes()[..], bytes[43..]);
+    assert_eq!(content_id(&bytes).unwrap().as_bytes()[..], bytes[44..]);
 }
 
 // spec/edits.md §3, spec/model.md §10: round trips of both kinds, goldens.
@@ -2224,13 +2303,16 @@ fn transform_rename_names() {
     // Every component is checked, the first bad one reported.
     refused(&with(&[b"a", b"1", b"int"], b"g"), "sections.transform.rename.target[1]");
 }
-
+// spec/model.md §1 rule 6, §2, §5.4: the request's enumerations (`dependent`: 3 is
+// unlisted, 2 is `leave`), its bool
 // spec/model.md §1 rule 6, §2, §5.4: the request's enumerations, its bool
 // and opt tags; the section is required; unknown sections.
 #[test]
 fn transform_structural() {
     let bytes = rename_bytes();
-    for (at, from, to) in [(18, 1, 3), (18, 1, 0), (31, 1, 2), (32, 1, 2), (38, 1, 3), (41, 0, 2)] {
+    for (at, from, to) in
+        [(18, 1, 3), (18, 1, 0), (31, 1, 2), (32, 1, 2), (38, 1, 3), (41, 0, 3), (42, 0, 2)]
+    {
         assert_eq!(
             error(Transform::from_bytes(&patch(&bytes, at, from, to))),
             (ErrorKind::Malformed, at),
@@ -2238,16 +2320,16 @@ fn transform_structural() {
         );
     }
     // No section: Malformed at the end byte.
-    let w = Writer::new(*b"TRFM", 1).finish();
+    let w = Writer::new(*b"TRFM", 2).finish();
     assert_eq!(error(Transform::from_bytes(&w)), (ErrorKind::Malformed, 16));
     // Another critical section; an ignorable one is skipped.
     let (_, _) = raw_transform(&rename_request());
-    let payload = &bytes[18..42];
-    let mut w = Writer::new(*b"TRFM", 1);
+    let payload = &bytes[18..43];
+    let mut w = Writer::new(*b"TRFM", 2);
     w.section(1, payload);
     w.section(2, &[]);
     assert_eq!(error(Transform::from_bytes(&w.finish())).0, ErrorKind::UnknownSection);
-    let mut w = Writer::new(*b"TRFM", 1);
+    let mut w = Writer::new(*b"TRFM", 2);
     w.section(1, payload);
     w.section(64, b"x");
     let with_extra = w.finish();
@@ -2277,6 +2359,33 @@ fn transform_structural() {
     let mut v = rename_request().to_json();
     set(&mut v, &["kind"], parse("\"DECL\""));
     assert_eq!(Transform::from_json(&v).unwrap_err().path, "kind");
+    let mut v = rename_request().to_json();
+    set(&mut v, &["sections", "transform", "rename", "dependent"], parse("\"sometimes\""));
+    assert_eq!(Transform::from_json(&v).unwrap_err().path, "sections.transform.rename.dependent");
+}
+
+// spec/edits.md §3 (WP-139): `TRFM` is at version 2, which has the
+// rename's `dependent`; version 1 is refused, from bytes
+// (`UnsupportedVersion` at the version field) and from JSON (at
+// `version`); version 3 is newer than supported. `refuse` round-trips.
+#[test]
+fn transform_version_1_is_refused() {
+    let bytes = rename_bytes();
+    let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
+    for v in [1u32, 3] {
+        let mut w = Writer::new(*b"TRFM", v);
+        w.section(1, payload);
+        assert_eq!(error(Transform::from_bytes(&w.finish())), (ErrorKind::UnsupportedVersion, 12));
+    }
+    let mut j = rename_request().to_json();
+    set(&mut j, &["version"], Value::Int(1));
+    assert_eq!(Transform::from_json(&j).unwrap_err().path, "version");
+    let mut t = rename_request();
+    t.rename.as_mut().unwrap().dependent = slip_model::transform::Dependent::Refuse;
+    assert_eq!(Transform::from_bytes(&t.to_bytes()).unwrap(), t);
+    assert_eq!(Transform::from_json(&t.to_json()).unwrap(), t);
+    assert!(dump(&t.to_bytes()).unwrap().contains("\"dependent\": \"refuse\""));
+    assert_eq!(patch(&bytes, 41, 0, 1), t.to_bytes());
 }
 
 // spec/edits.md §10.5: the names the output prints are the JSON names

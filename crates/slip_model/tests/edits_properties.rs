@@ -56,6 +56,7 @@ fn empty() -> Edits {
         reports: Vec::new(),
         changed: Vec::new(),
         renamed: Vec::new(),
+        instances: Vec::new(),
     }
 }
 
@@ -413,7 +414,13 @@ fn payloads(bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
 }
 
 fn build(kind: [u8; 4], sections: &[(u64, Vec<u8>)]) -> Vec<u8> {
-    let mut w = Writer::new(kind, if kind == *b"SHRD" { Shard::VERSION } else { 1 });
+    // `TRFM` is at version 2 since WP-139.
+    let version = match &kind {
+        b"SHRD" => Shard::VERSION,
+        b"TRFM" => Transform::VERSION,
+        _ => 1,
+    };
+    let mut w = Writer::new(kind, version);
     for (id, p) in sections {
         w.section(*id, p);
     }
@@ -502,7 +509,7 @@ fn corrupted_edits_sections() {
     });
     for x in bases {
         let base = map_shard(x).to_bytes();
-        for v in variants(*b"SHRD", &base, 17) {
+        for v in variants(*b"SHRD", &base, 32) {
             shard_survives(&v);
         }
     }
@@ -519,6 +526,7 @@ fn corrupted_transform_requests() {
             target: vec![b"n".to_vec(), b"f".to_vec()],
             kind: TargetKind::Function,
             new_name: b"g".to_vec(),
+            dependent: slip_model::transform::Dependent::Offer,
         }),
         script: None,
     };

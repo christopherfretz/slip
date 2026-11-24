@@ -2,3 +2,4 @@ spec: edits.md §9.4 row 1 and its first caveat (the set at the definition is al
 from: n::f
 to: g
 kind: function
+dependent: offer

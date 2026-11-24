@@ -196,18 +196,6 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
         s4.str(&c.name).uv(c.value);
     }
     out.push((4, s4.into_bytes()));
-    if let Some(x) = &s.edits {
-        // Only an empty section: `tests/edits.rs` encodes the rest.
-        assert!(x.failure.is_none() && x.files.is_empty() && x.claims.is_empty());
-        assert!(x.subjects.is_empty() && x.links.is_empty() && x.groups.is_empty());
-        assert!(x.reports.is_empty() && x.changed.is_empty() && x.renamed.is_empty());
-        let mut e = Encoder::new();
-        e.uv(x.scheme).digest(&x.transform).u8(0);
-        for _ in 0..8 {
-            e.count(0);
-        }
-        out.push((17, e.into_bytes()));
-    }
     if let Some(ds) = &s.digests {
         let mut e = Encoder::new();
         e.uv(ds.scheme).digest(&ds.tu).count(ds.groups.len());
@@ -244,6 +232,20 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     }
     if let Some(r) = &s.rule_use {
         out.push((29, raw_rule_use(r).0));
+    }
+    if let Some(x) = &s.edits {
+        // Only an empty section: `tests/edits.rs` encodes the rest. Section
+        // 32 since WP-139 (17 before `instances`).
+        assert!(x.failure.is_none() && x.files.is_empty() && x.claims.is_empty());
+        assert!(x.subjects.is_empty() && x.links.is_empty() && x.groups.is_empty());
+        assert!(x.reports.is_empty() && x.changed.is_empty() && x.renamed.is_empty());
+        assert!(x.instances.is_empty());
+        let mut e = Encoder::new();
+        e.uv(x.scheme).digest(&x.transform).u8(0);
+        for _ in 0..9 {
+            e.count(0);
+        }
+        out.push((32, e.into_bytes()));
     }
     out
 }
@@ -1547,12 +1549,13 @@ fn json_members() {
     assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.digests");
 }
 
-// spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 17, 24,
+// spec/model.md §5 rule 2, §8: sections 19 and 21 are known (and 32, 24,
 // 26 and 29: `tests/edits.rs`, `known_sections_of_m2`); 16, 18 and 20 stay
-// reserved, and 25 (`rule_use` before WP-111) is retired: UnknownSection.
+// reserved, and 25 (`rule_use` before WP-111) and 17 (`edits` before
+// WP-139) are retired: UnknownSection.
 #[test]
 fn reserved_ids_still_unknown() {
-    for id in [16u64, 18, 20, 25] {
+    for id in [16u64, 17, 18, 20, 25] {
         let mut sections = raw_sections(&map_shard());
         sections.push((id, Vec::new()));
         sections.sort_by_key(|s| s.0);
@@ -1700,7 +1703,7 @@ fn m2_sections_round_trip() {
     }
 }
 
-// spec/model.md §5 rule 2, §8: 17, 24, 26 and 29 are known sections; their
+// spec/model.md §5 rule 2, §8: 32, 24, 26 and 29 are known sections; their
 // opt tags are Malformed at their first byte.
 #[test]
 fn known_sections_of_m2() {
@@ -1726,6 +1729,7 @@ fn known_sections_of_m2() {
         reports: Vec::new(),
         changed: Vec::new(),
         renamed: Vec::new(),
+        instances: Vec::new(),
     });
     round_trip(&s);
 }

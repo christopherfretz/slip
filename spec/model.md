@@ -556,10 +556,10 @@ the same bytes.
 | 3 | inputs | no | `list<FileRef>` sorted by `path`: every file the front end read, the main file included |
 | 4 | counters | yes | `list<Counter>` sorted by `name` |
 | 16 | coverage | — | reserved (M4, with the preprocessing record) |
-| 17 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, or its failure); phase `map` |
+| 17 | — | — | retired (WP-139): `edits` before `instances`; no writer writes it |
 | 18 | facts | — | reserved (M3) |
 | 19 | digests | no | `Digests` (`digest.md` §11; §8.2) |
-| 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (17) |
+| 20 | reports | — | reserved and not planned: a transform's reports are part of `edits` (32) |
 | 21 | verdict | no | `Verdict` (`verify.md` §6; §8.3) |
 | 24 | binding | no | `Binding` (`verify.md` §9.1): the declared changes, the overlay and the pre round a verify shard was made with; phase `verify` |
 | 25 | — | — | retired (WP-111): `rule_use` before `kept_via` and `kept`; no writer writes it |
@@ -568,6 +568,7 @@ the same bytes.
 | 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
 | 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
 | 31 | found | no | `Found` (§8.8): each place where the map parse found a file, with the input it led to, and the classes of `inputs` that were one file; phase `map` |
+| 32 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, instances, or its failure); phase `map` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -596,10 +597,10 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 18, 20) or a retired one (25) is a critical id no
+A reserved id (16, 18, 20) or a retired one (17, 25) is a critical id no
 reader knows: a file with one is `UnknownSection`. Ids 22, 23 and 30 are
 not assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work
-package WP-117, 29 by WP-111 and 31 by WP-135, without a change of the
+package WP-117, 29 by WP-111, 31 by WP-135 and 32 by WP-139, without a change of the
 shard's version: a reader that predates one refuses a shard that has it
 (the ids are critical), and a shard without them reads as before (a map
 shard without `negatives` is then refused by the verify task's guard N1,
@@ -607,7 +608,8 @@ one without `found` by its guard N2, `verify.md` §5.3: it is made again
 by `slip parse`). A
 section whose payload changes takes a new id and the old one is retired,
 so that a reader never meets a payload it does not know under an id it
-knows (WP-111: 25 to 29). An `edits` section
+knows (WP-111: 25 to 29; WP-139: 17 to 32, when `Edits` gained
+`instances`, `edits.md` §4.5). An `edits` section
 in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
 section in a shard of phase `map`, is `Malformed` at the first byte of
 the section's payload, JSON path `sections.<name>`. So are `edits`,
@@ -616,7 +618,8 @@ the section's payload, JSON path `sections.<name>`. So are `edits`,
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
-`negatives`'s own are §8.6's, then `found`'s, §8.8's, last.
+`negatives`'s own are §8.6's, then `found`'s, §8.8's, then `edits`'s
+(32), last.
 
 Section 27 (`names`, WP-112) changed the version to 2 (above): every
 shard a reader of version 2 reads, of either phase, is one that could

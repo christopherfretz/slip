@@ -1,6 +1,6 @@
 {
   "kind": "TRFM",
-  "version": 1,
+  "version": 2,
   "sections": {
     "transform": {
       "kind": "rename",
@@ -19,7 +19,8 @@
           "f"
         ],
         "kind": "function",
-        "new_name": "g"
+        "new_name": "g",
+        "dependent": "offer"
       },
       "script": null
     }

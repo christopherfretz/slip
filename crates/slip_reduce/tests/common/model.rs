@@ -993,5 +993,6 @@ pub fn reduce(
         failures: failed,
         unparsed,
         counters: counters.into_iter().map(|(name, value)| Counter { name, value }).collect(),
+        instances: Vec::new(),
     }
 }

@@ -114,6 +114,70 @@ pub struct DependentName {
     pub unresolved: bool,
 }
 
+/// How lookup found a name: Kiln's `RefLookup` (Kiln `spec/ast.md`
+/// §18.7.2).
+pub use crate::kiln::ast::written_refs::RefLookup as Lookup;
+
+/// What one instantiation made a dependent name denote: a row of Kiln's
+/// per-specialisation table (stage 4, Kiln WP-1933, `spec/ast.md` §18.9;
+/// in the pin since WP-066), as `docs/wp/WP-139.md` item 9 reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Instance {
+    /// The specialisation whose instantiation resolved the name (Kiln
+    /// §18.9.2): a function template's specialisation, a member of a class
+    /// template's specialisation, a variable template's specialisation; for
+    /// an alias template, a default template argument or a constraint, the
+    /// template or the constrained declaration.
+    pub spec: DeclId,
+    /// What the name denotes there (§18.2's `entity`: the underlying
+    /// declaration through a using-shadow, a specialisation for a
+    /// template). `None`: the name stayed unresolved in that instantiation
+    /// (Kiln §18.9.3).
+    pub entity: Option<DeclId>,
+    /// What lookup found, when it differs from `entity` (the template of a
+    /// specialisation, a using-shadow).
+    pub found: Option<DeclId>,
+    /// How the instantiation's lookup found it.
+    pub how: Lookup,
+}
+
+/// For the span of every dependent name ([`dependent_names`]), the rows of
+/// Kiln's per-specialisation table of every main-table entry with that
+/// span (whatever its role), each once, sorted by `(spec, entity, found,
+/// how)` so that the order of instantiation does not show (Kiln §18.9.1,
+/// "Order independence"). A span absent from the map has no row: no
+/// instantiation this unit made resolved it, or the table has no row for
+/// its shape. Empty when the unit was parsed without `written`.
+pub fn instances(unit: &Unit<'_>) -> std::collections::HashMap<Span, Vec<Instance>> {
+    instances_of(&unit.ast().written_refs)
+}
+
+fn instances_of(table: &WrittenRefs) -> std::collections::HashMap<Span, Vec<Instance>> {
+    let mut out: std::collections::HashMap<Span, Vec<Instance>> = std::collections::HashMap::new();
+    for (_, r) in table.specs() {
+        let e = table.get(r.entry);
+        if e.entity.is_some() {
+            // A row's entry is a dependent one (Kiln §18.9.1); an entry
+            // that has an entity is a written reference, not read here.
+            continue;
+        }
+        out.entry(e.range).or_default().push(Instance {
+            spec: r.spec,
+            entity: r.entity,
+            found: r.found,
+            how: r.how,
+        });
+    }
+    let key = |i: &Instance| {
+        (i.spec.index(), i.entity.map(DeclId::index), i.found.map(DeclId::index), i.how as u8)
+    };
+    for v in out.values_mut() {
+        v.sort_by_key(key);
+        v.dedup();
+    }
+    out
+}
+
 /// What kind of declaration a name declares, as far as a rename must tell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeclNameKind {
