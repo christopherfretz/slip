@@ -1,0 +1,5 @@
+# key/rule-on-instantiated-member
+indeterminate W<int>::(anonymous enum for E)
+indeterminate W<int>::(anonymous enum for E)::<definition>
+indeterminate W<int>::E
+indeterminate f()

@@ -1,0 +1,4 @@
+# key/rule-on-instantiated-member
+indeterminate W<int>::operator==(const W<int> &) const
+indeterminate W<int>::operator==(const W<int> &) const::<definition>
+indeterminate f(W<int>, W<int>)

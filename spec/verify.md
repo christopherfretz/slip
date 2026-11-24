@@ -1825,7 +1825,11 @@ whose chain begins with the declaration Kiln instantiated from the
 template in `pick.h` has its place in `pick_int.h`. When no declaration
 of the chain is written (a derived unit, an implicit member), the place
 is that of the first declaration of the chain that has a location, which
-for an instantiation is where its pattern is (the row for step 4 above).
+for an implicit instantiation is where its pattern is (the row for step 4
+above), and for a class template's explicit instantiation that is the
+first to name the specialisation is the directive, where the front end
+makes the declaration (`crates/slip_digest/tests/trace.rs`,
+`s6_1_place_of_an_explicit_instantiation`).
 This is not the finding's `file` (§6): that is the unit's group, the file
 of the entity's first declaration including one Kiln made
 (`digest.md` §11), and the two differ for such a specialisation
