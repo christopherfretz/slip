@@ -1,0 +1,2 @@
+# WP-146 stage 1. S10 under a rule on the function itself: the dependency's observer (old::pad, so that the rule's old resolves here).
+fixed M fresh::g(int)

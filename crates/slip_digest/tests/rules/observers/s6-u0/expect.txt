@@ -1,0 +1,2 @@
+# WP-146 stage 1. S6, an inline function of an owned header: the observer of the dependency's d.h alone.
+fixed T old::twice(int)

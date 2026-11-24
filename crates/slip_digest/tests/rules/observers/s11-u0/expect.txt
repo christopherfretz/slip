@@ -1,0 +1,3 @@
+# WP-146 stage 1. S11, the hook kept: the dependency's observer, which moves f0.
+made fresh::f0()
+fixed T old::hook(int)

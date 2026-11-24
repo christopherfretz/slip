@@ -1,0 +1,2 @@
+# WP-146 stage 1. S10 under a rule on the function itself: the owned definer.
+made fresh::g(int)

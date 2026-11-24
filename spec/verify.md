@@ -344,9 +344,15 @@ includes both, nothing shows it (§8).
 
 Three holes remain where ownership reads as owned what the dependency's
 binary fixes. Each verifies wrongly today; each is pinned by a pending
-case beside the case it is the pair of, and the planned answer for all
-three is the run-level check of WP-116: an entity a rule renames is
-defined in an owned file by some observer.
+case beside the case it is the pair of. Only the second has a planned
+answer, the run-level check of WP-116 (an entity a rule renames is
+defined in an owned file by some observer). That check does not close
+the first or the third: there owned code defines the entity (`Both`,
+`UserData`), and where no observer shows the dependency's reading
+nothing does (`spec/landed/verify/WP-146.md` §0.2, §3.6; WP-146's
+fold across observers needs one observer that shows it). The first has
+no planned answer ("Open questions", "A dependency's header no observer
+includes"); the third waits for Kiln's WP-2111 (below).
 
 - **Two observers.** As above: the owned declaration and the
   dependency's are never in one translation unit
@@ -2330,7 +2336,7 @@ empty message.
   skipped by its guard, which is owned there although the dependency was
   compiled against it (a moved exception type is no longer caught, a
   function taking a moved type no longer links). WP-116's run-level
-  check is to close all three.
+  check is to close the second only (§2.1).
 - **What a generated includer hides** (the safe direction). A read-only
   file the build generates that includes owned code (a precompiled
   header, a unity-build main file) makes that code read-only for the
@@ -3363,6 +3369,19 @@ is pending, until Kiln records a range for it
   and `hook-user-with-dependency`. Whether the run should compare
   ownership across observers (a count per key is too much; a count per
   rule of entities reached both ways is not exact) is WP-146's.
+- **A dependency's header no observer includes** (§2.1, the first of
+  the three holes; §8; WP-146 ruling 6). Where owned code defines an
+  entity that a dependency's header also declares, and no observer of
+  the run includes that header (`tests/rules/owned/observer-includes-owned-only`;
+  `crates/slip_cli/tests/ownership_observers.rs`
+  `s15_no_observer_includes_the_header_today`), no observer shows the
+  dependency's reading: the entity is owned everywhere, moves, and the
+  run is `verified` although the dependency's binary keeps the old name.
+  Neither WP-116's check (owned code defines the entity) nor WP-146's
+  fold (it needs one observer that reads the entity as a dependency's)
+  closes it. The one remedy known: such headers parsed as observers of
+  their own, named by the user (a header list, each parsed alone under
+  the run's command). No package yet.
 - **An empty namespace moved into one a dependency opens** (WP-140
   review F3). A pre-image `namespace legacy {}` that holds nothing, moved
   to `namespace acme {}` that a dependency opens, holds nothing in the
