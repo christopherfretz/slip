@@ -1042,3 +1042,100 @@ fn s10_2_check_of_a_refused_set_with_declared() {
     let records = transform_runs(&t, "store", &plan);
     assert_eq!(steps(records.last().unwrap()), [Conclude]);
 }
+
+/// Reads the fifo at `path` until its writer has written and closed it,
+/// within `bound`; what was read.
+fn drain_fifo(path: &Path, bound: Duration) -> Vec<u8> {
+    use std::io::ErrorKind;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    const O_NONBLOCK: i32 = 0o4000;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let deadline = Instant::now() + bound;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        assert!(Instant::now() < deadline, "the fifo was not written and closed");
+        match f.read(&mut buf) {
+            Ok(0) if !got.is_empty() => return got,
+            Ok(0) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
+    }
+}
+
+// WP-076 fix round, B1 (§8.4, §8.5; exec.md §7): `rename --write`
+// interrupted between its verify phase and its scan. The report's
+// temporary file is a fifo, so the command is held after the verify
+// phase, with every verdict in, until the test reads it; the signal
+// arrives meanwhile. The scan does not run, and a scan that did not run
+// concludes `incomplete`, never `verified`: nothing is written, and the
+// result cannot be applied. The signal path waits for the result to be
+// published (`PUBLISH_WAIT`): at 0 there is no result and this fails.
+#[test]
+fn s10_6_rename_interrupted_after_its_verify_phase() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let t = Tree::three_files("sigint-scan");
+    let plan = t.plan("store");
+    let before = t.snapshot();
+    let mut cmd = Command::new(SLIP);
+    cmd.args([
+        "rename", "--plan", &plan, "--from", "f", "--to", "renamed", "--owned", "src", "--store",
+        "store", "-j", "2", "--report", "rep.json", "--write",
+    ])
+    .current_dir(&t.root)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let pid = child.id();
+    // The map phase alone takes far longer than this: the fifo is there
+    // before the report is written (the read below proves it).
+    let tmp = format!(".rep.json.{pid}.tmp");
+    mkfifo(&t, &tmp);
+    let stdout = reader(child.stdout.take().unwrap());
+    let stderr = reader(child.stderr.take().unwrap());
+    let runs = t.path("store").join("runs").join(&plan);
+    let deadline = Instant::now() + Duration::from_mins(1);
+    let verified = || {
+        std::fs::read_dir(&runs).is_ok_and(|d| {
+            d.flatten().any(|e| e.file_name().to_str().unwrap().starts_with("verify.1."))
+        })
+    };
+    while !verified() {
+        assert!(Instant::now() < deadline, "no verify phase record");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = Command::new("kill").args(["-INT", &pid.to_string()]).status().unwrap();
+    assert!(sent.success());
+    // Well inside the signal path's wait for the result.
+    std::thread::sleep(Duration::from_secs(1));
+    let report = drain_fifo(&t.path(&tmp), Duration::from_secs(10));
+    assert!(!report.is_empty());
+    let status = wait_bounded(&mut child, Duration::from_mins(1));
+    let out = Out { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() };
+    assert_eq!(out.status.signal(), Some(2), "{out:?}");
+    let records = transform_runs(&t, "store", &plan);
+    assert_eq!(records.len(), 1, "{out:?}");
+    let r = &records[0];
+    assert_eq!(steps(r), [Map, Reduce, Apply, Verify, Conclude], "{r:?}");
+    let id = r.result.expect("a result");
+    let bytes = std::fs::read(t.path("store").join("results").join(format!("{id}.rslt"))).unwrap();
+    let result = TransformResult::from_bytes(&bytes).unwrap();
+    assert_eq!(result.state, State::Incomplete);
+    assert_eq!(result.verdict, None);
+    assert!(result.residue.is_empty());
+    assert_eq!(t.snapshot(), before, "nothing written");
+    assert!(!t.path("store").join("lock").exists());
+    let apply = t.slip(&["apply", "--result", &id.to_string(), "--store", "store", "--write"]);
+    assert_eq!(apply.code(), Some(1), "{apply:?}");
+    assert_eq!(t.snapshot().get("src/h.h"), before.get("src/h.h"));
+}

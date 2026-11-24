@@ -18,17 +18,10 @@ use super::lines::edit_set_summary;
 use super::map::{MapInput, map, request_of, start};
 use super::reduce::reduce_round;
 use super::report::{Details, details};
-use super::run_record::{Clock, Record, install_signals, interrupted};
+use super::run_record::{Clock, Record, begin_write, install_signals, interrupted};
 use super::{CommandError, failure};
 use crate::args::{ApplyAction, RenameArgs};
 use crate::commands::{self, Failure, open_store};
-
-/// Whether the command may write what was asked: never after an
-/// interruption (`spec/exec.md` §7; WP-076 "Cancellation"), whatever the
-/// result permits.
-pub fn may_write(asked: bool, interrupted: bool) -> bool {
-    asked && !interrupted
-}
 
 /// `slip rename` (§10.1, §10.5).
 #[allow(
@@ -141,7 +134,7 @@ pub(crate) fn main(
         };
         let checked = check(&input, &mut record, out, err)?;
         let applied = match &a.output {
-            Some(action) if may_write(true, interrupted()) => {
+            Some(action) if begin_write() => {
                 let clock = Clock::start(StepName::Write);
                 let allow = Allow {
                     residue: a.options.allow_residue,
@@ -211,19 +204,4 @@ pub(crate) fn main(
     );
     // The plan's exclusions are its lines' (`plan`), not the result's.
     Ok(status_of(checked.result.state, wrote))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // WP-076 "Cancellation": nothing is written after an interruption,
-    // whatever was asked.
-    #[test]
-    fn an_interrupted_run_writes_nothing() {
-        assert!(may_write(true, false));
-        assert!(!may_write(true, true));
-        assert!(!may_write(false, false));
-        assert!(!may_write(false, true));
-    }
 }

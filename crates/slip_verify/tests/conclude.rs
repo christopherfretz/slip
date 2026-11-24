@@ -31,7 +31,7 @@ use slip_model::keys::KeyKind;
 use slip_model::result::{Category, Residue, RunVerdict, Stale, State, Tally};
 use slip_model::verdict::VerdictKind;
 use slip_model::{FileRef, Status};
-use slip_verify::conclude::{Allow, Concluded, Facts, conclude, permits, state, tally};
+use slip_verify::conclude::{Allow, Concluded, Facts, Scan, conclude, permits, state, tally};
 use slip_verify::guards::overlay_inputs;
 use slip_verify::run::Report;
 
@@ -161,7 +161,7 @@ fn facts(b: &Built, allow_unparsed: bool) -> Facts<'_> {
         selected: b.selected,
         report: b.report.as_ref(),
         allow_unparsed,
-        residue: &b.residue,
+        scan: Scan::Done(&b.residue),
     }
 }
 
@@ -325,11 +325,46 @@ fn s8_5_report_of_another_run_is_none() {
     assert_eq!(conclude(&f, None).state, State::Incomplete);
 }
 
+// spec/edits.md §8.4, §8.5 (WP-076 fix round, B1): whether the scan ran
+// is a value. A whole report that verifies, with a scan that did not run,
+// concludes `incomplete` with no verdict, as a run cut short: never
+// `verified` from "no residue found" read out of "not scanned". A scan
+// that ran and found nothing, or a request with no scan, is `verified`.
+#[test]
+fn s8_4_a_scan_that_did_not_run_is_incomplete() {
+    let b = build(&Row {
+        set: SetFacts::default(),
+        allow_unparsed: false,
+        residue: Res::None,
+        verdict: V,
+    });
+    let f = facts(&b, false);
+    for (scan, want) in [
+        (Scan::Done(&[]), State::Verified),
+        (Scan::NotApplicable, State::Verified),
+        (Scan::NotRun, State::Incomplete),
+    ] {
+        let f = Facts { scan, ..f };
+        assert_eq!(state(&f), want, "{scan:?}");
+        let c = conclude(&f, b.overlay.as_ref());
+        assert_eq!(c.state, want, "{scan:?}");
+        let r = result_of(&c, &b.set, false, false, scan.residue());
+        assert_eq!(r.validate(), Ok(()), "{scan:?}");
+        assert_eq!(permits(&r, &b.set, ALL_ALLOWED), want == State::Verified, "{scan:?}");
+        if scan == Scan::NotRun {
+            assert_eq!((c.verdict, c.tally.verified), (None, 0));
+        }
+    }
+    // Under every allowance and with `--allow-unparsed`, still nothing.
+    let f = Facts { scan: Scan::NotRun, allow_unparsed: true, ..f };
+    assert_eq!(state(&f), State::Incomplete);
+}
+
 /// conclude over `report` for `set` (two observers, nothing unparsed)
 /// with `overlay`: the state alone, conclude's state, and whether the
 /// result permits anything.
 fn verifies(set: &EditSet, report: &Report, overlay: Option<&Overlay>) -> (State, State, bool) {
-    let f = Facts { set, selected: 2, report: Some(report), allow_unparsed: false, residue: &[] };
+    let f = Facts { set, selected: 2, report: Some(report), allow_unparsed: false, scan: Scan::Done(&[]) };
     let c = conclude(&f, overlay);
     let r = result_of(&c, set, false, false, &[]);
     assert_eq!(r.validate(), Ok(()));
@@ -487,7 +522,7 @@ fn s7_3_report_independent_of_call_order() {
         }
         let json = slip_model::json::write_compact(&r.to_json()).unwrap();
         let f =
-            Facts { set: &s, selected: 4, report: Some(&r), allow_unparsed: false, residue: &[] };
+            Facts { set: &s, selected: 4, report: Some(&r), allow_unparsed: false, scan: Scan::Done(&[]) };
         let c = conclude(&f, Some(&o));
         assert_eq!(c.state, State::NotVerified);
         let result = result_of(&c, &s, false, false, &[]);
@@ -1054,7 +1089,7 @@ fn s8_5_each_residue_category() {
         (Category::NotPlanned, State::VerifiedWithResidue),
     ] {
         let residue = vec![residue(cat, 3)];
-        let f = Facts { residue: &residue, ..facts(&b, false) };
+        let f = Facts { scan: Scan::Done(&residue), ..facts(&b, false) };
         assert_eq!(state(&f), want, "{cat:?}");
         let c = conclude(&f, b.overlay.as_ref());
         let r = result_of(&c, &b.set, false, false, &residue);
@@ -1075,7 +1110,7 @@ fn s8_5_tally_counts_observers_and_error_reports_only() {
     s.validate().unwrap();
     let (report1, _) = report(RunVerdict::Verified, &s);
     let f =
-        Facts { set: &s, selected: 2, report: Some(&report1), allow_unparsed: false, residue: &[] };
+        Facts { set: &s, selected: 2, report: Some(&report1), allow_unparsed: false, scan: Scan::Done(&[]) };
     let t = tally(&f);
     assert_eq!((t.failed_runs, t.error_reports), (3, 1));
     assert_eq!(state(&f), State::VerifiedWithResidue);
@@ -1150,7 +1185,7 @@ fn s9_2_namespace_rule_stale_permits_nothing() {
         assert!(!json.contains("unchecked"), "{json}");
         assert!(!r.to_text().contains("not checked"));
         let f =
-            Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: true, residue: &[] };
+            Facts { set: &s, selected: 2, report: Some(&r), allow_unparsed: true, scan: Scan::Done(&[]) };
         let c = conclude(&f, Some(&o));
         assert_eq!(state(&f), c.state);
         let result = result_of(&c, &s, false, true, &[]);

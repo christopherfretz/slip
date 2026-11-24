@@ -43,8 +43,31 @@ pub struct Facts<'a> {
     pub report: Option<&'a Report>,
     /// The run was given `--allow-unparsed`.
     pub allow_unparsed: bool,
-    /// The residue of the scan (§8.4).
-    pub residue: &'a [Residue],
+    /// The scan step (§8.4): whether it ran, and what it found.
+    pub scan: Scan<'a>,
+}
+
+/// The scan step of a run (`spec/edits.md` §8.4) as a value: whether it
+/// ran is never read from an empty residue (WP-076's fix round, B1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scan<'a> {
+    /// The request has no scan (a script's: §8.4 is a rename's).
+    NotApplicable,
+    /// The scan ran to its end: what it found.
+    Done(&'a [Residue]),
+    /// The request has a scan and it did not run, or did not finish (the
+    /// run was interrupted): the run is concluded as one cut short.
+    NotRun,
+}
+
+impl<'a> Scan<'a> {
+    /// What the scan found; empty unless [`Scan::Done`].
+    pub fn residue(self) -> &'a [Residue] {
+        match self {
+            Scan::Done(r) => r,
+            Scan::NotApplicable | Scan::NotRun => &[],
+        }
+    }
 }
 
 /// `unparsed` as §8.2 counts it: the set's observers without an `ok` map
@@ -71,9 +94,11 @@ fn error_reports(set: &EditSet) -> u64 {
 /// set's content id: an accepted set is always verified through its
 /// overlay, §8.1, and a tree report compared nothing the set changed); it
 /// is of the set's plan and round; and its states add up to the observers
-/// the verify phase selected, `selected − unparsed` (§8.2, §8.5).
+/// the verify phase selected, `selected − unparsed` (§8.2, §8.5). A run
+/// whose scan did not run ([`Scan::NotRun`]) did not finish: its report
+/// is read as none, as a cancelled run's (row 3).
 fn report_of<'a>(facts: &Facts<'a>) -> Option<&'a Report> {
-    if facts.set.state == SetState::Refused {
+    if facts.set.state == SetState::Refused || facts.scan == Scan::NotRun {
         return None;
     }
     let r = facts.report?;
@@ -142,7 +167,7 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
         return State::Incomplete;
     }
     // Row 4.
-    let residue = facts.residue.iter().any(|r| r.category != Category::Mention);
+    let residue = facts.scan.residue().iter().any(|r| r.category != Category::Mention);
     if residue || !set.refusals.is_empty() || failed_runs(set) != 0 || error_reports(set) != 0 {
         return State::VerifiedWithResidue;
     }
@@ -158,8 +183,8 @@ fn state_with(facts: &Facts<'_>, report: Option<&Report>) -> State {
 /// 3. `Incomplete`: it is `Incomplete`; or there is no report, or none
 ///    that describes this run (another plan or round, not over an overlay
 ///    of this set, or states that do not add up to `selected −
-///    unparsed`); or `unparsed` is not 0 and the run was not given
-///    `--allow-unparsed`.
+///    unparsed`), or the scan did not run ([`Scan::NotRun`]); or
+///    `unparsed` is not 0 and the run was not given `--allow-unparsed`.
 /// 4. `VerifiedWithResidue`: the residue has an entry that is not a
 ///    mention; or the set has a refusal; or `failed_runs` or
 ///    `error_reports` is not 0.

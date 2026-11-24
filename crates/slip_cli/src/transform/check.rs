@@ -25,7 +25,7 @@ use slip_model::result::{SCHEME, State, TransformResult};
 use slip_model::transform::{Transform, TransformKind};
 use slip_model::transform_run::StepName;
 use slip_model::{Digest, Overlay, Phase, Plan, Shard, Status};
-use slip_verify::conclude::{Facts, conclude};
+use slip_verify::conclude::{Facts, Scan, conclude};
 use slip_verify::run::{Header, Report};
 
 use super::lines::edit_set_summary;
@@ -356,7 +356,13 @@ pub fn check(
         selected: input.selected.len() as u64,
         report: report.as_ref(),
         allow_unparsed: input.options.allow_unparsed,
-        residue: &found,
+        // Whether the scan ran is a value (WP-076 fix round, B1): a rename
+        // whose scan did not run concludes as a run cut short.
+        scan: match (input.transform.kind, scanned) {
+            (TransformKind::Rename, true) => Scan::Done(&found),
+            (TransformKind::Rename, false) => Scan::NotRun,
+            _ => Scan::NotApplicable,
+        },
     };
     let c = conclude(&facts, overlay.as_ref().map(|o| &o.1));
     let result = TransformResult {
