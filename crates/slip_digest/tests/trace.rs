@@ -709,7 +709,7 @@ fn s6_1_back_referenced_statement_is_marked() {
 // §6.1 "A unit's place", item 3 of WP-128: the place of a unit of each
 // kind of derived or front-end-made declaration, in each image of an edit.
 
-/// The first mark `(line, node)` of the unit named `name` in `src`.
+/// The first mark `(line, node)` of the unit named `name` in `s`.
 fn place_of(s: &Sided, name: &str) -> (u64, &'static str) {
     let t =
         s.traces.iter().find(|t| s.names.get(&t.key).is_some_and(|n| n == name)).unwrap_or_else(
@@ -730,8 +730,11 @@ fn assert_places(pre: &str, post: &str, rows: &[(&str, u64, u64, &str)]) {
     }
 }
 
+/// The lines `l`, each ended by a newline.
 fn lines(l: &[&str]) -> String {
-    l.iter().map(|l| format!("{l}\n")).collect()
+    let mut s = l.join("\n");
+    s.push('\n');
+    s
 }
 
 // An implicit instantiation: at its pattern (line 2), not at its point of
