@@ -34,10 +34,12 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
        slip map   (--plan <id or file> | --db [<name>=]<compile_commands.json>...)
                   (--from <qualified name> --to <identifier> [--kind function|variable]
+                   [--dependent offer|refuse|leave]
                    | --transform <file.cpp> [--transform-arg <option>]... [--indivisible])
                   --owned <path>... [--readonly <path>]...
                   [the store, selection, memory, timeout and worker options of parse]
        slip rename --from <qualified name> --to <identifier> [--kind function|variable]
+                  [--dependent offer|refuse|leave]
                   (--plan <id or file> | --db [<name>=]<compile_commands.json>...)
                   --owned <path>... [--readonly <path>]...
                   [--write | --patch <file>] [--relative-to <dir>] [--report <file>]
@@ -354,8 +356,9 @@ pub struct TransformOptions {
     pub result: Option<String>,
     /// `--dependent offer|refuse|leave` (`spec/edits.md` §10.1,
     /// `docs/wp/WP-139.md` item 4): the rename request's `dependent`;
-    /// `None`, not given (the request's default, `leave`). For `map` and `rename`, which
-    /// `docs/wp/WP-076.md` builds: no command of this version accepts it.
+    /// `None`, not given (the request's default, `leave`). `map` (with
+    /// `--from` and `--to`, not `--transform`) and `rename` accept it;
+    /// `check`, `reduce` and `apply` refuse it as an option not theirs.
     pub dependent: Option<slip_model::transform::Dependent>,
 }
 
@@ -992,6 +995,7 @@ fn parse_map(args: &[OsString]) -> Result<Invocation, UsageError> {
         "--transform",
         "--transform-arg",
         "--indivisible",
+        "--dependent",
         "--owned",
         "--readonly",
     ];
@@ -1017,6 +1021,9 @@ fn parse_map(args: &[OsString]) -> Result<Invocation, UsageError> {
             }
             MapTransform::Rename(rename_target(&values, "map")?)
         }
+        (None, Some(_)) if values.one("--dependent").is_some() => {
+            return usage("`--dependent` needs `--from` and `--to`, not `--transform`");
+        }
         (None, Some(file)) => MapTransform::Script {
             file: PathBuf::from(file),
             options: values.all("--transform-arg").cloned().collect(),
@@ -1033,6 +1040,7 @@ fn parse_rename(args: &[OsString]) -> Result<Invocation, UsageError> {
         "--from",
         "--to",
         "--kind",
+        "--dependent",
         "--plan",
         "--db",
         "--owned",

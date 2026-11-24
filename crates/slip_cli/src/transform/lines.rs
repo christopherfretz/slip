@@ -230,7 +230,7 @@ pub fn edit_set_details(
     out: &mut dyn Write,
 ) {
     edit_set_head_details(set, plan, relative_to, files, record, out);
-    edit_set_exempt_details(set, relative_to, files, record, out);
+    edit_set_exempt_details(set, plan, relative_to, files, record, out);
 }
 
 /// The `refusal`, `report` and `failed run` lines of [`edit_set_details`]:
@@ -309,14 +309,22 @@ pub fn edit_set_head_details(
     write_capped("failed run", failures, record, out);
 }
 
-/// The `exempt` lines of [`edit_set_details`].
+/// The `exempt` lines of [`edit_set_details`], then, right after them
+/// (§10.5, WP-139), the `instances:` heading and the `instance` lines when
+/// the set has instances. `check` and `rename` print them after the
+/// result's `finding`, `stale` and `spelling` lines (`report::details`).
 pub fn edit_set_exempt_details(
     set: &EditSet,
+    plan: &Plan,
     relative_to: Option<&[u8]>,
     files: &dyn slip_apply::Files,
     record: &Path,
     out: &mut dyn Write,
 ) {
+    let mains: HashMap<Digest, &[u8]> =
+        plan.observers.iter().map(|o| (o.id, o.main.path.as_slice())).collect();
+    let displays: HashMap<Digest, &str> =
+        set.subjects.iter().map(|s| (s.id, s.display.as_str())).collect();
     let mut places = Places { files, refs: &set.files, relative_to, newlines: HashMap::new() };
     let exempt = set.changed.iter().map(|x| {
         let key = x.key.to_string();

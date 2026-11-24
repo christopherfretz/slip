@@ -128,7 +128,8 @@ pub fn map(
     Ok((input.round, counts))
 }
 
-/// §3: the request of a rename from `--from`, `--to` and `--kind`, with the
+/// §3: the request of a rename from `--from`, `--to`, `--kind` and
+/// `--dependent` (not given: the request's default, `leave`), with the
 /// ownership of `--owned` and `--readonly` made real paths. `--from` is
 /// split at `::`, a leading `::` ignored (§10.1). A name §3 refuses is a
 /// usage error naming the option, decided before any path is resolved.
@@ -150,6 +151,7 @@ pub fn rename_request(
             target,
             kind: kind.unwrap_or(TargetKind::Any),
             new_name: to.to_vec(),
+            dependent: options.dependent.unwrap_or_default(),
         }),
         script: None,
     };

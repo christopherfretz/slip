@@ -2377,7 +2377,9 @@ exactly one file of its kind in the store, as for `--plan` (`exec.md`
      sets the request's flag. The budgets are the defaults of `api.md`
      §2.5.
    - `--dependent offer|refuse|leave` (a rename; default `leave`) sets the
-     request's `dependent` (§3, §9.4).
+     request's `dependent` (§3, §9.4). `map` and `rename` accept it; with
+     `--transform` it is a usage error, and `reduce`, `check` and `apply`
+     refuse it as an option not theirs.
    - `--owned` and `--readonly` are made real paths.
 3. Takes a new round (§8) and runs the phase of `exec.md` §5 with jobs
    that carry the request's id (`Job.transform`).

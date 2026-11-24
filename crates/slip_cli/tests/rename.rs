@@ -1707,3 +1707,109 @@ fn s8_1_one_file_under_two_spellings_in_the_set() {
         assert!(!t.path("p.diff").exists(), "{asked}: {out:?}");
     }
 }
+
+/// The template of WP-139's `wp139_dependent_call_found_by_adl`
+/// (`crates/slip_refactor/tests/rename.rs`): `h(t)` in `call` is
+/// dependent, found by argument-dependent lookup at the instantiation
+/// `call<m::A>`, which binds it to the subject `m::h`.
+fn dependent_tree(name: &str) -> Tree {
+    let t = Tree::new(name);
+    t.write(
+        "src/main.cpp",
+        "namespace m { struct A {}; int h(A) { return 1; } }\ntemplate <class T> int call(T t) { \
+         return h(t); }\nint u() { return call(m::A()); }\n",
+    );
+    t.db(&["src/main.cpp"]);
+    t
+}
+
+/// The value of the last `state` line (the result's; the set's comes first).
+fn last_state(out: &Out) -> Option<&str> {
+    out.stdout.lines().filter_map(|l| l.strip_prefix("state ")).last()
+}
+
+fn rename_dependent(t: &Tree, extra: &[&str]) -> Out {
+    let plan = t.plan("store");
+    let mut args = vec![
+        "rename",
+        "--plan",
+        &plan,
+        "--from",
+        "m::h",
+        "--to",
+        "k",
+        "--owned",
+        "src",
+        "--store",
+        "store",
+        "--relative-to",
+        ".",
+    ];
+    args.extend_from_slice(extra);
+    t.slip(&args)
+}
+
+// `spec/edits.md` §10.1, §10.5, §9.4 (WP-139 item 4, `docs/wp/WP-076.md`
+// second fix round): `rename --dependent offer` edits the dependent name
+// bound by every instantiation to the subject. The report has the
+// `instances:` heading, which says the run cannot verify the name, and
+// one `instance edited` line; the holder differs until dependent names are
+// compared mapped (WP-154), so the state is `not_verified`, status 1.
+#[test]
+fn s10_1_rename_dependent_offer_edits_an_instance() {
+    let t = dependent_tree("dependent-offer");
+    let before = t.snapshot();
+    let out = rename_dependent(&t, &["--dependent", "offer"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert_eq!(last_state(&out), Some("not_verified"), "{out:?}");
+    assert!(out.has_line("edit 2 in 1 file(s);"), "{out:?}");
+    // The holder `call` differs (WP-154 turns it around).
+    assert!(out.has_line("verify: verified 0, unchanged 0, mismatch 1,"), "{out:?}");
+    assert!(out.has_line("finding changed template <class> int call("), "{out:?}");
+    assert!(out.has_line("kept 0; unresolved 0"), "{out:?}");
+    assert!(
+        out.has_line(
+            "instances: 1 edited, 0 refused; a specialisation made only outside the run is not \
+             checked; the run cannot verify a name edited here until dependent names are \
+             compared mapped"
+        ),
+        "{out:?}"
+    );
+    let instances: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("instance ")).collect();
+    assert_eq!(instances.len(), 1, "{out:?}");
+    assert!(
+        instances[0].starts_with(
+            "instance edited src/main.cpp:2:43: call<m::A>(m::A): m::h(m::A) (1 observer(s)"
+        ),
+        "{out:?}"
+    );
+    // §10.5: the instance lines come right after the finding (no exempt line here).
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    let heading = lines.iter().position(|l| l.starts_with("instances:")).unwrap();
+    assert!(lines[heading - 1].starts_with("finding changed "), "{out:?}");
+    assert!(lines[heading + 1].starts_with("instance edited "), "{out:?}");
+    assert!(out.has_line("residue: dependent 0,"), "{out:?}");
+    assert_eq!(t.snapshot(), before, "nothing written without `--write`");
+}
+
+// The same with the default (`leave`, §3): the dependent name is not
+// edited (`unresolved 1`, residue `dependent`), no `instances:` heading
+// and no `instance` line; the instantiation's `h(t)` finds no `h` in the
+// post-image, so the run is not verified either.
+#[test]
+fn s10_1_rename_dependent_default_leaves_the_name() {
+    let t = dependent_tree("dependent-leave");
+    let out = rename_dependent(&t, &[]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.has_line("edit 1 in 1 file(s);"), "{out:?}");
+    assert!(out.has_line("kept 0; unresolved 1"), "{out:?}");
+    assert!(!out.has_line("instances:"), "{out:?}");
+    assert!(!out.has_line("instance "), "{out:?}");
+    assert!(out.has_line("residue: dependent 1,"), "{out:?}");
+    assert!(out.has_line("residue dependent: src/main.cpp:2:43"), "{out:?}");
+    assert!(out.has_line("verify: verified 0, unchanged 0, mismatch 0, not_parsed 1,"), "{out:?}");
+    assert_eq!(last_state(&out), Some("not_verified"), "{out:?}");
+    // `--dependent leave` is the default spelled out: the same request.
+    let given = rename_dependent(&t, &["--dependent", "leave"]);
+    assert_eq!(given.id("transform"), out.id("transform"), "{given:?}");
+}

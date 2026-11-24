@@ -96,8 +96,8 @@ pub struct Details<'a> {
 }
 
 /// The detail lines of §10.5 in its order: `refusal`, `report`, `failed
-/// run` (the edit set's), `finding`, `stale`, `spelling`, `exempt`,
-/// `residue`.
+/// run` (the edit set's), `finding`, `stale`, `spelling`, `exempt`, the
+/// `instances:` heading and `instance` lines (the edit set's), `residue`.
 pub fn details(d: &Details<'_>, out: &mut dyn Write) {
     let rel = d.relative_to;
     edit_set_head_details(d.set, d.plan, rel, &DiskFiles, d.set_record, out);
@@ -143,7 +143,7 @@ pub fn details(d: &Details<'_>, out: &mut dyn Write) {
         });
         write_capped("spelling", spellings, d.result_record, out);
     }
-    edit_set_exempt_details(d.set, rel, &DiskFiles, d.set_record, out);
+    edit_set_exempt_details(d.set, d.plan, rel, &DiskFiles, d.set_record, out);
     let residue = d.result.residue.iter().map(|r| {
         let mut line = format!("residue {}: ", r.category.name()).into_bytes();
         line.extend_from_slice(shown_path(&r.file, rel));
