@@ -1,0 +1,4 @@
+spec: edits.md §9.2 (a dependent using-declaration, the hider before it: the pattern unresolved, the instantiation mixed_follower as WP-120 rules), WP-127 item 1
+from: n::D::f
+to: g
+kind: function

@@ -1,0 +1,13 @@
+subjects:
+  1a005e78 follower - rule=yes n::D<int>::f of=2e887d42,8c4111e0,c59c794c,fdc4d601
+  91d7e426 follower - rule=yes n::D<int>::f() of=c59c794c
+  c59c794c seed - rule=yes n::D::f()
+links:
+claims:
+  main.cpp:2:39+1 keep t0 votes=1 none
+  main.cpp:2:49+1 keep t0 votes=1 none
+  main.cpp:3:46+1 replace "g" t0 votes=1 none [c59c794c]
+  main.cpp:3:66+1 unresolved t0 votes=1 none
+  main.cpp:5:26+1 replace spell(c59c794c, "g") t0 votes=1 none [c59c794c]
+  main.cpp:5:33+1 keep t0 votes=1 none
+changed:

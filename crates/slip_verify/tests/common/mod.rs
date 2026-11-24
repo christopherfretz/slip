@@ -226,6 +226,7 @@ impl Run {
             spellings: None,
             names: None,
             negatives: None,
+            found: None,
         }
     }
 

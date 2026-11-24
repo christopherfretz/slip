@@ -1,3 +1,6 @@
-# pending
-# needs: WP-125 (a name-derived value of a function template prints its parameter types as written; spec/landed/digest-kinds/WP-041.md "After the re-check of round 5")
-changed template <class> unsigned long h(type-parameter-0-0, int)
+# WP-125: the instantiation's definition holds the consumed length by
+# value (53 against 55); every declared unit is equal.
+exact derived
+derived-changed h<int>(int, int)::<definition>
+# The string stays symbolic beside its length and is fed (digest §9).
+names-changed h<int>(int, int)

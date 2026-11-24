@@ -18,7 +18,7 @@ use slip_script::fake::{
 use slip_script::host::{Host, Limits};
 use slip_script::output::{Changed, Edit, Piece, Place, Report, RunOutput, Severity, Tiers};
 use slip_script::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use slip_script::wire::{self, Errc};
 
@@ -668,10 +668,12 @@ fn no_empty_copy(out: &RunOutput) -> bool {
         .all(|p| !matches!(p, Piece::Copy(at) if at.lo == at.hi))
 }
 
-/// §7.1 rule 4: `spell` of a non-entity is `wrong_kind`; of a
-/// specialisation, a member of a class template, a parameter, an entity
-/// with no identifier, an entity declared in an unnamed class, and an
-/// entity the digest has no key for, `unsupported`.
+/// §7.1 rule 4: `spell` of a non-entity is `wrong_kind`; of a parameter,
+/// an entity with no identifier, and an entity the digest has no key for,
+/// `unsupported`. Of an entity with an identifier and no qualified name
+/// (a specialisation, a member of a class template, an entity declared in
+/// an unnamed class) the code is made (WP-137): the piece holds the
+/// entity.
 #[test]
 fn s7_1_rule_4_spell_refusals() {
     let w = world();
@@ -680,19 +682,81 @@ fn s7_1_rule_4_spell_refusals() {
     let spell = |run: &mut Run<'_, '_>, x: u64| run.status(wire::OP_CODE_SPELL, &[x], &[]);
     assert_eq!(spell(&mut run, r), errc(Errc::WrongKind), "a reference");
     assert_eq!(spell(&mut run, 0), errc(Errc::InvalidHandle));
-    for (e, what) in [
-        (w.foo_spec, "a specialisation"),
-        (w.tmember, "a member of a class template"),
-        (w.a, "a parameter"),
-        (w.unnamed, "no identifier"),
-        (w.inner, "declared in an unnamed class"),
-        (w.main, "no key"),
-    ] {
+    for (e, what) in [(w.a, "a parameter"), (w.unnamed, "no identifier"), (w.main, "no key")] {
         let h = run.entity(e);
         assert_eq!(spell(&mut run, h), errc(Errc::Unsupported), "{what}");
     }
+    for (e, what) in [
+        (w.foo_spec, "a specialisation"),
+        (w.tmember, "a member of a class template"),
+        (w.inner, "declared in an unnamed class"),
+    ] {
+        let h = run.entity(e);
+        assert_eq!(spell(&mut run, h), 0, "{what}");
+    }
     let out = run.finish();
-    assert_eq!(counter(&out, "api.op.code_spell"), None, "no spell succeeded");
+    assert_eq!(counter(&out, "api.op.code_spell"), Some(3), "three made");
+}
+
+/// §7.1 rule 4, §7.2 rule 2 (WP-137): a piece for an entity with no
+/// qualified name, where the place takes the fully qualified spelling,
+/// alone or beside other pieces of a `cat`, is refused at `replace` with
+/// `unsupported`, the error `spell` gave for it before; the refusal names
+/// the entity and has the edit's range as its place, and nothing is
+/// recorded. `cat` itself refuses nothing: it has no place.
+#[test]
+fn s7_2_rule_2_no_qualified_name_is_refused_where_it_lands() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let arg = run.extent(Value::Expression(w.arg1));
+    let arg_range = range(&w, "1", 0);
+    for (e, what) in
+        [(w.tmember, "a member of a class template"), (w.inner, "declared in an unnamed class")]
+    {
+        let s = run.spell(e);
+        let x = run.text("x");
+        let both = run.cat(&[x, s]);
+        for code in [s, both] {
+            assert_eq!(run.try_replace(arg, code, 0, ""), errc(Errc::Unsupported), "{what}");
+            let f = run.h.last_failure().expect("a refusal").clone();
+            assert_eq!(f.place, Some(arg_range), "{what}: the place is the edit's");
+            let display = w.fake.display(Value::Entity(e));
+            assert!(f.message.contains(&display), "{what}: {:?} names {display:?}", f.message);
+            assert!(f.message.contains(what), "{what}: {:?}", f.message);
+            assert!(f.message.starts_with("replace: "), "{:?}", f.message);
+        }
+    }
+    // A piece with a qualified name beside it changes nothing.
+    let bar = run.spell(w.bar);
+    let m = run.spell(w.tmember);
+    let both = run.cat(&[bar, m]);
+    assert_eq!(run.try_replace(arg, both, 0, ""), errc(Errc::Unsupported));
+    let out = run.finish();
+    assert!(out.edits.is_empty(), "a refused request records nothing");
+    assert_eq!(counter(&out, "api.op.replace"), None);
+}
+
+/// §7.2 rules 1 and 5 (WP-137): an entity that is not its own origin (a
+/// specialisation) passes the sibling conditions at the extent of a
+/// reference and at its name range, and is refused there with
+/// `unsupported`: a name written for it is checked against its origin,
+/// never against it, so the spelling could not hold. At a qualified place
+/// it has no qualified name: `unsupported` too.
+#[test]
+fn s7_2_rule_5_an_entity_that_is_no_origin_is_refused() {
+    let w = world();
+    let mut run = Run::new(&w, &w.fake);
+    let extent = run.extent(Value::Reference(w.r1));
+    let name = run.name_range(Value::Reference(w.r1));
+    let arg = run.extent(Value::Expression(w.arg1));
+    let s = run.spell(w.foo_spec);
+    for (at, what) in [(extent, "the extent"), (name, "the name range"), (arg, "an argument")] {
+        assert_eq!(run.try_replace(at, s, 0, ""), errc(Errc::Unsupported), "{what}");
+    }
+    let f = run.h.last_failure().expect("a refusal").clone();
+    assert!(f.message.contains("a specialisation"), "{:?}", f.message);
+    let out = run.finish();
+    assert!(out.edits.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -1389,6 +1453,7 @@ enum Lie {
     None,
     EntityKey(Option<Digest>),
     Qualified(Option<Vec<Vec<u8>>>),
+    Unqualified(Option<Unqualified>),
     UnitKeys(Result<Vec<Digest>, Errc>),
     RenameRule(Result<Rule, Errc>),
     Tiers(Option<[bool; 2]>),
@@ -1486,6 +1551,9 @@ impl Subject for Liar<'_> {
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>> {
         if let Lie::Qualified(q) = &self.lie { q.clone() } else { self.fake.qualified(e) }
     }
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        if let Lie::Unqualified(u) = self.lie { u } else { self.fake.unqualified(e) }
+    }
     fn references_at(&self, r: Range) -> Vec<Reference> {
         if let Lie::ReferencesAt(x) = &self.lie { x.clone() } else { self.fake.references_at(r) }
     }
@@ -1527,6 +1595,8 @@ fn under(w: &World, lie: Lie, what: &str) -> Result<u8, String> {
     let mut run = Run::new(w, &liar);
     let (op, ints, text): (u32, Vec<u64>, &[u8]) = match what {
         "spell" => (wire::OP_CODE_SPELL, vec![run.entity(w.bar)], b""),
+        "spell tmember" => (wire::OP_CODE_SPELL, vec![run.entity(w.tmember)], b""),
+        "spell unnamed" => (wire::OP_CODE_SPELL, vec![run.entity(w.unnamed)], b""),
         "replace" => {
             let e = run.extent(Value::Reference(w.r1));
             let s = run.spell(w.bar);
@@ -1564,6 +1634,22 @@ fn s7_1_subject_entity_key_statuses() {
 /// `unsupported`; an answer that is no qualified name of the entity (no
 /// name, an empty name, a last name that is not the entity's identifier)
 /// is a host failure naming the method.
+/// `Subject::unqualified` (§7.1 rule 4): asked only when `qualified` is
+/// `None`; `None` is `unsupported`, a reason makes the code; a reason for
+/// an entity with no identifier is a host failure naming the method.
+#[test]
+fn s7_1_subject_unqualified_statuses() {
+    let w = world();
+    let some = Some(Unqualified::MemberOfClassTemplate);
+    // `bar` has a qualified name: `unqualified` is not asked.
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell"), Ok(0));
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell tmember"), Ok(errc(Errc::Unsupported)));
+    assert_eq!(under(&w, Lie::Unqualified(some), "spell tmember"), Ok(0));
+    assert_eq!(under(&w, Lie::None, "spell tmember"), Ok(0));
+    assert_eq!(under(&w, Lie::Unqualified(None), "spell unnamed"), Ok(errc(Errc::Unsupported)));
+    host_failure(under(&w, Lie::Unqualified(some), "spell unnamed"), &["Subject::unqualified"]);
+}
+
 #[test]
 fn s7_2_subject_qualified_statuses() {
     let w = world();

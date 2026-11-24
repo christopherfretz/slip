@@ -1761,20 +1761,52 @@ seed of either kind: it is the §9.2 follower of what it names
     puts `B::f()` in `E`'s using-declaration's `of` (`mixed_follower`
     there: the using-declaration would have to name both names). A seed
     at `D::f` reaches the same subjects through the link and is decided
-    the same way. When the overrider is declared before the
-    using-declaration the front end makes no shadow for the hidden
-    declaration, and the rename is accepted; it verifies when the
-    using-declarator still names something in the base after the rename
-    (another `f` that it introduces before and after). Otherwise it is a
-    known mismatch, loud but not refused (`spec/landed/digest/WP-119.md`,
-    "Known mismatches after the review", F2; WP-127): in `struct A { void
-    f(int); }; struct B : A { virtual void f(); }; struct D : B { void f()
-    override; using B::f; };`, renaming `n::B::f` or `n::D::f` to `g`
-    leaves `using B::f;` as written, which now names `A::f(int)`, and
-    the digest shows `changed n::D` and `added n::D::<shadow
-    n::A::f(int)>`; without `A` the post-image does not compile. With
-    the using-declaration first it is rewritten to `using B::g;` and
-    verifies. An inheriting
+    the same way.
+
+    **What a using-declaration names** (`docs/wp/WP-127.md` item 1) is
+    read from its declarator, not from its shadows alone: when a member
+    of the class declared **before** the using-declaration hides or
+    overrides a declaration the declarator names, the front end makes no
+    shadow for it at all (one marked hidden when the member comes after),
+    so the shadows depend on the order of the members. The named set is
+    the members of the nominated class named like the declarator (the
+    class's own lookup table: what it declares, a using-shadow of it
+    taken to its target, one it hides left out), or, when it declares
+    none, the one set its bases give; bases that give different sets,
+    or a shadow whose target is not in the set, make it unknown, and a
+    using-declaration whose set is unknown is a follower `unsupported`
+    when it names a subject, a subject hides what it names, or a member
+    of its class named like it is a subject; its `of` is then its
+    shadows' targets **and every member of its class named like it**, so
+    that the follower is selected (and refused) when the rename renames
+    all of them and is `mixed_follower` when it renames part (a hider
+    that is a subject otherwise left it unselected, its flag inert, and
+    the rename accepted without verifying). Lookup through bases that
+    give different sets by dominance ([class.member.lookup]/6) is not
+    built: such a set is unknown, a limit (it refuses). A named
+    declaration without
+    a shadow is hidden: by the member that overrides it (Kiln's record of
+    overriding), which is of its family and renamed with it; or, when
+    none does, by a member that corresponds to it ([namespace.udecl]/14:
+    the same parameter-type-list, cv-qualification and ref-qualifier),
+    which Kiln does not name. Correspondence is told exactly only
+    between non-static member functions that are no templates and whose
+    function types are not dependent (the canonical parameter types,
+    variadic-ness and qualifiers compared); any other member named like
+    it counts as one that may hide it. Then it and those members
+    are in the using-declaration's `of`, so that renaming the hider and
+    not the hidden declaration, or the reverse, is `mixed_follower` (the
+    using-declaration with the shadow's role; a declaration without a
+    shadow that no member could hide is introduced). So `struct A { void
+    f(int); }; struct B : A { virtual void f(); }; struct D : B { void
+    f() override; using B::f; };`, `n::B::f` or `n::D::f` to `g`, is
+    rewritten to `using B::g;` and verifies in both orders (it was
+    WP-119's known mismatch F2), and `struct B { void f(); void f(int);
+    }; struct D : B { void f(); using B::f; };` refuses with `D::f` or
+    `B::f` the seed, in both orders; `struct A { virtual void f(int); };
+    struct B { void f(); }; struct D : A, B { void f(int) override; void
+    f(); using B::f; };` from `n::A::f` is accepted and verifies in both
+    orders (`D::f(int)` does not correspond to `B::f()`). An inheriting
     constructor's shadows (`using B::B;`) are another name and never
     followers. A using-declaration that names a class and functions of
     one name has both in its `of`; the class is a seed of another kind
@@ -1976,7 +2008,24 @@ Read precisely (`docs/wp/WP-073.md`):
 - **At this pin** neither row has what it needs from the front end (the
   join from a dependent entry to the declarations found at the
   definition; per-specialisation entries): every dependent name spelled
-  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`).
+  like the old name is `unresolved` (`spec/landed/edits/WP-073.md`),
+  except as the next bullet says.
+- **Bound by an instantiation: refused** (`docs/wp/WP-127.md` item 2,
+  the refusing form). The front end builds an instantiation's
+  expression at the place of the pattern's: the `MemberExpr` of `t.f()`
+  in `call<n::S<int>>`, the `DeclRefExpr` of `T::f()` and of `&T::f`,
+  has the dependent entry's name token as its location. A dependent
+  name some expression at whose name token refers to a subject (taken
+  to its origin and its entity, as above) is claimed
+  `refuse(mixed_instances)` with those subjects: the pattern's one name
+  is that of every instantiation, those other observers make and those
+  no observer makes included, and the rename does not edit it. Two
+  observers of which one instantiates refuse (the refusal is one
+  observer's). What it costs: a rename of a member that a function
+  template calls through its parameter is refused wherever an observer
+  instantiates the call with the renamed class. Offering the edit when
+  every instantiation of every observer binds the name to a subject is
+  the proposal of `spec/landed/edits/WP-127.md`, not built.
 
 This is where rename guesses, and where it leans on verification most:
 
@@ -2077,6 +2126,7 @@ end's tables:
 | `slip_kiln::ranges` (`docs/wp/WP-084.md`) | the file range of a name's span, or none: Kiln's `editable_file_range` (§2.2), which needs Kiln at or after `913a490bb` |
 | `slip_kiln::sites` (`docs/wp/WP-068.md`) | why there is none, and where a person must look (§2.3) |
 | `Unit::pp_record` | the macros the unit defines, for `name_taken` (§9.5) |
+| the AST's expressions and lookup tables (`docs/wp/WP-127.md`) | the declaration an instantiation's `DeclRefExpr` or `MemberExpr` at a dependent name's token refers to (§9.4); the members a class declares under a name (`Ast::lookup_local`) and a using-declaration's qualifier, for what it names (§9.2) |
 
 `run` is a function of the unit: two parses of the same inputs give equal
 `Edits`. It returns `Err` for a unit parsed without `ParseOptions::written`

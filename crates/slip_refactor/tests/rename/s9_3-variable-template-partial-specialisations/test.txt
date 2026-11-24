@@ -1,4 +1,4 @@
-spec: edits.md §9.3 row 1 (partial specialisations of a variable template, in the namespace and out of line: literal; WP-071 review A1)
+spec: edits.md §9.3 row 1 (partial specialisations of a variable template, in the namespace and out of line: literal; WP-071 review A1; WP-127: g<long> binds n::v<T> to the subject, refused)
 from: n::v
 to: w
 kind: variable

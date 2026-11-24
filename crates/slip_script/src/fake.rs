@@ -14,7 +14,7 @@ use slip_model::{Digest, FileRef};
 
 use crate::host::Out;
 use crate::subject::{
-    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Value,
+    Declaration, Entity, Expression, File, PlaceOf, Range, Reference, Subject, Unqualified, Value,
 };
 use crate::wire::{self, Errc};
 
@@ -555,6 +555,34 @@ impl Subject for FakeSubject {
         }
         names.reverse();
         Some(names)
+    }
+
+    fn unqualified(&self, e: Entity) -> Option<Unqualified> {
+        let fe = self.ent(e);
+        if fe.identifier.is_empty() || self.is(e, wire::KIND_PARAMETER) {
+            return None;
+        }
+        // A reason found nearer the entity names it; a function anywhere
+        // above refuses the spelling outright.
+        let mut why = fe.origin.map(|_| Unqualified::Specialisation);
+        let mut p = fe.parent?;
+        while let Some(grand) = self.ent(p).parent {
+            let fp = self.ent(p);
+            let found = if fp.kinds & wire::KIND_FUNCTION != 0 {
+                return None;
+            } else if fp.kinds & wire::KIND_TEMPLATE != 0 {
+                Some(Unqualified::MemberOfClassTemplate)
+            } else if fp.origin.is_some() {
+                Some(Unqualified::MemberOfSpecialisation)
+            } else if fp.identifier.is_empty() && fp.kinds & wire::KIND_NAMESPACE == 0 {
+                Some(Unqualified::InUnnamedClass)
+            } else {
+                None
+            };
+            why = why.or(found);
+            p = grand;
+        }
+        why
     }
 
     fn references_at(&self, r: Range) -> Vec<Reference> {

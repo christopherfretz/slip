@@ -39,6 +39,7 @@ fn map_shard(edits: Edits) -> Shard {
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     }
 }
 

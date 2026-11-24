@@ -560,7 +560,7 @@ fn without_units(d: &Digests) -> Digests {
 }
 
 /// Step 2's guards on what the post-image parse read and looked at, in
-/// this order (§5.3): [`post_parse_guards`], then O2 (both parts) and N1 of the tree
+/// this order (§5.3): [`post_parse_guards`], then O2 (both parts), N1 and N2 of the tree
 /// form (not with the identity, where every change since the map phase is
 /// the edit compared). The reason of the first that fails. They run before
 /// the comparison, so whatever it finds.
@@ -594,8 +594,19 @@ fn image_guards(
             "pre-image: the map shard has no negative inputs (run `slip parse` again)".to_owned(),
         );
     };
-    negatives::appeared(&mut resolver, negatives)
-        .map(|path| format!("pre-image: {} appeared since the map phase", show_path(path)))
+    if let Some(path) = negatives::appeared(&mut resolver, negatives) {
+        return Some(format!("pre-image: {} appeared since the map phase", show_path(path)));
+    }
+    // N2: every found lookup of the map parse leads where it led, and the
+    // inputs that were one file are one file. Without the record, fail
+    // closed.
+    let Some(found) = pre.shard.found.as_ref() else {
+        return Some(
+            "pre-image: the map shard has no record of where its lookups led (run `slip parse` again)"
+                .to_owned(),
+        );
+    };
+    negatives::found_moved(&mut resolver, found, pre_inputs)
 }
 
 /// The guards of §5.3 that need only the post-image parse, in this order:
@@ -755,7 +766,7 @@ fn left_behind<'a>(
 /// Whether `path`, a real path when the map parse recorded it, is still
 /// one: the path, or the nearest ancestor of it that exists, is its own
 /// real path now (no symbolic link has been made on the way since).
-fn as_recorded(path: &[u8]) -> bool {
+pub(crate) fn as_recorded(path: &[u8]) -> bool {
     let mut at = Path::new(OsStr::from_bytes(path));
     loop {
         if at.symlink_metadata().is_ok() {

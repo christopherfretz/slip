@@ -40,6 +40,7 @@ mod declared;
 mod digests;
 mod edits;
 mod editset;
+mod found;
 mod names;
 mod negatives;
 mod overlay;

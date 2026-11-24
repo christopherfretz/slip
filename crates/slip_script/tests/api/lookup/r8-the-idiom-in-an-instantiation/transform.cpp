@@ -1,5 +1,4 @@
 // spec: §6.1 rule 8
-// xfail: `spell` of a member of a class template is refused when the code is made (spec/api.md §7.1 rule 4, `unsupported`: no qualified name without template arguments), before `replace` knows the range takes the sibling rule; the ruling on WP-132 item 4 writes this idiom with `spell`, so the rule is left to the coordinator (spec/landed/api/WP-132.md, "Open")
 // The idiom `lookup(parent_of(referent_of(r)), "g")` at a call of a member
 // of an instantiation (spec/api.md §6.1 rule 8): `w.f()` with `W<int> w`,
 // `i.f()` with `O<int>::I i` (a member class of a class template) and

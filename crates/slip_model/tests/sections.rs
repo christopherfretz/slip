@@ -367,6 +367,7 @@ fn map_shard() -> Shard {
         spellings: None,
         names: Some(Names::default()),
         negatives: None,
+        found: None,
     }
 }
 
@@ -471,6 +472,7 @@ fn verify_shard() -> Shard {
         spellings: None,
         names: Some(Names::default()),
         negatives: None,
+        found: None,
     }
 }
 
@@ -702,6 +704,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         spellings: None,
         names: Some(Names::default()),
         negatives: None,
+        found: None,
     }
 }
 

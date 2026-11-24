@@ -98,6 +98,7 @@ pub fn old_shard(
         spellings: None,
         names: None,
         negatives: None,
+        found: None,
     })
 }
 

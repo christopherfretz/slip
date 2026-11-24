@@ -1,5 +1,5 @@
 # pending
-# needs: K-e, Kiln stage 4 (WP-1933): per instantiated specialisation, the entity a dependent name resolved to (not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"); until then unresolved
+# needs: K-e, Kiln stage 4 (WP-1933): per instantiated specialisation, the entity a dependent name resolved to (not in the pin: spec/landed/edits/WP-073.md, "Kiln at the pin"), or the offering form of spec/landed/edits/WP-127.md if it is ruled in; until then refused (WP-127, the refusing form)
 subjects:
   85f5d4ed seed - rule=yes n::S::f()
   d53c5070 seed - rule=yes n::S::f(int)

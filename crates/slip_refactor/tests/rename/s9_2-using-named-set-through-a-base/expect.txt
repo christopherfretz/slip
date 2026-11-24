@@ -1,0 +1,12 @@
+subjects:
+  3b98ec8e seed - rule=yes n::D::f()
+  8e22d4a6 follower - rule=yes n::D::f of=0c083ef3,3b98ec8e,b6e95146
+links:
+claims:
+  main.cpp:2:17+1 keep t0 votes=1 none
+  main.cpp:2:27+1 keep t0 votes=1 none
+  main.cpp:4:21+1 replace "g" t0 votes=1 none [3b98ec8e]
+  main.cpp:4:35+1 replace "g" t0 votes=1 none [8e22d4a6]
+  main.cpp:6:21+1 replace spell(3b98ec8e, "g") t0 votes=1 none [3b98ec8e]
+  main.cpp:6:28+1 keep t0 votes=1 none
+changed:

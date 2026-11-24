@@ -336,7 +336,7 @@ whole file. The order of checks is:
 4. The format's invariants, the first violation in section and element
    order: the plan's (§7.1); the shard's (§8.1), then those of `digests`
    (§8.2), then those of `verdict` (§8.3), then those of `edits`,
-   `binding`, `rule_use` and `spellings` (§8). Within `digests` and
+   `binding`, `rule_use`, `spellings`, `negatives` and `found` (§8). Within `digests` and
    `verdict` the rules are checked in the order of their tables, **each
    rule over the whole section, in field and element order, before the
    next rule**; `edits.md` §4.7 states its own order. The edit set's
@@ -416,8 +416,11 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
   (`slip_model::digests`), `verdict: Option<Verdict>`
   (`slip_model::verdict`), `edits: Option<Edits>` (`slip_model::edits`),
   `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
-  (`slip_model::agreement`) and `spellings: Option<Spellings>`
-  (`slip_model::spellings`), in that order; an absent section is `None`.
+  (`slip_model::agreement`), `spellings: Option<Spellings>`
+  (`slip_model::spellings`), `negatives: Option<Vec<Vec<u8>>>` (§8.6)
+  and `found: Option<Found>` (§8.8; `Found { places: Vec<FoundPlace>,
+  classes: Vec<Vec<u64>> }`, `FoundPlace { path: Vec<u8>, input: u64 }`),
+  in that order; an absent section is `None`.
 - `Transform` (`slip_model::transform`, kind `TRFM`, `edits.md` §3),
   `EditSet` (`slip_model::editset`, `EDTS`, §6), `Overlay`
   (`slip_model::overlay`, `OVLY`, §7.1), `TransformResult`
@@ -564,6 +567,7 @@ the same bytes.
 | 27 | names | with `digests` | `Names` (§8.7): the names digest of each key that has one, and the notes of a verify shard (`verify.md` §4.4); phases `map` and `verify` |
 | 28 | negatives | no | `list<Negative>` (§8.6): the places the map parse looked for a file and found none, sorted; phase `map` |
 | 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
+| 31 | found | no | `Found` (§8.8): each place where the map parse found a file, with the input it led to, and the classes of `inputs` that were one file; phase `map` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -593,13 +597,14 @@ A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
 A reserved id (16, 18, 20) or a retired one (25) is a critical id no
-reader knows: a file with one is `UnknownSection`. Ids 22 and 23 are not
-assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work package
-WP-117 and 29 by WP-111, without a change of the shard's version: a reader
-that predates one refuses a shard that has it (the ids are critical), and a
-shard without them reads
-as before (a map shard without `negatives` is then refused by the verify
-task's guard N1, `verify.md` §5.3: it is made again by `slip parse`). A
+reader knows: a file with one is `UnknownSection`. Ids 22, 23 and 30 are
+not assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work
+package WP-117, 29 by WP-111 and 31 by WP-135, without a change of the
+shard's version: a reader that predates one refuses a shard that has it
+(the ids are critical), and a shard without them reads as before (a map
+shard without `negatives` is then refused by the verify task's guard N1,
+one without `found` by its guard N2, `verify.md` §5.3: it is made again
+by `slip parse`). A
 section whose payload changes takes a new id and the old one is retired,
 so that a reader never meets a payload it does not know under an id it
 knows (WP-111: 25 to 29). An `edits` section
@@ -611,11 +616,11 @@ the section's payload, JSON path `sections.<name>`. So are `edits`,
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
-`negatives`'s own are §8.6's, last.
+`negatives`'s own are §8.6's, then `found`'s, §8.8's, last.
 
 Section 27 (`names`, WP-112) changed the version to 2 (above): every
 shard a reader of version 2 reads, of either phase, is one that could
-have 27, 28 and 29, and a version-1 shard, which predates `names`, is
+have 27, 28, 29 and 31, and a version-1 shard, which predates `names`, is
 refused whatever its sections (a version-1 shard with 25 or 29 included).
 `names` and `rule_use` (29) are independent: a verify shard may have
 either, both or neither, and neither's rows refer to the other's. It is present **exactly when** `digests`
@@ -759,6 +764,17 @@ directory and `.` for `"..."`, then every `--embed-dir` directory (Kiln's
 log does not say which were tried; they are taken from Kiln's driver,
 `Args::embed_dirs`). A lookup of an absolute name is not in Kiln's log
 and so not here (`spec/verify.md` §5.1, "What remains outside").
+`Lookups::found` lists the places where a lookup found its file, unique,
+in the order first seen (work package WP-135; §8.8): the place Kiln
+opened, which its log names exactly (Kiln `HeaderSearch::lookup` opens
+`join_path(dir, name)` for the directory the log records): the
+includer's directory for a hit beside the includer (`.` when the log
+names no includer, Kiln's own rule), the search list's entry for a hit
+on the list, and for `#embed` and `__has_embed` `(".", path)` with the
+path the log records as read. A lookup of an absolute name is `("/",
+name)` once Kiln's log records one. `Lookups::read` names each buffer
+read from disk and each consulted path as the front end first spelled
+it, the main file included.
 `Lookups::missed` lists the places where a lookup looked for its name and
 found nothing, unique, in the order first seen (the negative inputs, §8.6,
 item by item in `spec/landed/verify/WP-117.md`): `tried` less the place
@@ -1028,7 +1044,8 @@ format still does not require the section ("Open questions").
 
 **Negative inputs.** The map task parses with `ParseOptions::lookups` on,
 and a shard that has `inputs` gets the section `negatives` (§8.6) from
-the unit's `Lookups::missed`, whatever its status. `slip parse` (through
+the unit's `Lookups::missed`, and the section `found` (§8.8) from its
+`Lookups::found` and `Lookups::read`, whatever its status. `slip parse` (through
 the map task) is the only command that writes it; the verify task, `slip
 declare` and `slip units` write no map shard.
 
@@ -1133,6 +1150,89 @@ Checked in this order, each over its whole list before the next. Row 1 is
 the shard's (it names `digests`); rows 2 to 7 the section's. Tests:
 `crates/slip_model/tests/sections.rs` `names_1_*` to `names_7_*` and
 `names_rules_in_order`.
+
+### 8.8 The `found` section
+
+The **found lookups** of a map shard: each place where the map parse
+found a file, with the input the place led to, and which of the shard's
+`inputs` were one file at the map phase, so that the verify task can tell
+that every place still leads there and that the inputs are still the
+same files (guard N2, `verify.md` §5.3; work package WP-135). It is the
+positive counterpart of `negatives` (§8.6): N1 sees a search that now
+ends earlier, N2 a spelling that now leads elsewhere, through a link
+retargeted, and two files made one or one made two by hard links.
+
+```
+Found      := places:  list<FoundPlace>
+              classes: list<list<uv>>
+FoundPlace := shared: uv        bytes in common with the path before (none for the first)
+              rest:   bytes     the path's bytes after them
+              input:  uv        the index in `inputs` of the file the place led to
+```
+
+**The places** are the paths (§8.6, "The path of a place", from the
+command's `directory`) of each place of `Lookups::found` and of each name
+of `Lookups::read` (the main file, and every file as the front end first
+spelled it), unique, in path order, front-coded as `negatives` is. A
+place is written once whatever the number of lookups that found a file
+there. Kiln's log names the directory and the name it opened for every
+found lookup it records, so a place is never recomputed; what it does not
+record (a lookup of an absolute name, Kiln WP-2620) is covered by
+`Lookups::read` when that spelling is the file's first, and is not
+otherwise (`verify.md` §5.1).
+
+**The input of a place** is found when the map task makes the shard,
+right after the parse: the input whose path is the place's real path, or
+else the one that is the same file as the place (same device and file
+number, links followed): a hard link of an input that the front end read
+as that input's buffer (Kiln identifies a file by its device and file
+number, `SourceManager::load`). A place that leads to none fails the map
+task (the tree changed during the parse, the assumption `inputs` already
+makes, §8.4): no shard records a place it cannot tie to a file read.
+
+**The classes** partition the inputs that are one file at the map phase
+(the same device and file number, links followed): each class lists two
+inputs or more, by index, ascending; the classes ascend by their first
+input; an input in no class is a file of its own. The device and file
+numbers themselves are never written: they mean nothing on another host,
+or after a copy. Two inputs are one file at the map phase only when two
+consulted paths (an `#embed` resource, a `__has_include` or `__has_embed`
+hit the preprocessor did not enter) are hard links of one another: each
+real path is an input of its own (§8.4). A hard link of a file the
+preprocessor entered is that file's buffer (Kiln's source manager finds
+it by device and file number) and no input of its own: its place leads
+to the buffer's input.
+
+The JSON form (§10) is `{ "places": [{ "path", "input" }…], "classes":
+[[…]…] }`, the paths whole.
+
+**Invariants**, checked after `negatives`'s, at the section's first byte
+for the first two, at the place's first byte for F-3 and F-4, at its
+`input` for F-5, at the class's first byte (its count) for F-6 and F-7,
+and at the member for the rest; JSON path `sections.found`,
+`sections.found.places[<i>]`, `sections.found.places[<i>].input`,
+`sections.found.classes[<j>]` or `sections.found.classes[<j>][<k>]`:
+
+| Rule | Text |
+|---|---|
+| F-1 | the shard's phase is `map`: "a found section in a shard whose phase is not map" |
+| F-2 | the shard has `inputs`: "a found section in a shard without inputs" |
+| F-3 | each path starts with `/`: "a found place is not an absolute path" |
+| F-4 | the paths are strictly ascending by bytes: "found places are not strictly ascending" |
+| F-5 | each place's input is below the number of inputs: "a found place names no input" |
+| F-6 | each class has two inputs or more: "a class of fewer than two inputs" |
+| F-7 | the classes are strictly ascending by their first input: "classes are not ascending by their first input" |
+| F-8 | each member is below the number of inputs: "a class names no input" |
+| F-9 | each class's members are strictly ascending: "a class is not strictly ascending" |
+| F-10 | no input is in two classes: "an input in two classes" |
+
+They are checked place by place (F-3 to F-5 for each in turn), then class
+by class (F-6, F-7, then F-8 to F-10 for each member in turn). The
+encoding's own rules are `negatives`'s, at the place's `shared` field.
+
+**Determinism.** The places are text of the command and the source, as
+`negatives`'s; the inputs they lead to and the classes are a function of
+the tree, as `inputs` is.
 
 ## 9. The run record
 

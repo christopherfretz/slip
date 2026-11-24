@@ -62,6 +62,40 @@ pub enum PlaceOf {
     Nowhere,
 }
 
+/// Why an entity that has an identifier has no qualified name without
+/// template arguments (`spec/api.md` §7.1 rule 4): `Subject::unqualified`.
+/// `spell` of it is made all the same; the piece holds the entity, and
+/// its text is the entity's identifier where the place takes one (§7.2
+/// rule 1), refused where the place takes the fully qualified spelling
+/// (§7.2 rule 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Unqualified {
+    /// A specialisation or a partial specialisation of a template.
+    Specialisation,
+    /// A member of a class template specialisation, at any depth.
+    MemberOfSpecialisation,
+    /// A member of a class template (of its pattern), at any depth.
+    MemberOfClassTemplate,
+    /// An entity declared in an unnamed class.
+    InUnnamedClass,
+    /// An entity whose only declarations are friend declarations:
+    /// qualified lookup does not find it ([namespace.memdef]/3).
+    OnlyFriends,
+}
+
+impl Unqualified {
+    /// What the entity is, for a message.
+    pub fn what(self) -> &'static str {
+        match self {
+            Unqualified::Specialisation => "a specialisation",
+            Unqualified::MemberOfSpecialisation => "a member of a specialisation",
+            Unqualified::MemberOfClassTemplate => "a member of a class template",
+            Unqualified::InUnnamedClass => "declared in an unnamed class",
+            Unqualified::OnlyFriends => "declared only by friend declarations",
+        }
+    }
+}
+
 /// An `info` (§5.1): a value of one of the four sorts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Value {
@@ -210,6 +244,15 @@ pub trait Subject {
     /// `Some` must hold one identifier or more, none empty, the last
     /// `identifier(e)`; anything else is a host failure.
     fn qualified(&self, e: Entity) -> Option<Vec<Vec<u8>>>;
+    /// §7.1 rule 4, asked only when `qualified(e)` is `None`: why `e`
+    /// has no qualified name, when it is spelled all the same (its
+    /// identifier where it lands, §7.2 rule 1); `None`: it is never
+    /// spelled (a parameter of a function or a template, no identifier,
+    /// an entity with no written declaration that is made from no written
+    /// entity, a declaration in a function body, a using-declaration, a
+    /// deduction guide, a structured binding), and `spell` refuses.
+    /// `Some` for an entity whose identifier is empty is a host failure.
+    fn unqualified(&self, e: Entity) -> Option<Unqualified>;
     /// §7.2 rule 1: the references whose extent is exactly `r`. Each must
     /// be live, listed once, and have `extent` `Some(r)`, and a name range
     /// that is not empty and lies in `r`; anything else is a host failure.
