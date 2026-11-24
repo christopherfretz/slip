@@ -19,7 +19,12 @@
 //! "this run's shard" what a shard alone decides of it (its `binding`, the
 //! presence of `rule_use` and `spellings`). The verdict is [`combine`] of
 //! M1's. A run with a tree image and no rule gives M1's report, byte for
-//! byte.
+//! byte; its shards, like every other run's, carry the run's `binding`
+//! (WP-114 removed the exception of a tree image and no rule).
+//!
+//! WP-114 (§9.3): a `verified` or `mismatch` verdict is believed only
+//! against the map shard the run reads, by content id ([`MapShard`]); and
+//! every refusal of the state table says why.
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -135,82 +140,153 @@ fn counter(shard: &Shard, name: &str) -> Option<u64> {
 }
 
 /// The counts of the verdict's findings by kind (§7.2), checked against the
-/// verdict: `None` if one of the six is missing, if they do not add up to
-/// `total`, if `verify.findings` is present and is not `total`, or if the
-/// verdict lists more findings of a kind than its counter says.
-fn counts_by_kind(shard: &Shard, verdict: &Verdict) -> Option<[u64; 6]> {
+/// verdict: `Err` (the reason, WP-114) if one of the six is missing, if
+/// they do not add up to `total`, if `verify.findings` is present and is
+/// not `total`, or if the verdict lists more findings of a kind than its
+/// counter says.
+fn counts_by_kind(shard: &Shard, verdict: &Verdict) -> Result<[u64; 6], String> {
     let mut counts = [0u64; 6];
     for (i, (_, name)) in BY_KIND.iter().enumerate() {
-        counts[i] = counter(shard, name)?;
+        counts[i] =
+            counter(shard, name).ok_or_else(|| format!("the shard has no counter {name}"))?;
     }
-    let sum = counts.iter().try_fold(0u64, |a, &c| a.checked_add(c))?;
-    if sum != verdict.total {
-        return None;
+    let sum = counts.iter().try_fold(0u64, |a, &c| a.checked_add(c));
+    if sum != Some(verdict.total) {
+        let sum = sum.map_or_else(|| "more than 2^64".to_owned(), |n| n.to_string());
+        return Err(format!(
+            "the shard's counters by kind add up to {sum}, not its verdict's total {}",
+            verdict.total
+        ));
     }
-    if counter(shard, "verify.findings").is_some_and(|n| n != verdict.total) {
-        return None;
+    if let Some(n) = counter(shard, "verify.findings").filter(|&n| n != verdict.total) {
+        return Err(format!(
+            "the shard's counter verify.findings is {n}, not its verdict's total {}",
+            verdict.total
+        ));
     }
     let mut listed = [0u64; 6];
     for f in &verdict.findings {
         listed[kind_index(f.kind)] += 1;
     }
-    if listed.iter().zip(&counts).any(|(l, c)| l > c) {
-        return None;
+    if let Some(i) = (0..6).find(|&i| listed[i] > counts[i]) {
+        return Err(format!(
+            "the shard's verdict lists {} findings of kind {}, its counter {}",
+            listed[i],
+            kind_name(BY_KIND[i].0),
+            counts[i]
+        ));
     }
-    Some(counts)
+    Ok(counts)
 }
 
-/// What [`state`] knows of a shard it accepts with a verdict.
+/// The observer's map shard as the run reads it (§7, §9.3): its status, and
+/// its content id, which a `verified` or `mismatch` verdict must name as its
+/// `pre` (WP-114: a map shard replaced within a round leaves a verdict made
+/// against another one's digests). `None` where one is taken: absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapShard {
+    pub status: Status,
+    pub id: Digest,
+}
+
+/// What [`state`] knows of a shard.
 struct Judged<'s> {
     state: State,
     /// For `Verified`, `Mismatch` and `Unverifiable`: the verdict and its
     /// counts by kind.
     verdict: Option<(&'s Verdict, [u64; 6])>,
+    /// For a `Failed` shard the table refused (not one of status `failed`,
+    /// whose own message stands): why (§7.1, WP-114).
+    reason: Option<String>,
 }
 
-fn judge(verify: Option<&Shard>, map: Option<Status>) -> Judged<'_> {
-    let failed = Judged { state: State::Failed, verdict: None };
-    let Some(shard) = verify else { return failed };
+impl Judged<'_> {
+    fn failed(reason: Option<String>) -> Self {
+        Judged { state: State::Failed, verdict: None, reason }
+    }
+}
+
+/// The name of a phase as the report says it.
+fn phase_name(p: Phase) -> &'static str {
+    match p {
+        Phase::Map => "map",
+        Phase::Verify => "verify",
+    }
+}
+
+fn judge(verify: Option<&Shard>, map: Option<MapShard>) -> Judged<'_> {
+    let Some(shard) = verify else { return Judged::failed(None) };
     // A shard of another phase, or one that breaks an invariant of its
     // format, is nothing this run can read a result from.
-    if shard.phase != Phase::Verify || shard.validate().is_err() {
-        return failed;
+    if shard.phase != Phase::Verify {
+        return Judged::failed(Some(format!(
+            "the shard is of phase {}, not verify",
+            phase_name(shard.phase)
+        )));
     }
+    if let Err(e) = shard.validate() {
+        return Judged::failed(Some(format!("the shard is not valid: {e}")));
+    }
+    let map_ok = map.filter(|m| m.status == Status::Ok);
     match shard.outcome.status {
-        Status::Failed => failed,
+        Status::Failed => Judged::failed(None),
         Status::Diagnosed | Status::Rejected => {
-            let state = if map == Some(Status::Ok) { State::NotParsed } else { State::NeverParsed };
-            Judged { state, verdict: None }
+            let state = if map_ok.is_some() { State::NotParsed } else { State::NeverParsed };
+            Judged { state, verdict: None, reason: None }
         }
         Status::Ok => {
-            let Some(verdict) = &shard.verdict else { return failed };
-            let Some(counts) = counts_by_kind(shard, verdict) else { return failed };
+            let Some(verdict) = &shard.verdict else {
+                return Judged::failed(Some("the shard is ok and has no verdict".to_owned()));
+            };
+            let counts = match counts_by_kind(shard, verdict) {
+                Ok(c) => c,
+                Err(e) => return Judged::failed(Some(e)),
+            };
             // A comparison is believed only against the pre shard the store
-            // has now: an ok map shard. `unverifiable` compared nothing.
-            let compared = map == Some(Status::Ok);
+            // has now: an ok map shard, the one whose content id the
+            // verdict names (WP-114). `unverifiable` compared nothing.
             let state = match verdict.kind {
-                VerdictKind::Verified if compared => State::Verified,
-                VerdictKind::Mismatch if compared => State::Mismatch,
-                VerdictKind::Verified | VerdictKind::Mismatch => return failed,
+                VerdictKind::Verified => State::Verified,
+                VerdictKind::Mismatch => State::Mismatch,
                 VerdictKind::Unverifiable => State::Unverifiable,
             };
-            Judged { state, verdict: Some((verdict, counts)) }
+            if state != State::Unverifiable {
+                let kind = if state == State::Verified { "verified" } else { "mismatch" };
+                let refused = match map {
+                    None => Some("the observer has no map shard".to_owned()),
+                    Some(m) if m.status != Status::Ok => {
+                        Some(format!("its map shard is {}", m.status.name()))
+                    }
+                    Some(m) if m.id != verdict.pre => Some(format!(
+                        "it was made against map shard {}, not the run's {}",
+                        short(&verdict.pre),
+                        short(&m.id)
+                    )),
+                    Some(_) => None,
+                };
+                if let Some(why) = refused {
+                    return Judged::failed(Some(format!("the shard's verdict is {kind}: {why}")));
+                }
+            }
+            Judged { state, verdict: Some((verdict, counts)), reason: None }
         }
     }
 }
 
 /// §7: `verify` is this run's shard of the observer (None: there is none, or
-/// it is not this run's); `map` the status of its map shard (None: absent).
+/// it is not this run's); `map` its map shard as the run reads it (None:
+/// absent).
 ///
 /// A shard that is not of phase `verify`, that `Shard::validate` rejects,
 /// or whose verdict lacks the counters of §7.2 by kind or disagrees with
 /// them (they must add up to `total`, `verify.findings` must be `total`
 /// when present, and no kind may have more findings listed than counted)
 /// is `Failed`; so is a `verified` or `mismatch` verdict when `map` is
-/// not `Some(Status::Ok)` (the pre shard it compared against is not the
-/// one the store has now). `Unchanged` is never returned: it is decided
-/// without a shard (§5.5, not in M1).
-pub fn state(verify: Option<&Shard>, map: Option<Status>) -> State {
+/// absent, not `ok`, or not the map shard the verdict names as its `pre`
+/// (the pre shard it compared against is not the one the store has now;
+/// the content id since WP-114). `Unchanged` is never returned: it is
+/// decided without a shard (§5.5, not in M1).
+pub fn state(verify: Option<&Shard>, map: Option<MapShard>) -> State {
     judge(verify, map).state
 }
 
@@ -485,8 +561,8 @@ impl Report {
     /// Whether a shard is this observer's result in this run as far as the
     /// shard alone decides it (§7.3, §9.3, §10.4): its observer, round and
     /// verdict's rules; for a shard a worker wrote (status not `failed`),
-    /// its `binding` (required unless the run is M1's, a tree image with no
-    /// rule; when present, the run's in all three fields); for an `ok`
+    /// its `binding` (required, the run's in all three fields: WP-114
+    /// removed the exception of a tree image with no rule); for an `ok`
     /// shard, `rule_use` present exactly when the run has rules, with the
     /// run's `rules_id` and no rule index past the table, and `spellings`
     /// present exactly when the overlay has obligations. Status and section
@@ -512,7 +588,6 @@ impl Report {
                 declared: h.declared,
                 pre: self.pre,
             };
-            let required = self.overlay.is_some() || self.has_rules();
             match &s.binding {
                 Some(b) if *b != want => {
                     let what = if b.overlay != want.overlay {
@@ -524,8 +599,8 @@ impl Report {
                     };
                     return Err(format!("the shard's binding is not this run's: {what}"));
                 }
-                None if required => return Err("the shard has no binding".to_owned()),
-                _ => {}
+                None => return Err("the shard has no binding".to_owned()),
+                Some(_) => {}
             }
         }
         if s.outcome.status == Status::Ok {
@@ -579,7 +654,7 @@ impl Report {
         observer: &Digest,
         main: &[u8],
         verify: Option<&Shard>,
-        map: Option<Status>,
+        map: Option<MapShard>,
     ) {
         self.add_at(self.selected, observer, main, verify, map);
     }
@@ -589,7 +664,10 @@ impl Report {
     /// the calls (the stale pairs, `not_verified`, a group's `first` and
     /// shown finding, and the fold's `first` are by plan position).
     ///
-    /// `verify` is this run's shard of the observer, as for [`state`]; a
+    /// `verify` is this run's shard of the observer and `map` its map shard,
+    /// as for [`state`]; a shard the state table refuses is `Failed` with
+    /// the table's reason as its message (WP-114), one of status `failed`
+    /// with its own. A
     /// shard whose `observer` is not `observer`, whose `round` is not the
     /// header's, or whose verdict's `rules` is not the header's is not this
     /// observer's result in this run: the observer is `Failed`, and its
@@ -599,7 +677,7 @@ impl Report {
     ///
     /// M2 (§9.3, §10.4): so is a shard whose `binding` is not the run's
     /// (declared, overlay or its absence, pre round; a shard without one,
-    /// unless the run has a tree image and no rule), an `ok` shard without
+    /// whatever the image and the rules, WP-114), an `ok` shard without
     /// a `rule_use` of the run's `rules_id` in a run with rules (or with
     /// one in a run without, or naming a rule past the table), an `ok`
     /// shard without `spellings` when the overlay has obligations (or with
@@ -625,7 +703,7 @@ impl Report {
         observer: &Digest,
         main: &[u8],
         verify: Option<&Shard>,
-        map: Option<Status>,
+        map: Option<MapShard>,
     ) {
         assert!(
             position < self.header.plan_observers,
@@ -649,11 +727,10 @@ impl Report {
         // the observer (§7.1), never the foreign shard's own.
         let mut refused = verify.and_then(|s| self.ours(s, observer).err());
         let ours = verify.filter(|_| refused.is_none());
-        let mut judged = if refused.is_some() {
-            Judged { state: State::Failed, verdict: None }
-        } else {
-            judge(ours, map)
-        };
+        let mut judged = if refused.is_some() { Judged::failed(None) } else { judge(ours, map) };
+        if refused.is_none() {
+            refused = judged.reason.take();
+        }
         // The sections of an ok shard the state table accepts. The fold is
         // the last check: it refuses before it changes anything, and its
         // refusal makes the shard no shard of this run (§10.4).
@@ -661,7 +738,7 @@ impl Report {
         if let (Some(s), true) = (ours, accepted)
             && let Err(e) = self.read_sections(index, observer, main, s, judged.state)
         {
-            judged = Judged { state: State::Failed, verdict: None };
+            judged = Judged::failed(None);
             refused = Some(e);
         }
         // The notes of a shard that was compared (§4.4): read whatever the

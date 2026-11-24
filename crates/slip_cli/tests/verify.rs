@@ -1792,7 +1792,59 @@ fn s9_2_rename_declared_with_a_stale_observer() {
             out.stdout.contains(&format!("\nstale rule 0 direct 1 kept_via 0 {u1}\n")),
             "{out:?}"
         );
+        // WP-114 item 3: the report's member (§9.4), the pair's observer
+        // the one of `u1`.
+        let stale = get(&report, "agreement.stale").as_array().unwrap();
+        assert_eq!(stale.len(), 1, "{out:?}");
+        let o1 = f.observers(&plan).into_iter().find(|(_, m)| m.ends_with("u1.cpp")).unwrap().0;
+        assert_eq!(
+            json::write_compact(&stale[0]).unwrap(),
+            format!(r#"{{"rule":0,"observer":"{o1}","main":"{u1}","direct":1,"kept_via":0}}"#)
+        );
+        assert_eq!(json::write_compact(get(&report, "agreement.unused")).unwrap(), "[]");
     }
+}
+
+// spec/verify.md §9.2, §9.4 (WP-114 item 3): a rule no observer of the
+// run uses, through `slip verify` with a tree. The edit renames `S` to `T`
+// by hand (`u0`); the declared file also renames `G`, which only `u1`
+// declares, and the run selects `u0` alone (`--only`; `slip declare`
+// refuses a name no pre-image has): `u0` `verified`, the run verified (an
+// unused rule changes no verdict, status 0), the report's `agreement`
+// lists `G`'s rule unused (rule 0: a table is sorted by the post-image's
+// key, `H` before `T`), and the text says `unused rule 0`.
+#[test]
+fn s9_2_unused_rule_declared() {
+    const U0: &str = "#include \"a.h\"\nint u0() { S s{1}; return s.x; }\n";
+    const U1: &str = "struct G { int y; };\nint u1() { G g{2}; return g.y; }\n";
+    let (f, plan) = declared_run(
+        "unused-rule",
+        &[("a.h", "struct S { int x; };\n"), ("u0.cpp", U0), ("u1.cpp", U1)],
+        &[("a.h", "struct T { int x; };\n".to_owned()), ("u0.cpp", U0.replace("S s", "T s"))],
+        "relocate S => :: T\nrelocate G => :: H\n",
+    );
+    let declared = Declared::from_bytes(&std::fs::read(f.path("d.decl")).unwrap()).unwrap();
+    let names: Vec<&slip_model::keys::Name> =
+        declared.rules().rules().iter().map(|r| &r.name).collect();
+    assert_eq!(
+        names,
+        [
+            &slip_model::keys::Name::Identifier(b"H".to_vec()),
+            &slip_model::keys::Name::Identifier(b"T".to_vec())
+        ]
+    );
+    let mut s = Vec::new();
+    let mut args = image(&f, &mut s);
+    args.extend(["--declared", "d.decl", "--only", "u0.cpp"]);
+    let (out, report) = f.verify_report(&plan, &args);
+    assert_verdict(&out, &report, "verified");
+    assert_eq!(states(&report), [1, 0, 0, 0, 0, 0, 0], "{out:?}");
+    assert_eq!(out.value("agreement"), Some("rules 2 stale 0 unused 1"));
+    assert!(out.stdout.contains("\nunused rule 0\n"), "{out:?}");
+    assert!(!out.stdout.contains("\nstale rule"), "{out:?}");
+    let agreement = get(&report, "agreement");
+    assert_eq!(json::write_compact(agreement).unwrap(), r#"{"rules":2,"stale":[],"unused":[0]}"#);
+    assert_eq!(out.stderr, "", "{out:?}");
 }
 
 // ----- units (spec/exec.md §8.9) ------------------------------------------------------

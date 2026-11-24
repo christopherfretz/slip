@@ -46,7 +46,7 @@ fn stale(rule: u64, obs: u8, direct: u64) -> Stale {
 fn add(r: &mut slip_verify::run::Report, s: &slip_model::Shard) {
     let obs = s.observer;
     let main = format!("/m/{:02x}.cc", obs.0[0]);
-    r.add(&obs, main.as_bytes(), Some(s), Some(Status::Ok));
+    r.add(&obs, main.as_bytes(), Some(s), common::MAP_OK);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +279,46 @@ fn s9_3_stale_read_from_accepted_ok_shards_only() {
     add(&mut r, &u);
     let mut v = run.verified(0xa1);
     v.rule_use.as_mut().unwrap().uses = vec![used(1, 0, 1)];
-    r.add(&v.observer, b"/m/a1.cc", Some(&v), Some(Status::Failed));
+    r.add(&v.observer, b"/m/a1.cc", Some(&v), common::map_of(Status::Failed));
     assert_eq!(count(&r, State::Failed), 1);
     assert_eq!(r.stale(), [stale(0, 0xa0, 1)]);
     // Rule 1 was named only by the shard that was not read.
     assert_eq!(r.unused(), [1]);
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
+}
+
+// §9.3, §10.6 (WP-114 item 5, the question, not a change): today the
+// `rule_use` of an `unverifiable` shard is folded, whatever made it
+// unverifiable (here G3, a post-image that changed during the job: the
+// counts are of an image that is not the run's). Alone, a stale pair in it
+// makes the run `not verified` (status 1) where the state alone gives
+// `incomplete` (status 4), with a `stale` line; a use in it makes its rule
+// used, so it is not listed `unused`. Pinned as it is:
+// `spec/landed/verify/WP-114.md` §5 proposes to check only.
+#[test]
+fn s9_3_unverifiable_rule_use_is_folded_today() {
+    let run = two_rules();
+    let mut r = run.report();
+    let mut u = run.unverifiable(0xa0, "post-image: changed during the job");
+    u.rule_use.as_mut().unwrap().uses = vec![used(0, 0, 2), used(1, 1, 0)];
+    add(&mut r, &u);
+    assert_eq!(count(&r, State::Unverifiable), 1);
+    assert_eq!(r.stale(), [stale(0, 0xa0, 2)]);
+    assert!(r.unused().is_empty());
+    assert_eq!(r.verdict(), RunVerdict::NotVerified);
+    let t = r.to_text();
+    assert!(
+        t.contains(
+            "agreement rules 2 stale 1 unused 0\nstale rule 0 direct 2 kept_via 0 /m/a0.cc\n"
+        ),
+        "{t}"
+    );
+    // Without the pair: `incomplete`, as the state gives.
+    let mut r = run.report();
+    u.rule_use.as_mut().unwrap().uses = vec![used(1, 1, 0)];
+    add(&mut r, &u);
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    assert_eq!(r.unused(), [0]);
 }
 
 // §9.2: without rules, no agreement at all.
@@ -338,18 +372,24 @@ fn s9_3_binding_must_be_the_runs() {
     }
 }
 
-// §9.3, §9.4: a run with a tree image and no rule is M1's: a shard
-// without a binding is still its own (so M1's shards and goldens are
-// unchanged); one with a binding must have the run's.
+// §9.3 (WP-114): the exception of a run with a tree image and no rule is
+// gone. A shard a worker wrote without a binding is not this run's there
+// either: `failed`, with the reason, for an `ok` and a `not_parsed` shard;
+// one with a binding must have the run's.
 #[test]
-fn s9_3_tree_run_without_rules_needs_no_binding() {
+fn s9_3_tree_run_without_rules_needs_the_binding() {
     let run = Run::new(vec![], None);
-    let mut s = run.verified(0xa0);
-    assert_eq!(state_of(&run, &s), State::Verified);
-    s.binding = None;
-    assert_eq!(state_of(&run, &s), State::Verified);
-    s.binding = Some(Binding { pre: 9, ..run.binding() });
-    assert_eq!(state_of(&run, &s), State::Failed);
+    for good in [run.verified(0xa0), run.unparsed(0xa0, Status::Diagnosed, "e")] {
+        assert_ne!(state_of(&run, &good), State::Failed);
+        let mut s = good.clone();
+        s.binding = None;
+        assert_eq!(state_of(&run, &s), State::Failed, "{:?}", good.outcome.status);
+        let mut r = run.report();
+        add(&mut r, &s);
+        assert_eq!(r.error_lines(), "slip: failed: /m/a0.cc: the shard has no binding\n");
+        s.binding = Some(Binding { pre: 9, ..run.binding() });
+        assert_eq!(state_of(&run, &s), State::Failed);
+    }
     // A tree run with rules needs it (the contradiction with WP-074 item 3
     // is read the refusing way, spec/landed/verify/WP-070.md).
     let run = two_rules();
@@ -493,7 +533,7 @@ fn s9_3_stale_overrides_incomplete() {
     assert_eq!(r.verdict(), RunVerdict::NotVerified);
     let mut r = run.report();
     assert_eq!(r.verdict(), RunVerdict::Incomplete, "no observer");
-    r.add(&d(0xa2), b"/m", None, Some(Status::Ok));
+    r.add(&d(0xa2), b"/m", None, common::MAP_OK);
     assert_eq!(r.verdict(), RunVerdict::Incomplete);
 }
 
@@ -934,9 +974,10 @@ fn s5_3_guard_reasons() {
 }
 
 // §9.4: a run with a tree image and no rule writes exactly the M1
-// document: its shards without a binding (M1's) and with the run's give
-// the same report, with M1's members only. (M1's own goldens,
-// `tests/golden/run/`, are checked by `tests/run.rs`, unchanged.)
+// document, with M1's members only, its shards carrying the run's binding
+// (WP-114; before it, M1's shards without one gave the same report). (M1's
+// own goldens, `tests/golden/run/`, are checked by `tests/run.rs`,
+// unchanged.) Without the binding every observer is `failed` (§9.3).
 #[test]
 fn s9_4_m1_run_report_unchanged() {
     let run = Run::new(vec![], None);
@@ -953,11 +994,10 @@ fn s9_4_m1_run_report_unchanged() {
         }
         r
     };
-    let (m1, m2) = (report(false), report(true));
+    let (unbound, m1) = (report(false), report(true));
+    assert_eq!(count(&unbound, State::Failed), 3);
+    assert_eq!(unbound.verdict(), RunVerdict::Incomplete);
     let j1 = json::write_pretty(&m1.to_json()).unwrap();
-    assert_eq!(j1, json::write_pretty(&m2.to_json()).unwrap());
-    assert_eq!(m1.to_text(), m2.to_text());
-    assert_eq!(m1.error_lines(), m2.error_lines());
     for member in ["\"overlay\"", "\"agreement\"", "\"spellings\""] {
         assert!(!j1.contains(member), "{member}");
     }

@@ -22,7 +22,7 @@ use slip_model::declared::Declared;
 use slip_model::formats::content_id;
 use slip_model::result::RunVerdict;
 use slip_model::{Digest, Observer, Phase, RunRecord, Shard, Status, json};
-use slip_verify::run::{Header, Report};
+use slip_verify::run::{Header, MapShard, Report};
 
 use crate::args::{self, VerifyArgs};
 use crate::commands::{self, Failure, Result};
@@ -246,16 +246,21 @@ fn ours(bytes: &[u8], expected: &Digest) -> Option<Shard> {
     }
 }
 
-/// The status of the observer's map shard of round 0 (`None`: absent, or
-/// not a valid shard of phase `map`, round 0 and this observer).
-fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<Status>> {
+/// The status and content id of the observer's map shard of round 0
+/// (`None`: absent, or not a valid shard of phase `map`, round 0 and this
+/// observer). The id is what a `verified` or `mismatch` verdict must name
+/// as its `pre` (`spec/verify.md` §9.3, WP-114).
+fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<MapShard>> {
     let bytes = store
         .read_shard(plan, Phase::Map, 0, observer)
         .map_err(|e| commands::store_failure(store.root(), &e))?;
-    Ok(bytes
-        .and_then(|b| Shard::from_bytes(&b).ok())
-        .filter(|s| s.observer == *observer && s.phase == Phase::Map && s.round == 0)
-        .map(|s| s.outcome.status))
+    Ok(bytes.and_then(|b| {
+        let id = content_id(&b).ok()?;
+        Shard::from_bytes(&b)
+            .ok()
+            .filter(|s| s.observer == *observer && s.phase == Phase::Map && s.round == 0)
+            .map(|s| MapShard { status: s.outcome.status, id })
+    }))
 }
 
 /// The JSON report, written to a file beside `path` and renamed over it
@@ -426,8 +431,10 @@ mod tests {
             bytes.to_bytes()
         };
         assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "absent");
-        at(&a, &map(a, Phase::Map, 0));
-        assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(Status::Ok));
+        let ok = map(a, Phase::Map, 0);
+        at(&a, &ok);
+        let want = MapShard { status: Status::Ok, id: content_id(&ok).unwrap() };
+        assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(want));
         for (wrong, why) in [
             (map(b, Phase::Map, 0), "another observer's"),
             (map(a, Phase::Verify, 0), "another phase's"),

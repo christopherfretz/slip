@@ -2436,11 +2436,11 @@ Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 is `spellings`, §10.4; 25 is retired, below.)
 
 - `binding` is present in every shard a verify job writes, whatever the
-  parse's outcome, and is taken from `Job.post`. (Until the exception of
-  §9.3 is removed, a job of a tree image writes it only when the rules
-  are not empty: `spec/landed/verify/WP-121.md`.) A shard the coordinator
-  wrote for a worker that produced none (status `failed`) has no
-  `binding`.
+  parse's outcome and whatever the rules, and is taken from `Job.post`:
+  M1's `slip verify` with nothing declared included, whose `declared` is
+  the content id of the empty container it published
+  (`spec/landed/verify/WP-114.md`). A shard the coordinator wrote for a
+  worker that produced none (status `failed`) has no `binding`.
 - `rule_use` is present when the outcome is `ok` and the rule table is
   not empty, and absent otherwise. Invariants: `uses` strictly ascending
   by `rule`; no `Use` with its three counts 0; `kept` strictly ascending.
@@ -2624,15 +2624,22 @@ for any shard another run left. So is an `ok` shard with a `rule_use`
 under no rule or naming a rule past the table or a `kept` index past
 `Declared.kept`, and one whose `spellings`
 is absent although the overlay has obligations, present although it has
-none, or refused by the fold (§10.4). A run with a tree image and no
-rule is M1's: its shards need no `binding`, and one that has a binding
-must have the run's (`spec/landed/verify/WP-070.md` §2.1). The verify job keeps to
-it: with a tree image it writes `binding` and `rule_use` when the rules
-are not empty and neither when they are (`spec/landed/verify/WP-121.md`).
-This exception is temporary: a verify job is to write `binding` in every
-shard (§9.1), M1's `slip verify` included, after which a package of the
-coordinator's removes it and a shard without a binding is never this
-run's.
+none, or refused by the fold (§10.4). A shard a worker wrote without a
+`binding` is never this run's, whatever the image and the rules (the
+exception M1's runs had, a tree image and no rule, was removed with the
+job's writing of `binding` in every shard: `spec/landed/verify/WP-114.md`).
+
+**The map shard a verdict compared against.** A `verified` or `mismatch`
+verdict names the map shard it compared against by content id (its
+`pre`). It is believed only if that is the map shard the run reads for
+the observer: §7's `failed` row "a `verified` or `mismatch` verdict whose
+map shard is absent or not `ok` (the pre shard it compared against is
+not the one the store has now)" is checked by content id, not by status
+alone, so a map shard replaced within a round (`Store::publish` renames
+over an existing shard) makes such a verdict `failed`, with the reason.
+`Report::add` and `Report::add_at` take the map shard as `MapShard`
+(§9.5). An `unverifiable` verdict compared nothing and is not held to
+it.
 
 **Which observers.** The check is over every selected observer. With
 rules, no selected observer whose map shard is `ok` is `unchanged`
@@ -2713,6 +2720,10 @@ The run's half, in `slip_verify::run` (trusted base), added to §7.3:
 
 ```rust
 pub struct Stale { pub rule: u64, pub observer: Digest, pub direct: u64, pub kept_via: u64 }
+
+/// §9.3 (WP-114): the observer's map shard as the run reads it. In place of
+/// §7.3's `map: Option<Status>` in `state`, `Report::add` and `Report::add_at`.
+pub struct MapShard { pub status: Status, pub id: Digest /* its content id */ }
 
 /// §9.3: the verdict of the states, with the two conditions over all observers.
 pub fn combine(states: RunVerdict, stale: usize, obligations_not_passed: usize) -> RunVerdict;
