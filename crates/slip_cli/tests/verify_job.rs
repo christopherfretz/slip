@@ -3463,6 +3463,8 @@ fn o2_inputs_merged_by_hard_link() {
     assert_eq!(m.found.as_ref().unwrap().classes, Vec::<Vec<u64>>::new());
     let a = tree.base.join("ext/a.h");
     std::fs::remove_file(&a).unwrap();
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(tree.base.join("ext/b.h"), &a).unwrap();
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
@@ -3479,6 +3481,10 @@ const CONSULT: &str =
 fn hard_linked_tree(name: &str, main: &str) -> (Tree, Observer, Shard) {
     let tree = Tree::new(name, &[("a.cpp", main)]);
     write(&tree.base.join("ext/a.h"), MERGE_HDR);
+    // Two names of one file (identity). The tests that separate them
+    // replace `ext/b.h` by a new file of the same bytes, so a read of
+    // `ext/a.h` that returns the new file's bytes on a mount that confuses
+    // the names (spec/harness.md §11.4) returns the bytes it expects.
     std::fs::hard_link(tree.base.join("ext/a.h"), tree.base.join("ext/b.h")).unwrap();
     let ext = tree.base.join("ext");
     let o = tree.observer_in(&tree.subject, &[arg("-I", &ext), arg("--embed-dir=", &ext)]);
@@ -3577,6 +3583,8 @@ fn n2_outside_input_made_one_file_with_a_subject_input() {
     assert_eq!(kind(&v), VerdictKind::Verified, "pair: {}", reason(&v));
     let y = tree.base.join("ext/y.h");
     std::fs::remove_file(&y).unwrap();
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(tree.subject.join("x.h"), &y).unwrap();
     let pre_now = tree.verify_with(&o, &identity_params(&tree)).unwrap();
     assert_eq!(reason(&pre_now), changed(&y));
@@ -3594,6 +3602,8 @@ fn n2_one_class_subject_and_outside_post_copy() {
     let tree = Tree::new("n2-so-class", &[("a.cpp", main), ("x.h", "abc\n")]);
     std::fs::create_dir_all(tree.base.join("ext")).unwrap();
     let y = tree.base.join("ext/y.h");
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(tree.subject.join("x.h"), &y).unwrap();
     let o = tree.observer_in(&tree.subject, &[arg("--embed-dir=", &tree.base.join("ext"))]);
     let m = tree.map(&o);
@@ -3624,6 +3634,8 @@ fn n2_two_subject_inputs_made_one_file() {
     assert_eq!(kind(&v), VerdictKind::Verified, "pair: {}", reason(&v));
     let (a, b) = (tree.subject.join("a.h"), tree.subject.join("b.h"));
     std::fs::remove_file(&b).unwrap();
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(&a, &b).unwrap();
     let pre_now = tree.verify_with(&o, &identity_params(&tree)).unwrap();
     assert_eq!(reason(&pre_now), changed(&b));
@@ -3647,6 +3659,8 @@ fn n2_outside_input_made_one_file_with_the_post_counterpart() {
     assert_eq!(map.outcome.status, Status::Ok, "{:?}", map.outcome);
     let y = tree.base.join("ext/y.h");
     std::fs::remove_file(&y).unwrap();
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(tree.post.join("x.h"), &y).unwrap();
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
@@ -3672,6 +3686,8 @@ fn n2_two_subject_inputs_made_one_file_in_the_post_tree() {
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Mismatch, "pair: {}", reason(&v));
     std::fs::remove_file(tree.post.join("b.h")).unwrap();
+    // Two names of one file (identity); neither is replaced afterwards
+    // (spec/harness.md §11.4).
     std::fs::hard_link(tree.post.join("a.h"), tree.post.join("b.h")).unwrap();
     let v = tree.verify(&o);
     assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));

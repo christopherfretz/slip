@@ -7,9 +7,11 @@
 //!
 //! The inputs are `bench/demo1/` (§10.1): [`read_config`] reads
 //! `demo.toml`, [`read_edit`] a case's `edit.txt`, [`read_expect`] its
-//! `expect.txt`. The run (§10.3) makes a tree per case of hard links to
-//! the pristine corpus ([`link_tree`]), applies the edit by writing each
-//! edited file as a new file ([`apply_edit`]), and runs `slip` through
+//! `expect.txt`. The run (§10.3) computes what a case's edit writes
+//! ([`plan_edit`]), makes the case's tree with every file the edit leaves
+//! a hard link to the pristine corpus and every file it writes a new file
+//! ([`build_tree`], §11.3: a name that is a hard link is never replaced),
+//! and runs `slip` through
 //! [`slip_run`]. [`check`] is "the result of a case": pure, so that the
 //! tests need neither `slip` nor a corpus. Reports are read as
 //! [`json::parse`] reads them and runs as [`perf::load`] reads them; xtask
@@ -160,7 +162,7 @@ fn plain_relative(p: &str) -> bool {
 }
 
 /// One entry of `edit.txt`. `line` is the 1-based line of the `replace`
-/// or `create` that starts it, for the errors of [`apply_edit`].
+/// or `create` that starts it, for the errors of [`plan_edit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     Replace { file: String, all: bool, old: Vec<u8>, new: Vec<u8>, line: usize },
@@ -297,48 +299,60 @@ pub fn check_roots(entries: &[Entry], roots: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Applies `entries` in order to the tree `root` (the paths are relative
-/// to it), and returns the files written, in the order of their first
-/// entry. Each edited file is written **as a new file**: the old one (a
-/// hard link to the pristine file) is removed first, never opened for
-/// writing; its permission bits are kept.
+/// A file an edit writes: its path relative to the tree, its new bytes,
+/// and the permission bits of the file it replaces (`None`: created).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    pub path: PathBuf,
+    pub content: Vec<u8>,
+    pub mode: Option<u32>,
+}
+
+/// Computes what `entries` write, in the order of each file's first
+/// entry, reading the files they replace from the tree `from` (the paths
+/// are relative to it). Nothing is written: the files a case edits are
+/// known before its tree is made (§11.3), so that the tree never holds
+/// an edited name as a hard link.
 ///
 /// Errors name the entry's line: a path through a symbolic link or a
 /// non-directory, a `replace` of a file that does not exist (or is not a
 /// regular file), a `create` of one that does, an old text not found, or
-/// found more than once without `all`. Nothing is written when any entry
-/// fails.
-pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String> {
-    // The new contents, in the order of their first entry.
-    let mut order: Vec<PathBuf> = Vec::new();
-    let mut files: BTreeMap<PathBuf, (Vec<u8>, Option<u32>)> = BTreeMap::new();
+/// found more than once without `all`.
+pub fn plan_edit(from: &Path, entries: &[Entry]) -> Result<Vec<Written>, String> {
+    let mut out: Vec<Written> = Vec::new();
     for e in entries {
         let n = e.line();
-        let path = root.join(e.file());
-        no_link_on_the_way(root, e.file()).map_err(|why| format!("line {n}: {why}"))?;
         let shown = e.file();
+        let path = from.join(shown);
+        no_link_on_the_way(from, shown).map_err(|why| format!("line {n}: {why}"))?;
+        let at = out.iter().position(|w| w.path == Path::new(shown));
         match e {
             Entry::Replace { all, old, new, .. } => {
-                if !files.contains_key(&path) {
-                    let m = std::fs::symlink_metadata(&path)
-                        .map_err(|_| format!("line {n}: `{shown}` does not exist"))?;
-                    if !m.is_file() {
-                        return Err(format!("line {n}: `{shown}` is not a regular file"));
+                let i = match at {
+                    Some(i) => i,
+                    None => {
+                        let m = std::fs::symlink_metadata(&path)
+                            .map_err(|_| format!("line {n}: `{shown}` does not exist"))?;
+                        if !m.is_file() {
+                            return Err(format!("line {n}: `{shown}` is not a regular file"));
+                        }
+                        let bytes = std::fs::read(&path)
+                            .map_err(|err| format!("line {n}: `{shown}`: cannot read: {err}"))?;
+                        out.push(Written {
+                            path: PathBuf::from(shown),
+                            content: bytes,
+                            mode: Some(m.permissions().mode()),
+                        });
+                        out.len() - 1
                     }
-                    let bytes = std::fs::read(&path)
-                        .map_err(|err| format!("line {n}: `{shown}`: cannot read: {err}"))?;
-                    files.insert(path.clone(), (bytes, Some(m.permissions().mode())));
-                    order.push(path.clone());
-                }
-                let (content, _) = files
-                    .get_mut(&path)
-                    .unwrap_or_else(|| unreachable!("the file was inserted above"));
-                let at = occurrences(content, old);
-                match (at.len(), all) {
+                };
+                let content = &mut out[i].content;
+                let found = occurrences(content, old);
+                match (found.len(), all) {
                     (0, _) => {
                         return Err(format!("line {n}: the old text is not found in `{shown}`"));
                     }
-                    (1, _) | (_, true) => *content = replaced(content, &at, old.len(), new),
+                    (1, _) | (_, true) => *content = replaced(content, &found, old.len(), new),
                     (k, false) => {
                         return Err(format!(
                             "line {n}: the old text is found {k} times in `{shown}` (`replace all` \
@@ -348,35 +362,18 @@ pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String
                 }
             }
             Entry::Create { content, .. } => {
-                if files.contains_key(&path) || std::fs::symlink_metadata(&path).is_ok() {
+                if at.is_some() || std::fs::symlink_metadata(&path).is_ok() {
                     return Err(format!("line {n}: `{shown}` exists; `create` makes a new file"));
                 }
-                files.insert(path.clone(), (content.clone(), None));
-                order.push(path.clone());
+                out.push(Written {
+                    path: PathBuf::from(shown),
+                    content: content.clone(),
+                    mode: None,
+                });
             }
         }
     }
-    for path in &order {
-        let (content, mode) = &files[path];
-        if mode.is_some() {
-            std::fs::remove_file(path)
-                .map_err(|e| format!("{}: cannot remove: {e}", path.display()))?;
-        } else if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("{}: cannot create: {e}", dir.display()))?;
-        }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| format!("{}: cannot create: {e}", path.display()))?;
-        f.write_all(content).map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
-        if let Some(mode) = mode {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))
-                .map_err(|e| format!("{}: cannot set its mode: {e}", path.display()))?;
-        }
-    }
-    Ok(order)
+    Ok(out)
 }
 
 /// Every directory on the way from `root` to `rel` that exists is a real
@@ -427,55 +424,213 @@ fn replaced(hay: &[u8], at: &[usize], len: usize, new: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Makes `to` (which must not exist) a copy of the directory `from` in
-/// which every regular file is a hard link to `from`'s (a copy where
-/// linking fails), and every symbolic link a symbolic link with the same
-/// target. Returns the number of files linked or copied. Any other kind
-/// of file is an error.
-pub fn link_tree(from: &Path, to: &Path) -> Result<u64, String> {
-    let m = std::fs::symlink_metadata(from)
-        .map_err(|e| format!("{}: cannot read: {e}", from.display()))?;
-    if !m.is_dir() {
-        return Err(format!("{} is not a directory", from.display()));
-    }
-    if std::fs::symlink_metadata(to).is_ok() {
-        return Err(format!("{} exists", to.display()));
-    }
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("{}: cannot create: {e}", parent.display()))?;
-    }
-    let mut n = 0;
-    link_dir(from, to, &mut n)?;
-    Ok(n)
+/// How a tree's files that no edit writes are made (§11.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Make {
+    /// A hard link to the file it comes from (a copy where linking fails).
+    Link,
+    /// A copy.
+    Copy,
 }
 
-fn link_dir(from: &Path, to: &Path, n: &mut u64) -> Result<(), String> {
-    std::fs::create_dir(to).map_err(|e| format!("{}: cannot create: {e}", to.display()))?;
-    let entries =
-        std::fs::read_dir(from).map_err(|e| format!("{}: cannot read: {e}", from.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("{}: cannot read: {e}", from.display()))?;
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type().map_err(|e| format!("{}: {e}", src.display()))?;
-        if kind.is_dir() {
-            link_dir(&src, &dst, n)?;
-        } else if kind.is_symlink() {
-            let target = std::fs::read_link(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-            std::os::unix::fs::symlink(&target, &dst)
-                .map_err(|e| format!("{}: cannot create: {e}", dst.display()))?;
-            *n += 1;
-        } else if kind.is_file() {
-            if std::fs::hard_link(&src, &dst).is_err() {
-                std::fs::copy(&src, &dst)
-                    .map_err(|e| format!("{}: cannot copy: {e}", src.display()))?;
+/// The way Demo 1 makes its trees: `Link`, because the row
+/// `fresh-beside-links` of `cargo xtask fscheck` had no wrong read on the
+/// workspace's mount (`spec/landed/harness/WP-159.md`). Were it to have
+/// one, this is `Copy`.
+pub const TREES: Make = Make::Link;
+
+/// The file-system calls [`build_tree`] makes, so that a test can record
+/// them (or plant a difference); [`Disk`] makes them.
+pub trait TreeOps {
+    fn create_dir(&mut self, path: &Path) -> std::io::Result<()>;
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn copy(&mut self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn symlink(&mut self, target: &Path, at: &Path) -> std::io::Result<()>;
+    /// Creates `path`, which must not exist (`create_new`), with `bytes`
+    /// and, if given, the permission bits `mode`.
+    fn write_new(&mut self, path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()>;
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>>;
+}
+
+/// [`TreeOps`] on the file system.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Disk;
+
+impl TreeOps for Disk {
+    fn create_dir(&mut self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(path)
+    }
+
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::hard_link(from, to)
+    }
+
+    fn copy(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::copy(from, to).map(|_| ())
+    }
+
+    fn symlink(&mut self, target: &Path, at: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, at)
+    }
+
+    fn write_new(&mut self, path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        f.write_all(bytes)?;
+        if let Some(mode) = mode {
+            f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+}
+
+/// Makes the tree `to` (whose `roots` must not exist) from the tree
+/// `from`: for every root, its directories made, its symbolic links made
+/// with the same target, every regular file that `written` does not name
+/// made as `make` says, and every file `written` names created as a new
+/// file with its content (§11.3: **an edited or created name is never a
+/// hard link**, at any moment). Then every written file is read back and
+/// compared ([`read_back`]). Returns the number of files linked, copied
+/// or made symbolic links. Any other kind of file is an error, and so is
+/// a written path outside the roots.
+pub fn build_tree(
+    ops: &mut dyn TreeOps,
+    from: &Path,
+    to: &Path,
+    roots: &[String],
+    written: &[Written],
+    make: Make,
+) -> Result<u64, String> {
+    for w in written {
+        if !roots.iter().any(|r| w.path.starts_with(r) && w.path != Path::new(r)) {
+            return Err(format!("`{}` is not under a root", w.path.display()));
+        }
+    }
+    let by_path: BTreeMap<&Path, &Written> =
+        written.iter().map(|w| (w.path.as_path(), w)).collect();
+    let mut walk = Walk { ops, by_path: &by_path, make, count: 0, done: BTreeSet::new() };
+    for r in roots {
+        let (src, dst) = (from.join(r), to.join(r));
+        let m = std::fs::symlink_metadata(&src)
+            .map_err(|e| format!("{}: cannot read: {e}", src.display()))?;
+        if !m.is_dir() {
+            return Err(format!("{} is not a directory", src.display()));
+        }
+        if std::fs::symlink_metadata(&dst).is_ok() {
+            return Err(format!("{} exists", dst.display()));
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("{}: cannot create: {e}", parent.display()))?;
+        }
+        walk.tree(&src, &dst, Path::new(r))?;
+    }
+    // The created files, in a directory the walk made or one made here.
+    for w in written {
+        if walk.done.contains(w.path.as_path()) {
+            continue;
+        }
+        let path = to.join(&w.path);
+        let mut at = to.to_path_buf();
+        let parent = w.path.parent().unwrap_or(Path::new(""));
+        for part in parent.components() {
+            at.push(part);
+            match std::fs::symlink_metadata(&at) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) => return Err(format!("{}: not a directory", at.display())),
+                Err(_) => walk.dir(&at)?,
             }
-            *n += 1;
-        } else {
-            return Err(format!("{}: not a file, directory or symbolic link", src.display()));
+        }
+        walk.write(&path, w)?;
+    }
+    let count = walk.count;
+    read_back(ops, to, written)?;
+    Ok(count)
+}
+
+/// Reads every file of `written` back from the tree `to` and compares it
+/// with what was written: a check that the tree holds what the case
+/// wrote, not the guarantee (that is [`build_tree`] never replacing a
+/// linked name). The first difference is an error naming the file.
+pub fn read_back(ops: &mut dyn TreeOps, to: &Path, written: &[Written]) -> Result<(), String> {
+    for w in written {
+        let path = to.join(&w.path);
+        let got =
+            ops.read(&path).map_err(|e| format!("{}: cannot read back: {e}", path.display()))?;
+        if got != w.content {
+            return Err(format!(
+                "{}: read back {} bytes that are not the {} written",
+                path.display(),
+                got.len(),
+                w.content.len()
+            ));
         }
     }
     Ok(())
+}
+
+struct Walk<'a> {
+    ops: &'a mut dyn TreeOps,
+    by_path: &'a BTreeMap<&'a Path, &'a Written>,
+    make: Make,
+    count: u64,
+    /// The written files made by the walk (relative paths).
+    done: BTreeSet<PathBuf>,
+}
+
+impl Walk<'_> {
+    fn dir(&mut self, path: &Path) -> Result<(), String> {
+        self.ops.create_dir(path).map_err(|e| format!("{}: cannot create: {e}", path.display()))
+    }
+
+    fn write(&mut self, path: &Path, w: &Written) -> Result<(), String> {
+        self.ops
+            .write_new(path, &w.content, w.mode)
+            .map_err(|e| format!("{}: cannot create: {e}", path.display()))
+    }
+
+    /// `src` to `dst`; `rel` is `dst` relative to the tree.
+    fn tree(&mut self, src: &Path, dst: &Path, rel: &Path) -> Result<(), String> {
+        self.dir(dst)?;
+        let entries =
+            std::fs::read_dir(src).map_err(|e| format!("{}: cannot read: {e}", src.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: cannot read: {e}", src.display()))?;
+            let name = entry.file_name();
+            let (s, d, r) = (entry.path(), dst.join(&name), rel.join(&name));
+            let kind = entry.file_type().map_err(|e| format!("{}: {e}", s.display()))?;
+            if kind.is_dir() {
+                self.tree(&s, &d, &r)?;
+            } else if let Some(w) = self.by_path.get(r.as_path()) {
+                // Edited: written as a new file, never linked first.
+                if !kind.is_file() {
+                    return Err(format!("{}: an edited file is not a regular file", s.display()));
+                }
+                self.write(&d, w)?;
+                self.done.insert(r);
+            } else if kind.is_symlink() {
+                let target = std::fs::read_link(&s).map_err(|e| format!("{}: {e}", s.display()))?;
+                self.ops
+                    .symlink(&target, &d)
+                    .map_err(|e| format!("{}: cannot create: {e}", d.display()))?;
+                self.count += 1;
+            } else if kind.is_file() {
+                let linked = self.make == Make::Link && self.ops.hard_link(&s, &d).is_ok();
+                if !linked {
+                    self.ops
+                        .copy(&s, &d)
+                        .map_err(|e| format!("{}: cannot copy: {e}", s.display()))?;
+                }
+                self.count += 1;
+            } else {
+                return Err(format!("{}: not a file, directory or symbolic link", s.display()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `expect.txt`.
@@ -1367,18 +1522,16 @@ impl Ctx<'_> {
     }
 
     /// `demo1/trees/<case>/<root>` for every root, from the pristine root
-    /// or the base's tree, then the edit.
+    /// or the base's tree, with the edit's files written as new files
+    /// (§11.3).
     fn make_tree(&self, case: &Case, made: &BTreeSet<String>) -> Result<(), String> {
-        let tree = self.tree(&case.name);
-        for r in &self.config.roots {
-            let from = match &case.base {
-                Some(b) if made.contains(b) => self.tree(b).join(r),
-                Some(b) => return Err(format!("the tree of its base `{b}` was not made")),
-                None => self.layout.src.join(r),
-            };
-            link_tree(&from, &tree.join(r))?;
-        }
-        apply_edit(&tree, &case.edit)?;
+        let from = match &case.base {
+            Some(b) if made.contains(b) => self.tree(b),
+            Some(b) => return Err(format!("the tree of its base `{b}` was not made")),
+            None => self.layout.src.clone(),
+        };
+        let written = plan_edit(&from, &case.edit)?;
+        build_tree(&mut Disk, &from, &self.tree(&case.name), &self.config.roots, &written, TREES)?;
         Ok(())
     }
 
