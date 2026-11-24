@@ -1124,15 +1124,29 @@ kinds of piece:
    argument of that call, and `replace(extent_of(call), cat("g(",
    copy(argument), ")"))` does not.
 4. `spell(e)` throws `wrong_kind` if `e` is not an entity, and
-   `unsupported` if `e` cannot be named by a qualified name without
-   template arguments: a specialisation or a member of one, a member of a
-   class template, a parameter, an entity with no identifier, an entity
-   declared in an unnamed class (an unnamed enumeration is not a class:
-   rule 2 of §7.2 skips it), an entity whose only declarations are friend
-   declarations (qualified lookup does not find it, [namespace.memdef]/3).
-   Likewise if the digest has no key for
-   `e` (an entity declared in a function body): a spelling that could not
-   be checked (§7.2 rule 5) is not given.
+   `unsupported` if `e` is never spelled: a parameter (of a function or
+   of a template), an entity with no identifier, an entity that no
+   written name denotes by an identifier of its own (an implicit member,
+   which has no written declaration and is made from no written entity;
+   a using-declaration; a deduction guide; a structured binding).
+   Likewise if the digest has no key for `e` (an entity declared in a
+   function body): a spelling that could not be checked (§7.2 rule 5) is
+   not given. Every other entity is spelled: the piece holds the entity,
+   and its text is chosen where the code is put (§7.2). So is an entity
+   that cannot be named by a qualified name without template arguments:
+   a specialisation or a member of one, a member of a class template, an
+   entity declared in an unnamed class (an unnamed enumeration is not a
+   class: rule 2 of §7.2 skips it), an entity whose only declarations
+   are friend declarations (qualified lookup does not find it,
+   [namespace.memdef]/3). Its piece is its identifier where the place
+   takes a sibling's identifier (§7.2 rule 1, at the extent or at a name
+   range), and `replace` throws `unsupported` where the place takes the
+   fully qualified spelling (§7.2 rule 2), whether the piece is the whole
+   code or one of the pieces of a `cat`. That is the error `spell` gave
+   for such an entity before (WP-137), so a transform that catches it
+   reads one kind wherever it is thrown; its message names the entity,
+   and the subject place of the refusal (§2.8 rule 3) is the range
+   replaced. `cat` refuses nothing: it has no place.
 5. `cat` concatenates. A piece is a `code`, a `range` (as by `copy`) or a
    value convertible to `std::string_view` (as by `text`). An `info` is
    not accepted: the caller says `spell` or `copy`.
@@ -1196,10 +1210,32 @@ recorded. Version 0 has two spellings.
    the extent, where its qualifier can be written. Rule 2 is never used
    at a name range (it would put `::n::g` after the qualifier written,
    `n::::n::g`).
+
+   **An entity with no qualified name** (§7.1 rule 4) takes both forms
+   as any other entity does, and the second condition compares the
+   pattern's parent: `parent_of(E)` with the parent of the referent's
+   origin (§5.5), never of the referent. So a member of a class template
+   `W::g` is a sibling at a reference to `W<int>::f` and at one to
+   `W<long>::f`, whose origin is `W::f`, and is no sibling at a reference
+   to a member `W<char>::f` that an explicit specialisation declares,
+   which is its own origin; the explicit specialisation's own `W<char>::g`
+   is a sibling there. A member of an instantiation, `W<int>::g`, has the
+   instantiation as its parent and is a sibling of no origin: at a name
+   range `replace` throws `invalid_argument`, at an extent the place
+   takes rule 2. **An entity that is not its own origin** (a
+   specialisation, a member of an instantiated class) can never be
+   spelled at a reference: the name written there is checked against the
+   origin of what it denotes (rule 5), never against `E`, so the
+   spelling could not hold. Where the conditions above hold for a
+   reference and `E` is not its own origin, `replace` throws
+   `unsupported`, naming `E`; the transform spells the origin. (At a
+   name range that names declarations only, the record is an identifier
+   with no key, as above, and nothing is checked against `E`.)
 2. **Fully qualified.** Otherwise the text is `::` followed by the
    identifiers of `E`'s enclosing scopes and of `E`, separated by `::`.
    Unnamed namespaces and unnamed enumerations are skipped; inline
-   namespaces are named.
+   namespaces are named. An entity with no qualified name has no such
+   text: `replace` refuses it (§7.1 rule 4).
 3. The rule depends only on the subject unit at the place of the edit, so
    every subject unit that sees the same place records the same edit.
 4. The API promises that the text is the host's best spelling of `E` and

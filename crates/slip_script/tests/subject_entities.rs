@@ -18,7 +18,9 @@ use slip_model::hash::content_digest;
 use slip_script::fake::FakeOut;
 use slip_script::host::{Host, Limits, parse_qualified_name};
 use slip_script::kiln_subject::KilnSubject;
-use slip_script::subject::{Declaration, Entity, File, PlaceOf, Range, Subject, Value};
+use slip_script::subject::{
+    Declaration, Entity, File, PlaceOf, Range, Subject, Unqualified, Value,
+};
 use slip_script::wire::{self, Errc};
 
 // ---------------------------------------------------------------------------
@@ -731,6 +733,7 @@ fn s6_4_rule3_implicit_member() {
             assert!(!s.is_live(Value::Declaration(Declaration(d.index()))));
             assert_eq!(s.place(Value::Entity(e)), PlaceOf::Nowhere);
             assert_eq!(s.qualified(e), None);
+            assert_eq!(s.unqualified(e), None, "§7.1 rule 4: never spelled");
             assert!(is(s, e, wire::KIND_FUNCTION));
             assert_eq!(s.parent(e), Some(one(s, "sn::I")));
         }
@@ -804,6 +807,7 @@ fn s5_5_origin_of_function_template_specialisation() {
         assert_eq!(s.origin(e), tf);
         assert!(is(s, e, wire::KIND_FUNCTION), "a specialisation is a function");
         assert_eq!(s.qualified(e), None, "§7.1 rule 4: a specialisation");
+        assert_eq!(s.unqualified(e), Some(Unqualified::Specialisation));
     });
 }
 
@@ -843,6 +847,7 @@ fn s5_5_origin_of_member_of_instantiation() {
         assert_eq!(s.origin(e), one(s, "C::cm"));
         assert_eq!(s.parent(e), Some(s.entity_number(ci[0])));
         assert_eq!(s.qualified(e), None, "§7.1 rule 4: a member of a specialisation");
+        assert_eq!(s.unqualified(e), Some(Unqualified::MemberOfSpecialisation));
         let x = find(p, DeclKind::Field, "x", |ast, d| {
             ast.decls.get(d).ctx().is_some_and(|k| ci.contains(&k))
         });
@@ -887,6 +892,13 @@ fn s7_2_rule2_qualified() {
         assert_eq!(q("::"), None, "no identifier");
         let p = s.parameters(Value::Entity(look(s, "ns::f")[0])).unwrap();
         assert_eq!(s.qualified(p[0]), None, "a parameter");
+        // §7.1 rule 4 (WP-137): why there is none, when it is spelled.
+        let u = |name: &str| s.unqualified(one(s, name));
+        assert_eq!(u("ns::C::cm"), Some(Unqualified::MemberOfClassTemplate));
+        assert_eq!(u("ns::S::u1"), Some(Unqualified::InUnnamedClass));
+        assert_eq!(u("::"), None, "no identifier: never spelled");
+        assert_eq!(s.unqualified(p[0]), None, "a parameter: never spelled");
+        assert_eq!(u("ns::S::m"), None, "a qualified name");
     });
 }
 

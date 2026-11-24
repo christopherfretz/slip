@@ -24,7 +24,7 @@ use crate::host::{
     Record, Step, Stop, check_identifier, refuse,
 };
 use crate::output::{Changed, Edit, Piece, Place, Report, Severity, Tiers};
-use crate::subject::{Declaration, Entity, File, PlaceOf, Range, Reference, Value};
+use crate::subject::{Declaration, Entity, File, PlaceOf, Range, Reference, Unqualified, Value};
 use crate::wire::{self, Errc, Operation};
 
 /// A piece of a code value as the host holds it (§7.1). A spelled piece
@@ -38,13 +38,20 @@ pub(crate) enum HeldPiece {
     /// One identifier, checked (§7.1, `identifier`): a name given as data.
     /// Never merged with a literal or another identifier.
     Identifier(Vec<u8>),
+    /// The piece holds the entity (§7.1 rule 4): its text is chosen
+    /// where the piece lands.
     Spelled {
         entity: Entity,
         key: Digest,
-        /// The fully qualified text of §7.2 rule 2 (`::a::b::e`).
-        qualified: Vec<u8>,
-        /// Where the entity's identifier begins in `qualified`.
+        /// The fully qualified text of §7.2 rule 2 (`::a::b::e`), or the
+        /// entity's identifier when it has no qualified name.
+        text: Vec<u8>,
+        /// Where the entity's identifier begins in `text`.
         identifier_at: usize,
+        /// Why the entity has no qualified name; `None`: `text` is its
+        /// qualified name. A piece with a reason is refused where the
+        /// place takes the fully qualified spelling (§7.2 rule 2).
+        unqualified: Option<Unqualified>,
     },
 }
 
@@ -54,7 +61,7 @@ impl HeldPiece {
         match self {
             HeldPiece::Literal(b) | HeldPiece::Identifier(b) => b.len() as u64,
             HeldPiece::Copy(_) => 0,
-            HeldPiece::Spelled { qualified, .. } => qualified.len() as u64,
+            HeldPiece::Spelled { text, .. } => text.len() as u64,
         }
     }
 }
@@ -389,22 +396,40 @@ impl Host<'_> {
     }
 
     /// §7.1 rule 4: `spell(e)`. The key is asked here (decision 8 of
-    /// WP-088), the text is chosen at `replace`.
+    /// WP-088), the text is chosen at `replace`. An entity with an
+    /// identifier and no qualified name is spelled all the same
+    /// (`spec/landed/api/WP-137.md`): the piece holds the entity, and
+    /// `replace` refuses it where the place takes the fully qualified
+    /// spelling.
     fn spell(&self, h: u64) -> Step<Effect> {
         let e = self.entity_arg(h)?;
         let v = Value::Entity(e);
-        let Some(names) = self.subject.qualified(e) else {
-            return Err(self.refusal_at(
-                v,
-                Errc::Unsupported,
-                "the entity cannot be named by a qualified name without template arguments \
-                 (§7.1 rule 4)"
-                    .to_owned(),
-            ));
+        let own = self.subject.identifier(v).unwrap_or_default();
+        let (names, unqualified) = match self.subject.qualified(e) {
+            Some(names) => (names, None),
+            None => match self.subject.unqualified(e) {
+                Some(why) => {
+                    if own.is_empty() {
+                        return Err(Stop::Internal(format!(
+                            "Subject::unqualified gave \"{}\" for an entity with no identifier",
+                            why.what()
+                        )));
+                    }
+                    (vec![own.clone()], Some(why))
+                }
+                None => {
+                    return Err(self.refusal_at(
+                        v,
+                        Errc::Unsupported,
+                        "the entity is never spelled: a parameter, an entity with no \
+                         identifier, or one no written name can denote (§7.1 rule 4)"
+                            .to_owned(),
+                    ));
+                }
+            },
         };
         // What the subject answered: one identifier or more, none empty,
         // the last the entity's own.
-        let own = self.subject.identifier(v).unwrap_or_default();
         if names.is_empty() || names.iter().any(Vec::is_empty) || names.last() != Some(&own) {
             return Err(Stop::Internal(format!(
                 "Subject::qualified gave {} names, not ending in the entity's identifier",
@@ -420,16 +445,22 @@ impl Host<'_> {
                     .to_owned(),
             ));
         };
+        if unqualified.is_some() {
+            self.code_fits(1, own.len() as u64)?;
+            let piece =
+                HeldPiece::Spelled { entity: e, key, text: own, identifier_at: 0, unqualified };
+            return Ok(Effect::Code(Code::new(vec![piece])));
+        }
         let len: u64 = names.iter().map(|n| n.len() as u64 + 2).sum();
         self.code_fits(1, len)?;
-        let mut qualified = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+        let mut text = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
         let mut identifier_at = 0;
         for n in &names {
-            qualified.extend_from_slice(b"::");
-            identifier_at = qualified.len();
-            qualified.extend_from_slice(n);
+            text.extend_from_slice(b"::");
+            identifier_at = text.len();
+            text.extend_from_slice(n);
         }
-        let piece = HeldPiece::Spelled { entity: e, key, qualified, identifier_at };
+        let piece = HeldPiece::Spelled { entity: e, key, text, identifier_at, unqualified: None };
         Ok(Effect::Code(Code::new(vec![piece])))
     }
 
@@ -498,7 +529,7 @@ impl Host<'_> {
         }
         // §7.2: the sibling rule, or every spelled piece fully qualified.
         let narrowed = match code.pieces.as_slice() {
-            [HeldPiece::Spelled { entity, key, qualified, identifier_at }] => {
+            [HeldPiece::Spelled { entity, key, text, identifier_at, .. }] => {
                 match self.sibling(r, *entity)? {
                     Some(name) => {
                         let Some(t) = self.tiers(name)? else {
@@ -506,7 +537,8 @@ impl Host<'_> {
                                 "Subject::tiers gave None for a name range it gave out".to_owned(),
                             ));
                         };
-                        let text = qualified.get(*identifier_at..).unwrap_or_default();
+                        self.own_origin(*entity, r)?;
+                        let text = text.get(*identifier_at..).unwrap_or_default();
                         Some((name, t, Narrowed::Spelled(*key, text)))
                     }
                     None => None,
@@ -520,6 +552,11 @@ impl Host<'_> {
             Some(n) => Some(n),
             None => self.at_a_name(r, code)?,
         };
+        // §7.2 rule 2: every spelled piece is fully qualified here, and
+        // one for an entity with no qualified name is refused.
+        if narrowed.is_none() {
+            self.fully_qualified(r, code)?;
+        }
         // The limits, from the counts: nothing is copied before they pass.
         let (count, bytes) = match &narrowed {
             Some((.., n)) => (1, n.text().len() as u64),
@@ -562,10 +599,60 @@ impl Host<'_> {
             HeldPiece::Literal(b) => Piece::Literal(b.clone()),
             HeldPiece::Copy(r) => Piece::Copy(self.place_of(*r)),
             HeldPiece::Identifier(b) => Piece::Identifier { text: b.clone(), key: None },
-            HeldPiece::Spelled { key, qualified, .. } => {
-                Piece::Spelled { key: *key, text: qualified.clone() }
+            HeldPiece::Spelled { key, text, .. } => {
+                Piece::Spelled { key: *key, text: text.clone() }
             }
         }
+    }
+
+    /// §7.1 rule 4 and §7.2 rule 2 (`spec/landed/api/WP-137.md`): at the
+    /// edit of `r`, where every spelled piece takes its fully qualified
+    /// text, a piece for an entity with no qualified name is refused with
+    /// `unsupported`, the error `spell` gave for it before; the message
+    /// names the entity, and the refusal's place is `r`.
+    fn fully_qualified(&self, r: Range, code: &Code) -> Step<()> {
+        for p in &code.pieces {
+            if let HeldPiece::Spelled { entity, unqualified: Some(why), .. } = p {
+                return Err(Stop::Refused {
+                    errc: Errc::Unsupported,
+                    message: format!(
+                        "{} is {} and has no qualified name without template arguments, and \
+                         this range takes the fully qualified spelling (§7.1 rule 4, §7.2 rule \
+                         2): it is spelled by its identifier only at the extent or the name \
+                         range of a reference to a sibling (§7.2 rule 1)",
+                        self.subject.display(Value::Entity(*entity)),
+                        why.what()
+                    ),
+                    place: Some(r),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// §7.2 rule 5 at a reference's name (`spec/landed/api/WP-137.md`): a
+    /// spelling recorded there is checked against the origin (§5.5) of
+    /// what the name written denotes, and an entity that is not its own
+    /// origin (a specialisation, a member of an instantiated class) is
+    /// the origin of nothing, so its spelling could never hold: refused
+    /// with `unsupported` at the edit of `r`, naming the entity.
+    fn own_origin(&self, e: Entity, r: Range) -> Step<()> {
+        let origin = self.subject.origin(e);
+        self.subject_value("origin", Value::Entity(origin))?;
+        if origin == e {
+            return Ok(());
+        }
+        Err(Stop::Refused {
+            errc: Errc::Unsupported,
+            message: format!(
+                "{} is made from {} (§5.5), and a name written for it is checked against that \
+                 origin, never against it, so its spelling could not hold (§7.2 rule 5): spell \
+                 the origin",
+                self.subject.display(Value::Entity(e)),
+                self.subject.display(Value::Entity(origin))
+            ),
+            place: Some(r),
+        })
     }
 
     /// §7.2 rule 1: the name range to edit instead of `r` when the code
@@ -664,7 +751,7 @@ impl Host<'_> {
         if refs.is_empty() && decls.is_empty() {
             return Ok(None);
         }
-        let [HeldPiece::Spelled { entity, key, qualified, identifier_at }] = code.pieces.as_slice()
+        let [HeldPiece::Spelled { entity, key, text, identifier_at, .. }] = code.pieces.as_slice()
         else {
             return refuse(
                 Errc::InvalidArgument,
@@ -701,7 +788,10 @@ impl Host<'_> {
                 "Subject::tiers gave None for a range replace accepted".to_owned(),
             ));
         };
-        let text = qualified.get(*identifier_at..).unwrap_or_default();
+        if !refs.is_empty() {
+            self.own_origin(e, r)?;
+        }
+        let text = text.get(*identifier_at..).unwrap_or_default();
         Ok(Some(if refs.is_empty() {
             (r, t, Narrowed::Identifier(text))
         } else {
