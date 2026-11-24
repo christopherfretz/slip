@@ -143,7 +143,6 @@ fn s2_keep_going() {
             "==> test",
             "test: ok (Ts)",
             "==> transform",
-            "transform: no transform tests yet (spec/harness.md §6)",
             "transform: ok (Ts)",
             "ci: FAILED (fmt)",
         ]
