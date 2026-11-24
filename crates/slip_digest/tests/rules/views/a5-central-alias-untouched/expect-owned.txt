@@ -1,0 +1,6 @@
+# Addendum 3 (the guard is by key): `legacy` is not one view key whose E(k) is it alone,
+# so the alias L names a part (R2's readings): it changes. Equal before (the image-wide guard).
+added acme::Dep
+changed L
+removed acme
+removed acme::Dep

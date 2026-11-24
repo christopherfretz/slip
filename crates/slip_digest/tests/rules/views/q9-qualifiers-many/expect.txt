@@ -1,0 +1,3 @@
+# Q9 (O1): a body with three redirected qualifiers.
+# WP-141 build A: = (column 5).
+use 1 via 1 direct 0

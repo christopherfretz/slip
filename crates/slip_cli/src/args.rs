@@ -352,6 +352,27 @@ pub struct TransformOptions {
     pub declared: Option<OsString>,
     /// `--result <id>`: 4 to 64 hexadecimal digits, lower-cased.
     pub result: Option<String>,
+    /// `--dependent offer|refuse|leave` (`spec/edits.md` §10.1,
+    /// `docs/wp/WP-139.md` item 4): the rename request's `dependent`;
+    /// `None`, not given (the request's default, `leave`). For `map` and `rename`, which
+    /// `docs/wp/WP-076.md` builds: no command of this version accepts it.
+    pub dependent: Option<slip_model::transform::Dependent>,
+}
+
+/// The value of `--dependent` (`spec/edits.md` §10.1): `offer`, `refuse` or
+/// `leave`.
+///
+/// # Errors
+///
+/// Any other value, as the usage error the command prints.
+pub fn parse_dependent(value: &OsStr) -> Result<slip_model::transform::Dependent, UsageError> {
+    match value.to_str().and_then(slip_model::transform::Dependent::from_name) {
+        Some(d) => Ok(d),
+        None => usage(format!(
+            "`--dependent`: `{}` is not `offer`, `refuse` or `leave`",
+            value.to_string_lossy()
+        )),
+    }
 }
 
 /// `slip __worker` (§8.4).
@@ -886,6 +907,7 @@ impl Values {
                 )),
             })
             .transpose()?;
+        let dependent = self.one("--dependent").map(|v| parse_dependent(v)).transpose()?;
         Ok(TransformOptions {
             owned,
             readonly,
@@ -899,6 +921,7 @@ impl Values {
             edits: self.one("--edits").cloned(),
             declared: self.one("--declared").cloned(),
             result,
+            dependent,
         })
     }
 }

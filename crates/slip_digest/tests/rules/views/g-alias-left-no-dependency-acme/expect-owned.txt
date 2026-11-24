@@ -1,0 +1,4 @@
+# Every file owned.
+# Addendum 3: the finding's example with an alias `namespace L = legacy;` left. R2 applies:
+# the alias names a part, so it changes.
+changed L

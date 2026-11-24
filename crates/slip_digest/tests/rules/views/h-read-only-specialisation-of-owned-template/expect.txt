@@ -1,0 +1,8 @@
+# Second review R14: a read-only file (spec.h, which differs between the images through
+# `B`, as no real read-only file can) specialises the owned template S in S's namespace. An
+# opening of acme in a read-only file makes acme the dependency's namespace (verify.md 2.1),
+# its own unit keyed acme (added acme) beside its owned part keyed legacy; the directive names a
+# part. The specialisation itself makes no part (R14 survives: see the landed file).
+added <using_directive acme>
+added acme
+removed <using_directive legacy>

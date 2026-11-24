@@ -343,11 +343,22 @@ fn own_members(
 /// function that is no template, its type not dependent, with the canonical
 /// parameter types, variadic-ness and qualifiers of its function type.
 /// `None` when it cannot be told so.
+///
+/// An explicit object member function (`void f(this B&)`) is `None`
+/// (`docs/wp/WP-139.md` item 7): its object parameter is among its
+/// parameter types, and the front end hides `B::f(this B&)` behind a
+/// `D::f()` declared with the using-declaration, in either member order,
+/// where the parameter types differ. The other shapes of item 7 need no
+/// `None`: a ref-qualifier on one side only, the front end does not hide,
+/// as the comparison says; a trailing requires-clause, which the
+/// comparison does not read, makes it say "may hide" where the front end
+/// does not hide (a superset; `tests::hiding_signature_shapes`).
 fn hiding_signature(ast: &Ast, d: DeclId) -> Option<(Vec<QualType>, bool, u8, u8)> {
     if ast.decls.get(d).kind() != DeclKind::CXXMethod {
         return None;
     }
-    if ast.decls.function(d).is_none_or(|f| f.spec.storage() == FnStorage::Static) {
+    let f = ast.decls.function(d)?;
+    if f.spec.storage() == FnStorage::Static || f.spec.has_explicit_object() {
         return None;
     }
     let q = ast.decls.get(d).ty()?;
@@ -717,4 +728,149 @@ fn is_friend_in_pattern(ast: &Ast, d: DeclId) -> bool {
         at = ast.decls.get(x).ctx();
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_correspond;
+    use crate::rename::decls;
+    use slip_kiln::ParseOptions;
+    use slip_kiln::kiln::ast::decl::DeclKind;
+    use slip_kiln::tree::Tree;
+
+    /// One shape of `docs/wp/WP-139.md` item 7 in one member order: the
+    /// unit's errors and, for each `D` (the pattern and its instantiation,
+    /// when `D` is a template), whether the front end hides `B`'s `f` there
+    /// and what [`may_correspond`] says of `D`'s `f` and `B`'s (`B<int>`'s,
+    /// when `B` is a template).
+    fn hides(name: &str, src: &str) -> (u32, Vec<(bool, bool)>) {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap();
+        let tree = Tree::new(dir, name, &[("main.cpp", src.as_bytes())]).unwrap();
+        let obs = tree.observer("main.cpp", "c++23", &[]);
+        let mut o = ParseOptions::default();
+        o.written = true;
+        o.pp_record = true;
+        let (_, r) = tree
+            .parse(&obs, &o, |u| {
+                let ast = u.ast();
+                let fs = |class: &[u8]| -> Vec<_> {
+                    ast.decls
+                        .ids()
+                        .filter(|&d| {
+                            ast.decls.get(d).kind() == DeclKind::CXXMethod
+                                && decls::name_of(ast, d) == Some(b"f")
+                                && ast.decls.get(d).ctx().and_then(|c| decls::name_of(ast, c))
+                                    == Some(class)
+                        })
+                        .collect()
+                };
+                let specialised =
+                    |d| ast.decls.get(d).ctx().is_some_and(|c| ast.spec_info(c).is_some());
+                let xs = fs(b"B");
+                let x = xs.iter().copied().find(|&d| specialised(d)).or(xs.first().copied());
+                let x = x.unwrap_or_else(|| panic!("{name}: B::f"));
+                let mut out = Vec::new();
+                for m in fs(b"D") {
+                    let class = ast.decls.get(m).ctx().unwrap();
+                    // Kiln makes a hidden shadow for a member declared after
+                    // the using-declaration, and none for one declared before
+                    // (`named_set`).
+                    let shadows: Vec<_> = ast
+                        .lookup_local(class, ast.decls.get(m).name())
+                        .iter()
+                        .filter(|&d| ast.decls.get(d).kind() == DeclKind::UsingShadow)
+                        .collect();
+                    let hidden = shadows.is_empty()
+                        || shadows.iter().all(|&s| ast.decls.hidden_shadow(s).is_some());
+                    out.push((hidden, may_correspond(ast, m, x)));
+                }
+                (u.errors(), out)
+            })
+            .unwrap();
+        r.unwrap()
+    }
+
+    /// Item 7: the shapes of a member of `D` and the `B::f` its
+    /// using-declaration names: `B`'s class, `D`'s head, the
+    /// using-declaration, `D`'s member. A requires-clause needs a templated
+    /// function: `B` or `D` is then a class template, `B<int>::f` named.
+    const SHAPES: [(&str, &str, &str, &str, &str); 8] = [
+        ("ref-on-base", "struct B { void f() &; };", "struct D : B", "using B::f;", "void f();"),
+        ("ref-on-derived", "struct B { void f(); };", "struct D : B", "using B::f;", "void f() &;"),
+        (
+            "object-on-base",
+            "struct B { void f(this B&); };",
+            "struct D : B",
+            "using B::f;",
+            "void f();",
+        ),
+        (
+            "object-on-derived",
+            "struct B { void f(); };",
+            "struct D : B",
+            "using B::f;",
+            "void f(this D&);",
+        ),
+        (
+            "object-both",
+            "struct B { void f(this B&); };",
+            "struct D : B",
+            "using B::f;",
+            "void f(this D&);",
+        ),
+        (
+            "requires-on-base",
+            "template <class T> struct B { void f() requires (sizeof(T) > 0); };",
+            "struct D : B<int>",
+            "using B<int>::f;",
+            "void f();",
+        ),
+        (
+            "requires-on-derived",
+            "struct B { void f(); };",
+            "template <class T> struct D : B",
+            "using B::f;",
+            "void f() requires (sizeof(T) > 0);",
+        ),
+        (
+            "requires-on-both",
+            "template <class T> struct B { void f() requires (sizeof(T) > 0); };",
+            "template <class T> struct D : B<int>",
+            "using B<int>::f;",
+            "void f() requires (sizeof(T) > 1);",
+        ),
+    ];
+
+    /// Item 7, both member orders: where the front end hides `B`'s `f`,
+    /// [`may_correspond`] says `D`'s `f` may hide it (a hider is never
+    /// missed); and what each says, as found at the pin. The mutation "an
+    /// explicit object parameter compared" (the `None` of
+    /// [`super::hiding_signature`] dropped) fails `object-on-base`.
+    #[test]
+    fn hiding_signature_shapes() {
+        // (hidden, may) per `D`: the pattern, then `D<int>`.
+        let expected: [&[(bool, bool)]; 8] = [
+            &[(false, false)],
+            &[(false, false)],
+            &[(true, true)],
+            &[(false, true)],
+            &[(false, true)],
+            &[(false, true)],
+            &[(false, true), (false, true)],
+            &[(false, true), (false, true)],
+        ];
+        for ((name, base, head, using, m), expected) in SHAPES.into_iter().zip(expected) {
+            for after in [true, false] {
+                let body = if after { format!("{using} {m}") } else { format!("{m} {using}") };
+                let d = if head.starts_with("template") { "D<int>" } else { "D" };
+                let src = format!("{base}\n{head} {{ {body} }};\nint u() {{ {d} d; return 0; }}\n");
+                let n = format!("hiding-{name}-{}", if after { "after" } else { "before" });
+                let (errors, got) = hides(&n, &src);
+                assert_eq!(errors, 0, "{n}");
+                assert!(got.iter().all(|&(hidden, may)| !hidden || may), "{n}: {got:?}");
+                assert_eq!(got, expected, "{n}");
+            }
+        }
+    }
 }

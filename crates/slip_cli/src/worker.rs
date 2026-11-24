@@ -543,6 +543,7 @@ mod tests {
             reports: vec![],
             changed: vec![],
             renamed: vec![],
+            instances: vec![],
         };
         let (job, other) = (Digest([5; 32]), Digest([6; 32]));
         assert!(checked_edits(Some((section(job), vec![])), job).is_ok());

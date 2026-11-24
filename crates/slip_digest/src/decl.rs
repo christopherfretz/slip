@@ -260,8 +260,13 @@ impl Walk<'_> {
             DeclKind::NamespaceAlias | DeclKind::UsingDirective | DeclKind::UsingEnum => {
                 match ast.using_target(d) {
                     Some(t) => {
-                        let t = if kind == DeclKind::UsingEnum { t } else { ast.resolve_alias(t) };
-                        self.write_ref(s, t);
+                        if kind == DeclKind::UsingEnum {
+                            self.write_ref(s, t);
+                        } else {
+                            // R2 (WP-141, `ns_refs.rs`): the namespace named
+                            // whole.
+                            self.write_ns_whole(s, d, ast.resolve_alias(t));
+                        }
                     }
                     None => {
                         s.uv(crate::refs::REF_NONE)

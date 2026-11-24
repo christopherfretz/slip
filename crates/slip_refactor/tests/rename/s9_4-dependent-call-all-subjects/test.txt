@@ -1,4 +1,5 @@
-spec: edits.md §9.4 row 1 (the declarations found at the definition are all subjects: replace with a literal piece, and a changed entry for the holder n::t), WP-073 part A
+spec: edits.md §9.4 row 1 (the declarations found at the definition are all subjects: replace with a literal piece; no changed entry, the holder n::t compared mapped once docs/wp/WP-154.md lands), WP-073 part A
 from: n::f
 to: g
 kind: function
+dependent: offer

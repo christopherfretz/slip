@@ -674,7 +674,14 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
                     raise(w, e);
                 }
             }
+            if ast.templates.expr_nns.get(e).is_some() {
+                // R1 (WP-141): the qualifier names the namespace to find
+                // the set found at the definition.
+                w.ns_refs.pending = crate::ns_refs::found_of(w, e);
+            }
             nns_opt(w, s, ast.templates.expr_nns.get(e).copied());
+            // Never past this name's qualifier.
+            w.ns_refs.pending = None;
             push_args(w, s, ast.templates.expr_targs.get(e).copied(), stack);
         }
         K::DependentScopeDeclRefExpr => {

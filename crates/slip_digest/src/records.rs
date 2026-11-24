@@ -392,6 +392,7 @@ mod tests {
             rule_use: Vec::new(),
             kept: Vec::new(),
             name_strings: Vec::new(),
+            namespace_parts: Vec::new(),
             made: Vec::new(),
             fixed: Vec::new(),
         }
@@ -459,6 +460,7 @@ mod tests {
                 rule_use: Vec::new(),
                 kept: Vec::new(),
                 name_strings: Vec::new(),
+                namespace_parts: Vec::new(),
                 made: Vec::new(),
                 fixed: Vec::new(),
             };

@@ -1,0 +1,11 @@
+# A1 (O1): must differ: the owned re-export dropped, the references retargeted to the dependency's.
+# Pinned as it is before WP-141's build.
+added <using acme::string>
+changed template <class> type-parameter-0-0 g(type-parameter-0-0)
+removed <using legacy::string>
+removed legacy::<shadow std::string>
+removed legacy::<shadow template <class> type-parameter-0-0 && std::forward(type-parameter-0-0 &&)>
+removed legacy::<shadow template <class> type-parameter-0-0 && std::forward(type-parameter-0-0 &)>
+removed legacy::<using std::forward>
+removed legacy::<using std::string>
+use 1 via 1 direct 0

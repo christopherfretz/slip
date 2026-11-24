@@ -1,0 +1,4 @@
+# A2 (O1): finding: a dependent destructor p->N::Q::~Q() (expr_nns with no found set).
+# Pinned as it is before WP-141's build.
+indeterminate template <class> void f(type-parameter-0-0)
+use 1 via 1 direct 0

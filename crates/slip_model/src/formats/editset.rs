@@ -7,12 +7,13 @@ use std::collections::BTreeSet;
 
 use crate::edits::{FailureKind, Piece, Place, Reason, Stance};
 use crate::editset::{
-    Cause, Edit, EditSet, Exempt, FIRST_MAX, Failed, Refusal, Reported, SCHEME, SetState, cross,
+    Cause, Edit, EditSet, Exempt, FIRST_MAX, Failed, Refusal, Reported, SCHEME, Seen, SetState,
+    cross,
 };
 use crate::json::Value;
 use crate::keys::{DUPLICATE_RULE, RuleTable, SAME_PRODUCED_RULE, SortError, UNSORTED_RULES};
 use crate::transform::{is_canonical, is_file_path};
-use crate::wire::{Decoder, Encoder};
+use crate::wire::{Decoder, Encoder, Error, ErrorKind};
 use crate::{Counter, Digest};
 
 use super::common::{
@@ -23,11 +24,12 @@ use super::common::{
 };
 use super::declared::{json_rule, read_rule};
 use super::edits::{
-    SubjectField, ascending, dec_failure, dec_macro, dec_piece, dec_place, dec_report, dec_subject,
-    enc_failure, enc_macro, enc_opt, enc_piece, enc_place, enc_report, enc_subject, json_digests,
-    json_failure, json_macro, json_piece, json_place, json_report, json_subject, piece_violation,
-    read_failure, read_macro, read_piece, read_place, read_report, read_subject, record,
-    rule_names, subject_violation, tier_violation, within,
+    SubjectField, ascending, dec_failure, dec_instance, dec_macro, dec_piece, dec_place,
+    dec_report, dec_subject, enc_failure, enc_instance, enc_macro, enc_opt, enc_piece, enc_place,
+    enc_report, enc_subject, json_digests, json_failure, json_instance, json_macro, json_piece,
+    json_place, json_report, json_subject, piece_violation, read_failure, read_instance,
+    read_macro, read_piece, read_place, read_report, read_subject, record, rule_names,
+    subject_violation, tier_violation, within,
 };
 use super::shard::is_counter_name;
 use super::{
@@ -129,6 +131,9 @@ enum Loc {
     FailureSubject(usize),
     CounterName(usize),
     Counter(usize),
+    Instance(usize),
+    InstanceSubjects(usize),
+    InstanceFirst(usize),
 }
 
 impl Loc {
@@ -170,6 +175,9 @@ impl Loc {
             Loc::FailureSubject(i) => format!("{S}.failures[{i}].failure.refusal.subject"),
             Loc::CounterName(i) => format!("{S}.counters[{i}].name"),
             Loc::Counter(i) => format!("{S}.counters[{i}]"),
+            Loc::Instance(i) => format!("{S}.instances[{i}]"),
+            Loc::InstanceSubjects(i) => format!("{S}.instances[{i}].instance.subjects"),
+            Loc::InstanceFirst(i) => format!("{S}.instances[{i}].first"),
         }
     }
 }
@@ -258,6 +266,40 @@ fn violation(x: &EditSet) -> Violation {
         .or_else(|| refusal_violation(x))
         .or_else(|| counter_violation(&x.counters))
         .or_else(|| state_violation(x))
+        .or_else(|| instance_violation(x))
+}
+
+/// Row 19 (WP-139), for each instance in turn: strictly ascending by the
+/// instance; its place the range of an edit or of a refusal of a site;
+/// its `subjects` strictly ascending; `first` as row 14 says.
+fn instance_violation(x: &EditSet) -> Violation {
+    let sites: BTreeSet<(u64, u64, u64)> =
+        x.refusals.iter().filter_map(|r| Some((r.file?, r.lo, r.hi))).collect();
+    let at_edit = |p: &Place| {
+        x.edits.binary_search_by(|e| (e.file, e.lo, e.hi).cmp(&(p.file, p.lo, p.hi))).is_ok()
+    };
+    for (i, s) in x.instances.iter().enumerate() {
+        let p = &s.instance.place;
+        if i > 0 && x.instances[i - 1].instance >= s.instance {
+            return Some((Loc::Instance(i), "instances are not strictly ascending"));
+        }
+        if !at_edit(p) && !sites.contains(&(p.file, p.lo, p.hi)) {
+            return Some((
+                Loc::Instance(i),
+                "an instance's place is the range of no edit and of no refusal of a site",
+            ));
+        }
+        if ascending(&s.instance.subjects).is_some() {
+            return Some((
+                Loc::InstanceSubjects(i),
+                "an instance's subjects are not strictly ascending",
+            ));
+        }
+        if let Some(what) = first_what(&s.first, s.observers) {
+            return Some((Loc::InstanceFirst(i), what));
+        }
+    }
+    None
 }
 
 /// Row 7 for every edit in turn: strictly ascending by `(file,
@@ -873,6 +915,12 @@ pub(super) fn encode(x: &EditSet, extras: &[Extra<'_>]) -> Vec<u8> {
     for c in &x.counters {
         e.str(&c.name).uv(c.value);
     }
+    e.count(x.instances.len());
+    for s in &x.instances {
+        enc_instance(&mut e, &s.instance);
+        e.uv(s.observers);
+        enc_digests(&mut e, &s.first);
+    }
     seal(EditSet::KIND, EditSet::VERSION, &[(SET, e.as_bytes())], extras)
 }
 
@@ -893,6 +941,7 @@ struct Offsets {
     report: Vec<[usize; 2]>,
     failure: Vec<[usize; 3]>,
     counter: Vec<usize>,
+    instance: Vec<[usize; 3]>,
 }
 
 #[derive(Debug, Default)]
@@ -954,6 +1003,9 @@ impl Offsets {
             Loc::FailureFirst(i) => self.failure[i][1],
             Loc::FailureSubject(i) => self.failure[i][2],
             Loc::CounterName(i) | Loc::Counter(i) => self.counter[i],
+            Loc::Instance(i) => self.instance[i][0],
+            Loc::InstanceSubjects(i) => self.instance[i][1],
+            Loc::InstanceFirst(i) => self.instance[i][2],
         }
     }
 }
@@ -969,10 +1021,22 @@ fn dec_counts(d: &mut Decoder<'_>, first_at: &mut usize) -> Result<(u64, Vec<Dig
     Ok((observers, dec_digests(d)?))
 }
 
+/// The first version read: version 2 (`docs/wp/WP-139.md`) added
+/// `instances`, and no reader of version 1 is kept before a release
+/// (`spec/edits.md` §6): a version-1 set has no record of the
+/// instantiations its dependent edits were made on.
+const SINCE: u32 = 2;
+
+/// The message of a version this reader no longer reads.
+const OLD_VERSION: &str = "container version older than supported";
+
 /// The edit set, its unknown ignorable sections and its content id.
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
 pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> {
     let opened = open(bytes, EditSet::KIND, EditSet::VERSION, [SET])?;
+    if opened.version < SINCE {
+        return Err(Error::new(ErrorKind::UnsupportedVersion, 12, OLD_VERSION));
+    }
     let [section] = opened.sections;
     let mut section = super::required(section, opened.end, "edit set has no set section")?;
     let d = &mut section;
@@ -1078,6 +1142,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
     let counters = dec_list(d, Some(&mut o.counter), |d| {
         Ok(Counter { name: d.str()?.to_owned(), value: d.uv()? })
     })?;
+    let instances = dec_list(d, None, |d| {
+        let start = d.offset();
+        let (instance, subjects_at) = dec_instance(d)?;
+        let mut first_at = 0;
+        let (observers, first) = dec_counts(d, &mut first_at)?;
+        o.instance.push([start, subjects_at, first_at]);
+        Ok(Seen { instance, observers, first })
+    })?;
     section.finish()?;
     let x = EditSet {
         scheme,
@@ -1099,6 +1171,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
         failures,
         unparsed,
         counters,
+        instances,
     };
     if let Some((l, what)) = violation(&x) {
         return Err(malformed(o.of(l), what));
@@ -1111,7 +1184,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
 
 const NAMES: [SectionName; 1] = [SectionName { id: SET, name: "set", required: true }];
 
-const FIELDS: [&str; 19] = [
+const FIELDS: [&str; 20] = [
     "scheme",
     "plan",
     "round",
@@ -1131,6 +1204,7 @@ const FIELDS: [&str; 19] = [
     "failures",
     "unparsed",
     "counters",
+    "instances",
 ];
 const EDIT: [&str; 11] = [
     "file",
@@ -1151,6 +1225,7 @@ const REFUSAL: [&str; 10] =
 const REPORTED: [&str; 3] = ["report", "observers", "first"];
 const FAILED: [&str; 3] = ["failure", "observers", "first"];
 const COUNTER: [&str; 2] = ["name", "value"];
+const SEEN: [&str; 3] = ["instance", "observers", "first"];
 
 fn json_list<T>(list: &[T], f: impl Fn(&T) -> Value) -> Value {
     Value::Array(list.iter().map(f).collect())
@@ -1236,6 +1311,12 @@ pub(super) fn render(x: &EditSet, extras: &[Extra<'_>]) -> Value {
             json_list(&x.counters, |c| {
                 record(COUNTER, [Value::Str(c.name.clone()), json_uv(c.value)])
             }),
+            json_list(&x.instances, |s| {
+                record(
+                    SEEN,
+                    [json_instance(&s.instance), json_uv(s.observers), json_digests(&s.first)],
+                )
+            }),
         ],
     );
     render_container(EditSet::KIND, EditSet::VERSION, vec![("set", set)], extras)
@@ -1245,6 +1326,13 @@ pub(super) fn render(x: &EditSet, extras: &[Extra<'_>]) -> Value {
 #[allow(clippy::too_many_lines, reason = "one member per field of spec/edits.md §6")]
 pub(super) fn read(v: &Value) -> JResult<(EditSet, OwnedExtras)> {
     let s = read_container(v, EditSet::KIND, EditSet::VERSION, &NAMES)?;
+    if s.version < SINCE {
+        let have = s.version;
+        return Err(At::Root.key("version").error(format!(
+            "unsupported version {have}; this reader supports {SINCE} to {}",
+            EditSet::VERSION
+        )));
+    }
     let [Some(section)] = s.known else {
         unreachable!("read_container returns every required section")
     };
@@ -1271,6 +1359,7 @@ pub(super) fn read(v: &Value) -> JResult<(EditSet, OwnedExtras)> {
         failures,
         unparsed,
         counters,
+        instances,
     ] = read_record(section, &at, FIELDS)?;
     let x = EditSet {
         scheme: read_uv(scheme, &at.key("scheme"))?,
@@ -1351,6 +1440,14 @@ pub(super) fn read(v: &Value) -> JResult<(EditSet, OwnedExtras)> {
             Ok(Counter {
                 name: read_str(name, &at.key("name"))?.to_owned(),
                 value: read_uv(value, &at.key("value"))?,
+            })
+        })?,
+        instances: read_list(instances, &at.key("instances"), |v, at| {
+            let [instance, observers, first] = read_record(v, at, SEEN)?;
+            Ok(Seen {
+                instance: read_instance(instance, &at.key("instance"))?,
+                observers: read_uv(observers, &at.key("observers"))?,
+                first: read_list(first, &at.key("first"), read_digest)?,
             })
         })?,
     };

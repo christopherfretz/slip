@@ -1,0 +1,11 @@
+# Every file owned: acme is owned and mapped (to legacy); the dependency's entities move units.
+changed <order>
+changed u()
+added acme
+added acme::(anonymous namespace)
+added acme::(anonymous namespace)::hidden
+added acme::Dep
+removed acme
+removed acme::(anonymous namespace)
+removed acme::(anonymous namespace)::hidden
+removed acme::Dep

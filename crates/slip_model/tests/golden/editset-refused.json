@@ -1,6 +1,6 @@
 {
   "kind": "EDTS",
-  "version": 1,
+  "version": 2,
   "sections": {
     "set": {
       "scheme": 1,
@@ -246,7 +246,8 @@
           "name": "reduce.edits",
           "value": 3
         }
-      ]
+      ],
+      "instances": []
     }
   }
 }

@@ -6,8 +6,10 @@ claims:
   main.cpp:1:88+1 replace "w" t0 votes=1 none [d7b266e8]
   main.cpp:1:125+1 replace "w" t0 votes=1 none [d7b266e8]
   main.cpp:2:37+1 replace "w" t0 votes=1 none [d7b266e8]
-  main.cpp:3:40+1 refuse t0 votes=1 mixed_instances [d7b266e8]
+  main.cpp:3:40+1 replace "w" t0 votes=1 none [d7b266e8]
   main.cpp:3:50+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
   main.cpp:4:21+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
   main.cpp:4:34+1 replace spell(d7b266e8, "w") t0 votes=1 none [d7b266e8]
 changed:
+instances:
+  main.cpp:3:40+1 935ec61a g<long>() [d7b266e8]

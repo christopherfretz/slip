@@ -1,0 +1,4 @@
+# Q6 (O1): acme::g(t) now also finds the dependency's acme::g.
+# Pinned as it is before WP-141's build.
+changed template <class> int f(type-parameter-0-0)
+use 1 via 1 direct 0

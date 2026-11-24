@@ -164,6 +164,7 @@ impl Tree {
                 target: vec![b"f".to_vec()],
                 kind: TargetKind::Any,
                 new_name: b"g".to_vec(),
+                dependent: slip_model::transform::Dependent::default(),
             }),
             script: None,
         };

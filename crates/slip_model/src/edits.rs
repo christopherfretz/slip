@@ -121,6 +121,11 @@ pub enum Reason {
     /// The range holds a directive or part of a skipped group (§2.3).
     /// Added by WP-068.
     Directive = 10,
+    /// A dependent name that an instantiation the observer made binds to a
+    /// subject, under a request whose `dependent` is `refuse` (§9.4).
+    /// Added by WP-139, item 8: `mixed_instances` is the name some
+    /// instantiations bind to a subject and some to another declaration.
+    Instantiated = 11,
 }
 
 /// The bits of `Claim::tiers` (§2.2, §4.2): bit t for tier t, bit 4 for X.
@@ -199,6 +204,25 @@ pub struct Changed {
     pub reason: Vec<u8>,
 }
 
+/// What one instantiation the observer made bound a dependent name to
+/// (§4.5, §9.4): the evidence a rename's claim at the name was made on.
+/// Added by `docs/wp/WP-139.md` (items 3 and 5). The derived order is the
+/// section's: `(place, spec, display, subjects)`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instance {
+    /// The name token in the pattern: `lo < hi`.
+    pub place: Place,
+    /// The key id of the specialisation whose instantiation bound the
+    /// name; absent if it has none (a local entity's, a generic lambda's
+    /// call operator).
+    pub spec: Option<KeyId>,
+    /// The specialisation as a person would write it; for reports only.
+    pub display: String,
+    /// The subjects the name denotes there; sorted, no two equal. Empty: a
+    /// declaration that is no subject.
+    pub subjects: Vec<KeyId>,
+}
+
 /// How a run of a programmable transform failed (§4.6, `spec/api.md` §2.8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FailureKind {
@@ -268,6 +292,9 @@ pub struct Edits {
     /// A rule table (`spec/verify.md` §2): sorted by the bytes of the
     /// encoded `(parent, kind, name, disc)`, no two with the same.
     pub renamed: Vec<Rule>,
+    /// Sorted, no two equal (§4.5). Added by WP-139: the section's id is
+    /// 32 since (`spec/model.md` §8).
+    pub instances: Vec<Instance>,
 }
 
 impl Piece {
@@ -442,6 +469,9 @@ impl Edits {
         for c in &mut self.changed {
             remap(&mut c.place.file);
         }
+        for i in &mut self.instances {
+            remap(&mut i.place.file);
+        }
         if let Some(Some(place)) =
             self.failure.as_mut().map(|f| f.refusal.as_mut().and_then(|r| r.subject.as_mut()))
         {
@@ -494,5 +524,9 @@ impl Edits {
         sort_unique(&mut self.changed);
         self.renamed.sort_by(rule_order);
         self.renamed.dedup();
+        for i in &mut self.instances {
+            sort_unique(&mut i.subjects);
+        }
+        sort_unique(&mut self.instances);
     }
 }

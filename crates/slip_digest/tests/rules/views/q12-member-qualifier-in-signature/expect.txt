@@ -1,0 +1,5 @@
+# Q12 (O1): decltype(t.legacy::B::f()) in a signature (row 6).
+# Pinned as it is before WP-141's build.
+added template <class> decltype(t.acme::B::f()) f(type-parameter-0-0)
+removed template <class> decltype(t.legacy::B::f()) f(type-parameter-0-0)
+use 1 via 1 direct 0

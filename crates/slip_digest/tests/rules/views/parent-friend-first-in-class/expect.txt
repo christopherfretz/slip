@@ -1,0 +1,3 @@
+# WP-141 (keyed under it, lexical and semantic parents differ): fr first declared as a friend in the read-only
+# acme::Dep, redeclared in an owned opening of acme: the class's (dependency) entity, keyed
+# in the dependency view; acme holds nothing owned: equal.

@@ -1,6 +1,6 @@
 {
   "kind": "TRFM",
-  "version": 1,
+  "version": 2,
   "sections": {
     "transform": {
       "kind": "script",

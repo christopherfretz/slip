@@ -1,0 +1,3 @@
+# C6 (O2): using namespace legacy; using namespace acme;, untouched.
+# Pinned as it is before WP-141's build.
+use 1 via 1 direct 0

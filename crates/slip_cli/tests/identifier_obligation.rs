@@ -189,6 +189,7 @@ fn edit_set(out: &RunOutput, path: &[u8], pre: &str) -> EditSet {
         failures: vec![],
         unparsed: vec![],
         counters: vec![],
+        instances: Vec::new(),
     };
     set.validate().unwrap_or_else(|e| panic!("the edit set is invalid: {e}"));
     set

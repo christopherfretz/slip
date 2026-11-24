@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use slip_model::container::{Reader, Writer};
 use slip_model::edits::{
-    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Link, MacroSite, Piece, Place,
-    Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, tiers,
+    Changed, Claim, Edits, Failure, FailureKind, HostRefusal, Instance, Link, MacroSite, Piece,
+    Place, Reason, Report, Role, SCHEME, Severity, SourcePlace, Stance, Subject, tiers,
 };
 use slip_model::editset::{Cause, EditSet, Refusal};
 use slip_model::formats::content_id;
@@ -78,6 +78,7 @@ pub fn rename() -> Transform {
             target: vec![b"n".to_vec(), b"f".to_vec()],
             kind: TargetKind::Any,
             new_name: b"g".to_vec(),
+            dependent: slip_model::transform::Dependent::Offer,
         }),
         script: None,
     }
@@ -216,6 +217,9 @@ pub struct ShardB {
     pub reports: Vec<(Option<(Vec<u8>, u64, u64)>, Severity, Vec<u8>, bool)>,
     pub changed: Vec<(Digest, Vec<u8>, u64, u64, Vec<u8>)>,
     pub renamed: BTreeSet<Rule>,
+    /// The section's instances (WP-139): place, specialisation, display,
+    /// subjects.
+    pub instances: Vec<(Vec<u8>, u64, u64, Option<Digest>, String, Vec<Digest>)>,
     pub failure: Option<(FailureKind, String, String, Option<(Vec<u8>, u64, u64)>)>,
     pub counters: BTreeMap<String, u64>,
     pub edits: bool,
@@ -240,6 +244,7 @@ impl ShardB {
             reports: Vec::new(),
             changed: Vec::new(),
             renamed: BTreeSet::new(),
+            instances: Vec::new(),
             failure: None,
             counters: BTreeMap::new(),
             edits: true,
@@ -358,6 +363,19 @@ impl ShardB {
         self
     }
 
+    /// An instance (WP-139) at `[lo, hi)` of `path`.
+    pub fn instance(
+        mut self,
+        (path, lo, hi): (&str, u64, u64),
+        spec: Option<Digest>,
+        display: &str,
+        subjects: &[Digest],
+    ) -> ShardB {
+        let entry = (path.as_bytes().to_vec(), lo, hi, spec, display.to_owned(), subjects.to_vec());
+        self.instances.push(entry);
+        self
+    }
+
     pub fn renamed(mut self, rule: Rule) -> ShardB {
         self.renamed.insert(rule);
         self
@@ -400,6 +418,9 @@ impl ShardB {
         }
         for c in &self.changed {
             paths.push(c.1.clone());
+        }
+        for i in &self.instances {
+            paths.push(i.0.clone());
         }
         if let Some((.., Some(s))) = &self.failure {
             paths.push(s.0.clone());
@@ -522,6 +543,23 @@ impl ShardB {
             reports: if failed { Vec::new() } else { reports },
             changed: if failed { Vec::new() } else { changed },
             renamed: if failed { Vec::new() } else { renamed },
+            instances: if failed {
+                Vec::new()
+            } else {
+                let mut v: Vec<Instance> = self
+                    .instances
+                    .iter()
+                    .map(|(path, lo, hi, spec, display, subjects)| Instance {
+                        place: place(&(path.clone(), *lo, *hi)),
+                        spec: *spec,
+                        display: display.clone(),
+                        subjects: subjects.clone(),
+                    })
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            },
         };
         let inputs = self.inputs.as_ref().map(|extra| {
             let mut all: BTreeMap<Vec<u8>, FileRef> = extra.clone();

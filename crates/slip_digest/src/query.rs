@@ -244,6 +244,29 @@ impl<'a> Keys<'a> {
         }
     }
 
+    /// Whether the rules may give a namespace a second key
+    /// (`ns_refs.rs`): without, every namespace's key is `key_id`'s.
+    pub(crate) fn ns_rules(&self) -> bool {
+        self.w.ns_rules()
+    }
+
+    /// A5 (WP-141): the single key R1 writes for namespace `ns` named to
+    /// find `found` (`None`: `Ref::views`, or no key).
+    pub(crate) fn ns_found_key(&mut self, ns: DeclId, found: &[DeclId]) -> Option<Digest> {
+        self.w.ns_found_key(ns, found)
+    }
+
+    /// A5: the view keys of namespace `ns`.
+    pub(crate) fn ns_view_keys(&mut self, ns: DeclId) -> Vec<Digest> {
+        self.w.ns_view_keys(ns).into_iter().map(|(_, k)| k).collect()
+    }
+
+    /// A5: the key of the whole reading `d` (a using-directive or alias)
+    /// writes for its target (`None`: not whole).
+    pub(crate) fn ns_whole_key(&mut self, d: DeclId) -> Option<Digest> {
+        self.w.ns_whole_key(d)
+    }
+
     /// The key itself (digest §3): `key(e)?.id() == key_id(e)?`, and the
     /// two refuse alike. Under `with_rules` it is the mapped key. Its
     /// `parent` is a key id: the key of the enclosing entity is `key` of

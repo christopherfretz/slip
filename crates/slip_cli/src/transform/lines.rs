@@ -215,10 +215,12 @@ pub(crate) fn write_capped(
     }
 }
 
-/// The `refusal`, `report`, `failed run` and `exempt` lines of §10.5, each
+/// The `refusal`, `report`, `failed run`, `exempt` and `instance` lines of
+/// §10.5 (the last under their heading line), each
 /// list in the order of its record and cut at [`DETAIL_MAX`], followed by
 /// `<kind>: <n> more (slip dump <record>)`; `record` is the file of the
 /// edit set. Lines and columns come from `files`, the pre-image.
+#[allow(clippy::too_many_lines, reason = "one block per kind of line, in the order of §10.5")]
 pub fn edit_set_details(
     set: &EditSet,
     plan: &Plan,
@@ -326,4 +328,52 @@ pub fn edit_set_exempt_details(
         line
     });
     write_capped("exempt", exempt, record, out);
+
+    // The names edited, or refused, on the evidence of instantiations
+    // (`spec/edits.md` §10.5, `docs/wp/WP-139.md` items 3 and 5).
+    if set.instances.is_empty() {
+        return;
+    }
+    let edited = |p: &slip_model::edits::Place| {
+        set.edits.binary_search_by(|e| (e.file, e.lo, e.hi).cmp(&(p.file, p.lo, p.hi))).is_ok()
+    };
+    let mut at: Vec<(bool, slip_model::edits::Place)> =
+        set.instances.iter().map(|s| (edited(&s.instance.place), s.instance.place)).collect();
+    at.dedup();
+    let n_edited = at.iter().filter(|a| a.0).count();
+    let _ = writeln!(
+        out,
+        "instances: {n_edited} edited, {} refused; a specialisation made only outside the run is \
+         not checked{}",
+        at.len() - n_edited,
+        if n_edited > 0 {
+            // `spec/edits.md` §10.5: the holder of an edited dependent
+            // name differs until dependent names are compared mapped.
+            "; the run cannot verify a name edited here until dependent names are compared mapped"
+        } else {
+            ""
+        }
+    );
+    let instances = set.instances.iter().map(|s| {
+        let i = &s.instance;
+        let what = if edited(&i.place) { "edited" } else { "refused" };
+        let mut line = format!("instance {what} ").into_bytes();
+        line.extend_from_slice(&places.place(i.place.file, i.place.lo));
+        line.extend_from_slice(b": ");
+        line.extend_from_slice(printable(i.display.as_bytes()).as_bytes());
+        line.extend_from_slice(b": ");
+        if i.subjects.is_empty() {
+            line.extend_from_slice(b"another declaration");
+        }
+        for (n, k) in i.subjects.iter().enumerate() {
+            if n > 0 {
+                line.extend_from_slice(b", ");
+            }
+            let d = displays.get(k).map_or_else(|| k.to_string(), |d| printable(d.as_bytes()));
+            line.extend_from_slice(d.as_bytes());
+        }
+        line.extend_from_slice(&observers_part(s.observers, &s.first, &mains, relative_to));
+        line
+    });
+    write_capped("instance", instances, record, out);
 }

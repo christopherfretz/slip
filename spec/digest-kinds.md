@@ -374,6 +374,17 @@ A `DeclId` written as `ref` is first resolved to its entity: through a
 `UsingShadow` to its target, through an alias to what it names where the
 row says so, and from any redeclaration to the entity's key.
 
+A `ref` to a namespace is `Ref::unit` of its key, but at the sites of
+digest §3.4 "A reference to a namespace" (WP-141): the scope of a
+using-declaration in its key, the namespace qualifier of an unresolved
+name (`UnresolvedLookupExpr`, in a stream and in a profile) and of a
+qualified concept-id (`ConceptSpecializationExpr`) can be
+`Ref::views` (6: the count, then the view keys ascending); the target of
+a using-directive at namespace scope and of a namespace alias can be
+`Ref::part` (7: the key, then the view as a `bool`, `true` owned). Both
+need a namespace rule and a namespace of the image with two view keys;
+neither is ever written for a pre-image.
+
 ### 2.3 Redeclarations
 
 A unit is an entity, not a declaration (digest §2.1). Its stream is
