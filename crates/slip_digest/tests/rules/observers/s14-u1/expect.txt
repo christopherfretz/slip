@@ -1,0 +1,2 @@
+# WP-146 stage 1. S14: the owned observer, which leaves other and moves f.
+made fresh::f()

@@ -81,6 +81,11 @@ verified
       "used": [],
       "total": 0,
       "findings": []
+    },
+    "binding": {
+      "overlay": null,
+      "declared": "1df101a21fe96c2dbac45dc569ef03a35b2a1eed5ba122510a0f7413b44c1d6e",
+      "pre": 0
     }
   }
 }
@@ -193,6 +198,11 @@ mismatch
           }
         }
       ]
+    },
+    "binding": {
+      "overlay": null,
+      "declared": "1df101a21fe96c2dbac45dc569ef03a35b2a1eed5ba122510a0f7413b44c1d6e",
+      "pre": 0
     }
   }
 }
@@ -220,7 +230,12 @@ diagnosed
         "content": "1d2f4f314c9e5b36cd3dae3f19ba0e576ae0152a8c1c7ec763b80f50e1e3ef29"
       }
     ],
-    "counters": []
+    "counters": [],
+    "binding": {
+      "overlay": null,
+      "declared": "1df101a21fe96c2dbac45dc569ef03a35b2a1eed5ba122510a0f7413b44c1d6e",
+      "pre": 0
+    }
   }
 }
 
@@ -307,6 +322,11 @@ unverifiable
       "used": [],
       "total": 0,
       "findings": []
+    },
+    "binding": {
+      "overlay": null,
+      "declared": "1df101a21fe96c2dbac45dc569ef03a35b2a1eed5ba122510a0f7413b44c1d6e",
+      "pre": 0
     }
   }
 }

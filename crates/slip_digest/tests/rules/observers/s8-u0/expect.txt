@@ -1,0 +1,3 @@
+# WP-146 stage 1. S8, a friend a dependency's class declares: the dependency's observer.
+fixed T old::D
+fixed T old::peek(const old::D &)

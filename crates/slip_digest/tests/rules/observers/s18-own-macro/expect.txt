@@ -1,0 +1,2 @@
+# WP-146 stage 1. S18: the name spelled by the owned macro.
+made fresh::Thing

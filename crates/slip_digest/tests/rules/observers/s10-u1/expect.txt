@@ -1,0 +1,2 @@
+# WP-146 stage 1. S10, the mirror: the owned definer of old::g, moved to fresh.
+made fresh::g(int)

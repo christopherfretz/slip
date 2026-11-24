@@ -319,6 +319,8 @@ fn s8_5_cause_counters() {
         kept: Vec::new(),
         name_strings: Vec::new(),
         namespace_parts: Vec::new(),
+        made: Vec::new(),
+        fixed: Vec::new(),
     };
     let got: Vec<(String, u64)> =
         counters(&output).into_iter().map(|c| (c.name, c.value)).collect();
@@ -701,5 +703,14 @@ fn s9_5_map_unit_passes_rule_use_through() {
         [slip_model::agreement::Use { rule: 0, via: 1, direct: 0, kept_via: 0 }]
     );
     assert!(off.rule_use.is_empty());
-    assert_eq!(Output { rule_use: Vec::new(), kept: Vec::new(), ..on }, off);
+    assert_eq!(
+        Output {
+            rule_use: Vec::new(),
+            kept: Vec::new(),
+            made: Vec::new(),
+            fixed: Vec::new(),
+            ..on
+        },
+        off
+    );
 }

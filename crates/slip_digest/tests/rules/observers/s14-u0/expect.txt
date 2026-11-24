@@ -1,0 +1,2 @@
+# WP-146 stage 1. S14, a dependency entity not moved: the dependency's observer.
+fixed T old::other(int)

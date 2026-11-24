@@ -1,0 +1,2 @@
+# WP-146 ruling 2, F1: Y reads the dependency's fresh::D, which a rule would move were it owned.
+fixed M fresh::D

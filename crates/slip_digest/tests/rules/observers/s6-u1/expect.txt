@@ -1,0 +1,2 @@
+# WP-146 stage 1. S6: the owned observer of t.h.
+made fresh::twice(int)

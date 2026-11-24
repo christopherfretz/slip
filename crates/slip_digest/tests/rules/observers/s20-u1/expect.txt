@@ -1,0 +1,2 @@
+# WP-146 stage 1. S20: the owned definition inside old.
+lists empty

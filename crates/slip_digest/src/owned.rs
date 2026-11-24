@@ -160,6 +160,20 @@ pub(crate) struct OwnedState {
     /// owned, rules apply along the chain) when that is not the
     /// namespace's own ownership.
     pub views: HashMap<(DeclId, bool), KeyRes>,
+    /// Set when the walk forms its lists of ownership (`own_lists.rs`,
+    /// WP-146): `ns_parents` and `keyed` are kept.
+    pub record_parents: bool,
+    /// The namespace (its entity) each entity (its entity) was keyed
+    /// under, in any view (`Walk::namespace_parent`): the chain of
+    /// namespaces `own_lists.rs` climbs. Kept only with `record_parents`.
+    pub ns_parents: HashMap<DeclId, DeclId>,
+    /// Each entity whose own key `Walk::keys` memoises: whether the key
+    /// was formed under the rules (`Walk::rule_applies` as `Walk::key_in`
+    /// asked it: owned), and the key before the table. Kept only with
+    /// `record_parents`, beside the memo, so that the lists read the
+    /// ownership the key was formed under, not `Walk::owned` again
+    /// (WP-146 ruling 2, F5).
+    pub keyed: HashMap<DeclId, (bool, slip_model::keys::Key)>,
 }
 
 impl Walk<'_> {

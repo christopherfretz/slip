@@ -1,0 +1,2 @@
+# WP-146 stage 1. S5: the owned observer that moves its old.
+made fresh::A

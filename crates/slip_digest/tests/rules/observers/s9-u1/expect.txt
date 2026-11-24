@@ -1,0 +1,2 @@
+# WP-146 stage 1. S9: entered directly.
+made fresh::g(int)
