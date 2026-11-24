@@ -12,7 +12,9 @@ was not read: §2 and §3 are the supervisor's summary of it, of the
 answers given, and of Kiln's answer of 2026-11-24 (§2.1), which is
 used here as fact. The digest design this request serves is
 [spec/landed/digest/WP-153.md](../../spec/landed/digest/WP-153.md)
-("the proposal").
+("the proposal"). Kiln cannot read Slip's repository: §2.1, §4, §5, §6 and §9
+were sent inline in four messages, with the additions marked "(sent
+inline)" below.
 
 ## 1. The Slip need
 
@@ -434,7 +436,9 @@ slot per written argument of the partial specialisation;
 `Satisfaction`, one slot per atomic constraint of the normal form, in
 its order, empty for an atom not substituted or failed; `DefaultArg`
 and `Alias`, one. The slot's place matters: it keeps "bound in the
-first atom" apart from "bound in the second".
+first atom" apart from "bound in the second". Asked (sent inline):
+is one slot per atom of the normal form a shape Kiln can give, also
+for a concept-id's own check over the concept's normal form?
 
 **The second form, if a root is not possible for a kind**: rows whose
 entry is a pattern node and not a written-reference entry
@@ -453,7 +457,9 @@ would then need a way to name such a node as it names an entry (§5.1).
 `__builtin_*_synthesizes_from_spaceship` family;
 `kiln/crates/kiln_sema/src/templ/builtins/traits.rs` and
 `traits/special.rs`) are the same class: only the trait's value is
-stored. They come after the operators. Not probed.
+stored. They come after the operators. Not probed. Asked (sent
+inline): can what they selected be recorded at all? A root has only
+the trait's node.
 
 ### 5.4 Shapes with no key and no row
 
@@ -569,7 +575,9 @@ Left of it:
 `push_spec` (`kiln/crates/kiln_ast/src/written_refs.rs`) keeps one row
 per distinct resolution of an entry under a key, with no element
 index. Two elements whose bindings swap give the same rows. Slip
-states this as a limit of the row form. A root does not have it.
+states this as a limit of the row form. A root does not have it,
+provided a pack expansion in a root holds each element's substituted
+form in order (sent inline, as part of G1).
 
 ### 5.7 Readable omissions
 
@@ -581,6 +589,10 @@ unit per named file or module, and one for an image that has no key
 table at all, so a comparison is never equal by silence (the
 proposal's §6). Slip makes its own prefix and module images with the
 switch on.
+
+Asked (sent inline): the same for `subst_roots`. Is a root left out of
+a module image, or a prefix made without the roots' switch, readable
+per key or per file?
 
 ### 5.8 Operands a type or a value holds
 
@@ -701,7 +713,13 @@ int u = swappable<a::X>::v;
 Key `PartialMatch` (the partial specialisation, `<a::X, void>`);
 recorded: `swap` → `a::swap(X &, X &)`, with its `adl` set in a row.
 Whether `ref` (a template name whose arguments are dependent) is a
-`DEPENDENT` entry with a row is Kiln's rule.
+`DEPENDENT` entry with a row is Kiln's rule. The root here is
+`void_t<decltype(swap(...))>`, a transparent alias: Slip needs the
+written argument of the alias specialisation, with its `decltype`
+operand, reachable from the root, not only the canonical `void` (sent
+inline). The operator form of §5.3 (`shl<a::X>`) is an acceptance
+example too: a `PartialMatch` key whose root holds the `operator<<`
+selected.
 
 Order independence (P1): each example with the use written twice, with
 the second use first, with the argument spelled through an alias
