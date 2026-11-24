@@ -1,0 +1,4 @@
+# Owned code opens acme with the dependency's ACME_BEGIN (the name token in dep.h): no owned opening, an owned member.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed legacy
+use 1 via 0 direct 0

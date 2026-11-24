@@ -1,0 +1,4 @@
+# dep.h's acme is [[deprecated]]: the moved owned members are now in a deprecated namespace.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed legacy
+use 1 via 0 direct 0

@@ -1,0 +1,5 @@
+# An inline namespace acme::v1 that both open; legacy::v1 was inline too.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed legacy
+removed legacy::v1
+use 1 via 0 direct 0

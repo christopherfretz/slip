@@ -1,0 +1,4 @@
+# An owned acme (no read-only opening) holding a read-only header's Inner; legacy::g moves into it.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed acme
+use 1 via 1 direct 0

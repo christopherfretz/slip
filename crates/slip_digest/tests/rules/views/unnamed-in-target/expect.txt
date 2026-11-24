@@ -1,0 +1,5 @@
+# The unnamed namespace inside acme, one entity for dep.h and the owned file.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed legacy
+removed legacy::(anonymous namespace)
+use 1 via 0 direct 0

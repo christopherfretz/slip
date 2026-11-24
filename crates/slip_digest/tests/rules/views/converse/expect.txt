@@ -1,0 +1,3 @@
+# The motivating case: dep.h keeps legacy, owned g moves to acme (the dependency included).
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+use 1 via 1 direct 0

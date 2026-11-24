@@ -1,0 +1,3 @@
+# The WP-140 case in an observer that does not include dep.h: acme is owned, mapped onto legacy.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+use 1 via 1 direct 0

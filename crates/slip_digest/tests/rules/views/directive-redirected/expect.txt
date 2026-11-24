@@ -1,0 +1,6 @@
+# An owned using-directive redirected from legacy to acme, which dep.h opens (row N08's edit).
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+added <using_directive acme>
+removed <using_directive legacy>
+removed legacy
+use 1 via 0 direct 0

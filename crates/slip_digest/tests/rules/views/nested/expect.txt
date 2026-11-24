@@ -1,0 +1,5 @@
+# acme::detail opened by dep.h and by the owned code that moves legacy::detail there.
+# Today's answer (WP-140 phase 1, the proposal's table): not a goal.
+removed legacy
+removed legacy::detail
+use 1 via 0 direct 0
