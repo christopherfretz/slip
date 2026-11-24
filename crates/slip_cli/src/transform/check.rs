@@ -595,6 +595,14 @@ fn load_declared(store: &Store, x: &OsString) -> Result<(Digest, Declared), Comm
     )
 }
 
+/// What [`prepare`] gives.
+struct Prepared {
+    set_id: Digest,
+    set: EditSet,
+    declared: Option<(Digest, Declared)>,
+    worker: WorkerCommand,
+}
+
 /// `check`'s inputs after the round's request (decision 1: an error here
 /// still publishes the record): the selection, the edit set and its
 /// plan, round and transform, the declared changes, the worker command.
@@ -605,9 +613,8 @@ fn prepare(
     selected: &[usize],
     (transform_id, transform): (Digest, &Transform),
     err: &mut dyn Write,
-) -> commands::Result<(Digest, EditSet, Option<(Digest, Declared)>, WorkerCommand)> {
-    if (!a.run.only.is_empty() || a.run.limit.is_some())
-        && selection(plan, &a.run, err) != selected
+) -> commands::Result<Prepared> {
+    if (!a.run.only.is_empty() || a.run.limit.is_some()) && selection(plan, &a.run, err) != selected
     {
         return Err(commands::Failure::Input(format!(
             "plan {plan_id} round {}: `--only` and `--limit` select other observers than the \
@@ -640,7 +647,7 @@ fn prepare(
         (_, SetState::Refused) => None,
     };
     let worker = commands::worker_command(&a.run)?;
-    Ok((set_id, set, declared, worker))
+    Ok(Prepared { set_id, set, declared, worker })
 }
 
 /// `slip check` (§10.2, §10.5).
@@ -660,7 +667,7 @@ pub(crate) fn main(
     // From here the round and its transform are known: an error publishes
     // the record too, with no step (WP-076 decision 1).
     let prepared = prepare(a, &store, (&plan, plan_id), &selected, (transform_id, &transform), err);
-    let (set_id, set, declared, worker) = match prepared {
+    let Prepared { set_id, set, declared, worker } = match prepared {
         Ok(p) => p,
         Err(e) => {
             let _ = record.publish(&store, plan_id, a.round, transform_id);
