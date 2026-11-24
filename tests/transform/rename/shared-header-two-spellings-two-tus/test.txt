@@ -1,0 +1,5 @@
+# One header reached by two spellings from two observers (`h.h` and `sub/../h.h`): one real path, so one site and one edit.
+spec: edits §2.1
+spec: edits §5.4
+run: rename --from a::f --to g
+state: verified

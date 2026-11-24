@@ -1,0 +1,5 @@
+# The name in the target's scope is a class: a seed of another kind, `unsupported`.
+spec: edits §9.1
+spec: edits §9.5
+run: rename --from a::f --to g
+state: refused

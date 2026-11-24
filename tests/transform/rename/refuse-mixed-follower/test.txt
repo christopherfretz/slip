@@ -1,0 +1,5 @@
+# A namespace-scope using-declaration names an overload set that the rename selects in part (the subject through `b`'s using-declaration, and `b::f`): `mixed_follower`.
+spec: edits §9.2
+spec: edits §5.2
+run: rename --from a::f --to g
+state: refused

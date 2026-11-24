@@ -1,0 +1,24 @@
+plan <id>
+observers 1
+excluded not_a_compile 0
+excluded unsupported_language 0
+excluded unsupported_flag 0
+excluded missing_file 0
+excluded malformed_entry 0
+excluded unsupported_compiler 0
+transform <id>
+round 1
+map: selected 1, ok 1, not ok 0, failed runs 0
+edits <id>
+state accepted
+edit 2 in 1 file(s); shared 0; most observers 1; nested 0
+kept 6; unresolved 0
+declared <id>: rules 1, exempt 0
+overlay <id>: files 1, spellings 1
+verify: verified 1, unchanged 0, mismatch 0, not_parsed 0, unverifiable 0, never_parsed 0, failed 0
+agreement: stale 0, unused rules 0
+spellings: passed 1, failed 0
+residue: dependent 0, not_compiled 0, not_planned 0; mentions 0
+result <id>
+state verified
+written 1 file(s)

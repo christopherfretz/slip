@@ -1,0 +1,5 @@
+# The new name is hidden at one use by a local declaration (a lambda named `g`): the post-image parses, the call names the local. The spelled piece fails (`denotes_other`; a local has no key, so nothing is found).
+spec: verify §10.3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

@@ -1,0 +1,4 @@
+# A local variable named like the old name, declared and used, is kept.
+spec: edits §4.2
+run: rename --from a::f --to g
+state: verified
