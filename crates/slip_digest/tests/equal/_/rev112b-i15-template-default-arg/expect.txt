@@ -1,0 +1,1 @@
+# control: clang evaluates a default template argument at its declaration (N = 0 on both sides)

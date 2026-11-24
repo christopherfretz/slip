@@ -1,0 +1,1 @@
+rename template <class> void start(type-parameter-0-0) => f
