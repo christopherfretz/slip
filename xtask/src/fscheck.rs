@@ -28,7 +28,7 @@ pub struct Row {
     pub what: &'static str,
 }
 
-/// The rows, in the order they run (`spec/harness.md` §11.1).
+/// The rows, in the order they run (`spec/harness.md` §11.2).
 pub const ROWS: &[Row] = &[
     Row {
         name: "link-unlink-create",

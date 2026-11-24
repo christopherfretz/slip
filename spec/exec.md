@@ -106,10 +106,36 @@ took (§8.7).
   `runs/`, `logs/` are created, then `VERSION` is published (a `tmp/` file and a rename)
   last, so a directory with `VERSION` is complete. A non-empty directory
   without `VERSION`, or a path that is not a directory, is `Unrecognised`.
-- **`tmp/` names.** A file being written is `tmp/<pid>.<n>.tmp`, `n` a
-  process-wide counter; the scratch directory is `tmp/<pid>.d`. Every entry
-  the store makes starts with `<pid>.`, `<pid>` in canonical decimal, which
-  is what stale cleaning and `remove_entries_of` read.
+- **`tmp/` names.** A file being written is `tmp/<pid>.<t>.<n>.tmp`, `n`
+  a process-wide counter and `<t>` the process's token (the time of its
+  first temporary, in nanoseconds since the Unix epoch, decimal); the
+  scratch directory is `tmp/<pid>.d`. Every entry the store makes starts
+  with `<pid>.`, `<pid>` in canonical decimal, which is what stale
+  cleaning and `remove_entries_of` read. The token makes a temporary's
+  name one that no later process with the same pid makes again: the
+  lock is a temporary hard-linked to `lock`, and on a file system that
+  confuses the names of a hard-linked file a name made again while
+  another name of its old file is alive can make that other name read
+  as the new file (`spec/harness.md` §11). The journal's temporary in
+  the scratch directory is named the same way (`spec/edits.md` §10.4).
+- **Which reads are checked** against the name they were read by
+  (`spec/landed/harness/WP-159.md`, the audit): a blob against its
+  content digest (`read_blob`); a request, an edit set, an overlay and a
+  result against their content id (every reader of `read_object`); the
+  declared changes of a verify job (the worker) against their content
+  id; a map shard read by a verify job, by `verify` and `check`
+  (`read_map_shard`) and by reduce against the observer, phase and round
+  it was read for, and a shard named by a worker's `Done`, and by
+  `verify`'s own report of its shards, against the content id the job
+  reported. Not checked: a plan read by `--plan <id>` (decoded, its
+  content id not compared with `<id>`); the declared changes read by
+  `check --declared <id>` (decoded, not compared); the map shards
+  `slip map` counts failed runs in (decoded only); run records (decoded;
+  `selected_of_round` compares plan, phase and round, the pool's memory
+  hints nothing); `write.journal` (decoded); the lock (parsed as a pid).
+  None of these can be misled by the hazard of `spec/harness.md` §11: no
+  sequence of the store makes a name again while another name of its
+  old file is alive.
 - **Publishing validates.** `publish_plan` requires a valid `PLAN` file and
   names it by its content id; `publish_declared` a valid `DECL` file,
   named by its content id (the directory `declared/` is made when the
