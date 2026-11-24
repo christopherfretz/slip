@@ -744,6 +744,26 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
     for &(n, b, m) in &w.owned_state.nested_views {
         nested.entry((n, b)).or_default().push(m);
     }
+    // TEMPORARY (WP-141): `Walk::ns_holds` against this function's
+    // `holds`, for every namespace and both views, where 140's sets are
+    // complete. A line per comparison to `$WP141_CMP`.
+    if let Some(path) = std::env::var_os("WP141_CMP") {
+        use std::io::Write as _;
+        let mut out = String::new();
+        for n in w.ns_all_tmp() {
+            for v in [false, true] {
+                let a = w.ns_holds(n, v);
+                let b = holds(&w.owned_state.member_views, &nested, n, v);
+                let own = w.owned(n);
+                let tag = if a == b { "same" } else { "DISAGREE" };
+                let why = if a == b { String::new() } else { w.ns_members_tmp(n, v) };
+                out.push_str(&format!("{tag} ns {n:?} own {own} view {v} ns_holds {a} units {b} {why}\n"));
+            }
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(out.as_bytes());
+        }
+    }
     for (i, e) in views {
         let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
         let view = !w.owned(e);

@@ -102,23 +102,23 @@ struct NsInfo {
     /// Its enclosing namespace entity (`None`: the global namespace, or
     /// not at namespace scope).
     parent: Option<DeclId>,
-    /// By view (`[dependency, owned]`): a declaration of the chain in that
-    /// view's kind of file (`Walk::in_owned_file`).
-    open: [bool; 2],
-    /// By view: an entity of that ownership that is not a namespace is
-    /// keyed with it as its namespace parent (`Walk::key_namespace`).
+    /// By view (`[dependency, owned]`): an entity of that ownership
+    /// (`Walk::owned`, the entity's, not the file of one declaration)
+    /// that is not a namespace is keyed with it as its namespace parent
+    /// (`Walk::key_namespace`): a member, or a content-keyed using-directive,
+    /// alias, using-declaration or `static_assert`.
     member: [bool; 2],
-    /// By view: it holds something (A4): a read-only opening (dependency
-    /// view), a member of that view, or a nested namespace that holds
-    /// something in that view.
+    /// By view: it holds something (A4; WP-140 review F3): a member of
+    /// that view, or a nested namespace that holds something in that view,
+    /// transitively. An opening alone holds nothing.
     holds: [bool; 2],
 }
 
 impl NsInfo {
-    /// The view exists (WP-140: an opening or a member in it).
+    /// The view exists: the namespace holds something in it
+    /// ([`Walk::ns_holds`], the one predicate).
     fn exists(&self, view: bool) -> bool {
-        let v = usize::from(view);
-        self.open[v] || self.member[v] || self.holds[v]
+        self.holds[usize::from(view)]
     }
 }
 
@@ -505,15 +505,10 @@ impl Walk<'_> {
                 continue;
             }
             let owned = self.owned(e);
-            let mut open = [false; 2];
-            open[usize::from(owned)] = true;
             let chain = self.chain(e);
             let mut inline = false;
             if chain.len() <= REDECL_LIMIT {
                 for &x in &chain {
-                    if self.in_owned_file(x) != owned {
-                        open[usize::from(!owned)] = true;
-                    }
                     if let Some(n) = ast.decls.namespace(x) {
                         inline |= n.flags & NamespaceData::INLINE != 0;
                     }
@@ -522,7 +517,7 @@ impl Walk<'_> {
             let parent = self.directive_scope(e).flatten();
             info_of.insert(
                 e,
-                NsInfo { owned, inline, parent, open, member: [false; 2], holds: [false; 2] },
+                NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] },
             );
             order.push(e);
         }
@@ -588,7 +583,7 @@ impl Walk<'_> {
         let mut inline_children: HashMap<DeclId, Vec<DeclId>> = HashMap::new();
         for &(_, n) in &by_depth {
             let Some(mut i) = info_of.get(&n).copied() else { continue };
-            i.holds[0] |= i.open[0] || i.member[0];
+            i.holds[0] |= i.member[0];
             i.holds[1] |= i.member[1];
             info_of.insert(n, i);
             if let Some(p) = i.parent
@@ -621,7 +616,7 @@ impl Walk<'_> {
         for &n in &table.order {
             let Some(&ni) = table.info.get(&n) else { continue };
             for view in [false, true] {
-                if !ni.holds[usize::from(view)] {
+                if !ni.exists(view) {
                     continue;
                 }
                 match self.ns_view_key(n, view) {
@@ -640,6 +635,60 @@ impl Walk<'_> {
             self.ns_refs.by_key = Some(Arc::clone(&b));
         }
         b
+    }
+
+    /// Whether namespace `n` holds something in `view` (`true`: owned):
+    /// an entity of that ownership keyed under it, or a nested namespace
+    /// that holds something in that view, transitively (A4; WP-140 review
+    /// F3). Made from every declaration of the AST (`ns_table`), so it
+    /// does not depend on the order the walk keys entities in. The one
+    /// predicate of a view's existence: `E(k)`, R1's and R2's view keys,
+    /// and (after WP-140's fix round) `units::view_units`.
+    pub(crate) fn ns_holds(&mut self, n: DeclId, view: bool) -> bool {
+        let n = self.entity(n);
+        let table = self.ns_table();
+        table.info.get(&n).is_some_and(|i| i.holds[usize::from(view)])
+    }
+
+    /// TEMPORARY (WP-141, the one-predicate check): every namespace
+    /// entity of the table.
+    pub(crate) fn ns_all_tmp(&mut self) -> Vec<DeclId> {
+        self.ns_table().order.clone()
+    }
+
+    /// TEMPORARY (WP-141): what `ns_table` counted for `n` in `view`.
+    pub(crate) fn ns_members_tmp(&mut self, n: DeclId, view: bool) -> String {
+        let ast = self.ast;
+        let mut out = String::new();
+        let mut seen = HashSet::new();
+        for d in ast.decls.ids() {
+            let kind = ast.decls.get(d).kind();
+            if kind == DeclKind::Namespace {
+                continue;
+            }
+            if !matches!(info(kind).role, Role::Entity(_) | Role::Content(_)) {
+                continue;
+            }
+            let e = self.entity(d);
+            if !seen.insert(e) || self.key_namespace(e) != Some(n) || self.owned(e) != view {
+                continue;
+            }
+            let loc = self.sm.expansion_loc(ast.decls.get(d).loc());
+            let (file, text) = match self.sm.offset_of(loc) {
+                Some((f, at)) => {
+                    let t = self.sm.text(f);
+                    let at = (at as usize).min(t.len());
+                    let end = t[at..].find('\n').map_or(t.len(), |i| at + i).min(at + 50);
+                    (self.sm.file_name(f).to_string(), t.get(at..end).unwrap_or("").to_string())
+                }
+                None => (String::from("?"), String::new()),
+            };
+            out.push_str(&format!("[{kind:?} {e:?} {file}: {text}] "));
+        }
+        if out.is_empty() {
+            out.push_str("(nested only)");
+        }
+        out
     }
 
     /// R2's guard (Addendum 2): whether some namespace of the image has

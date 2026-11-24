@@ -1,0 +1,10 @@
+# WP-141 (keyed under it, lexical and semantic parents differ): an owned unnamed namespace in an opening of the
+# dependency's acme, with a variable: keyed under the unnamed namespace, which holds; acme holds
+# through it (added acme). Untouched, and a difference: WP-144's case.
+changed <order>
+changed u()
+added acme
+added acme::(anonymous namespace)
+added acme::(anonymous namespace)::hidden
+removed acme::(anonymous namespace)
+removed acme::(anonymous namespace)::hidden
