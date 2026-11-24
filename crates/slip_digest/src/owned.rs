@@ -169,6 +169,13 @@ pub(crate) struct OwnedState {
     /// in `view`. `N` holds something in that view if `M` does
     /// (`units::view_units`).
     pub nested_views: HashSet<(DeclId, bool, DeclId)>,
+    /// Set when the walk forms its lists of ownership (`own_lists.rs`,
+    /// WP-146): `ns_parents` is kept.
+    pub record_parents: bool,
+    /// The namespace (its entity) each entity (its entity) was keyed
+    /// under, in any view (`Walk::namespace_parent`): the chain of
+    /// namespaces `own_lists.rs` climbs. Kept only with `record_parents`.
+    pub ns_parents: HashMap<DeclId, DeclId>,
 }
 
 impl Walk<'_> {

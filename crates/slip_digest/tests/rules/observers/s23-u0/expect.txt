@@ -1,0 +1,2 @@
+# WP-146 stage 1. S23, S1 under a rule on the function itself: the dependency's observer (fresh::pad, so that the rule's fresh resolves here).
+fixed T old::hook(int)

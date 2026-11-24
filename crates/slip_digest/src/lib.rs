@@ -229,6 +229,7 @@ pub mod map;
 mod names;
 mod order;
 mod other;
+mod own_lists;
 mod own_spelling;
 mod owned;
 pub mod query;
@@ -249,6 +250,7 @@ mod walk;
 mod tests;
 
 pub use names::display_name;
+pub use own_lists::{Fixed, FixedAs, Made};
 pub use owned::{ReadOnly, ReadOnlyFiles};
 pub use walk::STACK_SIZE;
 
@@ -322,6 +324,13 @@ pub struct Output {
     /// symbolically, sorted by key; empty when the translation unit holds
     /// none.
     pub name_strings: Vec<NamesUnit>,
+    /// The owned entities whose key a rule made (WP-146 stage 1,
+    /// `spec/landed/verify/WP-146.md` "Stages 0 and 1 as built"), sorted;
+    /// empty when `rule_use` is not asked for or the table is empty.
+    pub made: Vec<Made>,
+    /// The dependency entities whose key a rule could have made (T) or
+    /// would have moved were they owned (M), sorted; empty when `made` is.
+    pub fixed: Vec<Fixed>,
 }
 
 /// The names digest of one key (`Output::name_strings`), with what a note

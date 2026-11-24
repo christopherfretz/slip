@@ -1,0 +1,3 @@
+# WP-146 stage 1. S17, a limit: the owned header entered directly first; dep.h's #include skipped by #pragma once.
+fixed T old::consume(fresh::UserData *)
+made fresh::UserData

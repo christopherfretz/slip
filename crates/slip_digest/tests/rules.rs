@@ -39,6 +39,13 @@
 //!   `RuleTable::new` itself refuses (two rules that produce one key,
 //!   `spec/verify.md` §2.1, WP-111 review F1) cannot be made without the
 //!   refusal: that it is not made is the check. Nothing else is checked.
+//! - `made <name>`, `fixed T <name>`, `fixed M <name>` (WP-146 stage 1):
+//!   the post-image's lists of ownership (`Output::made`, `Output::fixed`,
+//!   `own_lists.rs`), by the name each entry gives; `lists empty` says
+//!   both are empty. Optional: with no such line the lists are not
+//!   checked; with one, they are exactly the lines given (a name may
+//!   repeat). On a mismatch, and under `SLIP_DIGEST_DUMP`, the runner
+//!   prints the lists the walk gave.
 //!
 //! # `kept.txt` (WP-111)
 //!
@@ -181,16 +188,40 @@ struct Expected {
     collisions: u64,
     /// `refused <text>`.
     refused: Option<String>,
+    /// The `made` and `fixed` lines, sorted; `lists empty` is an empty
+    /// list; `None` when there is no such line.
+    lists: Option<Vec<String>>,
 }
 
 fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
     let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
     let (lines, exact, own) = common::expect_text(&text, |l| {
-        l.starts_with("use ") || l.starts_with("collisions ") || l.starts_with("refused ")
+        l.starts_with("use ")
+            || l.starts_with("collisions ")
+            || l.starts_with("refused ")
+            || l.starts_with("made ")
+            || l.starts_with("fixed ")
+            || l == "lists empty"
     })?;
     let mut uses = Vec::new();
     let (mut collisions, mut refused) = (0, None);
+    let mut lists: Option<Vec<String>> = None;
     for (n, l) in own {
+        if l == "lists empty" {
+            lists.get_or_insert_with(Vec::new);
+            continue;
+        }
+        if l.starts_with("made ") || l.starts_with("fixed ") {
+            let ok =
+                l.starts_with("made ") || l.starts_with("fixed T ") || l.starts_with("fixed M ");
+            if !ok {
+                return Err(format!(
+                    "{file}:{n}: `{l}` is not `fixed T <name>` or `fixed M <name>`"
+                ));
+            }
+            lists.get_or_insert_with(Vec::new).push(l.trim().to_owned());
+            continue;
+        }
         if let Some(c) = l.strip_prefix("collisions ") {
             collisions = c
                 .trim()
@@ -221,7 +252,10 @@ fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
             format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n> [kept_via <n>]`")
         })?);
     }
-    Ok(Expected { lines, exact, uses, collisions, refused })
+    if let Some(l) = lists.as_mut() {
+        l.sort();
+    }
+    Ok(Expected { lines, exact, uses, collisions, refused, lists })
 }
 
 /// The lines of `rules.txt` (absent: none).
@@ -407,8 +441,19 @@ fn post_side(
                 eprintln!("  name_strings {:?}", o.name_strings);
             }
             let off = digest_under(input, &t.table, ro);
-            let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..first.clone() };
-            if !off.rule_use.is_empty() || !off.kept.is_empty() || cleared != off {
+            let cleared = Output {
+                rule_use: Vec::new(),
+                kept: Vec::new(),
+                made: Vec::new(),
+                fixed: Vec::new(),
+                ..first.clone()
+            };
+            if !off.rule_use.is_empty()
+                || !off.kept.is_empty()
+                || !off.made.is_empty()
+                || !off.fixed.is_empty()
+                || cleared != off
+            {
                 return Err("the post-image under its table: rule_use on and off differ".into());
             }
             slip_digest::records::key_agreement(input, &t.table, ro)
@@ -612,7 +657,20 @@ fn one(
             ));
         }
     }
+    let lists = list_lines(&post.digested.output);
+    if let Some(want) = &e.lists
+        && *want != lists
+    {
+        problems.push(format!(
+            "lists: expected\n  {}\nthe walk gave\n  {}",
+            if want.is_empty() { "lists empty".to_owned() } else { want.join("\n  ") },
+            if lists.is_empty() { "lists empty".to_owned() } else { lists.join("\n  ") }
+        ));
+    }
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
+        for l in &lists {
+            eprintln!("  lists {} {own:?}: {l}", common::rel(dir));
+        }
         eprintln!("--- {}: {} rules, {own:?}", common::rel(dir), post.table.rules.len());
         for (n, r) in &post.table.rules {
             eprintln!("  line {n}: {r:?}");
@@ -635,11 +693,64 @@ fn one(
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
 
+/// The lists of ownership of `o` as `expect.txt` writes them (`made
+/// <name>`, `fixed T|M <name>`), sorted.
+fn list_lines(o: &Output) -> Vec<String> {
+    let mut out: Vec<String> = o.made.iter().map(|m| format!("made {}", m.name)).collect();
+    out.extend(o.fixed.iter().map(|f| {
+        let t = match f.as_ {
+            slip_digest::FixedAs::T => "T",
+            slip_digest::FixedAs::M => "M",
+        };
+        format!("fixed {t} {}", f.name)
+    }));
+    out.sort();
+    out
+}
+
 /// Every case of `tests/rules/`.
 #[test]
 fn rules() {
     common::run_all("rules", case);
 }
+
+/// WP-146 stage 1: every entry of the lists of `observers/places`, in
+/// full: its rule (made), its test (fixed), its name and its place. The
+/// fixed entry `old::f()` is at its first declaration in the read-only
+/// d.h, not at its first declaration (in the owned main file).
+#[test]
+fn wp146_list_places() {
+    let dir = common::manifest().join("tests/rules/observers/places");
+    let pre = common::with_side(&dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+    })
+    .unwrap()
+    .unwrap();
+    let own = Own::Listed(readonly_of(&dir).unwrap().unwrap());
+    let post = post_side(&dir, &pre, &[], &own, false).unwrap();
+    let o = &post.digested.output;
+    let place = |f: &[u8], l: u64, c: u64| format!("{}:{l}:{c}", String::from_utf8_lossy(f));
+    let made: Vec<String> = o
+        .made
+        .iter()
+        .map(|m| format!("{} rule {} {}", m.name, m.rule, place(&m.file, m.line, m.column)))
+        .collect();
+    let fixed: Vec<String> = o
+        .fixed
+        .iter()
+        .map(|f| format!("{} {:?} {}", f.name, f.as_, place(&f.file, f.line, f.column)))
+        .collect();
+    let mut made = made;
+    let mut fixed = fixed;
+    made.sort();
+    fixed.sort();
+    assert_eq!(made, PLACES_MADE, "made");
+    assert_eq!(fixed, PLACES_FIXED, "fixed");
+}
+
+const PLACES_MADE: &[&str] =
+    &["fresh::C rule 0 main.cpp:4:26", "fresh::inner2::Z rule 0 main.cpp:4:69"];
+const PLACES_FIXED: &[&str] = &["old::f() T d.h:1:22", "old::inner::Y T d.h:2:42"];
 
 /// The reader of `rules.txt` (`common/rules.rs`): every form, and the
 /// errors of the text.

@@ -1,0 +1,2 @@
+# WP-146 stage 1. S23: the owned definer.
+made fresh::hook(int)

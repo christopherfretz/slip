@@ -838,6 +838,9 @@ impl Walk<'_> {
         // WP-140): an entity that is not a namespace, or a nested namespace
         // that itself holds something in `b`.
         let (n, m) = (self.entity(ns), self.entity(member));
+        if self.owned_state.record_parents {
+            self.owned_state.ns_parents.insert(m, n);
+        }
         if matches!(info(self.ast.decls.get(m).kind()).role, Role::Entity(KeyKind::Namespace)) {
             self.owned_state.nested_views.insert((n, b, m));
         } else {

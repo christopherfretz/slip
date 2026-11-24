@@ -143,7 +143,13 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
     if !off.rule_use.is_empty() {
         return Err(format!("rule_use off, yet counted: {:?}", off.rule_use));
     }
-    let cleared = Output { rule_use: Vec::new(), kept: Vec::new(), ..on.clone() };
+    let cleared = Output {
+        rule_use: Vec::new(),
+        kept: Vec::new(),
+        made: Vec::new(),
+        fixed: Vec::new(),
+        ..on.clone()
+    };
     if cleared != *off {
         return Err("the output with rule_use on differs from the one with it off".into());
     }

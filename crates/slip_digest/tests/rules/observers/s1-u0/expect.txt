@@ -1,0 +1,2 @@
+# WP-146 stage 1. S1, the hook pair: the observer that includes the dependency's d.h.
+fixed T old::hook(int)

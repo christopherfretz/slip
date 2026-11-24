@@ -646,6 +646,7 @@ pub(crate) fn run_kept<R>(
     w.read_only = options.read_only;
     if options.rule_use && !options.rules.is_empty() {
         w.rule_use = Some(crate::rule_use::Counting::new(kept));
+        w.owned_state.record_parents = true;
     }
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
@@ -682,9 +683,14 @@ pub(crate) fn run_kept<R>(
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
-    let (rule_use, kept) = crate::rule_use::finish(w.rule_use.take());
+    let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);
-    f(&mut w, &written, Output { digests, counters, causes, names, rule_use, kept, name_strings })
+    // Last: the lists form keys of their own (`own_lists.rs`, inert).
+    let (made, fixed) = crate::own_lists::lists(&mut w, counting.as_ref());
+    let (rule_use, kept) = crate::rule_use::finish(counting);
+    let output =
+        Output { digests, counters, causes, names, rule_use, kept, name_strings, made, fixed };
+    f(&mut w, &written, output)
 }
 
 /// `Output::name_strings` from the names digests `fed` (by index in

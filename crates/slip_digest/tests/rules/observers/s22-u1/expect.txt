@@ -1,0 +1,3 @@
+# WP-146 stage 1. S22: the owned definer of peek.
+fixed T old::D
+made fresh::peek(old::D<int> &)

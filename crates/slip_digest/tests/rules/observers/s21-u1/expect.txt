@@ -1,0 +1,2 @@
+# WP-146 stage 1. S21: the owned typedef, moved.
+made fresh::id_t
