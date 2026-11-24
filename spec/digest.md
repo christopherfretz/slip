@@ -251,6 +251,97 @@ substitution whose result is not kept, a candidate no longer considered);
 a one-sided derived unit marked emitted unreferenced (§11) is therefore a
 finding of its own (`verify.md` §4 step 3, WP-155).
 
+**A limit: names bound in a substitution whose expression is not kept**
+(WP-153; found by WP-139, `spec/landed/edits/WP-139.md` finding 3). A
+substitution whose expression is not kept is seen by its outcome, never
+by what its names bound:
+
+```cpp
+struct Base { static int s(); };
+namespace n { struct S : Base { static int s(); }; }
+template <class T, int = sizeof(T::s())> int call() { return 0; }
+int u() { return call<n::S>(); }
+```
+
+Rename `n::S::s`. `T::s` at `call<n::S>` now finds `Base::s`. Every
+digest is equal: the default argument's value is in the
+specialisation's key, and the substituted expression is nowhere. The
+shapes, and the outcome that is compared today:
+
+| Shape | Outcome that is compared |
+|---|---|
+| a default template argument at a use that takes it | the argument, in the specialisation's key |
+| an alias template's pattern at `A<X>` | the type the alias names |
+| a requires-clause, a type-constraint or a concept-id at a satisfaction check | the stored result; the candidate chosen |
+| a partial specialisation matched (`void_t<decltype(swap(…))>`), also one that matched and was not chosen | the pattern the specialisation was made from |
+| a signature substituted during deduction (`-> decltype(T::s())`, a parameter type), also of a candidate that lost | the specialisation's type |
+| a `noexcept` or `explicit` operand substituted at instantiation | the stored value |
+| the type of a non-type template parameter, substituted with the arguments before it | the converted argument |
+| a requires-expression, or an operand that only a type or a value holds (`int a[sizeof(T::s())]`), in an instantiated declaration | the value; the type |
+
+In each of these an operator, a constructor or a conversion function
+that the substitution selected is as unseen as a name is.
+
+No call evaluated at run time is written in such an expression: it is
+an unevaluated operand, or it is evaluated during translation. So no
+call of the substituted expression changes at run time while the
+outcome is equal. Two things are not proven.
+
+The first is the statement Slip makes, "every name resolves as it
+did": in a namespace migration, the argument-dependent lookup inside a
+trait can find another `swap` and the trait still say yes.
+
+The second is behaviour that follows from what was instantiated. A
+name that binds a function with a deduced return type instantiates its
+body. That can instantiate a definition that is emitted whether or not
+it is referenced: a variable of static or thread storage duration whose
+initialiser or destructor runs, or a function with the attribute
+`constructor`, `destructor` or `used`. Such a demand is written in no
+unit, so the argument of the paragraph above does not hold for it: the
+derived units it made are on one side only and no unit both sides have
+differs, and `spec/verify.md` §4 step 3 reports nothing. It holds
+whether the substitution succeeded or failed after the name bound.
+
+The same behaviour changes with no name bound to another entity, when
+a candidate is no longer considered:
+
+```cpp
+extern "C" int puts(const char *);
+inline int note() { puts("registered"); return 0; }
+template <class T> struct Tr { static int r; };
+template <class T> int Tr<T>::r = note();
+namespace lib {
+struct X {};
+template <class T> auto probe() { return (void)&Tr<T>::r, 1; }
+template <class T, int = sizeof(probe<T>())> void f(T, char);
+}
+void f(lib::X, long) {}
+void use() { f(lib::X(), 0); }
+int main() { use(); }
+```
+
+Write the call `::f(lib::X(), 0)`: the callee is the same function,
+argument-dependent lookup no longer supplies `lib::f`, its default
+template argument is not substituted, `Tr<lib::X>::r` is not
+instantiated, and the program no longer prints. No record of what
+names bound can see this. Only WP-155 closes it: a derived unit that
+is emitted whether or not it is referenced, and that one image only
+has, is a finding. WP-155 is a package of its own and comes first.
+`spec/landed/digest/WP-153.md` §1 has the programs and what closes
+each.
+
+The limit of names is the same, outside any template, for a name in
+an operand that is not dependent and that only a type or a value holds
+(`decltype(n::S::s()) v;`): by §1 rule 2 the operand is spelling.
+
+Nothing is counted for this limit. The AST holds no fact that says a
+satisfaction check or an alias template-id was substituted, and what
+it does hold (that a specialisation took a default argument or was
+made from a partial specialisation) is true of every specialisation of
+a standard container (`spec/landed/digest/WP-153.md` §12). The design
+that removes the limit is `spec/landed/digest/WP-153.md`; what it needs
+of Kiln is `docs/requests/KR9-substitution-bindings.md`.
+
 ## 3. Keys
 
 A **key** identifies an entity independently of the parse, of source
