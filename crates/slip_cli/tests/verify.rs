@@ -2270,6 +2270,7 @@ fn s5_1_a_job_whose_roots_are_in_another_case_is_refused() {
 /// folds (the folding root); the missing entry is refused on any volume.
 #[test]
 fn s2_1_declared_files_spelled_on_disk() {
+    use slip_model::keys::{KeyKind, Name, Parent, Rule};
     let f = two_units_in(&common::folding_root(), "declared-files-spelling");
     f.both("dep/x.h", "int x;\n");
     f.both("caf\u{e9}/y.h", "int y;\n");
@@ -2278,7 +2279,18 @@ fn s2_1_declared_files_spelled_on_disk() {
     let decl = |readonly: Vec<u8>| {
         let owned = vec![f.path("s").as_os_str().as_encoded_bytes().to_vec()];
         let files = Ownership { owned, readonly: vec![readonly] };
-        let d = Declared::new(vec![], vec![], vec![], vec![]).unwrap().with_files(Some(files));
+        // A declaration with files has a rule (`DECL`'s invariant): one of
+        // a namespace no unit has.
+        let id = |s: &str| Name::Identifier(s.as_bytes().to_vec());
+        let rule = Rule {
+            parent: Parent::Root,
+            kind: KeyKind::Namespace,
+            name: id("wp151_absent"),
+            disc: None,
+            to_parent: Parent::Root,
+            to_name: id("wp151_other"),
+        };
+        let d = Declared::new(vec![rule], vec![], vec![], vec![]).unwrap().with_files(Some(files));
         std::fs::write(f.path("d.decl"), d.to_bytes()).unwrap();
     };
     let published = || std::fs::read_dir(f.path("store/declared")).map_or(0, Iterator::count);
