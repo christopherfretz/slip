@@ -27,8 +27,11 @@ struct Tree {
 
 impl Tree {
     fn new(name: &str) -> Tree {
-        let base =
-            common::work_root().join(format!("slip-kiln-overlay-{}-{name}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let base = common::work_root()
+            .join(format!("slip-kiln-overlay-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("a")).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();

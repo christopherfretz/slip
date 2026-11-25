@@ -26,8 +26,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let base =
-            common::work_root().join(format!("slip-kiln-parse-{}-{name}", std::process::id()));
+            common::work_root().join(format!("slip-kiln-parse-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("work")).unwrap();
         std::fs::create_dir_all(base.join("oracle")).unwrap();
