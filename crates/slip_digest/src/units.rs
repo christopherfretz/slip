@@ -1617,4 +1617,34 @@ mod tests {
         assert_eq!(a.len(), 1, "one derived unit");
         assert_eq!(a, b);
     }
+
+    // WP-158 fix round (review F5): the candidates' streams that
+    // `canonical_decl` digests to break a tie (a friend declared twice by
+    // one specialisation) are dropped: inside the run's window they
+    // record no hold. Today a candidate's declaration stream writes no
+    // body, default or initialiser (the definition is the resolved unit's,
+    // and a friend with a default argument has one declaration only), so
+    // this guards the predicate's use there rather than kills a mutant.
+    #[test]
+    fn canonical_candidates_hold_nothing() {
+        let src = "struct D;\n\
+                   template <class T> struct S { friend int fr(D *, T *); \
+                   friend int fr(D *, T *) { return sizeof(T); } };\n\
+                   struct D : S<int> {};\n\
+                   int w() { return fr((D *)nullptr, (int *)nullptr); }\n";
+        with_walk(src, |w| {
+            let inst = named(w, "fr", DeclKind::Function).into_iter().find(|&d| {
+                !w.ast.decls.get(d).has(slip_kiln::kiln::ast::decl::DeclFlags::DEPENDENT_CTX)
+            });
+            let e = w.entity(inst.expect("an instantiated fr"));
+            CANDIDATES.with(|c| c.set((0, 0)));
+            w.hold_begin();
+            let _ = super::canonical_decl(w, e);
+            let recorded = w.hold_pending.as_ref().map_or(0, Vec::len);
+            w.hold_end(true);
+            let (_, read) = CANDIDATES.with(std::cell::Cell::get);
+            assert!(read >= 2, "a tie: each candidate's stream read ({read})");
+            assert_eq!(recorded, 0);
+        });
+    }
 }
