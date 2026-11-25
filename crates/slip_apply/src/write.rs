@@ -83,6 +83,12 @@ pub trait Tree {
     /// without following a link (`lstat`); `None` when nothing is there.
     /// Not an operation that changes anything.
     fn identity(&self, path: &[u8]) -> io::Result<Option<(u64, u64)>>;
+    /// `path` with every symbolic link on it resolved (`canonicalize`), as
+    /// the kernel gives it (on a volume that folds, in the spelling
+    /// asked); `None` when nothing is there. An ownership entry must be
+    /// its own real path (`spec/edits.md` §2.1). A tree with no links
+    /// gives `path` back.
+    fn real_path(&self, path: &[u8]) -> io::Result<Option<Vec<u8>>>;
     /// Whether lookups in the directory `dir`, on device `dev`, are
     /// answered consistently (`slip_spelling::Lookup::consistent`), so
     /// that it may be seen not to fold without listing it. By default no
@@ -241,16 +247,19 @@ impl Lookup for TreeLookup<'_> {
 /// own per call of `write`, `recover` or `check_owned`, so that it sees
 /// the tree as it is now; each directory decided once per call.
 struct Spelling<'t> {
+    tree: &'t dyn Tree,
     walk: slip_spelling::Spelling<TreeLookup<'t>>,
 }
 
 impl<'t> Spelling<'t> {
     fn new(tree: &'t dyn Tree) -> Spelling<'t> {
-        Spelling { walk: slip_spelling::Spelling::new(TreeLookup(tree)) }
+        Spelling { tree, walk: slip_spelling::Spelling::new(TreeLookup(tree)) }
     }
 
     /// Every entry of `o`, owned and read-only, exists and is its own
-    /// spelling on disk (`spec/edits.md` §2.1): an entry in another case
+    /// real path spelled on disk (`spec/edits.md` §2.1; the predicate of
+    /// `slip_spelling::real_path`, asked of the tree: no link on it, and
+    /// its spelling): an entry through a link, or in another case
     /// than the tree's covers nothing of the paths, which are spelled on
     /// disk, so a read-only one would not protect its files. Otherwise
     /// `Invalid`, naming the entry and its spelling on disk (status 3);
@@ -265,7 +274,15 @@ impl<'t> Spelling<'t> {
                         String::from_utf8_lossy(e)
                     )))
                 };
-                match self.walk.on_disk(e) {
+                // The entry is its own real path, spelled
+                // (`slip_spelling::real_path`): a link on it resolved first,
+                // so an entry through a link is refused too.
+                let real = match self.tree.real_path(e) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return bad("does not exist".to_string()),
+                    Err(error) => return Err(io_error(e, &error, journal_left)),
+                };
+                match self.walk.on_disk(&real) {
                     Ok(q) if q == *e => {}
                     Ok(q) => {
                         return bad(format!(

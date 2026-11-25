@@ -262,6 +262,10 @@ impl Tree for World {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let s = self.0.borrow();
         let there = s.files.contains_key(p) || is_dir_of(p, s.files.keys().map(Vec::as_slice));
@@ -1684,6 +1688,9 @@ mod disk {
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
         }
+        fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+            DiskTree.real_path(p)
+        }
         fn consistent(&self, dir: &[u8], dev: u64) -> bool {
             DiskTree.consistent(dir, dev)
         }
@@ -1804,6 +1811,9 @@ mod disk {
         }
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
+        }
+        fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+            DiskTree.real_path(p)
         }
         fn consistent(&self, dir: &[u8], dev: u64) -> bool {
             DiskTree.consistent(dir, dev)
@@ -2137,6 +2147,10 @@ impl Tree for Folding {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     /// A file or directory is found in any case; its identity is that of
     /// its folded spelling.
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
@@ -2316,6 +2330,48 @@ fn s2_1_disk_readonly_entry_in_another_case() {
     common::remove_tree(&r);
 }
 
+/// WP-151 review N1 (`spec/edits.md` §2.1): an ownership entry reached
+/// through a symbolic link (`tree/vlink` to `tree/vendor`) is not its own
+/// real path, so a read-only one would protect nothing (the overlay's
+/// paths are real paths). `slip_apply` refuses it alone, without the
+/// CLI's check: `check_owned` and `write` (`recover` asks the same
+/// function), `Invalid` naming the entry and its real path; nothing
+/// written. The
+/// control: the entry by its real path is `not_owned`. Under the work
+/// root.
+#[test]
+fn s2_1_disk_entry_through_a_link() {
+    let r = disk::root("entry-link");
+    std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
+    std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
+    std::os::unix::fs::symlink(r.join("tree/vendor"), r.join("tree/vlink")).unwrap();
+    let x = r.join("tree/vendor/x.h");
+    let (o, id) = one_file(x.to_str().unwrap(), b"int v;\n", b"int w;\n");
+    let own = |readonly: &str| Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![disk::bytes(&r.join(readonly))],
+    };
+    let tree = slip_apply::fs::DiskTree;
+    let store = disk::Store(r.join("store"));
+    let want = format!(
+        "ownership: the readonly entry {:?} is not spelled as on disk ({:?})",
+        r.join("tree/vlink").to_string_lossy(),
+        r.join("tree/vendor").to_string_lossy()
+    );
+    let link = own("tree/vlink");
+    for got in [
+        slip_apply::check_owned(&o, &link, &tree),
+        write(&o, id, &link, &tree, &store, &store).map(|_| ()),
+    ] {
+        assert_eq!(got, Err(WriteError::Invalid(want.clone())));
+    }
+    assert_eq!(std::fs::read(&x).unwrap(), b"int v;\n");
+    let real = own("tree/vendor");
+    let got = slip_apply::check_owned(&o, &real, &tree);
+    assert!(matches!(&got, Err(WriteError::Refused(_))), "the control is not_owned: {got:?}");
+    common::remove_tree(&r);
+}
+
 // ---------------------------------------------------------------------------
 // WP-147 item 1, the inventory (`spec/landed/edits/WP-147.md`, rows A1–A3):
 // what the one-spelling check of WP-075 does with another Unicode
@@ -2422,6 +2478,10 @@ impl Tree for Inconsistent {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     /// As `get`: another spelling misses the first time it is asked.
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let exact = self.files.iter().any(|(f, _)| f == p)
@@ -2518,6 +2578,10 @@ impl Tree for Unlistable {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let there = self.0.iter().any(|(f, _)| f == p)
             || is_dir_of(p, self.0.iter().map(|(f, _)| f.as_slice()));
@@ -2590,6 +2654,10 @@ impl Tree for TwoNames {
             b"/w" => Some(vec![b"X.h".to_vec(), b"x.h".to_vec()]),
             _ => None,
         })
+    }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
     }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         Ok(match p.to_ascii_lowercase().as_slice() {
