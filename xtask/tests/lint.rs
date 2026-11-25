@@ -719,9 +719,10 @@ fn bad() {
     if let Ok(r) = common::with_side(d, s, |_| {}) {
         let _ = r;
     } else {}
-    let _ = slip_kiln::snippet::parse_with(&s, &e, |_| {}).unwrap_or_default();
-    let _ = slip_kiln::snippet::parse_with(&s, &e, |_| {}).is_ok();
-    let _ = slip_kiln::snippet::parse_with(&s, &e, |_| {}).unwrap_or(());
+    let v = slip_kiln::snippet::parse_with(&s, &e, |_| {}).unwrap_or_default();
+    let ok = slip_kiln::snippet::parse_with(&s, &e, |_| {}).is_ok();
+    let u = slip_kiln::snippet::parse_with(&s, &e, |_| {}).unwrap_or(());
+    let _ = (v, ok, u);
     slip_kiln::snippet::parse_with(&s, &e, |_| {}).unwrap_or_else(|_| ());
     let m = common::digest_side_with(d, s, &rules);
     match m {
@@ -748,8 +749,8 @@ fn bad() {
             "crates/slip_digest/src/bad.rs:23: swallowed-result: `.unwrap_or_default()` discards the Err of `parse_with` (a callback panic would be swallowed)",
             "crates/slip_digest/src/bad.rs:24: swallowed-result: `.is_ok()` discards the Err of `parse_with` (a callback panic would be swallowed)",
             "crates/slip_digest/src/bad.rs:25: swallowed-result: `.unwrap_or()` discards the Err of `parse_with` (a callback panic would be swallowed)",
-            "crates/slip_digest/src/bad.rs:26: swallowed-result: `.unwrap_or_else()` discards the Err of `parse_with` (a callback panic would be swallowed)",
-            "crates/slip_digest/src/bad.rs:30: swallowed-result: `match` discards the Err of `common::digest_side_with` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:27: swallowed-result: `.unwrap_or_else()` discards the Err of `parse_with` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:31: swallowed-result: `match` discards the Err of `common::digest_side_with` (a callback panic would be swallowed)",
         ]
     );
 }
