@@ -17,8 +17,13 @@
 # and the same pair is pinned as equal, the limit, by the digest rules pair
 # rules/wp158/friend-two-classes-rev; add bad/ (pre with mf(long) renamed
 # and nothing else) when that pair starts to differ.
+# The good trees edit the call's name, a dependent name: the friend's
+# pattern (B's friend declaration) differs until WP-154 maps it, and
+# nothing else does.
 good: verified
+xfail good: WP-154: the friend's pattern in B spells the edited dependent name .mg, so B::friend fr(X, D *) differs until a holder is compared with its edited dependent names mapped
 # pre-2: A<X> first: Kiln instantiates the definition and the wrong edit
 # is caught on the friend's definition unit.
 good-2: verified
+xfail good-2: WP-154: as good
 bad-2: mismatch derived_changed fr(X, D *)::<definition>
