@@ -18,9 +18,13 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::rc::Rc;
 
-use slip_apply::journal::{Journal, JournalEntry, staged_name};
-use slip_apply::{Blobs, JournalStore, Recovered, Refused, Stat, Tree, WriteError, recover, write};
+use slip_apply::journal::{HEAD_LEN, Journal, JournalEntry, Read, frame, staged_name};
+use slip_apply::{
+    Blobs, JournalStore, Recovered, Refused, Stat, Tree, WriteError, discard_interrupted, recover,
+    write,
+};
 use slip_model::Digest;
+use slip_model::container::Writer;
 use slip_model::formats;
 use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay, OverlayFile};
@@ -95,6 +99,12 @@ struct State {
     creator: (u32, u32),
     /// The inode the next create gives.
     next_ino: u64,
+    /// A publish writes this many bytes of the journal, then power is
+    /// lost (a crash before the publish returned).
+    torn: Option<usize>,
+    /// The journal reads as absent this many times (the hazard of
+    /// `spec/harness.md` §11 for a name just created).
+    journal_lies: u32,
 }
 
 #[derive(Clone)]
@@ -280,12 +290,23 @@ impl JournalStore for World {
             if s.journal.is_some() {
                 return Err(err(io::ErrorKind::AlreadyExists, "a journal exists"));
             }
+            if let Some(n) = s.torn {
+                s.journal = Some(bytes[..n.min(bytes.len())].to_vec());
+                s.dead = true;
+                return Err(err(io::ErrorKind::Other, "no power"));
+            }
             s.journal = Some(bytes.to_vec());
             Ok(())
         })
     }
     fn read(&self) -> io::Result<Option<Vec<u8>>> {
-        self.op("journal", b"", |s| Ok(s.journal.clone()))
+        self.op("journal", b"", |s| {
+            if s.journal_lies > 0 {
+                s.journal_lies -= 1;
+                return Ok(None);
+            }
+            Ok(s.journal.clone())
+        })
     }
     fn remove(&self) -> io::Result<()> {
         self.op("unjournal", b"", |s| {
@@ -697,6 +718,7 @@ fn s7_3_file_changed_after_the_commit_is_reported_and_left() {
         restored: vec![b"/w/a.cc".to_vec(), b"/w/sub/c.sh".to_vec()],
         left: vec![],
         reported: vec![b"/w/b.h".to_vec()],
+        interrupted: None,
     };
     assert_eq!(recover(&own_w(), &w, &w, &w), Ok(Some(want)));
     assert!(w.0.borrow().journal.is_some());
@@ -1299,16 +1321,206 @@ fn s7_3_write_refuses_bad_input() {
     assert_eq!(w.0.borrow().ops, 0);
 }
 
-// §7.3: `recover` refuses a malformed journal and touches nothing.
+/// The damages of a whole journal `whole` of record `record` that leave it
+/// at its declared length or longer, by name: every one is malformed
+/// (§7.3 step 2), never interrupted.
+fn damaged(whole: &[u8], record: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+    let at = |i: usize| {
+        let mut x = whole.to_vec();
+        x[i] ^= 1;
+        x
+    };
+    let n = whole.len();
+    // The `end` byte made a section id, the trailer made again: framing
+    // that a crash cannot make, behind a valid trailer.
+    let framing = {
+        let mut x = whole[..n - 32].to_vec();
+        x[n - 33] = 5;
+        let t = content_digest(&x);
+        x.extend_from_slice(&t.0);
+        x
+    };
+    let mut zero_tail = whole.to_vec();
+    zero_tail[n - 48..].fill(0);
+    // The review's crafted case for J5: the framing `01 11`, a total above
+    // the file's length, the check made again over them. Only the framing
+    // check keeps it malformed (it would read as cut short).
+    let framing_head = {
+        let mut x = whole.to_vec();
+        x[17] = 0x11;
+        x[18..26].copy_from_slice(&(n as u64 + 1).to_le_bytes());
+        let c = content_digest(&x[..26]);
+        x[26..34].copy_from_slice(&c.0[..8]);
+        x
+    };
+    // A valid container, its head's check valid, whose head declares one
+    // byte fewer than the file holds: only the comparison with the length
+    // finds it.
+    let declared_less = {
+        let mut head = whole[..18].to_vec();
+        head.extend_from_slice(&(n as u64 - 1).to_le_bytes());
+        let mut payload = head[18..].to_vec();
+        payload.extend_from_slice(&content_digest(&head).0[..8]);
+        let mut w = Writer::new(*b"JRNL", 1);
+        w.section(1, &payload);
+        w.section(2, record);
+        w.finish()
+    };
+    vec![
+        ("a bit in the record", at(HEAD_LEN + 4)),
+        ("a bit in the trailer", at(n - 1)),
+        ("a bit in the magic", at(0)),
+        ("a bit in the kind", at(9)),
+        ("a bit in the version", at(12)),
+        ("a bit in the section framing of the head", at(17)),
+        ("a bit in the declared total", at(18)),
+        ("a bit in the declared total's top byte", at(25)),
+        ("a bit in the head's check", at(26)),
+        ("4 bytes appended", [whole, &[0, 0, 0, 0][..]].concat()),
+        ("1 byte appended", [whole, &[0x5a][..]].concat()),
+        ("the tail zeroed", zero_tail),
+        ("all zero", vec![0; n]),
+        ("a whole container declaring one byte fewer", declared_less),
+        ("framing 01 11 under a recomputed check, declaring more", framing_head),
+        ("seven bytes of no journal", b"garbage".to_vec()),
+        ("33 zeros", vec![0; HEAD_LEN - 1]),
+        ("one ff", vec![0xff]),
+        ("a head's prefix, its version byte wrong", {
+            let mut x = whole[..14].to_vec();
+            x[12] = 2;
+            x
+        }),
+        ("framing behind a valid trailer", framing),
+        ("of version 2", frame(2, &[(2, record)])),
+        ("an unknown critical section", frame(1, &[(2, record), (3, b"?")])),
+        ("no record section", frame(1, &[(3, record)])),
+        ("a record that does not decode", frame(1, &[(2, &record[..record.len() - 1])])),
+        ("an earlier Slip's record alone", record.to_vec()),
+    ]
+}
+
+// §7.3: `recover` refuses a malformed journal (at its declared length or
+// longer, and damaged: the reviewer's five damages and the others of
+// [`damaged`]; whole, but its record breaking a rule; of a newer version),
+// names it, keeps it, and touches nothing.
 #[test]
 fn s7_3_recover_refuses_a_malformed_journal() {
     let c = case();
-    let w = c.world.healthy();
-    for bytes in [&b""[..], b"garbage", &[0u8; 33]] {
-        w.0.borrow_mut().journal = Some(bytes.to_vec());
-        assert!(matches!(recover(&own_w(), &w, &w, &w), Err(WriteError::Journal(_))));
+    let mut empty = Journal::of_write(&c.overlay, c.id);
+    empty.files.clear();
+    let j = Journal::of_write(&c.overlay, c.id);
+    let record = j.record();
+    let whole = j.to_bytes();
+    assert!(record.len() >= HEAD_LEN, "the case's record holds a head");
+    let mut cases = damaged(&whole, &record);
+    cases.push(("a record that breaks a rule", empty.to_bytes()));
+    for (what, bytes) in cases {
+        assert!(Journal::read(&bytes).is_err(), "{what}");
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        assert!(matches!(recover(&own_w(), &w, &w, &w), Err(WriteError::Journal(_))), "{what}");
+        assert!(matches!(discard_interrupted(&w), Err(WriteError::Journal(_))), "{what}");
+        assert_eq!(w.0.borrow().journal.as_ref(), Some(&bytes), "kept: {what}");
+        assert!(w.0.borrow().log.iter().all(|(op, _)| *op == "journal"), "{what}");
     }
-    assert!(w.0.borrow().log.iter().all(|(op, _)| *op == "journal"));
+}
+
+// §7.3 step 2: a journal shorter than its head, or than the total its head
+// declares, was cut short before its publish returned: `recover` removes
+// it, says so and why, and touches nothing else. Kills "recover reads a
+// short journal as nothing to recover and leaves it".
+#[test]
+fn s7_3_recover_removes_an_interrupted_journal() {
+    let c = case();
+    let whole = Journal::of_write(&c.overlay, c.id).to_bytes();
+    // Every true prefix, from empty (a crash between the creation and the
+    // first write) through every length shorter than the head (0 to 33)
+    // to one byte short. Short bytes that are no head's start are
+    // malformed (`damaged`).
+    let cut: Vec<Vec<u8>> = (0..whole.len()).map(|n| whole[..n].to_vec()).collect();
+    assert!(whole.len() > HEAD_LEN);
+    for bytes in cut {
+        let n = bytes.len();
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        let r = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+        let why = r.interrupted.clone().unwrap_or_else(|| panic!("{n} bytes: {r:?}"));
+        assert!(why.starts_with(&format!("the journal is {n} bytes, shorter than ")), "{why}");
+        assert_eq!(r, Recovered { interrupted: Some(why), ..Recovered::default() });
+        assert_eq!(w.0.borrow().journal, None, "{n} bytes");
+        assert!(w.0.borrow().log.iter().all(|(op, _)| matches!(*op, "journal" | "unjournal")));
+        assert!(!image(&c, &w));
+        // The same through discard_interrupted.
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        assert!(discard_interrupted(&w).unwrap().is_some());
+        assert_eq!(w.0.borrow().journal, None);
+        assert_eq!(discard_interrupted(&w), Ok(None));
+    }
+    // A whole journal is not discarded.
+    let w = c.world.healthy();
+    w.0.borrow_mut().journal = Some(whole.clone());
+    assert_eq!(discard_interrupted(&w), Ok(None));
+    assert_eq!(w.0.borrow().journal, Some(whole));
+    recover_fully(&c, &w);
+}
+
+// §7.3 step 2: power lost during the publish, after any number of the
+// journal's bytes: no file of the tree was touched (the publish returns
+// before step 3), the journal left is interrupted, `recover` removes it,
+// and a write then succeeds.
+#[test]
+fn s7_3_a_torn_publish_leaves_an_interrupted_journal() {
+    let c = case();
+    let len = Journal::of_write(&c.overlay, c.id).to_bytes().len();
+    for n in 0..len {
+        let w = c.world.healthy();
+        w.0.borrow_mut().torn = Some(n);
+        assert!(run_write(&c, &w).is_err());
+        let publish = w.0.borrow().log.iter().position(|(op, _)| *op == "publish").unwrap();
+        assert!(
+            w.0.borrow().log[..publish]
+                .iter()
+                .all(|(op, _)| !matches!(*op, "create" | "rename" | "remove")),
+            "a tree operation before the publish"
+        );
+        assert_eq!(w.0.borrow().log.len(), publish + 1, "nothing after the lost power");
+        let w = w.healthy();
+        w.0.borrow_mut().torn = None;
+        let r = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+        assert!(r.interrupted.is_some(), "{n} bytes");
+        assert_eq!(w.0.borrow().journal, None);
+        assert!(!image(&c, &w));
+        assert_eq!(run_write(&c, &w), Ok(3));
+        assert!(image(&c, &w));
+    }
+}
+
+// The hazard of `spec/harness.md` §11 on the journal: a journal that reads
+// as absent for a while. `write` still refuses (its publish is exclusive)
+// and touches nothing; `recover` finds nothing while it reads as absent,
+// then recovers.
+#[test]
+fn s7_3_a_journal_read_as_absent() {
+    let c = case();
+    for lies in 1..4 {
+        let w = c.world.healthy();
+        {
+            let mut s = w.0.borrow_mut();
+            s.journal = Some(Journal::of_write(&c.overlay, c.id).to_bytes());
+            s.journal_lies = lies;
+        }
+        assert!(matches!(run_write(&c, &w), Err(WriteError::Journal(_))));
+        assert!(
+            w.0.borrow().log.iter().all(|(op, _)| !matches!(*op, "create" | "rename" | "remove")),
+            "lies {lies}"
+        );
+        assert!(w.0.borrow().journal.is_some());
+        for _ in 1..lies {
+            assert_eq!(recover(&own_w(), &w, &w, &w), Ok(None));
+        }
+        recover_fully(&c, &w);
+    }
 }
 
 // The journal's record (§7.3 step 2): round trip, and every rule of its
@@ -1326,7 +1538,26 @@ fn s7_3_journal_record() {
     };
     let j = Journal { overlay: id, files: vec![entry(b"/a/b"), entry(b"/a/c")] };
     let bytes = j.to_bytes();
+    // A JRNL container, version 1: section 1 the head (the total length,
+    // then the first 8 bytes of the digest of the 26 bytes before them),
+    // section 2 the record.
+    assert_eq!(&bytes[..8], &slip_model::container::MAGIC);
+    assert_eq!(&bytes[8..16], b"JRNL\x01\0\0\0");
+    assert_eq!(&bytes[16..18], &[1, 16]);
+    assert_eq!(&bytes[18..26], &(bytes.len() as u64).to_le_bytes());
+    assert_eq!(&bytes[26..34], &content_digest(&bytes[..26]).0[..8]);
+    assert_eq!(HEAD_LEN, 34);
+    let r = slip_model::container::Reader::open(&bytes, *b"JRNL", 1).unwrap();
+    assert_eq!(r.section(2), Some(&j.record()[..]));
     assert_eq!(Journal::from_bytes(&bytes), Ok(j.clone()));
+    assert_eq!(Journal::read(&bytes), Ok(Read::Whole(j.clone())));
+    for n in 0..bytes.len() {
+        assert!(matches!(Journal::read(&bytes[..n]), Ok(Read::Interrupted(_))), "{n}");
+    }
+    // Damaged at its length or longer: malformed, never interrupted.
+    for (what, x) in damaged(&bytes, &j.record()) {
+        assert!(Journal::read(&x).is_err(), "{what}");
+    }
     assert!(Journal::from_bytes(&bytes[..bytes.len() - 1]).is_err());
     assert!(Journal::from_bytes(&[bytes.clone(), vec![0]].concat()).is_err());
     let bad = |f: &dyn Fn(&mut Journal), what: &str| {
@@ -1384,19 +1615,16 @@ mod disk {
 
     impl JournalStore for Store {
         fn publish(&self, bytes: &[u8]) -> io::Result<()> {
-            // Exclusive: a hard link fails if the journal exists. The
-            // temporary's name is never used again: made again while the
-            // journal (its old file) exists, the journal could read as the
-            // new temporary on a mount that confuses the names of a
-            // hard-linked file (spec/harness.md §11.2, `tmp-again-after-link`).
-            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let tmp = self.0.join(format!("write.journal.{}.{n}.tmp", std::process::id()));
-            std::fs::write(&tmp, bytes)?;
-            std::fs::File::open(&tmp)?.sync_all()?;
-            let linked = std::fs::hard_link(&tmp, self.0.join("write.journal"));
-            std::fs::remove_file(&tmp)?;
-            linked?;
+            // As the store does (spec/exec.md §2.1 "The journal"):
+            // created exclusively in place, written, synced, the directory
+            // synced.
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.0.join("write.journal"))?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
             std::fs::File::open(&self.0)?.sync_all()
         }
         fn read(&self) -> io::Result<Option<Vec<u8>>> {

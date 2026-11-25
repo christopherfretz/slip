@@ -281,6 +281,7 @@ its final name.
 | `OVLY` | An overlay: the files of a post-image and its spelling obligations | yes | `edits.md` §7.1 |
 | `RSLT` | The result of one run of a transform | yes | `edits.md` §8.5 |
 | `RUNT` | A transform run record | no | `edits.md` §10.6 |
+| `JRNL` | The journal of a write of the working tree; never leaves the store | yes | `edits.md` §7.3 |
 
 ### 5.2 Interface
 

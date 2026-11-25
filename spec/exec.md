@@ -29,7 +29,7 @@ the **verify** phase with the commands `verify`, `declare` and `units`
 
 ```
 <store>/
-  VERSION                                   the text "1\n"
+  VERSION                                   the text "2\n"
   plans/<plan id>.plan                      PLAN containers, named by content id
   declared/<declared id>.decl               DECL containers (spec/verify.md §2), named by content id
   shards/<plan id>/<phase>.<round>/<observer id>.shard
@@ -46,7 +46,9 @@ A run of a transform (M2) adds the directories and files of
 `blobs/`, the transform run records under `runs/`, and `write.journal`).
 Everything in this section holds for them: they are published by rename,
 never written in place, and a command that does not know them leaves them
-alone. A store that holds `write.journal` has an unfinished write of the
+alone. The one exception is `write.journal`, which, like `lock`, is
+created exclusively under its final name and written and synced there
+(§2.1 "The journal"). A store that holds `write.journal` has an unfinished write of the
 working tree, and a command that opens it exclusively refuses to run
 (`spec/edits.md` §7.3).
 
@@ -69,13 +71,20 @@ took (§8.7).
 - **Opening.** A store whose `VERSION` is missing is initialised if the
   directory is empty or absent, and otherwise refused (`Input` error): Slip
   does not write into a directory it does not recognise. A `VERSION` other
-  than `1` is refused.
+  than `2` is refused; a store of version `1` was written by an earlier
+  Slip, whose lock does not follow §2.1, and is refused saying so.
 - **Locking.** A command that runs a phase opens the store *exclusively*:
-  it creates `<store>/lock` exclusively, holding its process id in decimal
-  and a newline. If the file exists and its owner is alive (`/proc/<pid>`
-  exists; where there is no `/proc` the owner is taken to be alive), the
-  store is busy: an `Input` error naming the process and the lock file. A
-  lock whose owner no longer exists is taken over. Every other command, and
+  it creates `<store>/lock` exclusively, holding its process id and the
+  nonce of its take in decimal, a space between, and a newline. If the
+  file exists and its owner is alive (`/proc/<pid>` exists; where there is
+  no `/proc` the owner is taken to be alive), the store is busy: an
+  `Input` error naming the process and the lock file (or, when openers met
+  each other's claims until they gave up, saying that the store was
+  contended and to try again). A
+  lock whose owner no longer exists is taken over, and so is a lock left
+  empty or without its newline by an opener that died while writing it;
+  openers decide this one at a time, through their claims (§2.1 "The
+  lock"). Every other command, and
   every worker, opens the store *shared*: no lock; it only reads and
   publishes, which is safe beside a running phase. The lock is removed on
   every exit path its owner controls (§7).
@@ -99,9 +108,20 @@ took (§8.7).
   directory (`std::path::absolute`: not canonicalised, symbolic links
   kept), so `root()` and a `Job.store` made from it stay valid after a
   worker changes its current directory.
-- **Opening.** `VERSION` must be exactly the bytes `1\n`; anything else
-  (including `1` without the newline) is `Version` with the text, lossily
-  decoded. A missing `VERSION` in an absent or empty directory initialises
+- **Opening.** `VERSION` must be exactly the bytes `2\n`; anything else
+  (including `2` without the newline) is `Version` with the text, lossily
+  decoded; for `1\n` the message says that an earlier Slip wrote the
+  store (its lock was published by a link and held `<pid>\n`: it does not
+  share §2.1 "The lock" with this Slip, so the two must never take one
+  store's lock) and to use a new store. If such a store holds a name
+  `write.journal` (of any type), the error is `EarlierUnfinishedWrite`
+  with its path instead: the message says an unfinished write of the
+  working tree is recorded there, to finish it with `slip apply
+  --recover` of the Slip that wrote it (an earlier one), then to use a
+  new store. Of a version-1 store nothing is read beyond `VERSION` and
+  the existence of that name, and nothing is written or removed, by any
+  opener (`open_for_recovery` too). Version 2 is the first with
+  claims and nonces (WP-161). A missing `VERSION` in an absent or empty directory initialises
   it, in both access modes: `tmp/`, `plans/`, `declared/`, `shards/`,
   `runs/`, `logs/` are created, then `VERSION` is published (a `tmp/` file and a rename)
   last, so a directory with `VERSION` is complete. A non-empty directory
@@ -109,33 +129,41 @@ took (§8.7).
 - **`tmp/` names.** A file being written is `tmp/<pid>.<t>.<n>.tmp`, `n`
   a process-wide counter and `<t>` the process's token (the time of its
   first temporary, in nanoseconds since the Unix epoch, decimal); the
-  scratch directory is `tmp/<pid>.d`. Every entry the store makes starts
+  scratch directory is `tmp/<pid>.d`; an exclusive opener's claim
+  (§2.1 "The lock") is `tmp/<pid>.<t>.<n>.claim`, `n` from the same
+  counter. Every entry the store makes starts
   with `<pid>.`, `<pid>` in canonical decimal, which is what stale
   cleaning and `remove_entries_of` read. The token makes a temporary's
-  name one that no later process with the same pid makes again: the
-  lock is a temporary hard-linked to `lock`, and on a file system that
-  confuses the names of a hard-linked file a name made again while
-  another name of its old file is alive can make that other name read
-  as the new file (`spec/harness.md` §11). The journal's temporary in
-  the scratch directory is named the same way (`spec/edits.md` §10.4).
+  name one that no later process with the same pid makes again. The
+  store makes no hard link (`spec/harness.md` §11): every name it makes
+  is created (`create_new`) or renamed to.
 - **Which reads are checked** against the name they were read by
   (`spec/landed/harness/WP-159.md`, the audit): a blob against its
   content digest (`read_blob`); a request, an edit set, an overlay and a
   result against their content id (every reader of `read_object`); the
-  declared changes of a verify job (the worker) against their content
-  id; a map shard read by a verify job, by `verify` and `check`
+  declared changes of a verify job (the worker) and those read by
+  `check --declared <id>` against their content id; a plan read by
+  `--plan <id>` (every command that takes it) against its content id: a
+  difference is the `Input` error `<path>: the file's content id is not
+  its name`; a map shard read by a verify job, by `verify` and `check`
   (`read_map_shard`) and by reduce against the observer, phase and round
   it was read for, and a shard named by a worker's `Done`, and by
   `verify`'s own report of its shards, against the content id the job
-  reported. Not checked: a plan read by `--plan <id>` (decoded, its
-  content id not compared with `<id>`); the declared changes read by
-  `check --declared <id>` (decoded, not compared); the map shards
-  `slip map` counts failed runs in (decoded only); run records (decoded;
-  `selected_of_round` compares plan, phase and round, the pool's memory
-  hints nothing); `write.journal` (decoded); the lock (parsed as a pid).
-  None of these can be misled by the hazard of `spec/harness.md` §11: no
-  sequence of the store makes a name again while another name of its
-  old file is alive.
+  reported. Not checked against a name, and why none can mislead: the
+  map shards `slip map` counts failed runs in are decoded and counted
+  only (a shard of another observer, phase or round counts as that
+  observer's outcome in a count printed for the user; nothing is
+  decided from it, and every reader that decides compares the shard's
+  header with the name, above); run records are decoded and their
+  `plan`, `phase` and `round` compared by `selected_of_round` with
+  those it was read for, a difference refused; `verify` asks only
+  whether a map run record exists, and the pool's memory hints (the
+  peaks of the latest record) only size admission, which the memory
+  caps bound whatever the hint (§6); `write.journal` is
+  decoded whole, its digest checked (§2.1 "The journal"), and compared
+  with the write of its overlay by `apply --recover`; the lock is parsed
+  as a pid and a nonce. None of these can be misled by the hazard of
+  `spec/harness.md` §11: the store makes no hard link.
 - **Publishing validates.** `publish_plan` requires a valid `PLAN` file and
   names it by its content id; `publish_declared` a valid `DECL` file,
   named by its content id (the directory `declared/` is made when the
@@ -145,31 +173,141 @@ took (§8.7).
   whose `plan`, `phase`, `round` and `started_unix_ns` are the ones given.
   Anything else is `Invalid` and nothing is written. The `read_*`
   methods and `latest_run` return the bytes unvalidated; `None` when the
-  file does not exist. Files are not `fsync`ed.
-- **The lock** holds `<pid>\n`. It is written in full under `tmp/` and
-  hard-linked to `lock`, so it never exists without its pid. If `lock`
-  exists: a content other than a canonical decimal pid and a newline is an
-  `Io` error (`InvalidData`) and the lock is left alone; a live owner
-  (including this process, for a second exclusive open) is `Busy`; a dead
-  owner's lock is renamed into `tmp/` and, if the file moved still names
-  that dead pid, removed and the link retried; if it names another process
-  (a racing opener got there first) it is linked back and that process is
-  reported `Busy`. At most 8 rounds, then `Busy`.
+  file does not exist. Files are not `fsync`ed, except the lock and
+  the journal (below).
+- **The lock** holds `<pid> <nonce>\n`: the holder's process id and the
+  *nonce* of its take, 64 random bits drawn for each take, both in
+  canonical decimal. A take is known by its nonce, not by the store's
+  path, which can have many spellings (a symbolic link, a bind mount, a
+  case-insensitive file system): each process keeps a registry of the
+  nonces of the takes it holds, under a process-wide mutex that makes its
+  takes one at a time. The lock is created exclusively under its final
+  name (`create_new`), then written and synced there: no link, no
+  rename. So it exists for a while without its whole line (a *partial*
+  lock: no newline, and a prefix of a line: empty, one to ten digits, or
+  those digits, a space, and up to twenty digits), and forever so if its
+  creator dies in between. Who may look at it, and act on it, is decided
+  first by **claims**. An exclusive opener `P` takes it in rounds (at
+  most 8), each:
+  1. **Claim**: create `tmp/<P>.<t>.<n>.claim` (`create_new`, empty).
+  2. **Look for others**: list `tmp/`; a claim of another pid that is
+     alive is a *contender*: `P` removes its claim, waits (a few
+     milliseconds drawn at random, the bound growing with the round;
+     not after the last round), and
+     starts the next round. The claims of this process's own pid are not
+     contenders (an earlier process with this pid is dead; this
+     process's own takes are one at a time, under the mutex).
+  3. **Read `lock`** (`P` is now *inside*):
+     - absent: go to 4;
+     - `<Q> <N>\n`: if `Q` is `P`'s pid and `N` is in this process's
+       registry (a take of this process holds it, perhaps through another
+       spelling of the path), or `Q` is another pid that is alive,
+       `Busy` naming `Q`; otherwise (`Q` dead, or `Q` this process's pid
+       with a nonce it does not hold: a take whose close could not remove
+       it, or an earlier process with this pid) it is stale: remove
+       `lock`, go to 4;
+     - `<Q>\n`, the form before nonces: if `Q` is `P`'s pid, `Busy`
+       naming it (never taken back: a take of this process can not be
+       told from another's); if `Q` is another pid, as above;
+     - partial: stale, removed, go to 4;
+     - anything else: `Io` (`InvalidData`), the lock left alone.
+  4. **Create**: `create_new` `lock`, write `<P> <N>\n` with the take's
+     fresh nonce `N` (one not in the registry), `sync_all`. If the name
+     exists (created since step 3 read it as absent: by an opener that
+     does not follow these rules, or a read the file system got wrong),
+     the round ends and the next begins. If the write or the sync fails,
+     `lock` is removed and the error returned.
+  5. **Leave**: remove the claim. `P` holds the lock; `N` goes into the
+     registry.
+
+  Every path out of a round removes `P`'s claim (step 2, a `Busy`, an
+  error, step 5). A removal that fails leaves the claim, a contender to
+  the others until `P` ends, even after `P` has closed the store; if it
+  is step 5's, `P` removes the lock it just made and returns the error
+  (`Io`) rather than hold the lock so. After 8 rounds `P` is `Busy`: naming
+  the lock's holder if the lock then reads a whole line of a live pid,
+  else with no holder (`StoreError::Busy { holder: None }`: the rounds
+  met contenders; the message says the store was contended and to try
+  again; the command does not retry by itself). A claim whose pid has
+  since been taken by a live process is a contender until that process
+  ends.
+
+  **Why two openers never both hold the lock**, under three assumptions:
+  *(L)* the store is on a file system where an operation that has
+  returned is seen by every operation that starts after it, in any
+  process of the host (creation, removal, a read by name and a listing of
+  `tmp/`; the rows `create-new-read` and `create-new-xproc` of `cargo
+  xtask fscheck`, `spec/harness.md` §11.2; an `fsync` the mount does not
+  pass through to the host's disk is outside (L) and not addressed,
+  §11.4); *(P)* `/proc/<pid>` tells a
+  live process from a dead one; *(S)* every exclusive opener of the store
+  is a Slip that follows these rules (a store of version 2 is opened by
+  none other: an earlier Slip refuses it, and this one refuses version
+  1), and within one process every take is registered under the mutex
+  from its step 5 until its close removes it from the registry:
+  - *(Inside is one at a time.)* `P` is inside from its listing (step 2)
+    to the removal of its claim. Its claim exists from step 1 until then.
+    If `P` and `Q`, both alive, were inside at once, say `P` listed
+    first: `Q` listed after `P`'s claim was created and before it was
+    removed, so `Q`'s listing showed it, with `P` alive, and `Q` did not
+    go inside. A process that dies inside does nothing more. (Two takes
+    of one process are never inside at once: the mutex.)
+  - *(A lock is made only inside, and is whole when its maker leaves.)*
+    `lock` is created only at step 4. Its maker leaves (step 5) only
+    after its line is written and synced, so a lock read inside that is
+    partial has a maker that is dead, or that failed and returned an
+    error (it removed the file, or tried to): no take holds it.
+  - *(A held lock is never removed by another take.)* While the take
+    `(H, N)` holds, `lock` is its file and reads `<H> <N>\n` (nothing
+    writes a lock after its step 4; only its close and step 3 remove
+    one, and the close removes only a lock that reads its own line). An
+    opener inside reads `<H> <N>\n`: in another process, with `H` alive,
+    it is `Busy`; in `H`'s own process, `N` is in the registry, so it is
+    `Busy` too. So step 3 removes a lock only when no take holds it, and
+    an opener that creates it at step 4 is the only holder.
+
+  **After a crash at any one step**, the next opener alone takes the
+  lock: a dead process's claim is not a contender; a partial lock, or a
+  dead pid's, is stale to whoever is inside next; a take this process
+  left (its close read the lock as absent, or could not remove it) is
+  stale to this process's next exclusive open, through any spelling of
+  the path, and `Busy` naming this process to the others until it exits.
+  Two live openers that see each other's claims both wait and retry; one
+  of them, or both, can end `Busy` with no holder while the store is free
+  (never both holding); the next open finds it free. A dead process's
+  claim whose pid a live process has since taken, or a stale lock's, is
+  a contender, or a live owner, until that process ends.
+- **The journal** (`write.journal`, `spec/edits.md` §7.3) is created
+  exclusively under its final name (`create_new`: an existing journal
+  is `AlreadyExists` and nothing changes), written, synced, and the
+  store's directory synced (`publish_journal`); `remove_journal`
+  removes it and syncs the directory; `read_journal` reads it. Its
+  format declares its total length under a check of its own, and carries
+  its digest (`spec/edits.md` §7.3 step 2), so a journal cut short by a
+  crash is told from a whole one and from a damaged one.
 - **Stale cleaning** (exclusive open, after the lock is taken): every
   `tmp/` entry whose name starts with `<pid>.` for a process that does not
   exist is removed, directories recursively. Entries of live processes
   (shared writers beside the phase) and names not of that form are kept.
 - **The entries of one process.** `remove_entries_of(pid)` removes every
   `tmp/` entry whose name is `<pid>.…` with `<pid>` the canonical decimal
-  of `pid`, directories recursively, in either access mode. The caller
-  vouches that the process is gone: `/proc` is not consulted. This
+  of `pid`, directories recursively, in either access mode, except claims
+  (`<pid>.….claim`): a claim is removed by its owner, or by stale
+  cleaning once its pid is dead, since the pid may already be a live
+  opener's whose claim the lock relies on. The caller vouches that the
+  process is gone: `/proc` is not consulted. This
   process's own id is a no-op. No `tmp/`, or an entry that vanishes
   meanwhile, is not an error; any other failure is returned (the first
   one) after the remaining entries have been tried.
 - **Closing.** `Drop` and `cleanup_on_signal` run the same cleanup: mark the
   store closed, remove the `tmp/` files it has open, remove its scratch
   directory recursively if `scratch_dir` was called on it, and remove
-  `lock` if it holds it *and* the file still holds this process's pid.
+  `lock` if it holds it *and* the file still reads the line of its take
+  (its pid and its nonce), then drop the nonce from the process's
+  registry (under the mutex of the takes, so that no take of this process
+  sees it in between). A lock read as absent, or another take's, is left
+  as it is; one this process left is taken by its next exclusive open
+  (§2.1 "The lock", step 3).
   Errors are ignored; it never panics; it is idempotent. Once closed, a
   store refuses to create `tmp/` files or the scratch directory (`Io`,
   `Interrupted`). `tmp/` files are created under the same mutex the cleanup
@@ -188,10 +326,10 @@ took (§8.7).
 `slip_exec::store`:
 
 ```rust
-pub const VERSION_TEXT: &str = "1\n";
+pub const VERSION_TEXT: &str = "2\n";
 pub fn phase_name(phase: Phase) -> &'static str;            // "map", "verify"
 pub enum Access { Exclusive, Shared }
-pub enum StoreError { Unrecognised(PathBuf), Version(String), Busy { pid: u32, lock: PathBuf },
+pub enum StoreError { Unrecognised(PathBuf), Version(String), EarlierUnfinishedWrite(PathBuf), Busy { holder: Option<u32>, lock: PathBuf },
                       Invalid(String), Io { path: PathBuf, error: io::Error } }   // Display, Error
 pub struct Store;   // Drop: §2.1 "Closing"
 impl Store {
@@ -237,6 +375,9 @@ impl Store {
     pub fn publish_transform_run(&self, plan: &Digest, round: u64, started_unix_ns: u64, bytes: &[u8]) -> Result<PathBuf, StoreError>;
     pub fn latest_run_of_round(&self, plan: &Digest, phase: Phase, round: u64) -> Result<Option<Vec<u8>>, StoreError>;
     pub fn journal_path(&self) -> PathBuf;
+    pub fn publish_journal(&self, bytes: &[u8]) -> Result<(), StoreError>;   // §2.1 "The journal": Io AlreadyExists if one exists
+    pub fn read_journal(&self) -> Result<Option<Vec<u8>>, StoreError>;
+    pub fn remove_journal(&self) -> Result<(), StoreError>;                  // Io NotFound if there is none
     pub fn open_for_recovery(dir: &Path) -> Result<Store, StoreError>;                         // the one opener that accepts a journal
 }
 // StoreError gains UnfinishedWrite(PathBuf): an exclusive `open` of a store that holds `write.journal`.

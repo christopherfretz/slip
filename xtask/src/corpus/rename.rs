@@ -1352,6 +1352,15 @@ impl Rename<'_> {
             .read_plan(&r.result.plan)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("{}: no plan {}", store.display(), r.result.plan))?;
+        // Read by id: compared with it, as the product's reads are
+        // (`spec/exec.md` §2.1 "Which reads are checked").
+        if slip_model::formats::content_id(&plan_bytes).ok() != Some(r.result.plan) {
+            return Err(format!(
+                "{}: the plan {}: the file's content id is not its name",
+                store.display(),
+                r.result.plan
+            ));
+        }
         let plan = Plan::from_bytes(&plan_bytes).map_err(|e| format!("the plan: {e}"))?;
         let mut mapped = Vec::new();
         for f in overlay.files.iter().filter(|f| f.post.content != f.pre.content) {
