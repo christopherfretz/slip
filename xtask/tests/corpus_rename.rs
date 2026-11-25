@@ -26,7 +26,7 @@ mod common;
 
 use common::Fixture;
 use slip_exec::store::{Access, Object, Store};
-use slip_model::edits::Reason;
+use slip_model::edits::{MacroSite, Reason};
 use slip_model::editset::{Cause, EditSet, Refusal, SetState};
 use slip_model::hash::content_digest;
 use slip_model::json::{self, Value};
@@ -145,6 +145,46 @@ fn d(n: u8) -> Digest {
 
 fn id(bytes: &[u8]) -> Digest {
     formats::content_id(bytes).unwrap()
+}
+
+/// A refused edit set with one `no_edit` refusal and `counters` (the
+/// result is read on its own, so the stand-in needs no edits).
+fn edit_set(plan: Digest, counters: Vec<Counter>) -> EditSet {
+    EditSet {
+        scheme: 1,
+        plan,
+        round: 1,
+        transform: d(0x22),
+        basis: d(0x03),
+        // An edit set with no edit is `refused`; the result is read on
+        // its own, so the stand-in needs no edits.
+        state: SetState::Refused,
+        files: Vec::new(),
+        subjects: Vec::new(),
+        rules: Vec::new(),
+        edits: Vec::new(),
+        groups: Vec::new(),
+        changed: Vec::new(),
+        kept: Vec::new(),
+        unresolved: Vec::new(),
+        refusals: vec![Refusal {
+            cause: Cause::NoEdit,
+            file: None,
+            lo: 0,
+            hi: 0,
+            reason: Reason::None,
+            subject: None,
+            macro_site: None,
+            other: None,
+            observers: 0,
+            first: Vec::new(),
+        }],
+        reports: Vec::new(),
+        failures: Vec::new(),
+        unparsed: Vec::new(),
+        counters,
+        instances: Vec::new(),
+    }
 }
 
 /// What a run's store holds and prints: the state, the counters of the
@@ -280,41 +320,7 @@ impl World {
         let mut counters: Vec<Counter> =
             r.counters.iter().map(|(n, v)| Counter { name: (*n).into(), value: *v }).collect();
         counters.sort_by(|a, b| a.name.cmp(&b.name));
-        let set = EditSet {
-            scheme: 1,
-            plan,
-            round: 1,
-            transform: d(0x22),
-            basis: d(0x03),
-            // An edit set with no edit is `refused`; the result is read on
-            // its own, so the stand-in needs no edits.
-            state: SetState::Refused,
-            files: Vec::new(),
-            subjects: Vec::new(),
-            rules: Vec::new(),
-            edits: Vec::new(),
-            groups: Vec::new(),
-            changed: Vec::new(),
-            kept: Vec::new(),
-            unresolved: Vec::new(),
-            refusals: vec![Refusal {
-                cause: Cause::NoEdit,
-                file: None,
-                lo: 0,
-                hi: 0,
-                reason: Reason::None,
-                subject: None,
-                macro_site: None,
-                other: None,
-                observers: 0,
-                first: Vec::new(),
-            }],
-            reports: Vec::new(),
-            failures: Vec::new(),
-            unparsed: Vec::new(),
-            counters,
-            instances: Vec::new(),
-        };
+        let set = edit_set(plan, counters);
         let set_bytes = set.to_bytes();
         let set_id = st.publish_object(Object::EditSet, &set_bytes).unwrap();
         let overlay = (!refused).then(|| {
@@ -750,6 +756,7 @@ fn s6_5_result_file() {
             "agreement",
             "spellings",
             "residue",
+            "not_plain_at_macro",
             "measured"
         ]
     );
@@ -992,4 +999,46 @@ fn copy_and_compare() {
     );
     let (_, all) = rename::tree_differences(&w.src, &to, Some(".git"), 20).unwrap();
     assert_eq!(all[3..], ["new.cpp: only in the copy", "sub/c.h: of another kind in the copy"]);
+}
+
+// The count of `not_plain` refusals at a macro invocation, which demo-2's
+// record reads from the result file.
+#[test]
+fn s6_5_not_plain_at_macro() {
+    let mut set = edit_set(d(1), Vec::new());
+    let refusal = |reason, macro_site| Refusal {
+        cause: Cause::SiteRefused,
+        file: Some(0),
+        lo: 1,
+        hi: 2,
+        reason,
+        subject: None,
+        macro_site,
+        other: None,
+        observers: 3,
+        first: Vec::new(),
+    };
+    let site = || Some(MacroSite { name_start: 0, name: b"M".to_vec() });
+    set.refusals.extend([
+        refusal(Reason::NotPlain, site()),
+        refusal(Reason::NotPlain, None),
+        refusal(Reason::MacroBody, site()),
+        refusal(Reason::NotPlain, site()),
+    ]);
+    assert_eq!(rename::not_plain_at_macro(&set), 2);
+}
+
+// Check 1: a state that permits a patch, but `slip` wrote none (its
+// `--patch` refused at apply), fails.
+#[test]
+fn s6_5_verified_without_a_patch() {
+    let w = World::new("rename-no-patch");
+    w.records(&Run1::of(State::Verified));
+    std::fs::remove_file(w.f.path("fake/patch")).unwrap();
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert_eq!(
+        checks(&out)[0],
+        "check state: FAIL (state verified, but slip wrote no patch: its lines say why)"
+    );
 }

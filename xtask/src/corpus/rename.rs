@@ -32,6 +32,7 @@ use crate::slip_run::{self, Ran};
 use crate::transform::run::{Bounded, Lines, cmdline, read_object, read_result, run_bounded};
 use slip_exec::jobserver::Pool;
 use slip_exec::store::{Access, Store};
+use slip_model::edits::Reason;
 use slip_model::editset::EditSet;
 use slip_model::json::{self, Value};
 use slip_model::overlay::Overlay;
@@ -64,7 +65,8 @@ pub const NOT_COPIED: &str = ".git";
 
 /// The members of the result file that are compared exactly with the file
 /// already there (`spec/harness.md` §6.5): everything deterministic.
-pub const EXACT: [&str; 6] = ["state", "counters", "tally", "agreement", "spellings", "residue"];
+pub const EXACT: [&str; 7] =
+    ["state", "counters", "tally", "agreement", "spellings", "residue", "not_plain_at_macro"];
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -438,7 +440,16 @@ pub fn exact(r: &Records) -> Vec<(String, Value)> {
         ("agreement".to_owned(), agreement),
         ("spellings".to_owned(), spellings),
         ("residue".to_owned(), residue),
+        ("not_plain_at_macro".to_owned(), int(not_plain_at_macro(&r.set))),
     ]
+}
+
+/// The refusals of `set` with reason `not_plain` at a macro invocation
+/// (`spec/edits.md` §6): the sites a rename leaves because a macro wrote
+/// them, which demo-2's record counts.
+pub fn not_plain_at_macro(set: &EditSet) -> u64 {
+    set.refusals.iter().filter(|r| r.reason == Reason::NotPlain && r.macro_site.is_some()).count()
+        as u64
 }
 
 /// The result file (`spec/harness.md` §6.5): the run's identity, the
@@ -1160,7 +1171,20 @@ impl Rename<'_> {
             .overlay
             .is_none()
             .then(|| format!("the result is {}: there is no post-image", state.name()));
-        gate(&mut checks, out, "state", &mut |_| check_state(state, self.opts.expect));
+        let patched = self.paths.patch.is_file();
+        gate(&mut checks, out, "state", &mut |_| match check_state(state, self.opts.expect) {
+            // `--patch` refused at apply (`not_owned`, `not_canonical`,
+            // `stale_file`): the state permits a patch and none was written.
+            Outcome::Ok(_)
+                if matches!(state, State::Verified | State::VerifiedWithResidue) && !patched =>
+            {
+                Outcome::Fail(format!(
+                    "state {}, but slip wrote no patch: its lines say why",
+                    state.name()
+                ))
+            }
+            other => other,
+        });
         gate(&mut checks, out, "determinism", &mut |out| self.determinism(&records, out));
         gate(&mut checks, out, "accept", &mut |out| {
             if let Some(why) = &no_image {

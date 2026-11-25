@@ -640,6 +640,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   step prints `step <step>: started (…)` and `step <step>: done in <s>`.
   A result with no overlay (`refused`) has no post-image: checks 3 to 5
   are `skipped` even when asked for.
+- **1** also fails a `verified` or `verified_with_residue` run that wrote
+  no patch (its `--patch` refused at apply, `spec/edits.md` §7.2).
 - **2.** `slip reduce --plan <plan> --round <round> --store <store>` (and
   `-j`); status 0 or 1 with the run's edit set id passes, its lines
   printed after `reduce| `.
@@ -681,10 +683,14 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   (`check`, `outcome`, `detail`), then the exact members `state`,
   `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
   `unused_rules`), `spellings` (`obligations`, `passed`, `failed`) and
-  `residue` (a count per category), then `measured`: the transform run's
+  `residue` (a count per category) and `not_plain_at_macro` (the edit
+  set's refusals with reason `not_plain` at a macro invocation), then
+  `measured`: the transform run's
   `wall_ns`, per step `wall_ns`, `cpu_ns` and `peak_rss`, per phase
   record §7.1's measurements, and each check's `wall_ns`. No absolute
-  path is in it. The exact members are compared with the file there;
+  path is in it. The ids are not compared: every `slip rename` takes the
+  store's next round, and the round is in every id after the plan's.
+  The exact members are compared with the file there;
   each difference is printed `  <member>[.<name>]: <old> -> <new>`. The
   file is written only when every check passed and nothing differs (or
   there was none); otherwise the run's file is `<file>.new` and the file
