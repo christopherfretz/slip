@@ -14,6 +14,9 @@ commands:
   wp [--ready]                                 the work packages (§4)
   ci [--quick] [--step <name>]… [--keep-going] the gate (§2)
   corpus list|fetch|configure|status|path      the corpora (§8)
+  corpus rename <corpus> --from <name> --to <identifier> [--kind <k>] [--owned <path>]…
+         [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]
+                                               a rename over a corpus, checked (§6.5)
   jobserver status|refill [--fifo <p>] [--jobs <n>]
                                                the jobserver pool (§5); refill only
                                                while no client holds a token
