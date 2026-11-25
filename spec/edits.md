@@ -84,7 +84,9 @@ normalisation), and the real path such a volume gives keeps the spelling
 it was asked for. So a file has **one spelling**: the bytes its
 directories list (`read_dir`), component by component from `/` down.
 Every place a path enters Slip gives it that spelling, through one
-function (`slip_spelling`, `spec/landed/edits/WP-147.md`): the compile
+function (`slip_spelling`, `spec/landed/edits/WP-147.md`; enforced
+outside `crates/slip_spelling` by `cargo xtask lint`'s `real-path` rule,
+`spec/harness.md` §3): the compile
 database's main files and the database itself (`cdb.md` §5, §7), every
 input of a parse (`model.md` §8.4) and every file a transform unit read
 (`api.md` §2.2), and `--owned`, `--readonly`, `--relative-to`. The
