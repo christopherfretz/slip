@@ -1148,7 +1148,7 @@ pub(crate) fn as_recorded(path: &[u8]) -> bool {
     let mut at = Path::new(OsStr::from_bytes(path));
     loop {
         if at.symlink_metadata().is_ok() {
-            return std::fs::canonicalize(at).is_ok_and(|real| real == at);
+            return slip_spelling::real_path(at).is_ok_and(|real| real == at);
         }
         match at.parent() {
             Some(up) => at = up,
@@ -1164,7 +1164,7 @@ fn still_there(f: &FileRef) -> Result<(), Left> {
     let path = Path::new(OsStr::from_bytes(&f.path));
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => {
-            match std::fs::canonicalize(path) {
+            match slip_spelling::real_path(path) {
                 Ok(real) if real == path => {}
                 Ok(real) => return Err(Left::Moved(real.into_os_string().into_vec())),
                 Err(_) => return Err(Left::Gone),
