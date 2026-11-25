@@ -24,6 +24,7 @@ use slip_apply::{
     write,
 };
 use slip_model::Digest;
+use slip_model::container::Writer;
 use slip_model::formats;
 use slip_model::hash::content_digest;
 use slip_model::overlay::{Content, Overlay, OverlayFile};
@@ -1341,6 +1342,19 @@ fn damaged(whole: &[u8], record: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
     };
     let mut zero_tail = whole.to_vec();
     zero_tail[n - 48..].fill(0);
+    // A valid container, its head's check valid, whose head declares one
+    // byte fewer than the file holds: only the comparison with the length
+    // finds it.
+    let declared_less = {
+        let mut head = whole[..18].to_vec();
+        head.extend_from_slice(&(n as u64 - 1).to_le_bytes());
+        let mut payload = head[18..].to_vec();
+        payload.extend_from_slice(&content_digest(&head).0[..8]);
+        let mut w = Writer::new(*b"JRNL", 1);
+        w.section(1, &payload);
+        w.section(2, record);
+        w.finish()
+    };
     vec![
         ("a bit in the record", at(HEAD_LEN + 4)),
         ("a bit in the trailer", at(n - 1)),
@@ -1355,6 +1369,7 @@ fn damaged(whole: &[u8], record: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
         ("1 byte appended", [whole, &[0x5a][..]].concat()),
         ("the tail zeroed", zero_tail),
         ("all zero", vec![0; n]),
+        ("a whole container declaring one byte fewer", declared_less),
         ("framing behind a valid trailer", framing),
         ("of version 2", frame(2, &[(2, record)])),
         ("an unknown critical section", frame(1, &[(2, record), (3, b"?")])),
