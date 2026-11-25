@@ -752,6 +752,50 @@ fn a7_precompiled_header_observer() {
     );
 }
 
+/// R2.2 through `slip declare` (A14's shape): `extern "C" gen_start` is
+/// declared first in owned `own.h`, then again in rebuilt `gen.h`. The
+/// declaration in the rebuilt file decides, per declaration (not the
+/// entity's first one): the line is refused as a dependency entity with
+/// R2.2's own message. (Kills the mutation "C linkage decided on the
+/// entity's first declaration", which the rules cases did not.)
+#[test]
+fn r2_2_declare_c_linkage_redeclared_in_a_rebuilt_file() {
+    let t = Cli::new("r22");
+    t.write("src/own.h", "#pragma once\nextern \"C\" int gen_start();\n");
+    t.write("b/gen.h", "#pragma once\nextern \"C\" int gen_start();\n");
+    t.write(
+        "src/a.cpp",
+        "#include \"own.h\"\n#include \"../b/gen.h\"\nint user() { return gen_start(); }\n",
+    );
+    t.db(&["src/a.cpp"]);
+    let plan = t.plan();
+    t.write("decl.txt", "relocate gen_start() => :: gen_init\n");
+    let declare = |extra: &[&str]| {
+        let mut args = vec![
+            "declare", "--plan", &plan, "--from", "decl.txt", "--out", "decl.bin", "--owned",
+            "src", "--store", "store",
+        ];
+        args.extend_from_slice(extra);
+        t.slip(&args)
+    };
+    let out = declare(&["--rebuilt", "b"]);
+    assert_ne!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        out.stderr.contains(
+            "dependency entity: `gen_start()` is a dependency entity: it has C language linkage \
+             and is declared in a rebuilt file"
+        ),
+        "{out:?}"
+    );
+    // `b` undeclared (read-only): the general message.
+    let out = declare(&[]);
+    assert_ne!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        out.stderr.contains("`gen_start()` is a dependency entity (a declaration of it is in"),
+        "{out:?}"
+    );
+}
+
 /// T-116 (pending): a definition written in a rebuilt file counts as
 /// defined in owned code (`docs/wp/WP-116.md`, "Out of scope").
 #[test]
