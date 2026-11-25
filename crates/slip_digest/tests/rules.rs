@@ -1009,6 +1009,44 @@ fn observers_dir(name: &str) -> std::path::PathBuf {
     common::manifest().join("tests/rules/observers").join(name)
 }
 
+/// WP-118 A7 (R3.3): the same entity has the same key in an ordinary
+/// observer and a unity observer (its main file rebuilt): `Mine`'s key id
+/// under the rules is one over the two. With the glue undeclared
+/// (read-only) the unity observer keeps `Mine` unmapped: another id. (The
+/// precompiled-header observer, `-include` of a rebuilt file, needs a real
+/// parse: the snippet front end refuses `-include`; `slip_cli`'s
+/// `tests/rebuilt.rs` has it.)
+#[test]
+fn wp118_a7_one_key() {
+    let key = |case: &str, undeclared: bool| -> slip_model::Digest {
+        let dir = observers_dir(case);
+        let pre = common::with_side(&dir, Side::A, |input| {
+            records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+        })
+        .unwrap()
+        .unwrap();
+        let rebuilt = rebuilt_of(&dir).unwrap().unwrap_or_default();
+        let own = if undeclared {
+            Own::Listed(rebuilt)
+        } else {
+            Own::Rebuilt { readonly: Vec::new(), rebuilt }
+        };
+        let o = post_side(&dir, &pre, &[], &own, false).unwrap().digested.output;
+        let ids: BTreeSet<_> =
+            o.names.iter().filter(|(_, n)| n == "acme::Mine").map(|(k, _)| *k).collect();
+        assert_eq!(ids.len(), 1, "{case}: {ids:?}");
+        ids.into_iter().next().unwrap()
+    };
+    let cases = ["wp118-a7-ordinary", "wp118-a7-unity"];
+    let declared: BTreeSet<_> = cases.iter().map(|c| key(c, false)).collect();
+    assert_eq!(declared.len(), 1, "one key id over the observers");
+    let ordinary = key(cases[0], true);
+    assert_eq!(ordinary, key(cases[0], false));
+    for c in &cases[1..] {
+        assert_ne!(key(c, true), ordinary, "{c}: undeclared glue keeps Mine unmapped");
+    }
+}
+
 /// WP-146 stage 1: every entry of the lists of some cases, in full and in
 /// the lists' order: its rule (made), its test (fixed), its name and its
 /// place. In `places` the fixed entry `old::f()` is at its first
