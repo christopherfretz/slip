@@ -48,7 +48,7 @@ pub(crate) fn friend_target(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(Cause::Unaccounted("FriendTarget/kind"));
         return;
     }
-    let target = ast.decls.friend_target(d);
+    let target = slip_kiln::written::friend_target(ast, d);
     s.tag(friend_target::row(&target));
     match target {
         FriendTarget::Decl(x) => w.write_ref(s, x),
@@ -171,6 +171,16 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         // `out` (§5.7): what code generation reads of it is the row
         // `enclosing` (§1.7).
         written_ns: _,
+        // `out` (§5.7): the shadow a using-declaration's lookup found when
+        // it named one (Kiln WP-3401); what the declaration names is its
+        // target, held by the shadows' units.
+        shadow_named: _,
+        // `out` (§5.7): a friend's written form (Kiln WP-3164).
+        friend_form: _,
+        // `unsupported` (§5.7, WP-136 reads it): Kiln marks only an
+        // invalid declaration, which `decl_node` makes indeterminate
+        // (`Cause::Error`) wherever the walk meets it.
+        subst_failed: _,
     } = &ast.decls.cold;
     let e = w.entity(d);
     // The chain of `d`'s declarations, the first first (§2.3).

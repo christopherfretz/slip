@@ -568,6 +568,9 @@ pub fn with_transform<R>(
     stack: usize,
     f: impl FnOnce(Result<Session<'_>, CompileError>) -> R,
 ) -> R {
+    if let Some(var) = crate::check::kiln_switch_in_environment() {
+        return f(Err(CompileError::CommandLine(crate::parse::switch_message(var))));
+    }
     StackGuard::install(stack);
     let buffer = SharedBuffer::new();
     let io = Io {

@@ -253,7 +253,7 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`4a83f6e3c` (WP-066) it
+`60fb5ab9d` (WP-163; `4a83f6e3c` from WP-066) it
 still holds: what Kiln added since (the definition-context operator sets,
 the names of an overloaded member access, the shadows of a
 using-declaration, the owner of a closure, the checked mark of an
@@ -1278,10 +1278,14 @@ definitions: the body, a function-try-block's handlers, a constructor's
 mem-initializers, and through the `#include` of a body that comes from
 an included file.
 
-Kiln makes **one source-location string object per content**, so the
-`"get"` of `a::get()` and of `b::get()` is one object. Such a string is
-written as the context of its uses only where **every use** of the object
-in the translation unit is of one kind and in **one entity** (a lambda or
+The uses of a source-location string are taken **by content**: every use
+of a string of these bytes, so the `"get"` of `a::get()` and of
+`b::get()` is one string (Kiln made one object per content until Kiln
+WP-3000, `50ee80489`; it makes one per content, kind and declaration
+since, in the pin since WP-163, and the rule reads the content as
+before). Such a string is written as the context of its uses only where
+**every use** of a string of its bytes in the translation unit is of one
+kind and in **one entity** (a lambda or
 a local class of a function is another entity) whose name of that kind
 the bytes are; otherwise by its bytes. **What equal means for a name
 string**: two are equal when their bytes are equal, or when their bytes
@@ -1622,6 +1626,15 @@ baseline of scheme 3 is recorded (the shard goldens of `crates/slip_model`
 are unchanged by it, `bench/baselines` was last recorded under WP-050,
 and the corpus invariants are recorded by the supervisor at the merge,
 who confirms none was), so it shares the number 3.
+WP-163 (the Kiln pin `60fb5ab9d`) adds rows, all `out` or `unsupported`
+(no stream reads them), and changes streams only where Kiln's facts
+changed or where Slip reads them again in the old way
+(`spec/landed/digest-kinds/WP-163.md`). Two changes close wrong equals:
+an instantiation's parameter attributes now include the ones it
+inherits from a later declaration (Kiln WP-3407), and a class's hidden
+using-shadow is made in either member order (Kiln WP-3145). No baseline
+of scheme 3 is recorded since WP-158, so it shares the number 3. The
+supervisor confirms that at the merge.
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.

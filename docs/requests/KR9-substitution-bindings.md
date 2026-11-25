@@ -840,7 +840,7 @@ pin. The work-package numbers are Kiln's.
 
 Also answered: the internal error in class template argument
 deduction (a guide's parameter types still name the constructor's own
-parameters; WP-3590, launched); and `spec/ast.md` §18.9.4: true for
+parameters; WP-3590, `a37ea6f2b`, in Slip's pin since WP-163); and `spec/ast.md` §18.9.4: true for
 member templates, but "every node an instantiation rebuilds is a
 pattern node of its entry" has eight exceptions, which WP-3591 lists
 (asked for inline; `docs/wp/WP-154.md` depends on it).

@@ -45,6 +45,77 @@ fn refused(args: &Args, whole: bool) -> bool {
         || module_header
         || args.verify.is_some()
         || args.pch.include.is_some()
+        || not_modelled(args).is_some()
+}
+
+/// The first flag of `args` that Kiln's driver refused as an unknown
+/// argument at the pin before WP-163 (`4a83f6e3c`) and accepts at the pin
+/// since (`60fb5ab9d`), which Slip does not model. Slip keeps refusing
+/// every one of them, here (the check, `spec/cdb.md` §6.2 rejection 3) and
+/// before the parse (`parse_observer_with`), so that a command is refused
+/// as it was (parity). The list is the diff of Kiln's argument parser
+/// between the two pins (`kiln_driver/src/args.rs`):
+///
+/// - files read and search directories named (`Args::imacros`,
+///   `Args::prefixed_dirs`, `Args::iprefix`; Kiln WP-2822, `c52c27ba8`,
+///   with their GCC spellings `--imacros`, `--include-prefix`,
+///   `--include-with-prefix*`): the lookup guards (`spec/verify.md` §5.3)
+///   do not know the files and directories they bring in (`Driver::of`
+///   reads neither), and a file read by a flag Slip does not model would
+///   be a hole in them;
+/// - tables and checks for a tooling client and dumps
+///   (`-fkiln-written-ref-keys`, WP-3540; `-fkiln-fn-names` and
+///   `-fkiln-dump-fn-names`, WP-3280, WP-3164; `-fkiln-builtin-literals`,
+///   WP-2821; `-fkiln-verify-subst-failed`, WP-3281;
+///   `-fkiln-dump-friend-forms`, WP-3164): a dump writes to the standard
+///   output Slip does not own, and a table or a check changes what Kiln
+///   records or reports in a way Slip's reading of the AST does not know.
+pub(crate) fn not_modelled(args: &Args) -> Option<&'static str> {
+    let flags: [(bool, &'static str); 9] = [
+        (!args.imacros.is_empty(), "-imacros"),
+        (!args.prefixed_dirs.is_empty(), "-iwithprefix"),
+        (!args.iprefix.is_empty(), "-iprefix"),
+        (args.written_ref_keys, "-fkiln-written-ref-keys"),
+        (args.dump_fn_names, "-fkiln-dump-fn-names"),
+        (args.fn_names, "-fkiln-fn-names"),
+        (args.builtin_literals, "-fkiln-builtin-literals"),
+        (args.verify_subst_failed, "-fkiln-verify-subst-failed"),
+        (args.dump_friend_forms, "-fkiln-dump-friend-forms"),
+    ];
+    flags.into_iter().find_map(|(set, flag)| set.then_some(flag))
+}
+
+/// The variable of the process environment that turns on a Kiln check
+/// Slip does not model, if one is set as Kiln reads it. Kiln reads two
+/// such variables since the pin of WP-163 (`60fb5ab9d`), on every parse
+/// Slip asks for (`run_front_end`, `with_eval_session`, both through
+/// `SyntaxJob::parse_options`, `kiln_driver/src/syntax_cmd.rs:400`, `:412`):
+///
+/// - `KILN_VERIFY_SUBST_FAILED` (not empty, not `0`;
+///   `kiln_driver/src/args.rs:2974`, WP-3281), read from the process
+///   whatever `FrontEndOptions::environment` says: the silent-failure
+///   marks reported as diagnostics;
+/// - `KILN_FN_NAMES_VERIFY` (`1`; `kiln_driver/src/env.rs:66`, WP-3280),
+///   read from `FrontEndOptions::environment`, which is the process's
+///   (`FrontEndOptions::default()`): every function-name record
+///   self-checked, a failure a diagnostic.
+///
+/// Neither reaches a field Slip can set off: both are put straight into
+/// Kiln's `ParseOptions` inside the job. So Slip refuses to parse while
+/// one is set (WP-163 fix round 1, F3): a unit's diagnostics, and so its
+/// status, never depend on a variable the command does not name. Every
+/// other variable Kiln reads on these paths was read at the old pin too.
+pub(crate) fn kiln_switch_in_environment() -> Option<&'static str> {
+    let on = |name: &str, is_on: fn(&std::ffi::OsStr) -> bool| {
+        std::env::var_os(name).is_some_and(|v| is_on(&v))
+    };
+    if on("KILN_VERIFY_SUBST_FAILED", |v| !v.is_empty() && v != "0") {
+        Some("KILN_VERIFY_SUBST_FAILED")
+    } else if on("KILN_FN_NAMES_VERIFY", |v| v == "1") {
+        Some("KILN_FN_NAMES_VERIFY")
+    } else {
+        None
+    }
 }
 
 /// The argument of `rest` that makes the front end refuse it: the last of
@@ -59,7 +130,10 @@ fn refusing_argument(program: &str, rest: &[String]) -> String {
         if k >= 2 {
             let before = Args::parse_as(program, &front_end_line(&rest[..k - 1]));
             let option = &rest[k - 2];
-            if before.errors.iter().any(|e| matches!(e, ArgError::MissingValue(o) if o == option)) {
+            // Only the last word of `before` can lack its value. Kiln
+            // names an alias's option, not its spelling, in the error
+            // (`--include-with-prefix` is `-iwithprefix`, WP-2822).
+            if before.errors.iter().any(|e| matches!(e, ArgError::MissingValue(_))) {
                 return option.clone();
             }
         }

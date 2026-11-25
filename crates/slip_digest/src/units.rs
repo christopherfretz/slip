@@ -1265,6 +1265,46 @@ mod tests {
     use crate::decl_func::tests::{named, with_walk};
     use crate::walk::Walk;
 
+    /// `hidden_shadow`: only a hider written in source counts. Since Kiln
+    /// WP-3145/WP-3146 (`690711450`, in the pin since WP-163) an implicit
+    /// member marks the shadow it hides at the class's closing brace, used
+    /// or not, so `differ/_/wp119-shadow-hidden-by-implicit-member` sees
+    /// the mark on both sides and no longer tells the rule from the
+    /// mutation "an implicit hider counts"; this test does (WP-163 fix
+    /// round 1, F5). `E`'s written `operator=(const D&)` hides the shadow;
+    /// `D`'s implicit copy assignment marks it, and it stays a unit.
+    #[test]
+    fn only_a_hider_written_in_source_counts() {
+        let src = "struct D;\n\
+                   struct Base { Base& operator=(const D&); };\n\
+                   struct D : Base { using Base::operator=; };\n\
+                   struct E : Base { using Base::operator=; E& operator=(const D&); };\n";
+        with_walk(src, |w| {
+            let ast = w.ast;
+            let shadows: Vec<DeclId> = ast
+                .decls
+                .ids()
+                .filter(|&d| ast.decls.get(d).kind() == DeclKind::UsingShadow)
+                .collect();
+            let parent = |d: DeclId| {
+                let p = ast.semantic_parent(d).expect("a class");
+                let n = named(w, "D", DeclKind::CXXRecord);
+                if n.iter().any(|&x| ast.first(x) == ast.first(p)) { "D" } else { "E" }
+            };
+            let mut seen: Vec<(&str, bool, bool)> = shadows
+                .iter()
+                .map(|&d| {
+                    (parent(d), ast.decls.hidden_shadow(d).is_some(), super::hidden_shadow(w, d))
+                })
+                // The shadows of `Base`'s implicit copy and move
+                // assignment operators are hidden by none.
+                .filter(|&(_, marked, _)| marked)
+                .collect();
+            seen.sort_unstable();
+            assert_eq!(seen, [("D", true, false), ("E", true, true)]);
+        });
+    }
+
     thread_local! {
         /// How many times `write` has read each entity's stream.
         static READS: std::cell::RefCell<std::collections::BTreeMap<DeclId, u64>> =

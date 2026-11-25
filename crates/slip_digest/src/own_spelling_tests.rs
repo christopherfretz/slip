@@ -379,7 +379,7 @@ fn an_alias_whose_spelling_is_indeterminate_is_listed() {
 #[test]
 fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
     let src = format!(
-        "{PRELUDE}template<class T> using R = void (*)(decltype(f(T())) [2]);\n\
+        "{PRELUDE}template<class T> using R = _BitInt(sizeof(f(T())) * 8);\n\
          template<class T> void u(T, R<T> r);\n"
     );
     crate::decl_func::tests::with_walk(&src, |w| {
@@ -389,7 +389,10 @@ fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
         w.unit = crate::walk::UnitState::default();
         let mut s = Stream::new();
         super::left_out_of_type(w, &mut s, under, None);
-        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/decltype")));
+        // A dependent `_BitInt` is held canonical (rule 5). Until WP-163 the
+        // alias was `void (*)(decltype(f(T())) [2])`, whose adjusted array
+        // parameter Kiln keeps as declared since WP-2720.
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/bit-int")));
         assert!(!w.unit.facts_due, "{:?}", w.unit.facts);
         let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
         let q = w.ast.decls.get(d).ty().expect("a type");
@@ -399,6 +402,56 @@ fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
         super::left_out_of_type(w, &mut s, q, None);
         assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(pattern))]);
         assert_eq!(s.cause(), None);
+    });
+}
+
+/// Rule 12 (WP-163 fix round 1): a dependent template-id written with an
+/// expression argument that Kiln's canonical type holds converted (Kiln
+/// WP-3321, `It<T, n::k>` is `It<T, 0>`). The written type reads the
+/// expression (no cause); the canonical type, which holds no written
+/// argument, makes the unit indeterminate under `CONVERTED_ARGUMENT`
+/// rather than equal to one naming another entity of the same value.
+#[test]
+fn a_converted_argument_with_no_written_form_is_a_cause() {
+    let src = "namespace n { constexpr int k = 0; }\n\
+               template<class, int> struct It {};\n\
+               template<class T> struct M { It<T, n::k>* p; };\n";
+    crate::decl_func::tests::with_walk(src, |w| {
+        let p = crate::decl_func::tests::named(w, "p", DeclKind::Field)[0];
+        let q = w.ast.decls.get(p).ty().expect("a type");
+        w.unit = crate::walk::UnitState::default();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, q, None);
+        assert_eq!(s.cause(), None);
+        assert!(w.unit.facts.iter().any(|f| matches!(f, Fact::Profile(_))), "{:?}", w.unit.facts);
+        let canonical = w.ast.types.canonical(q);
+        w.unit = crate::walk::UnitState::default();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, canonical, None);
+        assert_eq!(s.cause(), Some(super::CONVERTED_ARGUMENT));
+    });
+}
+
+/// Rule 12's check for a converted value looks inside a pack (WP-163 fix
+/// round 2): Kiln converts no dependent pack's arguments today, but a
+/// specialisation's own list holds its pack converted (`V<int, 1, 2>`:
+/// a pack of two values), which `holds_value` must see.
+#[test]
+fn a_converted_value_inside_a_pack_is_seen() {
+    use slip_kiln::kiln::ast::types::ArgView;
+    let src = "template<class, int...> struct V {};\n\
+               V<int, 1, 2> v;\n";
+    crate::decl_func::tests::with_walk(src, |w| {
+        let v = crate::decl_func::tests::named(w, "v", DeclKind::Var)[0];
+        let q = w.ast.decls.get(v).ty().expect("a type");
+        let TypeView::Record(r) = w.ast.types.view(w.ast.types.canonical(q).ty()) else {
+            panic!("a record");
+        };
+        let (_, info) = w.ast.spec_info(r).expect("a specialisation");
+        let l = info.args;
+        assert!(w.ast.types.args(l).iter().any(|a| matches!(a.view(), ArgView::Pack(_))));
+        assert!(!w.ast.types.args(l).iter().any(|a| matches!(a.view(), ArgView::Value { .. })));
+        assert!(super::holds_value(w, l));
     });
 }
 
@@ -427,12 +480,14 @@ fn an_alias_holds_its_set_and_its_user_the_ref() {
 /// file names the test of each.
 const REACHED: &[&str] = &[
     "spelling/decltype",
-    "spelling/array-bound",
-    "spelling/noexcept",
-    "spelling/arg",
-    "spelling/vector-size",
-    "spelling/addr-space",
-    "spelling/pack-index",
+    // Not `spelling/array-bound`, `noexcept`, `arg`, `vector-size`,
+    // `addr-space` or `pack-index`: their pair tests (`spelling-site-*`)
+    // are `differ` pairs since WP-163. Kiln WP-2720 keeps a parameter's
+    // declared array type (`TypeView::Decayed`), whose written operand
+    // rule 2 reads, so these sites are no longer reached through the
+    // adjusted pointer. They are unreachable through the digest at this
+    // pin: `a_marked_canonical_operand_is_unaccounted` meets all six
+    // through a canonical type.
     "spelling/bit-int",
     "spelling/profile",
     "spelling/conversion-name",
@@ -500,10 +555,10 @@ const RULE_5_TRIED: &[(&str, &[&str])] = &[
     ("template<class T> auto k(T t) { auto x = f(t); return x; }\n", &[]),
     ("template<class T> void k(T t) { auto (*p)(T) = &k<T>; decltype(auto) y = f(t); }\n", &[]),
     ("template<class... T> void k(void (*)(T...[0] [2]), T...);\n", &[]),
-    (
-        "template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n",
-        &["spelling/decltype"],
-    ),
+    // An adjusted array parameter of a function type keeps its declared
+    // type since Kiln WP-2720 (`dc5a7989e`, `TypeView::Decayed`), which
+    // rule 2 reads (WP-163): no longer a canonical operand.
+    ("template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n", &[]),
     // subst-pack
     (
         "template<class... T> struct P { template<class U> void m(U, void (*)(decltype(f(U()) + T())...)); };\n\
@@ -516,7 +571,8 @@ const RULE_5_TRIED: &[(&str, &[&str])] = &[
         &[],
     ),
     // full
-    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &["spelling/arg"]),
+    // As the `__underlying_type` source above (Kiln WP-2720, WP-163).
+    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &[]),
     ("template<class T> void k(T, void (*)(Z<sizeof([] { return 0; }, f(T()))> [2]));\n", &[]),
 ];
 
@@ -555,7 +611,14 @@ fn a_marked_canonical_operand_is_unaccounted() {
                template<class T> void b(T t, char (*p)[sizeof(f(T()))]);\n\
                template<class T> void c(T t, void (*p)() noexcept(noexcept(f(T()))));\n\
                template<class T> void d(T t, Z<sizeof(f(T()))> z);\n\
-               template<class T> auto e(T t) -> decltype(t.m);\n";
+               template<class T> auto e(T t) -> decltype(t.m);\n\
+               template<class T> void g(T t, T __attribute__((vector_size(sizeof(f(T())) * 4))) *v);\n\
+               template<class T> void h(T t, int __attribute__((address_space(sizeof(f(T()))))) *p);\n\
+               template<class... T> void i(T... t, T...[sizeof(f(T()...))] *x);\n";
+    // `spelling/vector-size`, `addr-space` and `pack-index` are met here
+    // only: since Kiln WP-2720 (WP-163) no unit of the digest hands their
+    // canonical operand to the reading (`REACHED`'s note; their
+    // `differ/_/spelling-site-*` pairs read the declared array type).
     crate::decl_func::tests::with_walk(src, |w| {
         for (name, site) in [
             ("a", Some("spelling/decltype")),
@@ -563,6 +626,9 @@ fn a_marked_canonical_operand_is_unaccounted() {
             ("c", Some("spelling/noexcept")),
             ("d", Some("spelling/arg")),
             ("e", None),
+            ("g", Some("spelling/vector-size")),
+            ("h", Some("spelling/addr-space")),
+            ("i", Some("spelling/pack-index")),
         ] {
             let d = crate::decl_func::tests::named(w, name, DeclKind::Function)[0];
             let q = w.ast.decls.get(d).ty().expect("a type");

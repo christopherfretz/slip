@@ -1355,6 +1355,10 @@ fn property_of(
         let spans = ast
             .written_refs
             .iter()
+            // The roles `slip_kiln::written` leaves out (WP-163: Kiln
+            // records them since WP-2820 F1; a ud-suffix is part of a
+            // token) are no reference a consumer is given.
+            .filter(|(_, w)| !slip_kiln::written::left_out(w.role))
             .map(|(_, w)| (w.range, false))
             .chain(ast.decl_extents.iter().map(|(_, d)| (d.name, true)))
             .filter(|(s, _)| s.lo.is_valid());

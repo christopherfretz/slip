@@ -597,7 +597,7 @@ impl<'u> KilnSubject<'u> {
     /// The declaration of a friend's wrapper or of a member, as the value
     /// it declares, for the walks of `lookup`.
     pub(super) fn befriended(&self, m: DeclId) -> Option<DeclId> {
-        match self.ast.decls.friend_target(m) {
+        match slip_kiln::written::friend_target(self.ast, m) {
             FriendTarget::Decl(x) => Some(x),
             FriendTarget::Type { owned_tag, .. } => owned_tag,
         }

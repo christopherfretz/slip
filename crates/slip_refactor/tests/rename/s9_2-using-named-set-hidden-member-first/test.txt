@@ -1,4 +1,4 @@
-spec: edits.md §9.2 (a non-virtual declaration hidden by a member declared before the using-declaration, no shadow: it and the hider in the using-declaration of; the hider renamed alone: mixed_follower), WP-127 item 1
+spec: edits.md §9.2 (a non-virtual declaration hidden by a member declared before the using-declaration, no shadow until Kiln WP-3145 (since WP-163 a hidden shadow, a follower of its own; the claims are as before): it and the hider in the using-declaration of; the hider renamed alone: mixed_follower), WP-127 item 1
 from: n::D::f
 to: g
 kind: function

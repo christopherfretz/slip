@@ -154,7 +154,15 @@ impl Lookups {
             // An absolute name is tried where it is, whatever the form
             // (Kiln's log records one since WP-2620: `Found::Absolute`, or
             // `Found::Embed` with the name as its path, when it is found).
-            if l.name.starts_with('/') {
+            // So is a module probe of `import` (`LookupForm::Module`, Kiln
+            // WP-3276, `fa2338ed3`, in the pin since WP-163): its name is
+            // the candidate file's path joined onto the working directory,
+            // absolute, and it uses no search list. The form is tested as
+            // well as the name, as Kiln's `LookupLog::check_absolute` does
+            // (`kiln_pp/src/lookups.rs:646`), so that a probe is never
+            // placed in a directory of the list
+            // (`tests/lookups.rs` `module_probe_is_absolute`).
+            if l.name.starts_with('/') || l.form == LookupForm::Module {
                 tried.push("/", &l.name);
                 if matches!(l.found, Found::Missing) {
                     missed.push("/", &l.name);
@@ -165,8 +173,8 @@ impl Lookups {
             }
             if l.form == LookupForm::Embed {
                 embed(l, log, &driver.embed_dirs, &mut tried, &mut missed);
-                if let Found::Embed { path } = &l.found {
-                    found.push(".", path);
+                if let Some(path) = embed_read(l, log) {
+                    found.push(".", &path);
                 }
                 continue;
             }
@@ -454,14 +462,27 @@ fn embed(
     for (d, _) in &order {
         tried.push(d, &l.name);
     }
-    let read = match &l.found {
-        Found::Embed { path } => order.iter().position(|(_, p)| p == path),
-        _ => None,
-    };
+    let read = embed_read(l, log).and_then(|path| order.iter().position(|(_, p)| *p == path));
     // A path read that is none of the tries cannot be placed: every try is
     // then missed, which refuses more, never less.
     for (d, _) in &order[..read.unwrap_or(order.len())] {
         missed.push(d, &l.name);
+    }
+}
+
+/// The path an `#embed` or `__has_embed` lookup `l` read: Kiln's
+/// `Found::Embed` path, or, since Kiln WP-2829 (`c52c27ba8`, in the pin
+/// since WP-163), the name in the `--embed-dir` `Found::EmbedDir` names
+/// (`LookupLog::embed_dirs`), which was a `Found::Embed` path before: the
+/// same path as before (parity).
+fn embed_read(l: &kiln_pp::Lookup, log: &LookupLog) -> Option<String> {
+    match &l.found {
+        Found::Embed { path } => Some(path.clone()),
+        Found::EmbedDir { index } => {
+            let d = log.embed_dirs.get(*index as usize)?;
+            Some(join_path(dir(log, *d), &l.name))
+        }
+        _ => None,
     }
 }
 

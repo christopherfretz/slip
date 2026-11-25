@@ -205,6 +205,10 @@ fn takes_part(role: Role) -> bool {
         | Role::Designator
         // The qualified declarator-id of a redeclaration (Kiln WP-1932).
         | Role::Redecl => true,
+        // Left out at the boundary (`slip_kiln::written::left_out`, WP-163):
+        // an operator token and a ud-suffix (Kiln WP-2820 F1), which Kiln
+        // did not record at `4a83f6e3c`; never given, so never reached here.
+        Role::Operator | Role::UdSuffix => false,
     }
 }
 

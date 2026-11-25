@@ -1,4 +1,2 @@
-# pending
-# needs: kiln (as differ/_/spelling-instantiation-array-bound)
 added f(long)
 changed template <class> void g(type-parameter-0-0)

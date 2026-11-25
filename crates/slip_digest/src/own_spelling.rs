@@ -35,8 +35,8 @@ use slip_kiln::kiln::ast::expr::{Designator, ExprDeps, ExprFlags, ExprKind as K,
 use slip_kiln::kiln::ast::fp::FpRound;
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{
-    ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TemplateArg, TemplateName, TypeFlags,
-    TypeOfOperand, TypeView,
+    ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TagKeyword, TemplateArg, TemplateName,
+    TypeFlags, TypeOfOperand, TypeView,
 };
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, QualType, TemplateNameId};
 
@@ -223,10 +223,25 @@ pub(crate) fn left_out_of_type(
     ty(w, s, written, own_fn);
 }
 
-/// The left-out facts of a written template argument list (a partial
-/// specialisation's arguments as written).
-pub(crate) fn left_out_of_args(w: &mut Walk<'_>, s: &mut Stream, l: ArgListId, marked: bool) {
-    args(w, s, l, Ctx::Known(marked));
+/// The left-out facts of a template argument list `l`: a partial
+/// specialisation's arguments (converted, sugared), with `written`, the
+/// list as written, and `canonical`, the canonical list, where Kiln keeps
+/// them (`args_as_written`): a written expression whose canonical
+/// argument is a converted value is read as rule 12 reads one
+/// (`converted_args`); otherwise the list `l` the unit holds.
+pub(crate) fn left_out_of_args(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    l: ArgListId,
+    written: Option<(ArgListId, ArgListId)>,
+    marked: bool,
+) {
+    match written {
+        Some((written, canonical)) => {
+            converted_args(w, s, l, written, Some(canonical), Ctx::Known(marked));
+        }
+        None => args(w, s, l, Ctx::Known(marked)),
+    }
 }
 
 /// The left-out facts of one template argument as written (a default
@@ -395,6 +410,11 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: Option<DeclId>) {
         TypeView::QualifiedArray { quals: _, base } => ty(w, s, QualType::unqual(base), None),
         TypeView::Paren(x) => ty(w, s, x, own_fn),
         TypeView::Attributed { kind: _, modified, equivalent: _ } => ty(w, s, modified, own_fn),
+        // A parameter type adjusted from an array whose bound is an
+        // instantiation-dependent expression (Kiln WP-2720): the declared
+        // array type holds the bound as written (rule 7); the adjusted
+        // pointer has lost it.
+        TypeView::Decayed { original, adjusted: _ } => ty(w, s, original, None),
         TypeView::ConstantArray(a) => {
             let slip_kiln::kiln::ast::types::ConstArray { elem, size: _, size_expr } = a;
             ty(w, s, elem, None);
@@ -466,12 +486,24 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: Option<DeclId>) {
                     alias(w, s, pattern);
                 }
                 args(w, s, l, here);
-            } else {
+            } else if let Some(u) = underlying {
                 // With `underlying` (a specialisation that is not
-                // dependent), the canonical type holds the arguments'
-                // values: an instantiation-dependent one is read as
-                // written, its profile with it (`written_expr`).
-                let _ = underlying;
+                // dependent, or a dependent one whose canonical form holds
+                // converted values, Kiln WP-3321), the canonical type holds
+                // the arguments' values: an instantiation-dependent one is
+                // read as written, its profile with it (`written_expr`),
+                // and so is a converted one (`converted_args`, rule 12).
+                let canonical = dependent_canonical_args(w, u);
+                template_name(w, s, name);
+                converted_args(w, s, l, l, canonical, here);
+            } else {
+                // A canonical dependent specialisation with no spelling of
+                // its own: a converted value argument hides which entity
+                // was written (WP-163; `CONVERTED_ARGUMENT`), inside a pack
+                // too (Kiln converts no pack's arguments today).
+                if types.flags(q.ty()).intersects(TypeFlags::DEPENDENT) && holds_value(w, l) {
+                    s.indeterminate(CONVERTED_ARGUMENT);
+                }
                 template_name(w, s, name);
                 args(w, s, l, here);
             }
@@ -551,6 +583,151 @@ fn instantiation_only(w: &Walk<'_>, e: ExprId) -> bool {
     d.contains(ExprDeps::INSTANTIATION)
         && !d.intersects(ExprDeps::TYPE)
         && !d.intersects(ExprDeps::VALUE)
+}
+
+/// A dependent class template-id's canonical type whose arguments hold a
+/// converted value where the template-id was written with an expression
+/// (Kiln WP-3321, `ea9a8e141`, in the pin since WP-163: `It<T, n::k>` is
+/// `It<T, 0>`), met where the unit holds no written form of it: which
+/// entity the argument named is not known, so the unit is indeterminate
+/// (`spec/digest-kinds.md` §4.4 "Spellings", rule 12).
+pub(crate) const CONVERTED_ARGUMENT: Cause = Cause::Unaccounted("spelling/converted-argument");
+
+/// The canonical argument list of `underlying`, the canonical form of a
+/// written template-id, where rule 12 compares the written list with it:
+/// a dependent specialisation's (Kiln WP-3321: there the canonical type
+/// no longer says which entity a written expression names, which the
+/// profile of the written expression did at the pin before). None for a
+/// specialisation that is not dependent (its canonical type is its
+/// specialisation's record at both pins, digest-kinds §4.6) and for a
+/// canonical form that is not a specialisation (a partial
+/// specialisation's current instantiation, whose canonical arguments are
+/// the partial specialisation's own: they are compared where the list is
+/// written, `left_out_of_args`, and an out-of-line member's qualifier,
+/// which Kiln does not keep, is `out_of_line_member`'s).
+fn dependent_canonical_args(w: &Walk<'_>, underlying: QualType) -> Option<ArgListId> {
+    let types = &w.ast.types;
+    if !types.flags(underlying.ty()).intersects(TypeFlags::DEPENDENT) {
+        return None;
+    }
+    match types.view(types.canonical(underlying).ty()) {
+        TypeView::TemplateSpecialization { args: cl, .. } => Some(cl),
+        _ => None,
+    }
+}
+
+/// Rule 12 (digest-kinds §4.4 "Spellings"), the one reader of a list
+/// whose canonical form holds converted values: list `read` position by
+/// position (`read` is `written` itself for a written type, and a
+/// partial specialisation's converted list, which has the canonical
+/// list's shape, for its own list), where `written` (the list as
+/// written) holds an expression and `canonical` a converted value, the
+/// written expression with its profile (`profiled_expr`); elsewhere
+/// `read`'s argument, as `arg` reads it.
+///
+/// Before a pack the three lists hold one argument per parameter, and
+/// the written list is shorter only where defaults fill the canonical
+/// one, which the template's own unit reads (its default template
+/// argument): the zip stops at the shorter. A canonical argument that
+/// is a pack holding a converted value (a partial specialisation of a
+/// variadic template, `P<T, n::k>` with `template<class, int...>`:
+/// the canonical list is `T, {0}`) covers the rest of the written list
+/// (a class or variable template's pack is its last parameter): when
+/// the written arguments from that position are exactly as many as the
+/// pack's elements, each is read against its element as above, a
+/// written pack expansion over a converted value excepted; otherwise
+/// which written argument names which element is not known and the
+/// form is lost (`lost_form`, `CONVERTED_ARGUMENT`), never equal. A
+/// written dependent type's canonical list holds no such pack (Kiln
+/// converts no dependent variadic template-id's arguments).
+fn converted_args(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    read: ArgListId,
+    written: ArgListId,
+    canonical: Option<ArgListId>,
+    here: Ctx,
+) {
+    let types = &w.ast.types;
+    let read = types.args(read).to_vec();
+    let written = types.args(written).to_vec();
+    let canonical = canonical.map_or_else(Vec::new, |c| types.args(c).to_vec());
+    for (i, a) in read.into_iter().enumerate() {
+        let c = canonical.get(i).map(TemplateArg::view);
+        if let Some(ArgView::Pack(p)) = c
+            && holds_value(w, p)
+        {
+            let elements = w.ast.types.args(p).to_vec();
+            let rest = written.get(i..).unwrap_or(&[]);
+            let aligned = rest.len() == elements.len()
+                && rest
+                    .iter()
+                    .zip(&elements)
+                    .all(|(x, c)| !(expansion(w, *x) && matches!(c.view(), ArgView::Value { .. })));
+            if !aligned {
+                lost_form(w, s, CONVERTED_ARGUMENT);
+                arg(w, s, a, here);
+                return;
+            }
+            for (x, c) in rest.iter().zip(&elements) {
+                one_converted(w, s, *x, *x, c.view(), here);
+            }
+            return;
+        }
+        let x = written.get(i).copied().unwrap_or(a);
+        match c {
+            Some(c) => one_converted(w, s, a, x, c, here),
+            None => arg(w, s, a, here),
+        }
+    }
+}
+
+/// One position of `converted_args`: argument `written` over canonical
+/// argument `canonical`, read as rule 12 reads it where `written` is an
+/// expression and `canonical` a converted value; otherwise `held`, the
+/// argument the unit holds.
+fn one_converted(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    held: TemplateArg,
+    written: TemplateArg,
+    canonical: ArgView,
+    here: Ctx,
+) {
+    match (written.view(), canonical) {
+        (ArgView::Expr { expr, profile: _ }, ArgView::Value { .. }) => profiled_expr(w, s, expr),
+        _ => arg(w, s, held, here),
+    }
+}
+
+/// Whether written argument `a` is a pack expansion (`Ns...`,
+/// `Ts...`, `TT...`).
+fn expansion(w: &Walk<'_>, a: TemplateArg) -> bool {
+    match a.view() {
+        ArgView::Expr { expr: e, profile: _ } => w.ast.exprs.get(e).kind() == K::PackExpansionExpr,
+        ArgView::Type(q) => {
+            matches!(w.ast.types.view(q.ty()), TypeView::PackExpansion { .. })
+        }
+        ArgView::TemplateExpansion { .. } => true,
+        _ => false,
+    }
+}
+
+/// A written argument expression `e` whose canonical form is a converted
+/// value (`converted_args`): its profile bytes added to the list
+/// first, then read as written, as an instantiation-dependent one is
+/// (rule 7, `written_expr`).
+fn profiled_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let mut p = Stream::new();
+    let left_out = w.left_out;
+    w.spelling_off += 1;
+    crate::expr_dep::profile_expr(w, &mut p, e);
+    w.spelling_off -= 1;
+    let marked = w.left_out != left_out;
+    w.left_out = left_out;
+    s.absorb(p.cause());
+    push(w, Fact::Profile(p.as_bytes().to_vec()));
+    expr(w, s, e, Ctx::Known(marked));
 }
 
 /// An expression a written type holds where the canonical type holds a
@@ -820,10 +997,24 @@ pub(crate) fn friend_name(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, target: F
     let lost = match target {
         FriendTarget::Decl(x) => named(x),
         FriendTarget::Type { ty, owned_tag: _ } => {
-            // An elaborated-type-specifier Kiln built without its
-            // qualifier (`friend struct Bq<..>::Y;`) is the class itself.
+            // An elaborated-type-specifier with a class-key (`friend
+            // struct Bq<..>::Y;`) is the class itself. At `4a83f6e3c` Kiln
+            // built it without its qualifier; since WP-3164 (`2af5deebd`)
+            // the type keeps the written qualifier, which this rule does
+            // not read (parity, WP-163: reading a friend's written form is
+            // WP-126's). A `typename` one (`friend typename Bq<..>::Y;`)
+            // kept its qualifier at both pins and is sugar, read as written.
             let mut view = ast.types.view(ty.ty());
-            if let TypeView::Elaborated { nns: None, named, .. } = view {
+            if let TypeView::Elaborated { keyword, nns, named } = view
+                && (nns.is_none()
+                    || matches!(
+                        keyword,
+                        TagKeyword::Struct
+                            | TagKeyword::Class
+                            | TagKeyword::Union
+                            | TagKeyword::Enum
+                    ))
+            {
                 view = ast.types.view(named.ty());
             }
             match view {
@@ -858,6 +1049,59 @@ pub(crate) fn explicit_specialisation(w: &mut Walk<'_>, s: &mut Stream, d: DeclI
     if explicit && templated_at(w, Some(d)) {
         lost_form(w, s, SPECIALISATION_ARGUMENTS);
     }
+}
+
+/// Rule 12 at a qualifier Kiln does not keep: declaration `d` written
+/// outside a partial specialisation it is a member of (an out-of-line
+/// member function, static data member or nested class, or a member of
+/// one, `template<class T> void P<T, n::k>::f() {}`), whose canonical
+/// arguments hold a converted value. The qualifier's template-id named
+/// the partial specialisation by its written arguments, which Kiln keeps
+/// nowhere on `d` (only a using-declaration's qualifier is kept), so
+/// which entity a written argument named is not known: the unit is
+/// indeterminate (`CONVERTED_ARGUMENT`), never equal. The semantic chain
+/// is walked up to the first class `d` is written in: a qualifier above
+/// it was written by that class's declaration, and is its unit's.
+pub(crate) fn out_of_line_member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
+    let ast = w.ast;
+    let decls = &ast.decls;
+    let mut lexical: Vec<DeclId> = Vec::new();
+    let mut x = decls.lexical_ctx(d);
+    while let Some(c) = x {
+        if lexical.len() >= 4096 {
+            break;
+        }
+        lexical.push(ast.first(c));
+        x = decls.lexical_ctx(c);
+    }
+    let mut x = decls.get(d).ctx();
+    let mut steps = 0;
+    while let Some(c) = x {
+        steps += 1;
+        if steps > 4096
+            || matches!(decls.get(c).kind(), DeclKind::TranslationUnit | DeclKind::Namespace)
+            || lexical.contains(&ast.first(c))
+        {
+            return;
+        }
+        let info = ast.partial_spec_info(c).or_else(|| ast.partial_spec_info(ast.first(c)));
+        if let Some((_, info)) = info
+            && holds_value(w, info.canonical)
+        {
+            lost_form(w, s, CONVERTED_ARGUMENT);
+            return;
+        }
+        x = decls.get(c).ctx();
+    }
+}
+
+/// Whether list `l` holds a converted value, inside a pack too.
+fn holds_value(w: &Walk<'_>, l: ArgListId) -> bool {
+    w.ast.types.args(l).iter().any(|a| match a.view() {
+        ArgView::Value { .. } => true,
+        ArgView::Pack(p) => holds_value(w, p),
+        _ => false,
+    })
 }
 
 /// A form whose written spelling Kiln did not keep, in a templated

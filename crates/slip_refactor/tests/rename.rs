@@ -2314,12 +2314,16 @@ fn wp127_named_set_two_observers() {
 
 /// F1's family with `C : B2, B1` (the first base gives `A::f()`, the
 /// second `B1::f()`) and `B1` declaring `f()` only, hidden by `D::f()`:
-/// member first Kiln makes no shadow at all, so what `using C::f;` names
-/// is empty and cannot be told. From `n::D::f` it is refused in both
-/// orders (`unsupported` member first: the follower's `of` is `D::f()`
-/// alone, renamed; `mixed_follower` using first, the hidden shadow of the
-/// kept `B1::f()`). From `n::A::f` nothing of the rename is near it: it is
-/// kept, and the rename verifies in both orders.
+/// what `using C::f;` names is unknown (the bases give different sets).
+/// From `n::D::f` it is refused in both orders, `mixed_follower`: the
+/// follower's `of` is its shadows' targets and `D::f()` (`spec/edits.md`
+/// "What a using-declaration names"), and the hidden shadow of the kept
+/// `B1::f()` is in it. (Until WP-163 member first was `unsupported`:
+/// Kiln made no shadow at all there, so the `of` was `D::f()` alone,
+/// renamed; since Kiln WP-3145 (`690711450`) it makes the hidden shadow in
+/// either order, and the spec's rule gives `mixed_follower`.) From
+/// `n::A::f` nothing of the rename is near it: it is kept, and the rename
+/// verifies in both orders.
 #[test]
 fn wp127_unknown_named_set_nothing_shadowed() {
     let text = |d: &str| {
@@ -2329,7 +2333,7 @@ fn wp127_unknown_named_set_nothing_shadowed() {
     };
     let mf = text("void f(); using C::f;");
     let uf = text("using C::f; void f();");
-    for (tag, src, want) in [("mf", &mf, "SubjectUnsupported"), ("uf", &uf, "MixedFollower")] {
+    for (tag, src, want) in [("mf", &mf, "MixedFollower"), ("uf", &uf, "MixedFollower")] {
         let files: [(&str, &[u8]); 1] = [("main.cpp", src.as_bytes())];
         let n = format!("wp127-unknown-empty-{tag}");
         let r = end_to_end(&n, &files, &["main.cpp"], &["n", "D", "f"], "g", &right);
@@ -2600,9 +2604,11 @@ fn wp139_template_name_is_refused_at_the_target() {
     assert_eq!(r.refusals, ["SubjectUnsupported n::S::t"], "{r:?}");
 }
 
-/// Item 6, where Kiln's table has no row: a dependent name in a default
-/// template argument (`template <class T, int = sizeof(T::s())>`), which
-/// the call `call<n::R>()` substitutes. The name is `unresolved` (and
+/// Item 6, where the rename is given no row: a dependent name in a
+/// default template argument (`template <class T, int = sizeof(T::s())>`),
+/// which the call `call<n::R>()` substitutes. (Kiln records the row since
+/// WP-3520; `slip_kiln::written::instances` leaves it out since WP-163,
+/// parity, so this guard stays tested.) The name is `unresolved` (and
 /// residue `dependent`); the rename is accepted, and the post-image, whose
 /// `T::s` names nothing in `R`, does not compile: verification fails
 /// loudly, never `verified` (the harness's post-image parse asserts no
@@ -2623,8 +2629,8 @@ fn wp139_no_row_fails_verification_loudly() {
     assert!(m.contains("main.cpp has errors"), "{m}");
 }
 
-/// The shape with no row in Kiln's table, where the old name has a
-/// fallback. With `n::S<int>` (whose base `Base` declares a static `s`),
+/// The shape with no row given (left out at the boundary since WP-163, as
+/// above), where the old name has a fallback. With `n::S<int>` (whose base `Base` declares a static `s`),
 /// renaming `n::S::s` leaves `T::s` in the default template argument
 /// `unresolved` (no evidence: the right claim), and in the post-image it
 /// binds `Base::s`. This helper runs the rename and the digest only: the

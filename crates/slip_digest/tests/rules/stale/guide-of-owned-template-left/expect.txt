@@ -1,5 +1,0 @@
-# The guide left beside a compatibility using: the using and its shadow are added. Counted direct: the using, the shadow and the guide (3; with the guide
-# exempt, as before F4, 2).
-added legacy::<using acme::W>
-added legacy::<shadow acme::W>
-use 6 via 1 direct 3

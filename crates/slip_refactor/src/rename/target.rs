@@ -92,7 +92,11 @@ fn rename_role(role: written::Role) -> bool {
         | R::Elaborated
         | R::SpecTarget
         | R::Designator
-        | R::Redecl => false,
+        | R::Redecl
+        // Left out at the boundary (`slip_kiln::written::left_out`, WP-163):
+        // Kiln WP-2820 F1's operator and ud-suffix entries are never given.
+        | R::Operator
+        | R::UdSuffix => false,
     }
 }
 

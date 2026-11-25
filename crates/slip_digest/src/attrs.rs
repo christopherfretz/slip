@@ -711,6 +711,23 @@ fn own_nodes(w: &Walk<'_>, s: &mut Stream, x: DeclId) -> Vec<AttrNode> {
         .collect()
 }
 
+/// The nodes of parameter `p` of declaration `x`: [`own_nodes`], except
+/// for a declaration made by instantiation, whose parameter's nodes are
+/// all written, `inherited` copies included. Since Kiln WP-3407
+/// (`14b25bd70`, in the pin since WP-163) an instantiation's parameter
+/// takes its attributes from the template's latest declaration, where an
+/// attribute of the first declaration is an `inherited` copy; before, it
+/// took them from the first declaration, as its own. Its chain holds no
+/// other declaration with the attribute, so leaving the copy out would
+/// lose it (parity: `differ/_/param-attr-template-first-declaration`).
+fn param_nodes(w: &Walk<'_>, s: &mut Stream, x: DeclId, p: DeclId) -> Vec<AttrNode> {
+    if !crate::templ::made_by_instantiation(w, x) {
+        return own_nodes(w, s, p);
+    }
+    let ast = w.ast;
+    attr_ids(w, s, ast.attrs.of_decl(p)).into_iter().map(|a| *ast.attrs.get(a)).collect()
+}
+
 /// `count` then `record AttrNode` for each of `nodes`.
 fn node_list(w: &mut Walk<'_>, s: &mut Stream, nodes: &[AttrNode]) {
     s.count(nodes.len());
@@ -837,14 +854,17 @@ fn param_attrs(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) -> bool {
             Some((x, param))
         })
         .collect();
-    let def_param = params.iter().find(|&&(x, _)| Some(x) == def).map(|&(_, p)| p);
+    let def_param = params.iter().find(|&&(x, _)| Some(x) == def).copied();
     s.opt(def_param.is_some());
-    if let Some(p) = def_param {
-        let nodes = own_nodes(w, s, p);
+    if let Some((x, p)) = def_param {
+        let nodes = param_nodes(w, s, x, p);
         node_list(w, s, &nodes);
     }
-    let others: Vec<Vec<AttrNode>> =
-        params.iter().filter(|&&(x, _)| Some(x) != def).map(|&(_, p)| own_nodes(w, s, p)).collect();
+    let others: Vec<Vec<AttrNode>> = params
+        .iter()
+        .filter(|&&(x, _)| Some(x) != def)
+        .map(|&(x, p)| param_nodes(w, s, x, p))
+        .collect();
     groups(w, s, &others);
     let chain: Vec<DeclId> = params.iter().map(|&(_, p)| p).collect();
     chain_annotations(w, s, &chain);
@@ -2228,10 +2248,10 @@ mod tests {
     // parameter (kiln_sema templ/subst/decls.rs `param_infos`), inherited
     // ones included: the explicit instantiation in
     // `differ/_/param-attr-template-first-declaration` changes with them.
-    // An attribute written on the definition's parameter alone is not on
-    // the instantiation's, where clang 19 puts it (`For Kiln` in
-    // `spec/landed/digest-kinds/WP-066.md`); when this fails, Kiln puts it
-    // there, and `differ/_/param-attr-template-definition` changes too.
+    // An attribute written on the definition's parameter alone is on the
+    // instantiation's too since Kiln WP-3407, as clang 19 has it (`For
+    // Kiln` in `spec/landed/digest-kinds/WP-066.md`), and
+    // `differ/_/param-attr-template-definition` changes f<int>.
     #[test]
     fn kiln_instantiates_parameter_attributes() {
         let count = |src: &str| {
@@ -2258,8 +2278,9 @@ mod tests {
              template<class T> void f(T *p __attribute__((nonnull))) {}\n\
              template void f<int>(int *);",
         );
-        // Kiln defect (For Kiln, `spec/landed/digest-kinds/WP-066.md`):
-        // clang 19 instantiates the definition's attribute onto f<int>.
-        assert_eq!(definition, [0, 1, 0], "the definition's attribute is not instantiated");
+        // Since Kiln WP-3407 (`14b25bd70`, in the pin since WP-163) the
+        // definition's attribute is instantiated onto f<int>, as clang 19
+        // does (WP-066's For Kiln item, fixed).
+        assert_eq!(definition, [0, 1, 1], "the definition's attribute is instantiated");
     }
 }

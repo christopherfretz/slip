@@ -1,2 +1,2 @@
 indeterminate M
-indeterminate M::<friend It<type-parameter-0-0, sizeof (((D *)nullptr)->~D() , 0)>>
+indeterminate M::<friend It<type-parameter-0-0, 4UL>>
