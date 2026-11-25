@@ -1,0 +1,9 @@
+# The unity main file read-only: own.h read-only by the chain, a difference.
+removed user(legacy::Mine *)
+removed legacy
+removed legacy::Mine
+removed legacy::Mine::v
+added acme::Mine::v
+added acme::Mine
+added user(acme::Mine *)
+added acme

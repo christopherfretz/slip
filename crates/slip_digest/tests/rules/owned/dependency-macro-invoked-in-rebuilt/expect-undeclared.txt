@@ -1,0 +1,6 @@
+# The same difference.
+removed legacy
+removed legacy::legacy_init()
+changed user()
+added acme::legacy_init()
+added acme

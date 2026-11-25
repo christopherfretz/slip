@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 row 31 (inclusion-chain-left with a rebuilt header): gen.h is rebuilt and unedited, declares legacy::f(int), and this observer includes it only through read-only dep.h, so f is a dependency entity by the per-inclusion rule alone. A rebuilt file is not read-only by its own path: f is counted as an owned member is, left in legacy, direct (spec/verify.md §9.2).

@@ -334,6 +334,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         names: Some(slip_model::names::Names::default()),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());

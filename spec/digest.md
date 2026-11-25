@@ -863,7 +863,10 @@ include chain passes through a read-only file; a
 specialisation of such a template; an implicit member of such a class)
 keeps its own name and its namespaces theirs, with only what its
 discriminators mention mapped. The definition and the reason are
-`verify.md` §2.1 "Rules rename owned entities only". "Map its parent"
+`verify.md` §2.1 "Rules rename owned entities only". A file may also be
+**rebuilt** (`verify.md` §2.1, WP-118): for everything in this section
+it is read as an owned file, except that an entity with C language
+linkage declared in one is a dependency entity. "Map its parent"
 above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
 keyed: the same namespace can have two keys in one walk, one for its

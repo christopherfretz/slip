@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R3.1 (M11): main.cpp includes rebuilt outer.h, which includes rebuilt inner.h (including other.h, whose entity no rule maps) and then owned mid.h (whose Mine is mapped). The inclusion of mid.h has only outer.h on its chain: each element of a chain gets the entries from itself upwards, not the leaf's. So only outer.h is relied on.

@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A7 (R3.3): one of two observers over own.h (ordinary; a unity main file, rebuilt). Mine has one key id under the rules in both (rules.rs wp118_a7_one_key); the precompiled-header observer (-include) needs a real parse (the snippet refuses -include): slip_cli tests/rebuilt.rs.

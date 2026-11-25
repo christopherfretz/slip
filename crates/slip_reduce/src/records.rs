@@ -416,6 +416,8 @@ pub(crate) fn reason_of(v: u64) -> Option<Reason> {
     ]
     .get(v as usize)
     .copied()
+    // 12 is unlisted (`spec/edits.md` §4.2); `rebuilt` is 13 (WP-118).
+    .or((v == 13).then_some(Reason::Rebuilt))
 }
 
 fn severity_of(v: u64) -> Option<Severity> {

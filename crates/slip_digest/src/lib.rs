@@ -255,7 +255,8 @@ mod tests;
 pub use names::display_name;
 pub use ns_refs::NamespacePart;
 pub use own_lists::{Fixed, FixedAs, Made};
-pub use owned::{ReadOnly, ReadOnlyFiles};
+pub use owned::{Class, ReadOnly, ReadOnlyFiles};
+pub use rule_use::{Declares, RebuiltOutput};
 pub use walk::STACK_SIZE;
 
 /// A finished translation unit (`spec/digest.md` §1 rule 4).
@@ -340,6 +341,11 @@ pub struct Output {
     /// The dependency entities whose key a rule could have made (T) or
     /// would have moved were they owned (M), sorted; empty when `made` is.
     pub fixed: Vec<Fixed>,
+    /// What the walk says of the rebuilt files (WP-118, `spec/verify.md`
+    /// §9.1 section 33): the entries relied on, the `declares` rows, the
+    /// files that cut an include chain; empty when `rule_use` is not asked
+    /// for or the table is empty.
+    pub rebuilt: RebuiltOutput,
 }
 
 /// The names digest of one key (`Output::name_strings`), with what a note

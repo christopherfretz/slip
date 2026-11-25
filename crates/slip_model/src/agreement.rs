@@ -1,6 +1,6 @@
 //! The records of agreement between observers (`spec/verify.md` §9.1):
-//! sections 24, `binding`, and 25, `rule_use`, of a verify shard. Work
-//! package WP-060.
+//! sections 24, `binding`, 29, `rule_use`, and 33, `rebuilt_use`
+//! (WP-118), of a verify shard. Work package WP-060.
 //!
 //! Plain data. The binary and JSON forms and the invariants are in
 //! `formats` (`spec/landed/edits/WP-060.md`).
@@ -50,4 +50,53 @@ pub struct Binding {
     pub declared: Digest,
     /// The round of the pre shard (`spec/verify.md` §5.2 step 0).
     pub pre: u64,
+}
+
+/// Section 33, `rebuilt_use` (`spec/verify.md` §9.1, WP-118 R6.4): what
+/// one observer's walk under rules said of the run's `rebuilt` entries,
+/// and the read-only files that cut an include chain (the hint, R1.3).
+/// Present only in an `ok` verify shard under a rule table that is not
+/// empty, and only when not every list is empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RebuiltUse {
+    /// The entries relied on, as indices into `Declared.files.rebuilt`;
+    /// strictly ascending.
+    pub relied: Vec<u64>,
+    /// Strictly ascending by `(file, rule)`.
+    pub declares: Vec<Declares>,
+    /// Subject paths of the read-only files that cut an include chain and
+    /// pass the job's filter (R1.3 rules 2 and 4); strictly ascending, at
+    /// most [`RebuiltUse::HINTS_MAX`].
+    pub hints: Vec<Vec<u8>>,
+    /// How many more there were; 0 unless `hints` has
+    /// [`RebuiltUse::HINTS_MAX`].
+    pub hints_more: u64,
+}
+
+impl RebuiltUse {
+    /// The most hints a shard keeps (R1.3).
+    pub const HINTS_MAX: usize = 16;
+
+    /// Every list empty and `hints_more` 0: the section is not written.
+    pub fn is_empty(&self) -> bool {
+        self.relied.is_empty()
+            && self.declares.is_empty()
+            && self.hints.is_empty()
+            && self.hints_more == 0
+    }
+}
+
+/// One row of [`RebuiltUse::declares`]: how many entities one rebuilt file
+/// declares that rule `rule` gave their key (`mapped`), or whose key is the
+/// one the rule produces, kept by the walk (`left`, not in
+/// `Declared.kept`; `left_kept`, in it).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Declares {
+    /// The rebuilt file's subject path.
+    pub file: Vec<u8>,
+    /// The rule's index in `Declared.rules`.
+    pub rule: u64,
+    pub mapped: u64,
+    pub left: u64,
+    pub left_kept: u64,
 }

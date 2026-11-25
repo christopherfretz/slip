@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A12 (row 5): a rebuilt file's macro whose body spells Mine, invoked in an owned file: owned (the name token spelled in a rebuilt file is not a dependency's). The declaration lies in gen.h by its name token, so the row names gen.h (D(e) by the spelling location too).

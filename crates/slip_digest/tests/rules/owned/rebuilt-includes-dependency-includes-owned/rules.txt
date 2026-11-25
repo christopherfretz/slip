@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A3 (R3.2 row 2): rebuilt gen.h includes read-only dep.h, which includes owned own.h. own.h is read-only for that inclusion: read-only wins, the dependency was compiled against own.h. Mine keeps its key and the correct migration differs; the entry is not relied on.

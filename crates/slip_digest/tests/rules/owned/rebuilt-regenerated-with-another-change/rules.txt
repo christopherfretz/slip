@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R6.1, the second failure: gen.h is regenerated with another change (a member added): a difference like any other.

@@ -143,7 +143,7 @@ impl Tree {
     /// The run's files: the subject owned, `readonly` of it read-only.
     fn files(&self, readonly: &[&str]) -> Ownership {
         let readonly = readonly.iter().map(|r| bytes(&self.subject.join(r))).collect();
-        Ownership { owned: vec![bytes(&self.subject)], readonly }
+        Ownership { owned: vec![bytes(&self.subject)], readonly, rebuilt: Vec::new() }
     }
 
     fn params(&self, declared: Declared) -> Params {

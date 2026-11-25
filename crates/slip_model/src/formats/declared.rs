@@ -66,6 +66,9 @@ enum Loc {
     Owned,
     OwnedAt(usize),
     ReadonlyAt(usize),
+    /// `files.rebuilt` (version 3).
+    Rebuilt,
+    RebuiltAt(usize),
 }
 
 impl Loc {
@@ -78,6 +81,8 @@ impl Loc {
             Loc::Owned => format!("{S}.files.owned"),
             Loc::OwnedAt(i) => format!("{S}.files.owned[{i}]"),
             Loc::ReadonlyAt(i) => format!("{S}.files.readonly[{i}]"),
+            Loc::Rebuilt => format!("{S}.files.rebuilt"),
+            Loc::RebuiltAt(i) => format!("{S}.files.rebuilt[{i}]"),
         }
     }
 }
@@ -109,6 +114,16 @@ fn violation(x: &Declared, version: u32) -> Option<(Loc, &'static str)> {
         && let Some(v) = ownership_violation(o)
     {
         return Some(v);
+    }
+    // Row 4's last rows (WP-118 R5.4): one encoding per value. At the list,
+    // or at the `files` tag when there is no list to point at.
+    let rebuilt = x.files().is_some_and(|o| !o.rebuilt.is_empty());
+    if version >= 3 && !rebuilt {
+        let at = if x.files().is_some() { Loc::Rebuilt } else { Loc::Files };
+        return Some((at, super::transform::V3_NO_REBUILT));
+    }
+    if version < 3 && rebuilt {
+        return Some((Loc::RebuiltAt(0), super::transform::V2_REBUILT));
     }
     let rules = !x.rules().rules().is_empty();
     if version == 1 && rules {
@@ -142,25 +157,36 @@ fn ownership_violation(o: &Ownership) -> Option<(Loc, &'static str)> {
     if let Some(i) = o.readonly.iter().position(|r| o.owned.binary_search(r).is_ok()) {
         return Some((Loc::ReadonlyAt(i), READONLY_OWNED));
     }
+    if let Some((i, what)) = super::transform::rebuilt_violation(o) {
+        return Some((Loc::RebuiltAt(i), what));
+    }
     None
 }
 
+/// The version a value is written in (WP-118 R5.4): 3 exactly when its
+/// files have a `rebuilt` entry, else 2.
+pub(super) fn version_of(x: &Declared) -> u32 {
+    if x.files().is_some_and(|o| !o.rebuilt.is_empty()) { Declared::VERSION } else { 2 }
+}
+
 /// The four lists are checked by the constructors; what is left is
-/// [`violation`], as a value written now (version 2) is read.
+/// [`violation`], as a value written now (version 2 or 3, by the value)
+/// is read.
 pub(super) fn check(x: &Declared) -> std::result::Result<(), (String, &'static str)> {
-    violation(x, Declared::VERSION).map_or(Ok(()), |(l, what)| Err((l.path(), what)))
+    violation(x, version_of(x)).map_or(Ok(()), |(l, what)| Err((l.path(), what)))
 }
 
 // ---------------------------------------------------------------------------
 // Binary
 
 pub(super) fn encode(x: &Declared, extras: &[Extra<'_>]) -> Vec<u8> {
-    encode_as(x, extras, Declared::VERSION)
+    encode_as(x, extras, version_of(x))
 }
 
 /// The file in `version`'s layout: version 1 has no `kept` and no `files`
 /// (a value read from a version 1 file has neither), so that `undump` of
-/// a version 1 file's `dump` gives its bytes back.
+/// a version 1 file's `dump` gives its bytes back; version 3 has
+/// `rebuilt` after `readonly` (WP-118).
 pub(super) fn encode_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Vec<u8> {
     let mut e = Encoder::new();
     let rules = x.rules().rules();
@@ -185,9 +211,14 @@ pub(super) fn encode_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Vec
             }
             Some(o) => {
                 e.u8(1);
-                for list in [&o.owned, &o.readonly] {
+                let lists: &[&Vec<Vec<u8>>] = if version >= 3 {
+                    &[&o.owned, &o.readonly, &o.rebuilt]
+                } else {
+                    &[&o.owned, &o.readonly]
+                };
+                for list in lists {
                     e.count(list.len());
-                    for path in list {
+                    for path in *list {
                         e.bytes(path);
                     }
                 }
@@ -224,7 +255,13 @@ pub(super) fn decode_versioned(bytes: &[u8]) -> Result<(Declared, Vec<Extra<'_>>
             o.owned = d.offset();
             let owned = dec_list(d, Some(&mut o.owned_at), |d| Ok(d.bytes()?.to_vec()))?;
             let readonly = dec_list(d, Some(&mut o.readonly_at), |d| Ok(d.bytes()?.to_vec()))?;
-            Ok(Ownership { owned, readonly })
+            o.rebuilt = d.offset();
+            let rebuilt = if opened.version >= 3 {
+                dec_list(d, Some(&mut o.rebuilt_at), |d| Ok(d.bytes()?.to_vec()))?
+            } else {
+                Vec::new()
+            };
+            Ok(Ownership { owned, readonly, rebuilt })
         })?;
         (kept, files)
     } else {
@@ -256,6 +293,8 @@ struct Offsets {
     owned: usize,
     owned_at: Vec<usize>,
     readonly_at: Vec<usize>,
+    rebuilt: usize,
+    rebuilt_at: Vec<usize>,
 }
 
 impl Offsets {
@@ -267,6 +306,8 @@ impl Offsets {
             Loc::Owned => self.owned,
             Loc::OwnedAt(i) => self.owned_at[i],
             Loc::ReadonlyAt(i) => self.readonly_at[i],
+            Loc::Rebuilt => self.rebuilt,
+            Loc::RebuiltAt(i) => self.rebuilt_at[i],
         }
     }
 }
@@ -434,7 +475,7 @@ fn json_keys(list: &[Digest]) -> Value {
 }
 
 pub(super) fn render(x: &Declared, extras: &[Extra<'_>]) -> Value {
-    render_as(x, extras, Declared::VERSION)
+    render_as(x, extras, version_of(x))
 }
 
 /// The rendering in `version`'s layout (see [`encode_as`]).
@@ -448,10 +489,12 @@ pub(super) fn render_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Val
             json_keys(x.removed()),
             json_keys(x.kept()),
             json_opt(x.files(), |o| {
-                object(vec![
-                    ("owned", Value::Array(o.owned.iter().map(|p| json_bytes(p)).collect())),
-                    ("readonly", Value::Array(o.readonly.iter().map(|p| json_bytes(p)).collect())),
-                ])
+                let list = |l: &[Vec<u8>]| Value::Array(l.iter().map(|p| json_bytes(p)).collect());
+                let mut files = vec![("owned", list(&o.owned)), ("readonly", list(&o.readonly))];
+                if version >= 3 {
+                    files.push(("rebuilt", list(&o.rebuilt)));
+                }
+                object(files)
             }),
         ])
         .collect();
@@ -495,10 +538,21 @@ pub(super) fn read_versioned(v: &Value) -> JResult<(Declared, OwnedExtras, u32)>
         Some((kept, files)) => {
             let kept = read_list(kept, &at.key("kept"), read_digest)?;
             let files = read_opt(files, &at.key("files"), |v, at| {
-                let [owned, readonly] = read_record(v, at, ["owned", "readonly"])?;
+                let (owned, readonly, rebuilt) = if s.version >= 3 {
+                    let [owned, readonly, rebuilt] =
+                        read_record(v, at, ["owned", "readonly", "rebuilt"])?;
+                    (owned, readonly, Some(rebuilt))
+                } else {
+                    let [owned, readonly] = read_record(v, at, ["owned", "readonly"])?;
+                    (owned, readonly, None)
+                };
                 Ok(Ownership {
                     owned: read_list(owned, &at.key("owned"), read_bytes)?,
                     readonly: read_list(readonly, &at.key("readonly"), read_bytes)?,
+                    rebuilt: match rebuilt {
+                        Some(r) => read_list(r, &at.key("rebuilt"), read_bytes)?,
+                        None => Vec::new(),
+                    },
                 })
             })?;
             (kept, files)

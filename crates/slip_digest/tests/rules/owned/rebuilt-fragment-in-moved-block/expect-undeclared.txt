@@ -1,0 +1,8 @@
+# frag.inc read-only.
+removed legacy::G
+removed legacy::G::v
+removed user(legacy::G *)
+added acme::G::v
+added acme::G
+added acme (the dependency's part of acme)
+added user(acme::G *)

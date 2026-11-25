@@ -68,6 +68,7 @@ fn digest(dep: &str, body: &str) -> Output {
         let o = Ownership {
             owned: vec![ROOT.as_bytes().to_vec()],
             readonly: vec![format!("{ROOT}/dep.h").into_bytes()],
+            rebuilt: Vec::new(),
         };
         let subject = |f| {
             let p = (input.subject_path)(f);
