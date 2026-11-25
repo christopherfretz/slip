@@ -174,8 +174,10 @@ nothing). One check (`spec/landed/edits/WP-151.md`), made:
 - in the worker, each time it reads a request for a map job, or a
   declaration for a verify job (the job fails, `exec.md` §8.4).
 
-Apply checks again, with its own walk, before any path is checked
-against the ownership; it is the last check before a write.
+Apply checks again, alone, with its own walk and the same predicate
+(the entry is its own real path, spelled: `slip_apply`'s `Tree::real_path`
+then the walk), before any path is checked against the ownership; it is
+the last check before a write, and holds without the command line's.
 
 Two hard links are two names by design: ownership is by path, and a hard
 link of a read-only file under an owned directory is owned, as a copy
@@ -1576,7 +1578,14 @@ write of the overlay it names publishes (the same files, `pre` and
 anything is touched, and kept: a journal naming a file its overlay does
 not change would have recovery write a blob over a file no write
 replaced. It is given the ownership the write was given (that of the
-request of the overlay's edit set); a journal naming a path not spelled
+request of the overlay's edit set). An entry of that ownership that no
+longer exists or is no longer spelled as on disk (§2.1; a read-only
+directory removed or renamed since the write) is refused (`Input`,
+status 3) before anything is touched, and the journal is kept: the line
+names the entry and says that the write ends when the entry exists again,
+spelled as the request records it, and `--recover` is run again (every
+other command that opens the store exclusively is refused meanwhile). A
+journal naming a path not spelled
 as on disk (§2.1) is refused (`not_canonical`), and one naming a path
 that ownership does not own (outside it, or under a `readonly` entry)
 is refused (`journal_not_owned`), before anything is touched, and kept.
