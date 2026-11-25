@@ -1523,11 +1523,11 @@ fn s2_1_another_case_of_a_readonly_directory_refused() {
     }
     let mut request = fx.rename();
     request.ownership.readonly = vec![bytes_of(&fx.root.join("src/vendor"))];
-    let (_, set, out) = fx.reduced(&request, &agreeing());
-    out.expect(0);
     fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
     let x = fx.root.join("src/vendor/x.h");
     fs::write(&x, "int v;\n").unwrap();
+    let (_, set, out) = fx.reduced(&request, &agreeing());
+    out.expect(0);
     let (r, _) = hand(&fx, set, &[(bytes_of(&x), b"int v;\n", b"int w;\n")]);
     let out = apply_write(&fx, &r, &[]);
     out.expect(1);
