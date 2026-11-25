@@ -7348,8 +7348,10 @@ entry    = uv site expr            ; sites 1, 2, 4, 6
 | 7 | reserved: `explicit(e)` | never (the unit's own stream walks it) |
 | 8 | a `TemplateSpecialization` of an alias template, as written | always, unless instantiation-dependent |
 
-An operand that is instantiation-dependent is never written (§4.4: the
-pattern's own spellings hold it). The walk of a written type stops at a
+An operand that is instantiation-dependent is not written as one
+(§4.4); the holders inside it whose own operands are not
+instantiation-dependent are, each an entry of its own (digest §2.4,
+WP-156 fix round 2). The walk of a written type stops at a
 `Typedef`/`Using` type's underlying type, a `Record`/`Enum` type's
 declaration, a `SubstTemplateTypeParm` type's replacement, a
 `SubstNonTypeTemplateParmExpr`'s replacement, and the argument list of a

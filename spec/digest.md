@@ -415,8 +415,16 @@ of a compound literal of array type (`compound_literal_written`,
 `digest-kinds.md`; `tests/differ/_/operands-expr-holders`).
 
 An operand that writes no reference (`noexcept(true)`, `array<char, 4>`)
-and an instantiation-dependent one (a pattern's own spellings hold it,
-`digest-kinds.md` §4.4) are not written; neither is a deduced type.
+is not written; neither is a deduced type. An instantiation-dependent
+operand is not written as one (its instantiation's is the
+specialisation's, `digest-kinds.md` §4.4), but the holders inside it
+whose own operands are not instantiation-dependent are, each an entry
+(`W2<sizeof(make(x))>` in `decltype(t, W2<sizeof(make(x))>())` of a
+pattern's signature or local, or in the expression argument
+`W2<sizeof(T) + sizeof(Wr<decltype(make(x))>)>`; WP-156 fix round 2,
+X4 to X6). A lambda or statement expression inside such an operand
+fails closed (`operands/dependent-body`): its body is not walked for
+holders.
 
 Nothing is counted for this limit. The AST holds no fact that says a
 satisfaction check or an alias template-id was substituted, and what
@@ -584,40 +592,77 @@ is written but Kiln keeps none of it, the operand unit gets an entry
 `uv 0` that is indeterminate for a named cause (fails closed), whether
 or not the holder had an operand:
 
+A type of the arena is **linked** when a declaration holds it as written
+(its type, a parameter's before adjustment, a typedef's, a friend's,
+an enumeration's underlying type, a base, a template parameter's
+default, a using-declaration's or friend's qualifier, an argument list
+as written), with the types written inside it. Kiln interns a type
+holding an operand by its expressions, so one such spelling is one
+type. The causes below read the types that are not linked, hold an
+operand that is no literal, are not instantiation-dependent and hold
+no substituted template parameter (**unlinked held types**). A type
+written in an expression is not linked either, so the sets are wider
+than what is unkept, never narrower.
+
 - `kiln/placeholder-constraint`: a declaration whose type a placeholder
-  deduced (a variable's, a function's return type) and every `new`,
-  when the translation unit's type arena holds a constrained
-  placeholder whose written arguments hold an operand that is no
-  literal and not instantiation-dependent. Kiln replaces the declared
-  type by the deduced one and keeps the type-constraint only in its
-  arena, unlinked; in a translation unit with no such constraint
-  nothing fails.
+  deduced (a variable's, a function's return type), or a `new`, when
+  an operand of an unlinked held constrained placeholder's arguments
+  is located (expansion location) between the bounds around the
+  declaration's name (the names of the declarations not in a function,
+  lambda or requires-expression and not a class or enumeration that is
+  no definition, and the ends of their bodies and initialisers) or
+  inside the `new` expression. Kiln replaces the declared type by the
+  deduced one and keeps the type-constraint only in its arena,
+  unlinked; a deduced declaration elsewhere fails nothing.
 - `kiln/explicit-instantiation-written`: an explicit instantiation of a
   function, a variable or a member that its own directive names (not
   its class's), when the directive may have spelt an operand: the
   entity is a member of a class of `kiln/declarator-qualifier`'s set,
-  or its arguments hold a non-type argument, or one of its type
-  arguments, its type, its return type or a parameter's type is
-  (canonically) a type of the arena that holds an operand. Kiln keeps
-  neither the directive's arguments nor its declarator as written. A
-  class's explicit instantiation keeps its arguments and is read.
+  or its arguments hold a non-type argument (Kiln keeps the value:
+  `at<3>` and `at<sizeof(make(x))>` are one), or a type argument that
+  is canonically an unlinked held type, or the function's type is, up
+  to its exception specification, that of an unlinked held function
+  type (its declarator, its own `noexcept(e)` included: X3), or a
+  variable's type is an unlinked held type. Kiln keeps neither the
+  directive's arguments nor its declarator as written; the
+  specialisation's exception specification is substituted from the
+  pattern. A class's explicit instantiation keeps its arguments and is
+  read.
 - `kiln/declarator-qualifier`: a declaration written outside its class
   (not an instantiation's), or a `using enum`, when a class around it
-  is in this set: a class named somewhere in the translation unit by a
-  template-id whose written arguments hold an operand that is no
-  literal, or by a `decltype` or `typeof` of an expression (`template
-  <> int Q<sizeof(make(x))>::s = 5;`); a class an alias template names
-  (`template <int> using AL = Pl;`, then `int AL<sizeof(make(x))>::s`);
-  a specialisation of a class template an alias template names
-  (`template <class T> using A2 = Q2<T>;`); a specialisation of a
-  class template whose arguments hold a non-type argument, or a type
-  argument that is (canonically) a type of the arena that holds an
-  operand (`template <> int Q<sizeof(make(x))>::s = 5;` inside a
-  namespace whose other code names no `Q<4>`). Kiln keeps no
-  declarator's qualifier as written, and neither an alias template's
-  template-id nor a declarator qualifier's leaves a type in the arena. A limit by name: an alias template whose target a
-  dependent name finds (`typename T::type`) names a class the arena
-  cannot tell, and is not failed closed.
+  is in this set: a class an unlinked held template-id names (one whose
+  arguments hold an operand, or an alias template's, whose template-id
+  Kiln keeps as a type: `int AL<sizeof(make(x))>::s` with `template
+  <int> using AL = Pl;`); for a `using enum`, a class an unlinked held
+  `decltype` or `typeof` names; a specialisation of a class template
+  whose arguments hold a type argument that is canonically an unlinked
+  held type, or a non-type argument, when an expression that is no
+  literal is located between the bound before the declaration's name
+  and the name (`template <> int Q<sizeof(make(x))>::s = 5;`; for
+  `void Q<1>::f() {}` nothing fails). Kiln keeps no declarator's
+  qualifier as written. An alias template by itself, and a `decltype`
+  of an object (`decltype(obj) other;`, which a declaration links), is
+  nothing. A limit by name: an alias template whose target a dependent
+  name finds (`typename T::type`) names a class the arena cannot tell,
+  and is not failed closed.
+- `kiln/friend-specialization-declarator`: a friend function template
+  specialisation whose function type is that of an unlinked held
+  function type: Kiln links the specialisation, not its declarator. A
+  friend's qualifier and template arguments as written are read from
+  Kiln's friend-form row (X1, X7); a friend read from a module image
+  carries none (`kiln/friend-form-not-carried`).
+- `kiln/destructor-name`: a member access naming a destructor of a
+  class an unlinked held template-id, `decltype` or `typeof` names
+  (`wv.~Wr<decltype(make(x))>()`, X2): Kiln resolves the name and keeps
+  no type as written.
+- `kiln/bit-int-width`: a written `_BitInt(e)` (X8): Kiln keeps the
+  width as a number, or a profile in a pattern, never the expression,
+  and interns `_BitInt(8)` and `_BitInt(sizeof(make(x)))` alike. A
+  pattern's fails closed; another's where an expression that is no
+  literal begins between the bounds around the declaration's name, or
+  inside the expression that holds the type after its first token
+  (`_BitInt(8) v = 0;` fails nothing). `_BitInt` is not used in LLVM's
+  or libc++'s sources, so it fails closed rather than being a limit.
 - `operands/splice`: a splice in a written type or qualifier.
 
 **`noexcept` of a specialisation** (a function whose exception
