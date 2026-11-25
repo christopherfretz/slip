@@ -1278,13 +1278,13 @@ mod tests {
     // `as_recorded` returns `false` on any `real_path` error.
     #[test]
     fn s2_1_real_path_error_paths() {
-        let base = std::env::var_os("SLIP_TEST_ROOT")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        let base = std::env::var_os("SLIP_TEST_ROOT").filter(|v| !v.is_empty()).map_or_else(
+            || {
                 let exe = std::env::current_exe().unwrap();
                 exe.parent().and_then(Path::parent).and_then(Path::parent).unwrap().join("tmp")
-            });
+            },
+            PathBuf::from,
+        );
         let dir = base.join(format!("wp164-err-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
