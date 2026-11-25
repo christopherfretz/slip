@@ -74,18 +74,8 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
 /// roots; the rules pairs, walked since the WP-158 fix round (F2), had
 /// these.
 pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[
-    (
-        "rules/disc/function-template-relocated-concept",
-        "f<int>(int)",
-        2,
-        TWO_SPECS,
-    ),
-    (
-        "rules/disc/function-template-relocated-concept-renamed",
-        "f<int>(int)",
-        2,
-        TWO_SPECS,
-    ),
+    ("rules/disc/function-template-relocated-concept", "f<int>(int)", 2, TWO_SPECS),
+    ("rules/disc/function-template-relocated-concept-renamed", "f<int>(int)", 2, TWO_SPECS),
 ];
 
 /// Why the `disc` pairs share a name: found when the rules pairs were first
