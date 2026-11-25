@@ -1,0 +1,1 @@
+relocate template <class> auto n::S::s() => n::S :: h

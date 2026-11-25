@@ -610,6 +610,98 @@ and the phases' `peak_rss_max` and `peak_rss_sum` (§7.1). Counters are
 compared exactly with the file already there, if any; times and sizes
 are reported and not gated ("Open questions").
 
+What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
+
+- **Names.** `--from` is identifiers joined by `::` (a leading `::`
+  allowed) and `--to` one identifier; anything else is a usage error
+  (status 2). `<target>` is `--from` without a leading `::`, each `::`
+  written `.`. `--expect` takes one of the five states of
+  `spec/edits.md` §8.5. `--slip <path>` names the `slip` executable, as
+  for §9 and §10; by default it is `target/release/slip`, never built by
+  xtask.
+- **Paths.** "The corpus's build directory" is the corpus directory
+  `<root>/<name>/` (§8.2): the store is `slip-store/`, the patch
+  `rename/<target>.patch`, the overlay file of check 3
+  `rename/<target>.vfs.json` (both kept), the copy `rename-copy/` and its
+  build tree `rename-build/` (with the inverse run's store,
+  `rename-build/slip-store/`, and the logs `patch.log`, `configure.log`,
+  `generate.log`, `build.log`). "The source directory" is the clone
+  `src/`, not the cmake source directory: it is `--owned`'s default and
+  `--relative-to`, so uses in projects the corpus does not configure are
+  residue. A given `--owned` must be under `src/` (real paths), or the
+  command stops before `slip` runs.
+- **The run.** `slip rename` is given `--kind` and `-j` when the command
+  is; its lines are printed as they come. Status 2 or 3, or a run that
+  prints no `result` line or a state other than its result's, is an
+  error of the command; 0, 1 and 4 go on to the checks. The result, its
+  edit set, the latest transform run record that names the result and
+  the phase records it names (by content id) are read from the store.
+- **Checks.** They run in order and the first failure stops them; each
+  prints `check <name>: ok|FAIL|skipped|not run (<detail>)`, with
+  `<name>` one of `state`, `determinism`, `accept`, `build`, `back`. Every
+  step prints `step <step>: started (…)` and `step <step>: done in <s>`.
+  A result with no overlay (`refused`) has no post-image: checks 3 to 5
+  are `skipped` even when asked for.
+- **1** also fails a `verified` or `verified_with_residue` run that wrote
+  no patch (its `--patch` refused at apply, `spec/edits.md` §7.2).
+- **2.** `slip reduce --plan <plan> --round <round> --store <store>` (and
+  `-j`); status 0 or 1 with the run's edit set id passes, its lines
+  printed after `reduce| `.
+- **3.** The commands are the plan's observers: the corpus's C compiler
+  (§8.1 `c_compiler`) for C and Objective-C, its C++ compiler otherwise,
+  found on `PATH`, with the observer's arguments after `argv[0]`,
+  `-fsyntax-only`, its directory and environment; once as they are and
+  once with `-ivfsoverlay <file>`. The overlay file maps every overlay
+  file whose post-image differs from its pre-image to its blob in the
+  store, `use-external-names` off. One jobserver token per command pair,
+  at most `-j` pairs at once (the jobserver's count without `-j`); a
+  pair that does not end within an hour counts as a difference. Exit
+  statuses alone are compared; up to 20 differences are printed with the
+  first error line.
+- **4.** Before `slip` runs: the tools are found, the file system of the
+  corpus directory must have at least twice the bytes of `src/`'s
+  regular files free (`df -Pk`), and a `rename-copy/` or `rename-build/`
+  left by an earlier run is removed. The copy is of `src/` without its
+  top-level `.git`: every regular file written anew from its bytes
+  (never a hard link, a reflink or an in-kernel copy), with its mode and
+  modification time; links as links. The patch, when not empty, is
+  applied with `patch -p0 --batch --forward --no-backup-if-mismatch`.
+  cmake runs with §8.3's arguments over the copy, then `make` of the
+  `generate` entries (§8.3, without its promised-file check) and
+  `make all`, with no `-j` (the jobserver in `MAKEFLAGS` bounds them).
+- **5.** The inverse is §6.4's (`--from <prefix>::<to> --to <last>`),
+  over `rename-build/compile_commands.json`, `--owned` mapped into the
+  copy, `--allow-unparsed --allow-residue --write`; status 0 or 1 goes
+  on to the comparison. Every entry of `src/` (without `.git`) and of the
+  copy is compared: presence, kind, a regular file's bytes, a link's
+  target; modes and times are not.
+- **Removal.** `rename-copy/` and `rename-build/` are removed only by
+  their full paths and only when strictly under the corpus directory
+  (§9.1's rule); `removed <path>` or `kept <path>` is printed for each.
+- **The result file** holds `corpus`, `pin`, `from`, `to`, `kind`,
+  `options` (`owned` relative to `src/`, `expect`, `accept`, `build`,
+  `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
+  `transform`, `edits`, `declared`, `overlay` and `result`, `checks`
+  (`check`, `outcome`, `detail`), then the exact members `state`,
+  `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
+  `unused_rules`), `spellings` (`obligations`, `passed`, `failed`) and
+  `residue` (a count per category) and `not_plain_at_macro` (the edit
+  set's refusals with reason `not_plain` that have a `macro`, i.e. the
+  name was read from an expansion: a whole-invocation range, or a
+  spelling that is not plain inside a macro argument), then
+  `measured`: the transform run's
+  `wall_ns`, per step `wall_ns`, `cpu_ns` and `peak_rss`, per phase
+  record §7.1's measurements, and each check's `wall_ns`. No absolute
+  path is in it. The ids are not compared: every `slip rename` takes the
+  store's next round, and the round is in every id after the plan's.
+  The exact members are compared with the file there;
+  each difference is printed `  <member>[.<name>]: <old> -> <new>`. The
+  file is written only when every check passed and nothing differs (or
+  there was none); otherwise the run's file is `<file>.new` and the file
+  stays. The last lines are `counters: …`, `result <file>` and
+  `corpus rename: ok` or `corpus rename: FAILED (<checks>[, counters])`;
+  the status is 0 when ok, 1 otherwise, 2 for a usage error.
+
 ## 7. Performance records
 
 A parallel phase writes a run record (`spec/model.md` §9) into its store
@@ -935,6 +1027,9 @@ in the repository. A relative `$SLIP_CORPUS_DIR` is an error. Corpus
 | `lock` | §8.5 |
 | `stores/<name>/` | stores of the runs xtask makes over the corpus (§9, §10) |
 | `demo1/` | the trees, declared files and reports of §10 |
+| `slip-store/` | the store of `corpus rename` (§6.5) |
+| `rename/` | its patches and clang overlay files, `<target>.patch` and `<target>.vfs.json` |
+| `rename-copy/`, `rename-build/` | its patched copy of `src/` and that copy's build tree (§6.5, `--build`); kept only after a failed check |
 
 ### 8.3 Steps
 
@@ -1746,9 +1841,17 @@ file system (its `scripts/env.sh`).
   `SLIP_REQUIRE_ALL`.
 - `tests/transform/` — the transform tests themselves, run by the
   `transform` step of the gate.
-- `xtask/tests/corpus_rename.rs` — §6.5 over the local three-file corpus
-  of the §8 tests: the checks in order, the result file, a failing check
-  keeping the copy.
+- `xtask/tests/corpus_rename.rs` — §6.5 over a local corpus of three
+  units (a `.git`, a link and a subdirectory beside them) with stand-in
+  `slip`, clang, `cmake` and `make` and the real `patch`: a rename that
+  verifies through every check, with the calls it makes (`--patch` on
+  the corpus, `--write` only on the copy) and the steps' lines in order;
+  `--expect refused`, and a refused result without it; a `reduce` that
+  gives another edit set id; `--accept` with a unit rejected on both
+  images (passes) and one rejected only on the post-image (fails); the
+  result file's members; counters that differ fail and leave the file,
+  times do not; a failing `back` and a failing build keeping a copy that
+  is a true copy; usage errors; the copy and the tree comparison.
 - `xtask/tests/corpus.rs` — §8: rows and their Kiln pins, every
   malformed-row error, the committed `llvm` row (§8.1); root and layout
   (§8.2); `path`, `list` and usage errors through the binary (§8.3); the

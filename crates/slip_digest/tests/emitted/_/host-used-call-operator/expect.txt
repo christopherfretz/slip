@@ -1,0 +1,2 @@
+# Admitted mark too many (spec/landed/verify/WP-155.md).
+marked-a A<int>::x::<default_argument 0>

@@ -860,19 +860,34 @@ Let `Dp`, `Dq` be the declared multisets of the pre and post shards.
    that has a unit with the indeterminate flag in `Vp` or in `Vq` is one
    finding `derived_indeterminate`, and takes no further part. For each
    other key, with `R(k)` and `A(k)` as in step 2: if both are non-empty,
-   finding `derived_changed`. If only one is, there is **no** finding; the
-   key is counted (`verify.derived.only_pre` when it is `R(k)`,
+   finding `derived_changed`. If only one is, the key is **emitted** when
+   that image has a unit of it marked "emitted unreferenced" (flag bit 1,
+   `digest.md` §11; WP-155) whose digest is one of the non-empty set's
+   (`R(k)` or `A(k)`) and whose group's sum differs from the other
+   image's (§4.1 `G`; a group whose sum is the other image's holds the
+   same units, and none of them is one only that image has). The flag is
+   part of no digest and no sum. An emitted key is one finding,
+   `derived_only_pre` when it is `R(k)` and `derived_only_post` when it
+   is `A(k)`, once per key whatever its multiplicity (counted:
+   `verify.derived.only_pre.emitted`, `verify.derived.only_post.emitted`).
+   Any other such key is **no** finding; it is counted
+   (`verify.derived.only_pre` when it is `R(k)`,
    `verify.derived.only_post` when it is `A(k)`), once per key whatever
    its multiplicity. No exemption applies to a derived key, so `changed`
-   on a key does not prevent `derived_changed`.
+   on a key does not prevent `derived_changed`, and `removed` or
+   `created` does not prevent `derived_only_pre` or `derived_only_post`.
+   The mark is read on derived units only: a declared unit that carries
+   it (the walk marks declared and derived units alike) changes nothing
+   in steps 1, 2 and 4.
 
 4. **Declared on one side, derived on the other.** Where step 2 would
    give `removed` for a key that has a unit in `Vq`, or `added` for a
    key that has a unit in `Vp`, the finding is `changed` instead, unless
    `k` is in `changed`. `removed` and `created` do not prevent it and
    are not used by it, and step 3 does not count the key in `only_post`
-   or `only_pre` (a `derived_indeterminate` or `derived_changed` of
-   step 3 stands beside it). The two units are not compared: one is
+   or `only_pre` and gives it no `derived_only_pre` or
+   `derived_only_post`, marked or not (a `derived_indeterminate` or
+   `derived_changed` of step 3 stands beside it). The two units are not compared: one is
    what was written and the other what the front end made, and their
    streams differ by construction. "Has a unit in `Vq`" is read on the
    differences, as steps 2 and 3 are: `Vq(k) − Vp(k)` is not empty (for
@@ -921,22 +936,43 @@ programs and is not the same.
 
 The observer is **verified** when there is no finding.
 
-**Why a derived unit on one side only is not a difference.** A derived unit
-exists because something demanded it (`digest.md` §2.2): a reference, an
-odr-use, a constant evaluation. That demand is written in the stream of the
-unit that made it, as a reference to the derived unit's key or as the
-expression that forced it. If the post-image has an instantiation the
-pre-image lacks, then some unit of the post-image refers to it. That unit
-is either declared (it differs from its pre-image counterpart, which cannot
-refer to something that does not exist there, or it is `added`), or it is
-itself derived and present only in the post-image, and the argument repeats
-until it reaches a declared unit, as it must: nothing derived exists
-without a chain of demands that starts at something written. So a
-difference in the set of derived units always comes with a finding on a
-declared unit, and reporting the derived unit too would only add a second
-finding with less to say. (An indeterminate derived unit is reported even
-on one side only: nothing can be argued from a digest that cannot be
-trusted.) What must not be skipped is a derived unit that
+**Why a derived unit on one side only is not a difference, unless it is
+emitted.** A derived unit exists because something demanded it
+(`digest.md` §2.2): a reference, an odr-use, a constant evaluation. Most
+demands are written in the stream of the unit that made them, as a
+reference to the derived unit's key or as the expression that forced it,
+and then a difference in the set of derived units comes with a finding on
+a declared unit: if the post-image has an instantiation the pre-image
+lacks, some unit of the post-image refers to it, and that unit is either
+declared (it differs from its pre-image counterpart, or it is `added`) or
+itself derived and present only in the post-image, and the argument
+repeats until it reaches a declared unit.
+
+That argument fails for a demand that no unit records: one made by a
+substitution whose result is not kept (a default template argument of a
+candidate that is discarded, a partial specialisation whose match fails
+after a name bound, the operand of a `decltype` whose only trace is the
+type), or by a candidate that is no longer considered at all (a call
+requalified in a namespace migration loses a template candidate that
+argument-dependent lookup supplied, and with it every instantiation that
+candidate's substitution made; WP-153's design review, `zz153-q4`). Every
+unit both images have is then equal, and only derived units are on one
+side. Whether such a unit changes the program depends on the unit: an
+instantiation whose code runs only when something calls or reads it
+changes nothing when nothing does, and every unit that could call or read
+it is compared; an instantiation the translation unit emits whether or
+not anything refers to it (a variable whose initialiser runs before
+`main` or whose destructor runs at exit, a `constructor` function, a
+`used` entity) changes the program by being there. The walk marks the
+second kind (`digest.md` §11 flag bit 1; the rule is
+`spec/landed/verify/WP-155.md` §1) and a one-sided unit with the mark is
+a finding; a one-sided unmarked derived unit changes no behaviour by
+itself and stays counted, not reported. The finding is about this
+translation unit: another may still instantiate the entity, so the
+program may still run its initialiser (§8).
+(An indeterminate derived unit is reported even on one side only: nothing
+can be argued from a digest that cannot be trusted.) What must not be
+skipped is a derived unit that
 both have and that differs: the same specialisation instantiated to
 something else is exactly how a dependent name that resolves differently
 shows up ([03](../docs/design/03-equivalence.md) §7 row 6), and no declared
@@ -969,7 +1005,12 @@ Unit lists are not normally in a shard. The comparison is carried out on
 group sums first (`digest.md` §11):
 
 1. If the two `tu` digests are equal, the unit multisets are equal, flags
-   included. If, further, no group has an indeterminate unit (every
+   included except bit 1, emitted unreferenced (WP-155): no digest holds
+   that bit (`digest.md` §11), so equal sums say nothing of it. That is
+   harmless: step 3 reads the mark only on a unit of a key whose units
+   differ between the images, in a group whose sum differs, and with
+   equal `tu` digests there is no such key; a unit both images have is
+   never read for its mark. If, further, no group has an indeterminate unit (every
    `GroupSum.indeterminate` is 0), there is no finding and the observer is
    verified.
 2. Otherwise let `G` be the groups, identified by `(class, file)`, whose
@@ -997,6 +1038,11 @@ all units.
   other key, leaving those groups out removes the same multiset `X` from
   `P(k)` and from `Q(k)`, and `(P − X) − (Q − X) = P − Q`: `R(k)` and
   `A(k)` do not change, and they are all that steps 2 and 3 look at.
+  Step 3's mark is read only on units of groups in `G` (its statement
+  says so), so it does not depend on the restriction either. A derived
+  group that holds a one-sided unit differs (its digest hashes the
+  unit's key and digest) and is in `G`: it is opened as any group that
+  differs is (WP-155).
 - Step 4 looks at `R(k)` and `A(k)` of `D` and of `V`, which do not
   change either. The group shortcut cannot skip such a key: step 2 has a
   finding for it, so a declared or `tu` group holding it differs and is
@@ -1026,8 +1072,9 @@ Per image, the pre-image first:
    - the units are strictly ascending by `(key, digest)` (`digest.md` §11)
      (`UnitsNotAscending`; this covers duplicates, and two units of one key
      and digest that differ only in flags);
-   - every unit's `flags` is 0 or 1 (`BadFlags`: an unknown flag bit
-     would otherwise be ignored by §4, which compares digests only);
+   - every unit's `flags` has no bit but bits 0 and 1 (`BadFlags`: an
+     unknown flag bit would otherwise be ignored by §4, which compares
+     digests and reads only those two; bit 1 since WP-155);
    - `count` is the number of units (`CountMismatch`);
    - `indeterminate` is the number of units with the flag
      (`IndeterminateMismatch`);
@@ -1059,6 +1106,7 @@ pub fn at_sums(pre: &Digests, post: &Digests) -> AtSums;                    // �
 
 pub struct Comparison { pub findings: Vec<Finding>, pub only_pre: u64, pub only_post: u64,
                         pub used: Vec<Digest>, pub notes: Vec<Digest> }   // notes: §4.4
+                        // only_pre, only_post: the unmarked one-sided keys of step 3
 pub enum CompareError {   // every variant: { class: GroupClass, file: Vec<u8>, post: bool }
     MissingUnits, UnitsNotAscending, BadFlags, CountMismatch, IndeterminateMismatch,
     DigestMismatch, DuplicateGroup,
@@ -1799,6 +1847,7 @@ Finding := kind:  FindingKind
 
 FindingKind := changed = 0 | removed = 1 | added = 2 | indeterminate = 3
              | derived_changed = 4 | derived_indeterminate = 5
+             | derived_only_pre = 6 | derived_only_post = 7          (WP-155)
 ```
 
 Findings are ordered by `(rank, file, key)`: `file` and `key` by their
@@ -1810,8 +1859,10 @@ bytes, and `rank` from the kind:
 | `removed` | 1 | 1 |
 | `added` | 2 | 2 |
 | `derived_changed` | 4 | 3 |
-| `indeterminate` | 3 | 4 |
-| `derived_indeterminate` | 5 | 5 |
+| `derived_only_pre` | 6 | 4 |
+| `derived_only_post` | 7 | 5 |
+| `indeterminate` | 3 | 6 |
+| `derived_indeterminate` | 5 | 7 |
 
 - The findings that say a unit differs come before those that say a unit
   is unknown: a `derived_changed` finding is within the first `limit`
@@ -1834,13 +1885,14 @@ bytes, and `rank` from the kind:
 `pre`, `post` and `file` are defined on what §4 looked at, so that they too
 are the same whether or not the comparison was restricted to `G`:
 
-- For `changed`, `removed`, `added` and `derived_changed`: `pre` is the
+- For `changed`, `removed`, `added`, `derived_changed`, `derived_only_pre`
+  and `derived_only_post`: `pre` is the
   digest in `R(k)` when `R(k)` has exactly one element (counting
   multiplicity), else absent; `post` likewise from `A(k)`. `file` is the
   file of the first group, in the order of `(class, file)`, among the
   groups of the multiset the finding is about (the declared and `tu`
   groups for `D`, the derived groups for `V`) whose units, flags
-  included, are not the same in both images, that holds a unit of the key
+  included but bit 1, are not the same in both images, that holds a unit of the key
   in the pre-image; if there is none, in the post-image. (There is one: a
   key with a difference has a unit in a group that differs; were there
   none, it would be a defect of `slip_verify`, which stops with
@@ -1848,8 +1900,8 @@ are the same whether or not the comparison was restricted to `G`:
   skipped even when it comes first. The group named need not be where the
   key itself changed: it can differ on account of another unit.
 - A group **differs** when the other image has no group of its
-  `(class, file)`, or has one whose unit list, flags included, is not the
-  same. Groups are paired across the images by `(class, file)`; so given
+  `(class, file)`, or has one whose unit list, flags included but bit 1
+  (which no group sum holds, step 1), is not the same. Groups are paired across the images by `(class, file)`; so given
   only the groups of `G` the comparison decides the same as given all
   groups, since a group outside `G` has the same units in both.
 - For `indeterminate` and `derived_indeterminate`: `pre` is the digest of
@@ -2033,6 +2085,8 @@ say without recording where each node ends ("Open questions").
 |---|---|
 | `changed`, `derived_changed` with `pre` or `post` absent (several units of the key differ) | both sites from the units' first marks (below), `what` empty |
 | `removed` | `pre`: the unit's first mark; `post`: the empty site |
+| `derived_only_pre` | as `removed`: the derived unit's first mark, which is where its pattern is (its place, below) |
+| `derived_only_post` | as `added` |
 | `changed` of §4 step 4 (declared in one image, derived in the other) | the first mark of the declared unit in its image, and in the other image the first mark of the derived unit (where the template's pattern is); `what` empty |
 | `added` | `post`: the unit's first mark; `pre`: the empty site |
 | `indeterminate`, `derived_indeterminate` | in each image that has an indeterminate unit of the key: the unit's first mark, with `what` the cause as the walk prints it (`unsupported ExprKind/CXXReflectExpr`, `collision`, `pending stmt`); the empty site in the other |
@@ -2244,6 +2298,8 @@ finding <kind> <key, first 16 digits> observers <n> <name>          at most 100 
                                                  (under --strict-names, `finding names_changed …`
                                                  and its `first` line, after the other groups)
   first <main file>
+  says <sentence>                                for derived_only_pre and derived_only_post only
+                                                 (WP-155; spec/landed/verify/WP-155.md §3)
   pre  <file>:<line>:<column> <node> <what>      the two `where` lines only if it has one;
   post <file>:<line>:<column> <node> <what>      a site with an empty file prints `-`
 findings <total> total, <listed> listed, <groups> group(s)
@@ -2280,15 +2336,16 @@ Counters of a verify shard, added to those of the parse and of
 |---|---|
 | `verify.groups.differing` | groups of `G` (§4.1); 0 when the sums were equal |
 | `verify.findings` | findings (`total`) |
-| `verify.findings.changed`, `.removed`, `.added`, `.indeterminate`, `.derived_changed`, `.derived_indeterminate` | findings of each kind, all six always present when there is a verdict |
-| `verify.derived.only_pre`, `verify.derived.only_post` | derived keys counted by §4 step 3 |
+| `verify.findings.changed`, `.removed`, `.added`, `.indeterminate`, `.derived_changed`, `.derived_indeterminate`, `.derived_only_pre`, `.derived_only_post` | findings of each kind, all eight always present when there is a verdict (the last two since WP-155) |
+| `verify.derived.only_pre`, `verify.derived.only_post` | derived keys counted by §4 step 3: one-sided and not marked |
+| `verify.derived.only_pre.emitted`, `verify.derived.only_post.emitted` | one-sided derived keys that step 3 found marked (WP-155): the findings `derived_only_pre` and `derived_only_post`, as the two counters by kind; present with every verdict |
 | `verify.exemptions.used` | exemptions that prevented a finding |
 | `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
 | `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
 
 A shard without a verdict has none of them; a shard with a verdict has
-`verify.findings` and the six by kind always (the job writes them with
+`verify.findings` and the eight by kind always (the job writes them with
 every verdict), and one without any of them is not believed: the
 observer is `failed`, "the shard has no counter <name>" (§7, WP-114).
 The counters by kind are what
@@ -2381,6 +2438,28 @@ empty message.
 - **One front end.** Both images are resolved by Kiln. An error Kiln makes
   the same way twice is invisible here; tiers T2 to T4 of
   [03](../docs/design/03-equivalence.md) §8 exist for that.
+- **What is instantiated depends on the compiler modelled** (WP-155).
+  Which candidates a call considers, and so which instantiations their
+  substitutions make, is Kiln's at its compatibility level: Kiln defers
+  a template candidate when a non-template candidate is a perfect match,
+  as clang 22 does (`kiln/crates/kiln_sema/src/overload/defer.rs`), so
+  such a candidate is not instantiated in Slip's parse, and is in clang
+  19's. A program whose edit loses such a candidate verifies, and under
+  clang 19 no longer runs the initialiser the candidate's substitution
+  instantiated (WP-153 review, `zz153-q2`). The rule of §4 step 3 is as
+  good as the match between the front end's compatibility level and the
+  compiler of the compilation database.
+- **Emitted, per translation unit** (WP-155). `derived_only_pre` says
+  that this translation unit no longer instantiates an entity it emitted
+  whether or not anything referred to it. Another translation unit of
+  the program may still instantiate it, and the program may still run
+  its initialiser: the finding can be one the program does not show.
+  Which entities are marked is the walk's rule
+  (`spec/landed/verify/WP-155.md` §1), not the code generator's: it marks
+  more than Kiln's code generator emits where the AST does not say
+  (a variable Kiln did not evaluate, a constant variable with constant
+  destruction), and a class whose instantiation `dllexport` emits whole
+  is not marked.
 - **Agreement between observers** is not shown by any one observer's
   verdict. §9 adds the check that shows it, for the observers of the run.
   What remains outside is the first point above: a declaration in a file

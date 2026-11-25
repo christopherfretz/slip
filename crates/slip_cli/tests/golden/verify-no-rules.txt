@@ -27,7 +27,15 @@ verified
         "value": 0
       },
       {
+        "name": "verify.derived.only_post.emitted",
+        "value": 0
+      },
+      {
         "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre.emitted",
         "value": 0
       },
       {
@@ -52,6 +60,14 @@ verified
       },
       {
         "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_pre",
         "value": 0
       },
       {
@@ -119,7 +135,15 @@ mismatch
         "value": 0
       },
       {
+        "name": "verify.derived.only_post.emitted",
+        "value": 0
+      },
+      {
         "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre.emitted",
         "value": 0
       },
       {
@@ -144,6 +168,14 @@ mismatch
       },
       {
         "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_pre",
         "value": 0
       },
       {
@@ -268,7 +300,15 @@ unverifiable
         "value": 0
       },
       {
+        "name": "verify.derived.only_post.emitted",
+        "value": 0
+      },
+      {
         "name": "verify.derived.only_pre",
+        "value": 0
+      },
+      {
+        "name": "verify.derived.only_pre.emitted",
         "value": 0
       },
       {
@@ -293,6 +333,14 @@ unverifiable
       },
       {
         "name": "verify.findings.derived_indeterminate",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_post",
+        "value": 0
+      },
+      {
+        "name": "verify.findings.derived_only_pre",
         "value": 0
       },
       {

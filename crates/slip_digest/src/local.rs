@@ -1307,6 +1307,8 @@ fn member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         Role::Entity(_) => {
             w.write_key(s, e);
             let from = stream_source(w, e);
+            // Rule 1 of the mark "emitted unreferenced" (WP-155).
+            crate::emitted::in_place(w, e);
             w.decl_stream(s, from, e);
         }
         Role::Content(_) => w.write_key(s, e),
@@ -2027,10 +2029,11 @@ mod tests {
         while i < w.queue.len() {
             let (e, class) = w.queue[i];
             i += 1;
-            if let Some(u) = crate::units::write(w, e, class) {
+            if let Some(mut u) = crate::units::write(w, e, class) {
                 // Its resolved units after it, as `run_with` writes them.
                 let mut resolved = Vec::new();
                 crate::demand::resolved_units(w, e, &u, &mut resolved);
+                crate::emitted::mark(w, e, &mut u, &mut resolved);
                 written.push(u);
                 written.append(&mut resolved);
             }

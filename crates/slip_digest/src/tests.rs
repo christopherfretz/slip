@@ -227,6 +227,7 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         collided: false,
         view: None,
         denotes: None,
+        emitted: false,
     }
 }
 
@@ -298,7 +299,13 @@ fn collisions() {
 // spec/digest.md §12: the counters, by name, and the split by cause.
 #[test]
 fn counters() {
-    let totals = crate::groups::Totals { units: 7, derived: 2, groups: 3, indeterminate: 4 };
+    let totals = crate::groups::Totals {
+        units: 7,
+        derived: 2,
+        derived_emitted: 1,
+        groups: 3,
+        indeterminate: 4,
+    };
     let k = |b| Digest([b; 32]);
     let causes = [
         (k(1), Cause::Collision),
@@ -321,6 +328,7 @@ fn counters() {
             ("digest.indeterminate.unsupported", 1),
             ("digest.units", 7),
             ("digest.units.derived", 2),
+            ("digest.units.derived.emitted", 1),
         ]
     );
 }

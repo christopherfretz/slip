@@ -12,7 +12,10 @@ use slip_verify::{
     names_changed, unverifiable, verdict, verified,
 };
 
-use FindingKind::{Added, Changed, DerivedChanged, DerivedIndeterminate, Indeterminate, Removed};
+use FindingKind::{
+    Added, Changed, DerivedChanged, DerivedIndeterminate, DerivedOnlyPost, DerivedOnlyPre,
+    Indeterminate, Removed,
+};
 use GroupClass::{Declared, Derived, Tu};
 
 // ---------------------------------------------------------------------------
@@ -38,6 +41,11 @@ fn u(k: u8, d: u8) -> Unit {
 
 fn ui(k: u8, d: u8) -> Unit {
     Unit { key: key(k), digest: dg(d), flags: Unit::INDETERMINATE }
+}
+
+/// A unit marked "emitted unreferenced" (WP-155).
+fn ue(k: u8, d: u8) -> Unit {
+    Unit { key: key(k), digest: dg(d), flags: Unit::EMITTED }
 }
 
 /// A well-formed group: units sorted, `count` and `digest` computed.
@@ -164,8 +172,8 @@ fn check_valid(v: &Verdict) {
         match x.kind {
             Indeterminate => {}
             Changed | DerivedChanged | DerivedIndeterminate => assert!(x.key.is_some()),
-            Removed => assert!(x.key.is_some() && x.post.is_none()),
-            Added => assert!(x.key.is_some() && x.pre.is_none()),
+            Removed | DerivedOnlyPre => assert!(x.key.is_some() && x.post.is_none()),
+            Added | DerivedOnlyPost => assert!(x.key.is_some() && x.pre.is_none()),
         }
     }
     assert!(v.used.windows(2).all(|w| w[0] < w[1]));
@@ -483,6 +491,111 @@ fn s4_3_derived_indeterminate_on_one_side_only_is_a_finding_not_counted() {
     let c = run(&pre, &post, &ex(&[3, 4], &[3, 4], &[3, 4]));
     assert_eq!(c.findings.len(), 2);
     assert!(c.used.is_empty());
+}
+
+// §4 step 3 (WP-155): a derived key one image has, with a unit of it that
+// only that image has marked "emitted unreferenced", is one finding,
+// `derived_only_pre` or `derived_only_post`, once per key; an unmarked one
+// is counted as before. §6: `pre`/`post` from the difference.
+#[test]
+fn s4_3_emitted_one_sided_key_is_a_finding() {
+    let pre = [deriv("/a.h", &[ue(1, 1), u(2, 2), u(5, 5)])];
+    let post = [deriv("/a.h", &[u(5, 5)]), deriv("/b.h", &[ue(4, 4), u(6, 6)])];
+    assert_eq!(
+        plain(&pre, &post),
+        Comparison {
+            findings: vec![
+                f(DerivedOnlyPre, 1, "/a.h", Some(1), None),
+                f(DerivedOnlyPost, 4, "/b.h", None, Some(4)),
+            ],
+            only_pre: 1,
+            only_post: 1,
+            used: vec![],
+            notes: vec![],
+        }
+    );
+    // Once per key, whatever its multiplicity; `pre` absent with two.
+    let pre = [deriv("/a.h", &[ue(1, 1), ue(1, 2)]), deriv("/b.h", &[u(1, 1)])];
+    assert_eq!(plain(&pre, &[]), only(vec![f(DerivedOnlyPre, 1, "/a.h", None, None)]));
+    // Mirrored.
+    assert_eq!(plain(&[], &pre), only(vec![f(DerivedOnlyPost, 1, "/a.h", None, None)]));
+}
+
+// §4 step 3 (WP-155): the mark is read on a unit only that image has. A
+// marked unit both images have, beside one unmarked that only one has, is
+// a count; a key both images have is `derived_changed` whatever its marks;
+// a mark on the other image's units says nothing.
+#[test]
+fn s4_3_the_mark_is_read_on_the_difference_only() {
+    // Key 1: (1,1) marked in both, (1,2) only in pre, unmarked: counted.
+    let pre = [deriv("/a.h", &[ue(1, 1), u(1, 2)])];
+    let post = [deriv("/a.h", &[ue(1, 1)])];
+    assert_eq!(plain(&pre, &post), Comparison { only_pre: 1, ..none() });
+    // The same unit, marked in one image only: no difference at all.
+    let pre = [deriv("/a.h", &[ue(1, 1), u(2, 2)])];
+    let post = [deriv("/a.h", &[u(1, 1), u(2, 2)])];
+    assert_eq!(plain(&pre, &post), none());
+    assert_eq!(plain(&post, &pre), none());
+    // Both images have the key, digests differ: derived_changed only.
+    let pre = [deriv("/a.h", &[ue(1, 1)])];
+    let post = [deriv("/a.h", &[ue(1, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(DerivedChanged, 1, "/a.h", Some(1), Some(2))]));
+    // A one-sided unmarked key beside a marked key the other image has.
+    let pre = [deriv("/a.h", &[u(1, 1)]), deriv("/b.h", &[ue(2, 2)])];
+    let post = [deriv("/b.h", &[ue(2, 2)])];
+    assert_eq!(plain(&pre, &post), Comparison { only_pre: 1, ..none() });
+    assert_eq!(plain(&post, &pre), Comparison { only_post: 1, ..none() });
+}
+
+// §4 step 3 (WP-155): an indeterminate one-sided key stays
+// `derived_indeterminate`, marked or not; no exemption applies to the new
+// findings; a marked declared unit is read as an unmarked one.
+#[test]
+fn s4_3_emitted_with_indeterminate_exemptions_and_declared_units() {
+    let marked_indeterminate =
+        Unit { key: key(3), digest: dg(3), flags: Unit::INDETERMINATE | Unit::EMITTED };
+    let pre = [deriv("/a.h", &[marked_indeterminate])];
+    assert_eq!(plain(&pre, &[]), only(vec![f(DerivedIndeterminate, 3, "/a.h", Some(3), None)]));
+    assert_eq!(plain(&[], &pre), only(vec![f(DerivedIndeterminate, 3, "/a.h", None, Some(3))]));
+    // No exemption prevents derived_only_pre or derived_only_post.
+    let pre = [deriv("/a.h", &[ue(1, 1)])];
+    let post = [deriv("/a.h", &[ue(2, 2)])];
+    let c = run(&pre, &post, &ex(&[1, 2], &[1, 2], &[1, 2]));
+    assert_eq!(
+        c,
+        only(vec![
+            f(DerivedOnlyPre, 1, "/a.h", Some(1), None),
+            f(DerivedOnlyPost, 2, "/a.h", None, Some(2)),
+        ])
+    );
+    // A marked declared unit: removed, added, changed, each exemptible, as
+    // if unmarked.
+    let pre = [decl("/a.h", &[ue(1, 1), ue(2, 2)])];
+    let post = [decl("/a.h", &[ue(2, 3), ue(4, 4)])];
+    let unmarked_pre = [decl("/a.h", &[u(1, 1), u(2, 2)])];
+    let unmarked_post = [decl("/a.h", &[u(2, 3), u(4, 4)])];
+    assert_eq!(plain(&pre, &post), plain(&unmarked_pre, &unmarked_post));
+    assert_eq!(run(&pre, &post, &ex(&[2], &[4], &[1])), used(&[1, 2, 4]));
+    // Step 4 takes a key declared in one image and derived (marked) in
+    // the other: `changed`, no derived_only_*.
+    let pre = [decl("/a.h", &[u(1, 1)])];
+    let post = [deriv("/b.h", &[ue(1, 2)])];
+    assert_eq!(plain(&pre, &post), only(vec![f(Changed, 1, "/a.h", Some(1), None)]));
+}
+
+// digest.md §11 (WP-155): the mark is part of no group digest, so a group
+// that differs only by marks has the sum it had, and is not in `G`.
+#[test]
+fn s4_1_the_mark_is_part_of_no_sum() {
+    assert_eq!(group_digest(&[ue(1, 1), u(2, 2)]), group_digest(&[u(1, 1), u(2, 2)]));
+    assert_ne!(group_digest(&[ui(1, 1)]), group_digest(&[u(1, 1)]));
+    let pre =
+        Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[ue(1, 1)])] };
+    let post =
+        Digests { scheme: SCHEME, tu: tu_digest(&[]), groups: vec![deriv("/a.h", &[u(1, 1)])] };
+    let pre = Digests { tu: tu_digest(&pre.groups), ..pre };
+    let post = Digests { tu: tu_digest(&post.groups), ..post };
+    assert_eq!(pre.tu, post.tu);
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,7 +1314,8 @@ fn s4_2_malformed_groups_are_rejected() {
         Group { digest: group_digest(&flagged), units: Some(flagged), ..good.clone() },
         |file, post| CompareError::UnitsNotAscending { class: Declared, file, post },
     );
-    let flags = vec![u(1, 1), Unit { flags: 2, ..u(2, 2) }];
+    // WP-155: bit 1 is the mark; bit 2 has no meaning.
+    let flags = vec![u(1, 1), Unit { flags: 4, ..u(2, 2) }];
     check(
         Group { digest: group_digest(&flags), units: Some(flags), ..good.clone() },
         |file, post| CompareError::BadFlags { class: Declared, file, post },

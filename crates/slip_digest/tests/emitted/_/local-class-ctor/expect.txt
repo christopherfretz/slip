@@ -1,0 +1,6 @@
+marked-a s<int>()::<definition>
+# `x` adds two sizes: a binary operator, outside the grammar of rule 2.
+marked-a x
+# `f` declares, two classes deep, a `destructor` function: its own unit
+# (a function that is not a template has no resolved definition unit).
+marked f()

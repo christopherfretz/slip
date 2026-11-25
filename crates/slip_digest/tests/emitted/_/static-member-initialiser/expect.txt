@@ -1,0 +1,3 @@
+marked-a Reg<int>::r::<definition>
+# `x` (`sizeof(...)` in side A, `4` in side B) is plainly constant: not
+# marked (rule 2 of the fix round).

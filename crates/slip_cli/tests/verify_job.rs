@@ -261,14 +261,18 @@ fn rename_ns(from_post: &str, to_pre: &str) -> Rule {
 }
 
 /// The §7.2 counters every verdict shard has.
-const VERIFY_COUNTERS: [&str; 12] = [
+const VERIFY_COUNTERS: [&str; 16] = [
     "verify.derived.only_post",
+    "verify.derived.only_post.emitted",
     "verify.derived.only_pre",
+    "verify.derived.only_pre.emitted",
     "verify.exemptions.used",
     "verify.findings",
     "verify.findings.changed",
     "verify.findings.derived_changed",
     "verify.findings.derived_indeterminate",
+    "verify.findings.derived_only_post",
+    "verify.findings.derived_only_pre",
     "verify.findings.added",
     "verify.findings.indeterminate",
     "verify.findings.removed",
@@ -2920,6 +2924,45 @@ fn shard_view(tree: &Tree, v: &Shard, pre: Option<Digest>) -> String {
         text = text.replace(&pre.to_string(), "<pre>");
     }
     text
+}
+
+// spec/verify.md §4 step 3, §7.2 (WP-155, fix round): a requalified call
+// that no longer considers a candidate whose default argument
+// instantiated `Tr<lib::X>::r = note()` gives `derived_only_pre`; the
+// edit the other way gives `derived_only_post`. Each kind's counter, and
+// its `.emitted` one, is exactly the side's: swapping the two fails.
+#[test]
+fn s4_3_emitted_counters_by_side() {
+    const Q4: &str = "inline int note() { return 0; }\n\
+        template <class T> struct Tr { static int r; };\n\
+        template <class T> int Tr<T>::r = note();\n\
+        namespace lib {\n\
+        struct X {};\n\
+        template <class T> auto probe() { return (void)&Tr<T>::r, 1; }\n\
+        template <class T, int = sizeof(probe<T>())> void f(T, char);\n\
+        }\n\
+        void f(lib::X, long) {}\n\
+        void use() { CALL(lib::X(), 0); }\n";
+    let cases = [
+        ("emitted-pre", "f", "::f", FindingKind::DerivedOnlyPre, [1, 0]),
+        ("emitted-post", "::f", "f", FindingKind::DerivedOnlyPost, [0, 1]),
+    ];
+    for (name, pre, post, kind, [n_pre, n_post]) in cases {
+        let tree = Tree::new(name, &[("a.cpp", &Q4.replace("CALL", pre))]);
+        write(&tree.post.join("a.cpp"), &Q4.replace("CALL", post));
+        let o = tree.observer();
+        tree.map(&o);
+        let v = tree.verify(&o);
+        let verdict = v.verdict.as_ref().unwrap();
+        assert_eq!(verdict.kind, VerdictKind::Mismatch, "{name}");
+        let found: Vec<_> = verdict.findings.iter().filter(|f| f.kind == kind).collect();
+        assert_eq!(found.len(), 1, "{name}: {:?}", verdict.findings);
+        assert_eq!(found[0].name, "Tr<lib::X>::r::<definition>", "{name}");
+        assert_eq!(counter(&v, "verify.findings.derived_only_pre"), Some(n_pre), "{name}");
+        assert_eq!(counter(&v, "verify.findings.derived_only_post"), Some(n_post), "{name}");
+        assert_eq!(counter(&v, "verify.derived.only_pre.emitted"), Some(n_pre), "{name}");
+        assert_eq!(counter(&v, "verify.derived.only_post.emitted"), Some(n_post), "{name}");
+    }
 }
 
 // §5.4, §9.1 (WP-121 item 3, WP-114 item 2): a job whose rule table is

@@ -1,0 +1,3 @@
+marked-a s<int>()::<definition>
+# `x` adds two sizes: outside the grammar of rule 2.
+marked-a x

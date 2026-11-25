@@ -8,7 +8,10 @@
 //! cargo xtask corpus configure <name>
 //! cargo xtask corpus status <name>
 //! cargo xtask corpus path <name> [--db]
+//! cargo xtask corpus rename <name> --from <name> --to <identifier> …
 //! ```
+//!
+//! `rename` (`spec/harness.md` §6.5) is [`rename`].
 //!
 //! A corpus lives in `<root>/<name>/`: `src/` (the clone), `build/` (the
 //! cmake build tree), the stamps `fetch.stamp`, `configure.stamp` and
@@ -23,6 +26,7 @@
 //! stamps of the steps after it.
 
 pub mod build_tree;
+pub mod rename;
 pub mod rows;
 
 pub use rows::Corpus;
@@ -39,7 +43,9 @@ usage: cargo xtask corpus list
        cargo xtask corpus fetch <name>
        cargo xtask corpus configure <name>
        cargo xtask corpus status <name>
-       cargo xtask corpus path <name> [--db]";
+       cargo xtask corpus path <name> [--db]
+       cargo xtask corpus rename <name> --from <name> --to <identifier> [--kind <k>]
+               [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]";
 
 /// What a missing tool's message tells the user to run.
 pub const PROVISION: &str = "scripts/provision.sh --full";
@@ -141,7 +147,7 @@ impl std::fmt::Debug for Ctx<'_> {
 }
 
 impl Ctx<'_> {
-    fn say(&mut self, line: &str) {
+    pub(crate) fn say(&mut self, line: &str) {
         let _ = writeln!(self.out, "{line}");
         let _ = self.out.flush();
     }
@@ -280,7 +286,12 @@ impl Drop for Lock {
 
 /// Runs `cmd` with its output appended to the file `log`; `Err` names the
 /// command, its status and the log, after printing the log's last lines.
-fn run_logged(cmd: &mut Command, what: &str, log: &Path, ctx: &mut Ctx) -> Result<(), String> {
+pub(crate) fn run_logged(
+    cmd: &mut Command,
+    what: &str,
+    log: &Path,
+    ctx: &mut Ctx,
+) -> Result<(), String> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -671,6 +682,9 @@ pub fn render_list(corpora: &[Corpus]) -> String {
 
 /// `cargo xtask corpus …` for the repository at `repo`.
 pub fn main(repo: &Path, args: &[String]) -> ExitCode {
+    if args.first().map(String::as_str) == Some("rename") {
+        return rename::main(repo, &args[1..]);
+    }
     match run(repo, args, std::env::var_os("SLIP_CORPUS_DIR").as_deref(), std::env::var_os("PATH"))
     {
         Ok(()) => ExitCode::SUCCESS,

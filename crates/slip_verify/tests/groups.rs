@@ -79,6 +79,13 @@ fn class_for(rng: &mut Rng) -> GroupClass {
     }
 }
 
+/// The mark "emitted unreferenced" (WP-155) of a new unit: on every third
+/// derived key, from the key alone, so that the generator draws what it
+/// drew before the mark.
+fn marked(class: GroupClass, k: u64) -> u64 {
+    if class == GroupClass::Derived && k.is_multiple_of(3) { Unit::EMITTED } else { 0 }
+}
+
 fn base(rng: &mut Rng) -> Image {
     let mut img = Image::new();
     let n = rng.below(20);
@@ -86,6 +93,7 @@ fn base(rng: &mut Rng) -> Image {
         let class = class_for(rng);
         let file = file_for(rng, class);
         let flags = if rng.chance(1) { Unit::INDETERMINATE } else { 0 };
+        let flags = flags | marked(class, k);
         let unit = Unit { key: key(k), digest: dg(rng.below(3)), flags };
         img.push((class, file, unit));
         // A content-keyed unit written in another file.
@@ -115,7 +123,7 @@ struct Coverage {
     straddling: u64,
     /// A group with an indeterminate unit and the same sum in both images.
     indeterminate_unchanged: u64,
-    findings: [u64; 6],
+    findings: [u64; 8],
     used: u64,
     only_pre: u64,
     only_post: u64,
@@ -141,8 +149,16 @@ fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) 
     }
     let at = if img.is_empty() { 0 } else { rng.below(img.len() as u64) as usize };
     match which {
-        // Change a digest.
-        0 => img[at].2.digest = dg(3 + rng.below(3)),
+        // Change a digest; when it draws the digest the unit has, its
+        // mark instead (a unit both images have, marked in one: the mark
+        // is part of no sum, WP-155).
+        0 => {
+            let new = dg(3 + rng.below(3));
+            if img[at].2.digest == new {
+                img[at].2.flags ^= Unit::EMITTED;
+            }
+            img[at].2.digest = new;
+        }
         // Remove.
         1 => {
             img.swap_remove(at);
@@ -151,13 +167,13 @@ fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) 
         2 => {
             let class = class_for(rng);
             let file = file_for(rng, class);
-            let k = if rng.chance(15) && !img.is_empty() {
-                img[at].2.key // a second unit of an existing key
+            let (k, flags) = if rng.chance(15) && !img.is_empty() {
+                (img[at].2.key, 0) // a second unit of an existing key
             } else {
                 *next_key += 1;
-                key(*next_key)
+                (key(*next_key), marked(class, *next_key))
             };
-            img.push((class, file, Unit { key: k, digest: dg(rng.below(3)), flags: 0 }));
+            img.push((class, file, Unit { key: k, digest: dg(rng.below(3)), flags }));
         }
         // Move to another file (the first declaration moved).
         3 => {
@@ -171,7 +187,7 @@ fn edit(rng: &mut Rng, img: &mut Image, next_key: &mut u64, cov: &mut Coverage) 
             img.push((class, file, unit));
         }
         // Flag indeterminate.
-        5 => img[at].2.flags = Unit::INDETERMINATE,
+        5 => img[at].2.flags |= Unit::INDETERMINATE,
         // Declared becomes derived or the reverse.
         _ => {
             let class = match img[at].0 {
@@ -249,6 +265,8 @@ fn kind_index(kind: FindingKind) -> usize {
         FindingKind::Indeterminate => 3,
         FindingKind::DerivedChanged => 4,
         FindingKind::DerivedIndeterminate => 5,
+        FindingKind::DerivedOnlyPre => 6,
+        FindingKind::DerivedOnlyPost => 7,
     }
 }
 

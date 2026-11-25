@@ -471,6 +471,13 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
     let (output, errors, diagnostics) = out;
     let output = output?;
+    // WP-155 (second fix round, rule 3): every local function with
+    // `constructor`, `destructor` or `used` the mark could place, it
+    // placed, in every fixture of every runner.
+    let unplaced = output.counters.iter().find(|c| c.name == "digest.emitted.unplaced");
+    if unplaced.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
+    }
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",

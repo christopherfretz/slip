@@ -246,7 +246,10 @@ them.
 Derived units are compared when both parses have them. A derived unit that
 only one parse has is not by itself a difference (`verify.md` says when it
 is reported): the reference that demanded it is in some unit, and that
-unit's digest differs.
+unit's digest differs, except where the demand is recorded in no unit (a
+substitution whose result is not kept, a candidate no longer considered);
+a one-sided derived unit marked emitted unreferenced (§11) is therefore a
+finding of its own (`verify.md` §4 step 3, WP-155).
 
 **A limit: names bound in a substitution whose expression is not kept**
 (WP-153; found by WP-139, `spec/landed/edits/WP-139.md` finding 3). A
@@ -296,8 +299,11 @@ initialiser or destructor runs, or a function with the attribute
 `constructor`, `destructor` or `used`. Such a demand is written in no
 unit, so the argument of the paragraph above does not hold for it: the
 derived units it made are on one side only and no unit both sides have
-differs, and `spec/verify.md` §4 step 3 reports nothing. It holds
-whether the substitution succeeded or failed after the name bound.
+differs. Since WP-155 such a definition's unit carries the mark
+emitted unreferenced (§11), and `spec/verify.md` §4 step 3 reports the
+one-sided marked unit as `derived_only_pre` or `derived_only_post`. It
+holds whether the substitution succeeded or failed after the name
+bound.
 
 The same behaviour changes with no name bound to another entity, when
 a candidate is no longer considered:
@@ -321,11 +327,11 @@ Write the call `::f(lib::X(), 0)`: the callee is the same function,
 argument-dependent lookup no longer supplies `lib::f`, its default
 template argument is not substituted, `Tr<lib::X>::r` is not
 instantiated, and the program no longer prints. No record of what
-names bound can see this. Only WP-155 closes it: a derived unit that
-is emitted whether or not it is referenced, and that one image only
-has, is a finding. WP-155 is a package of its own and comes first.
+names bound can see this. WP-155 closes it: a derived unit that is
+marked emitted unreferenced, and that one image only has, is a finding
+(here `derived_only_pre Tr<lib::X>::r::<definition>`; pitfall row E24).
 `spec/landed/digest/WP-153.md` §1 has the programs and what closes
-each.
+each; `spec/landed/verify/WP-155.md` has the mark and the rule.
 
 The limit of names is the same, outside any template, for a name in
 an operand that is not dependent and that only a type or a value holds
@@ -1439,7 +1445,7 @@ Digests are produced only for an observer whose shard is `ok`.
 Section 19 of the shard (`spec/model.md` §8).
 
 ```
-Digests := scheme: uv              2; changes whenever any stream, key or table of this spec changes (rule below)
+Digests := scheme: uv              3; changes whenever any stream, key or table of this spec changes (rule below)
            tu:     digest          H("slip.tu.v1", list<GroupSum>), groups in the order below
            groups: list<Group>     sorted by (class, file)
 
@@ -1447,13 +1453,15 @@ Group   := class:  GroupClass
            file:   bytes           the subject path of a file; empty for class `tu`
            count:  uv              units in the group
            indeterminate: uv       units in the group with the indeterminate flag
-           digest: digest          H("slip.group.v1", list<Unit>) over the group's units
+           digest: digest          H("slip.group.v1", list<Unit>) over the group's units,
+                                   each unit's flags without bit 1
            units:  opt<list<Unit>> sorted by (key, digest); present when detail was asked for
 
 GroupSum   := class, file, count, indeterminate, digest
 GroupClass := declared = 0 | derived = 1 | tu = 2
 
-Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; other bits must be 0
+Unit    := key: digest, digest: digest, flags: uv      flags bit 0: indeterminate; bit 1: emitted
+                                                         unreferenced (WP-155, below); other bits must be 0
 ```
 
 From the first release, `scheme` changes with every change to a stream,
@@ -1484,6 +1492,140 @@ whose key is another unit's with a different digest is a collision,
 indeterminate (fails closed). No comparison goes from a difference of a
 member to equal. No baseline of scheme 2 is recorded, so it shares the
 number.
+
+It is 3 since WP-155: a unit carries flag bit 1, **emitted unreferenced**,
+when it holds the definition of an entity the translation unit emits
+whether or not anything refers to it (the rule, and the Kiln fields it
+reads, are `spec/landed/verify/WP-155.md` §1): the resolved unit
+`definition` of an entity of the definition class (`digest-kinds.md`
+§11.9), else the entity's own unit. The flag is part of no unit's digest
+(no stream, key or table row changes: every unit digest is what it was
+under scheme 2), nor of the group's: `group_digest` hashes a unit's
+flags without bit 1, so every group digest and `tu` is what it was under
+scheme 2 too. The scheme moves because a shard of scheme 2 holds no
+mark: compared with one of scheme 3, a one-sided marked unit would be
+read as unmarked, a wrong `verified` (`verify.md` §4 step 3). The move
+voids every recorded baseline of scheme 2 (its digests stay valid, its
+marks are missing): the shard goldens of `crates/slip_model` are blessed
+again with the package; `bench/baselines` and the corpus invariants are
+the supervisor's to record again. WP-155's fix round changed which units
+are marked (below), not the format; no baseline of scheme 3 was recorded,
+so it shares the number. WP-141 landed beside it saying "`scheme` stays
+2" (`spec/landed/digest/WP-141.md`): written before this move, it reads
+as "no move of its own"; its changes are under 3 for the same reason.
+
+**The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
+either of two ways; the mark is their union.
+
+**In place.** A unit is marked when its own stream writes in place, in
+the full walk, the definition of a function with the attribute
+`constructor`, `destructor` or `used`: a member of a local type written
+where the type is declared (a local class's member function, at any
+depth, also inside a lambda's body; a closure type's call operator), the
+function itself in a dependent context or not. That holds whatever the
+unit's kind: an entity's own unit, a resolved unit `definition`, a
+`default_argument` unit (the initialiser of a field an instantiation
+made), a content-keyed unit; except a unit whose entity is a template, a
+template's pattern, a partial specialisation or in a dependent context,
+which is never marked. The walk records the function in the state of the
+unit being written (§4.3), which a key, a content digest, a candidate
+stream (§2.2) and any other stream written with a fresh unit state put
+aside and restore with the rest; nothing is recorded while an owner is
+numbered (§4.3), inside a key, a type digest or a profile, or in a stream
+whose local state is put aside. So the initialiser of a variable, of a
+static data member or of a field, and the body of a function, mark the
+unit that holds them, wherever the lambda in them is.
+
+**By entity.** The entities read are the variables (`DeclKind::Var`) and
+functions that are not local (a block-scope `extern` declaration is the
+namespace's) and not a template's pattern, a partial specialisation or in
+a dependent context. The unit marked is the entity's resolved unit
+`definition` when there is one, else its own unit when the entity is
+defined. One is marked when any of these holds:
+
+1. It, or its defining declaration, has the attribute `used`.
+2. Its body or initialiser declares, at any depth, a function with the
+   attribute `constructor`, `destructor` or `used`: a member function of
+   a local class (also nested, also inside a lambda's body), or a
+   lambda's call operator (Kiln accepts `[]() __attribute__((used)) {}`
+   and puts the attribute on the call operator). The declaration's
+   enclosing declarations are climbed through `ctx`; a closure type also
+   counts the variable its name is prefixed by
+   (`LambdaMangling::context`). A static local with `used` does not mark
+   its function: clang emits it only where the function is emitted.
+3. It is a function with `constructor` or `destructor`.
+4. It is a variable whose type, through arrays and references, is a class
+   whose definition is missing or whose destructor is not trivial
+   (`DefinitionBits::TRIVIAL_DTOR`), or a chain of more than 256 such
+   steps.
+5. It is a variable that is not **constant-initialised**. It is when one
+   of these holds: its evaluated state (`VarData::eval`, read in
+   definition mode over every declaration) is `Value`; no declaration has
+   an initialiser and its type is not a class, or is a class, or an array
+   of one, whose default constructor is trivial (`TRIVIAL_DEFAULT_CTOR`
+   set and `NONTRIVIAL_DEFAULT_CTOR` clear); its initialiser is the call
+   of a trivial constructor with no argument
+   (`Ast::is_trivial_default_construction`: Kiln's form of `K k;`); or
+   its type is arithmetic, enumeration, pointer or reference and its
+   initialiser is **plainly constant**.
+
+Thread-local variables follow the same rules as variables of static
+storage duration.
+
+A **plainly constant** initialiser is one of this grammar, read on Kiln's
+expression nodes; anything else is not (a call, a read of a variable's
+value, a binary or conditional operator, a temporary, a cast written in
+the source, a member access, a compound literal), nor is a tree of more
+than 64 nodes:
+
+```text
+plain   := literal | enumerator | sizeof | address
+         | ( plain )                        ParenExpr
+         | { } | { plain }                  InitListExpr, at most one element
+         | + plain | - plain                UnaryOperator Plus, Minus
+         | conversion of plain              ImplicitCastExpr: IntegralCast,
+                                            IntegralToFloating, FloatingToIntegral,
+                                            FloatingCast, IntegralToBoolean,
+                                            FloatingToBoolean, BooleanToSignedIntegral,
+                                            NullToPointer, NoOp
+literal := IntegerLiteral | FloatingLiteral | CharacterLiteral
+         | CXXBoolLiteralExpr | CXXNullPtrLiteralExpr | GNUNullExpr | StringLiteral
+enumerator := DeclRefExpr naming an EnumConstant
+sizeof  := UnaryExprOrTypeTraitExpr: sizeof, alignof, __alignof
+address := & designator                     UnaryOperator AddrOf
+         | decay of designator              ImplicitCastExpr ArrayToPointerDecay,
+                                            FunctionToPointerDecay
+         | designator                       a DeclRefExpr bound as it is: see below
+designator := ( designator ) | StringLiteral
+         | DeclRefExpr naming a function
+         | DeclRefExpr naming a variable (DeclKind::Var) that is not
+           thread-local, not of reference type, and of static storage
+           duration (not local, or a static local)
+```
+
+A bare designator (a `DeclRefExpr` that names no enumerator) is `plain`
+only where it is bound as it is: the declared type is a reference, and the
+`DeclRefExpr` is the root of the initialiser or is reached from the root
+through parentheses, lists of one element and `NoOp` conversions alone.
+Anywhere else (under a sign, under another conversion, or for a declared
+type that is not a reference) a `DeclRefExpr` is an enumerator or the
+initialiser is not plain. The grammar does not rest on Kiln placing an
+lvalue-to-rvalue conversion on a read. `designator` reads the declaration
+kind `DeclKind::Var` exactly: a binding, a parameter or a declaration of
+any other kind is refused.
+
+**What neither way placed.** The counter `digest.emitted.unplaced` (§12)
+is the number of local functions that are not in a dependent context,
+have a definition and have `constructor`, `destructor` or `used`, which
+neither way placed: the first did not meet them in a unit's own stream,
+and no declaration around them (rule 2's climb) is one the second way
+marked an entity for. It is zero over every fixture; a shape that makes
+it non-zero is a mark too few the walk can see, and is listed in
+`spec/landed/verify/WP-155.md`.
+
+A mark too many is a finding too many; a mark too few a wrong `verified`.
+The marks too many that remain are listed in `spec/landed/verify/WP-155.md`
+§1 (a class initialised by a constexpr constructor is the known one).
 
 - A declared unit belongs to the group of the file that holds the entity's
   first declaration in the translation unit that has a location (below). A derived unit belongs to the
@@ -1545,6 +1687,8 @@ comparison of unit sets (`verify.md`).
 |---|---|
 | `digest.units` | units, declared and derived |
 | `digest.units.derived` | derived units |
+| `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
+| `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |

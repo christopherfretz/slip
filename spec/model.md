@@ -657,7 +657,7 @@ in the encodings of §2: `GroupClass` is an enumeration, `units` an `opt`. A
 group is `class`, `file`, `count`, `indeterminate` (`uv`), `digest`,
 `units`. `tu_digest` hashes the `list<GroupSum>`: the count, then per group
 `uv(class)`, `bytes(file)`, `uv(count)`, `uv(indeterminate)`, `digest`.
-`scheme` is `slip_model::digests::SCHEME`, 2.
+`scheme` is `slip_model::digests::SCHEME`, 3 (WP-155; `digest.md` §11).
 
 **Invariants.** The section's payload starts at offset `P` (the `scheme`
 field).
@@ -665,14 +665,14 @@ field).
 | # | Rule | Offset | JSON path |
 |---|---|---|---|
 | 1 | present only if the outcome's status is `ok` | `P` | `sections.digests` |
-| 2 | `scheme` = `digests::SCHEME` (2) | `P` | `sections.digests.scheme` |
+| 2 | `scheme` = `digests::SCHEME` (3) | `P` | `sections.digests.scheme` |
 | 3 | `groups` strictly ascending by `(class, file)` | the later group's first byte | `sections.digests.groups[i]` |
 | 4 | a `tu` group's `file` is empty; a `declared` group's is not | the `file` field | `sections.digests.groups[i].file` |
 | 5a | `count` ≥ 1 | the `count` field | `sections.digests.groups[i].count` |
 | 5b | `indeterminate` ≤ `count` | the `indeterminate` field | `sections.digests.groups[i].indeterminate` |
 | 6a | `units` strictly ascending by `(key, digest)` | the later unit's first byte | `sections.digests.groups[i].units[j]` |
 | 6b | the length of `units` is `count` | the list's count (the byte after the `opt` tag) | `sections.digests.groups[i].units` |
-| 6c | every `flags` is 0 or 1 | the `flags` field | `sections.digests.groups[i].units[j].flags` |
+| 6c | every `flags` has no bit but bits 0 (indeterminate) and 1 (emitted unreferenced, WP-155): 0 to 3 | the `flags` field | `sections.digests.groups[i].units[j].flags` |
 | 6d | `indeterminate` is the number of `units` with flag bit 0 set | the `indeterminate` field | `sections.digests.groups[i].indeterminate` |
 | 6e | `digest` = `group_digest(units)` | the group's `digest` field | `sections.digests.groups[i].digest` |
 | 7 | `tu` = `tu_digest(groups)` | the `tu` field (`P` + 1 while `scheme` < 128, one byte) | `sections.digests.tu` |
@@ -702,8 +702,8 @@ field).
 | 2 | `reason`; each finding's `name`, then `where.pre.node`, `where.pre.what`, `where.post.node`, `where.post.what`: at most 4096 bytes | the field | `sections.verdict.reason`, `….findings[i].name`, `….findings[i].where.<pre\|post>.<node\|what>` |
 | 3 | by `kind`, checking in field order: `verified`: `pre` not all zero, `reason` empty, `total` 0, `findings` empty; `mismatch`: `pre` not all zero, `reason` empty, `total` ≥ 1; `unverifiable`: `reason` non-empty, `total` 0, `findings` empty (only `unverifiable` may have no pre shard: `pre` all zero) | the `pre` field, the `reason` field, the `total` field, the `findings` list's count | `sections.verdict.pre`, `.reason`, `.total`, `.findings` |
 | 4a | `findings` has at most `total` elements | the first finding beyond `total` | `sections.verdict.findings[total]` |
-| 4b | for each finding in turn: ascending by `(rank, file, key)`, where `rank` is that of the finding's kind (`verify.md` §6: `changed` 0, `removed` 1, `added` 2, `derived_changed` 3, `indeterminate` 4, `derived_indeterminate` 5; not the kind's number), an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
-| 5 | for each finding in turn: `key` absent only for `indeterminate`; an `added` finding has no `pre`; a `removed` finding has no `post` | the `opt` tag of `key`, `pre`, `post` | `sections.verdict.findings[i].key`, `.pre`, `.post` |
+| 4b | for each finding in turn: ascending by `(rank, file, key)`, where `rank` is that of the finding's kind (`verify.md` §6: `changed` 0, `removed` 1, `added` 2, `derived_changed` 3, `derived_only_pre` 4, `derived_only_post` 5, `indeterminate` 6, `derived_indeterminate` 7; not the kind's number), an absent key first (not strictly: findings with no key may tie); then, if it has a key, no earlier finding has the same `(kind, key)` | that finding's first byte | `sections.verdict.findings[i]` |
+| 5 | for each finding in turn: `key` absent only for `indeterminate`; an `added` or `derived_only_post` finding has no `pre`; a `removed` or `derived_only_pre` finding has no `post` (the two kinds since WP-155) | the `opt` tag of `key`, `pre`, `post` | `sections.verdict.findings[i].key`, `.pre`, `.post` |
 | 6 | `used` strictly ascending | the later element | `sections.verdict.used[j]` |
 | 7 | in each `Site` (pre, then post), `line` is 0 exactly when `column` is 0 | the `line` field | `sections.verdict.findings[i].where.<pre\|post>.line` |
 
