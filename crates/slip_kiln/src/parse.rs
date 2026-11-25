@@ -786,12 +786,9 @@ fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<(Arc<Overlay>, Overl
         if overlay.len() != i + 1 {
             return Err(format!("overlay: {shown} and an entry before it are one file"));
         }
-        let real = std::fs::canonicalize(&at)
-            .map_err(|e| format!("overlay: cannot resolve {shown}: {e}"))?;
-        let on_disk = slip_spelling::disk()
-            .on_disk(&path_bytes(&real))
+        let on_disk = slip_spelling::real_path(&at)
             .map_err(|e| format!("overlay: cannot resolve {shown}: {}", e.detail()))?;
-        overlaid_real.push((on_disk, Arc::clone(bytes)));
+        overlaid_real.push((path_bytes(&on_disk), Arc::clone(bytes)));
     }
     overlaid_real.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(Some((Arc::new(overlay), overlaid_real)))
@@ -994,6 +991,7 @@ fn read_consulted(real: &[u8], seen: Option<Content>) -> Result<(u64, Digest), S
 /// case or normalisation: `inputs.respelled`).
 fn real_path(directory: &Path, name: &str) -> Result<(Vec<u8>, bool), String> {
     let spelled = directory.join(name);
+    // canonicalize: first half of real_path to count inputs.respelled (spec/edits.md §2.1)
     let real = std::fs::canonicalize(&spelled)
         .map_err(|e| format!("cannot resolve {}: {e}", spelled.display()))?;
     let real = path_bytes(&real);
