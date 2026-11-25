@@ -1,0 +1,4 @@
+exact derived
+removed lib::make(lib::X)
+derived-added make<lib::X>(lib::X)
+derived-changed template <class> void fa(type-parameter-0-0, W2<sizeof(T) + sizeof(Wr<decltype(make(x))>)> *)::<operands>
