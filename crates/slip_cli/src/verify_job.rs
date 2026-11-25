@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use slip_digest::map::{counters as walk_counters, with_input};
 use slip_digest::spelling::{Spelling, check_spellings};
@@ -1209,6 +1209,9 @@ enum Left {
     /// path: not the file the map parse read there (two inputs made one by
     /// a link, or a directory on the way replaced by a link).
     Moved(Vec<u8>),
+    /// The file exists, but `slip_spelling::real_path` could not resolve its
+    /// spelling on disk (e.g. an unlistable directory or ambiguous name).
+    Unresolvable(String),
     /// The file there has another size or content, or cannot be read.
     Changed,
 }
@@ -1225,6 +1228,9 @@ impl Left {
                 "pre-image: {path} now leads to {}, not the file the map parse read (run `slip parse` again)",
                 show_path(real)
             ),
+            Left::Unresolvable(detail) => {
+                format!("pre-image: {path} cannot be resolved: {detail} (run `slip parse` again)")
+            }
             Left::Changed => {
                 format!("pre-image: {path} changed since the map phase (run `slip parse` again)")
             }
@@ -1262,12 +1268,22 @@ fn left_behind<'a>(
 
 /// Whether `path`, a real path when the map parse recorded it, is still
 /// one: the path, or the nearest ancestor of it that exists, is its own
-/// real path now (no symbolic link has been made on the way since).
+/// real path now (no symbolic link has been made on the way since, and its
+/// spelling on disk matches). Any error from `real_path` (including an
+/// unlistable directory) returns `false`, so a subject file in an
+/// unlistable directory is checked rather than skipped.
 pub(crate) fn as_recorded(path: &[u8]) -> bool {
+    as_recorded_with(path, slip_spelling::real_path)
+}
+
+fn as_recorded_with(
+    path: &[u8],
+    real_path: impl Fn(&Path) -> Result<PathBuf, slip_spelling::SpellingError>,
+) -> bool {
     let mut at = Path::new(OsStr::from_bytes(path));
     loop {
         if at.symlink_metadata().is_ok() {
-            return std::fs::canonicalize(at).is_ok_and(|real| real == at);
+            return real_path(at).is_ok_and(|real| real == at);
         }
         match at.parent() {
             Some(up) => at = up,
@@ -1280,13 +1296,21 @@ pub(crate) fn as_recorded(path: &[u8]) -> bool {
 /// regular file (links followed now) whose real path is `f.path`, of `f`'s
 /// size and content digest.
 fn still_there(f: &FileRef) -> Result<(), Left> {
+    still_there_with(f, slip_spelling::real_path)
+}
+
+fn still_there_with(
+    f: &FileRef,
+    real_path: impl Fn(&Path) -> Result<PathBuf, slip_spelling::SpellingError>,
+) -> Result<(), Left> {
     let path = Path::new(OsStr::from_bytes(&f.path));
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => {
-            match std::fs::canonicalize(path) {
+            match real_path(path) {
                 Ok(real) if real == path => {}
                 Ok(real) => return Err(Left::Moved(real.into_os_string().into_vec())),
-                Err(_) => return Err(Left::Gone),
+                Err(e) if e.is_not_found() => return Err(Left::Gone),
+                Err(e) => return Err(Left::Unresolvable(e.detail())),
             }
             if m.len() != f.size {
                 return Err(Left::Changed);
@@ -1366,5 +1390,53 @@ mod tests {
         assert_eq!(err, format!("{e} (observer {}, main file /d/a\\xff.cpp)", observer.id));
         let ok = compare_groups(&[], &[], &Exemptions::from_declared(&Declared::none()));
         assert!(compared(ok, &observer).is_ok());
+    }
+
+    // §2.1 (WP-164 fix round 1): `still_there` carries non-not-found
+    // `real_path` error detail in `Left::Unresolvable` (not `Gone`), and
+    // `as_recorded` returns `false` on any `real_path` error.
+    #[test]
+    fn s2_1_real_path_error_paths() {
+        let base = std::env::var_os("SLIP_TEST_ROOT").filter(|v| !v.is_empty()).map_or_else(
+            || {
+                let exe = std::env::current_exe().unwrap();
+                exe.parent().and_then(Path::parent).and_then(Path::parent).unwrap().join("tmp")
+            },
+            PathBuf::from,
+        );
+        let dir = base.join(format!("wp164-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.h");
+        std::fs::write(&file, b"int x;\n").unwrap();
+        let f = FileRef {
+            path: file.as_os_str().as_bytes().to_vec(),
+            size: 7,
+            content: content_digest(b"int x;\n"),
+        };
+
+        let unlistable = |p: &Path| {
+            Err(slip_spelling::SpellingError::Unlistable {
+                path: p.as_os_str().as_bytes().to_vec(),
+                dir: dir.as_os_str().as_bytes().to_vec(),
+                error: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            })
+        };
+        let got = still_there_with(&f, unlistable).unwrap_err();
+        assert!(matches!(got, Left::Unresolvable(_)), "{got:?}");
+        let msg = got.reason(&f.path);
+        assert!(msg.contains("cannot be resolved:") && msg.contains("cannot be listed"), "{msg}");
+        assert!(!as_recorded_with(&f.path, unlistable));
+
+        let missing = |p: &Path| {
+            Err(slip_spelling::SpellingError::Missing {
+                path: p.as_os_str().as_bytes().to_vec(),
+                at: p.as_os_str().as_bytes().to_vec(),
+            })
+        };
+        assert_eq!(still_there_with(&f, missing), Err(Left::Gone));
+        assert!(!as_recorded_with(&f.path, missing));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

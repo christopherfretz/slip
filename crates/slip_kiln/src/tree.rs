@@ -74,6 +74,7 @@ impl Tree {
             }
         };
         let mut tree = Tree { root, files: Vec::new(), dirs: Vec::new() };
+        // canonicalize: test helper only, not product code (spec/landed/edits/WP-068.md)
         tree.root = std::fs::canonicalize(&tree.root)?;
         for (path, bytes) in files {
             tree.add(path, bytes)?;
