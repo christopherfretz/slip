@@ -13,6 +13,7 @@ mod local_paths;
 pub(crate) mod manifest;
 mod rust_tokens;
 mod specs;
+mod swallowed_result;
 mod wp_files;
 
 pub use crates::KILN_LINKING;
@@ -35,6 +36,7 @@ pub const LINTS: &[&str] = &[
     "local-paths",
     "doc-links",
     "api-tests",
+    "swallowed-result",
 ];
 
 /// One violation of one lint.
@@ -88,6 +90,7 @@ pub fn check(repo: &Repo) -> Vec<Violation> {
         local_paths::check(repo),
         doc_links::check(repo),
         api_tests::check(repo),
+        swallowed_result::check(repo),
     ];
     let mut all = Vec::new();
     for mut group in groups {

@@ -278,14 +278,28 @@ fn one(dir: &Path, tables: &[(&str, RuleTable)]) -> Result<(), String> {
                 problems.extend(lines.into_iter().map(|l| format!("side {side:?}: {l}")));
             }
             // A side the snippet front end does not parse (an `errors`
-            // side of a pending directory) has no walk to compare.
+            // side of a pending directory) has no walk to compare; a panic
+            // inside the callback or front end still fails the test.
             Err(e) if common::is_pending(dir) => {
-                let _ = e;
+                if let Err(panicked) = common::skip_unparsed::<()>(Err(e)) {
+                    problems.push(format!("side {side:?}: {panicked}"));
+                }
             }
             Err(e) => problems.push(format!("side {side:?}: {e}")),
         }
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+#[test]
+fn wp168_pending_dir_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    let err = common::skip_unparsed(common::with_side(&dir, Side::A, |_| {
+        assert_eq!(1, 2, "wp168 inert sentinel");
+    }))
+    .expect_err("a callback panic must fail even for a pending dir");
+    assert!(err.contains("the callback panicked: wp168 inert sentinel"), "{err}");
 }
 
 /// Every directory of [`ROOTS`], pending ones included.

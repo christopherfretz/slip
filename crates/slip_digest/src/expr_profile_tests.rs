@@ -92,11 +92,12 @@ pub(crate) fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
             std: &std,
         };
         let extra = slip_kiln::snippet::Extra { args: &args, target };
-        let _ = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+        slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
             f(&input);
-        });
+        })
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     }
 }
 
@@ -1123,4 +1124,24 @@ fn the_bytes_are_pinned() {
             diff.join("\n")
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "the callback panicked: wp168 sentinel")]
+fn each_input_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    each_input(&dir, |_| {
+        assert_eq!(1, 2, "wp168 sentinel");
+    });
+}
+
+#[test]
+#[should_panic(expected = "the callback panicked: wp168 side sentinel")]
+fn each_side_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    each_side(&dir, |_| {
+        assert_eq!(1, 2, "wp168 side sentinel");
+    });
 }

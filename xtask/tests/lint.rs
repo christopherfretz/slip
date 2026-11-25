@@ -540,3 +540,52 @@ fn wp090_api_tests() {
         ]
     );
 }
+
+#[test]
+fn s3_swallowed_result() {
+    let f = Fixture::new("swallowed-result");
+    f.write(
+        "crates/slip_digest/src/ok.rs",
+        r#"#![forbid(unsafe_code)]
+fn ok() {
+    let _ = slip_kiln::snippet::parse_with(&s, &e, |p| p).expect("parses");
+    slip_kiln::snippet::parse(&s, |p| p).unwrap();
+    if let Ok(r) = common::skip_unparsed(common::with_side(d, s, |i| i)) {
+        let _ = r;
+    }
+    // let _ = slip_kiln::snippet::parse_with(&s, &e, |_| {});
+    let _ = "let _ = parse_with(&s, &e, |_| {});";
+}
+"#,
+    );
+    assert_eq!(lint(&f), none());
+
+    f.write(
+        "crates/slip_digest/src/bad.rs",
+        r"#![forbid(unsafe_code)]
+fn bad() {
+    let _ = slip_kiln::snippet::parse_with(&s, &e, |_| {});
+    let _ = slip_kiln::snippet::parse(&s, |_| {});
+    let _ = slip_kiln::snippet::preprocess(&s, &e, |_| {});
+    let _ = parse_observer_with(&o, p, 0, opts, |_| {});
+    if let Ok(r) = common::with_side(d, s, |_| {}) {
+        let _ = r;
+    }
+    let Ok(v) = common::digest_side(d, s) else { return; };
+    let _v = parse_with_tables(&s, &e, |_| {}).ok();
+}
+",
+    );
+    assert_eq!(
+        lint(&f),
+        [
+            "crates/slip_digest/src/bad.rs:3: swallowed-result: `let _ =` discards the Result of `parse_with` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:4: swallowed-result: `let _ =` discards the Result of `snippet::parse` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:5: swallowed-result: `let _ =` discards the Result of `snippet::preprocess` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:6: swallowed-result: `let _ =` discards the Result of `parse_observer_with` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:7: swallowed-result: `if let Ok` discards the Err of `common::with_side` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:10: swallowed-result: `let Ok ... else` discards the Err of `common::digest_side` (a callback panic would be swallowed)",
+            "crates/slip_digest/src/bad.rs:11: swallowed-result: `.ok()` discards the Err of `parse_with_tables` (a callback panic would be swallowed)",
+        ]
+    );
+}

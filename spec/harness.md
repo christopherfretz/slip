@@ -119,6 +119,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `local-paths` | No committed text file contains an absolute path into a home directory or this host's workspace (`/home/`, `/Users/`, `/root/`, `/Volumes/`). |
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
 | `api-tests` | Every directory under `crates/slip_script/tests/api/` with a `transform.cpp` has `t.cpp` and `expect.txt`, lies in no other, and its `// spec:` line names a heading of `spec/api.md`; no other file lies there (`spec/api.md` §11). |
+| `swallowed-result` | No `.rs` file under `crates/` or `xtask/` discards the `Result` of a callback-catching parse helper (`snippet::{parse, parse_with, parse_with_tables, preprocess}`, `parse_observer_with`, `common::{with_side, digest_side}`) via `let _ =`, `if let Ok`, `let Ok ... else`, or `.ok()`. |
 
 Lints read the files tracked by git, so build output and worktrees are
 never scanned. If the root holds `.git` (a directory, or a file as in a
@@ -211,6 +212,17 @@ in both places.
   listed files, or a path inside a submodule that exists on disk. A target
   above the root fails. Anchors are not checked. Message:
   ``link `<target>` points at no file``.
+
+- **`swallowed-result`.** Scans `.rs` files under `crates/` and `xtask/`
+  with the textual Rust tokeniser (`xtask/src/lint/rust_tokens.rs`,
+  comments and string literals skipped) and rejects `let _ = <call>(...)`
+  (without `?`, `.unwrap`, `.unwrap_err`, `.unwrap_or_else`, `.expect`, or
+  `.expect_err` at depth 0), `if let Ok(...) = <call>(...)`,
+  `let Ok(...) = <call>(...) else`, and `<call>(...).ok()` when `<call>` is
+  `snippet::parse`, `snippet::preprocess`, `parse_with`,
+  `parse_with_tables`, `parse_observer_with`, `common::with_side`, or
+  `common::digest_side` (a callback panic in these helpers comes back as
+  `Err`, so discarding it silently swallows test assertions).
 
 ## 4. Work packages
 
