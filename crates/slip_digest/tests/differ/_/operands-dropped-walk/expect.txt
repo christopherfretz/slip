@@ -1,0 +1,6 @@
+# WP-156 fix round 1 (S4).
+exact derived
+removed lib::make(lib::X)
+derived-changed g(int)::<operands>
+derived-changed h()::<operands>
+derived-added make<lib::X>(lib::X)
