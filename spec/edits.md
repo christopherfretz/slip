@@ -212,10 +212,14 @@ finds them (§2.3).
 **The range is Kiln's.** Which bytes of a file an edit must replace to
 replace a range of tokens, and where a token ends, are answered by
 Kiln's own functions (Kiln WP-2150: `SourceManager::editable_file_range`,
-Kiln `spec/source.md` "Editable file ranges"; `kiln_lex::token_end`,
-Kiln `spec/lex.md` "End of a token"), the ones Kiln's fix-its use.
-`slip_kiln::ranges` calls them and Slip has no rule of its own for
-either. They need Slip's Kiln revision at or after `913a490bb`.
+Kiln `spec/source.md` "Editable file ranges"; Kiln WP-2542:
+`kiln_lex::token_end_split` with `Ast::split_greaters`, Kiln
+`spec/lex.md` "End of a token", "Split `>` tokens"), the ones Kiln's
+fix-its use. A `>` split off `>>`, `>=` or `>>=` to close a template
+argument list is located at its single byte rather than refused
+(`spec/landed/exec/WP-148.md`). `slip_kiln::ranges` calls them and Slip
+has no rule of its own for either. They need Slip's Kiln revision at or
+after `913a490bb` (and WP-2542 at or after `4a83f6e3c`).
 
 **The tier is where the token is written**, which Kiln has no function
 for and Slip reads from Kiln's expansion entries: the token's location
@@ -652,8 +656,8 @@ HostRefusal := function: str, errc: str, message: str, subject: opt<Place>
 
 `message` is the cause of the failure, taken from Kiln's structured
 diagnostics, never cut out of the rendered text: for an `uncaught`
-`slip::error` with a refusal, the refusal ("an uncaught slip::error; the
-most recent refusal was: <message> (<errc>)", `api.md` §2.8 rule 3);
+`slip::error` (or class derived from it) with a refusal, the refusal
+("an uncaught slip::error: <message> (<errc>)", `api.md` §2.8 rule 3);
 when the run's first error is Kiln's "call to consteval function
 'transform' is not a constant expression", that error's first note of
 free text (the evaluator's account of what went wrong: "dereferencing a

@@ -848,9 +848,12 @@ coordinator records `failed` (`spec/exec.md`). `parse_observer` is
 - A command that is not UTF-8 is `rejected` without running the front end:
   `errors` 1, `warnings` 0, `message` `` argument `<argument>` is not
   UTF-8 `` (the first such argument, decoded lossily).
-- The process's current directory is set to `Command.directory` (failing
-  that is `Err`) and not restored: Kiln has no working-directory parameter.
-  Callers that parse on several threads of one process must serialise.
+- `Command.directory` is verified to exist and be a directory (failing
+  that is `Err`) and passed per run to Kiln
+  (`FrontEndOptions::working_directory`, Kiln WP-2121;
+  `spec/landed/exec/WP-148.md`). The process's current directory is never
+  changed, so parses in different directories may run concurrently in one
+  process.
 - The command line is the one of `spec/cdb.md` §6.1, `argv[0]
   -fsyntax-only -fkiln-reproducible-time argv[1..]`, given to
   `run_front_end` with
@@ -916,18 +919,21 @@ otherwise. The list is made from the unit, without a second read of a file
 the front end read:
 
 - every buffer of the source manager (`SourceManager::file_ids`) whose
-  origin (`file_origin`) is `Disk`: its size and content digest are those
-  of `original_bytes` (the bytes as read, byte-order mark and invalid UTF-8
-  included);
+  origin (`file_origin`) is `Disk` or `Overlay`: its size and content
+  digest are those of `original_bytes` (the bytes as read, byte-order
+  mark and invalid UTF-8 included);
 - every buffer whose origin is `Lazy` (from a module file or a precompiled
   header) that has `original_bytes`; one without them (never read) is left
   out;
 - every path of `FrontEnd.consulted` (`__has_include` and `__has_embed`
   hits, `#embed` resources; Kiln lists each once and leaves out the files
-  the preprocessor entered) whose real path is not that of a buffer above:
-  read here, once, for its size and digest; failing that is `Err`. (A
-  `__has_include` hit is a buffer; an `#embed` resource is not: Kiln keeps
-  no bytes of it.)
+  the preprocessor entered): if its real path is that of a buffer above,
+  its `Consulted::content` (when present) is verified against the
+  buffer's `original_bytes`; otherwise, an overlaid path takes the
+  overlay's bytes and a disk path is read once for BLAKE3, and both are
+  verified against Kiln's recorded `Consulted::content` (size and 128-bit
+  FNV-1a digest), failing closed (`Err`, `<path> changed during the
+  parse`) on mismatch (`spec/landed/exec/WP-148.md`).
 
 `Virtual` buffers (the predefines, the command line's macros, token-paste
 results) are not inputs. Each name (`file_name`, the path as first loaded,

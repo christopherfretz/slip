@@ -63,8 +63,8 @@ Two transforms are part of the conformance suite and are referenced from
    holds a NUL byte is also `transform-option`, as is a transform file or
    resource directory whose path does. The values of `-I`, `-isystem` and
    `-include`, the transform file and the resource directory must be
-   absolute paths, or it is `transform-option`: a worker's current
-   directory is not stable.
+   absolute paths, or it is `transform-option`: the transform's command
+   and identity (§2.2) must not depend on the worker's working directory.
 3. The target is the one Kiln chooses by default on the machine that runs
    Slip, and the C++ standard library is the one Kiln finds for it. Both
    are inputs of the transform's identity (§2.2). Version 0 requires of
@@ -239,11 +239,20 @@ an action entry once per match (§9); nothing here prevents it.
    a run that instantiates (reflection's `substitute` and what reads its
    result, at any depth) failed there with "stack exhausted" by the
    history of the threads, and the flag was sticky, so every later run of
-   the unit failed too. The host refuses a run on another thread before
-   it reaches Kiln, as an error of the worker that ends nothing. Kiln
-   WP-2410, in the pin since WP-066, checks the running thread's guard
-   (`crates/slip_kiln/tests/session.rs` `kn1_…`); lifting the rule is
-   WP-138's (`spec/landed/edits/WP-066.md`). The compiling thread has a stack of 256 MiB:
+   the unit failed too. Kiln WP-2410 (in the pin since WP-066) checks the
+   running thread's guard and restores Kiln's flag when the run leaves
+   (`crates/slip_kiln/tests/session.rs` `kn1_…`), lifting that cross-thread
+   hazard (`spec/landed/exec/WP-148.md`). Slip keeps the compiling-thread
+   check in `slip_script::driver::Loaded::run` for now because it
+   guarantees that the running thread is the one whose stack (`STACK`,
+   256 MiB) and Kiln `StackGuard` were checked at load time (another
+   thread, such as a subject front-end thread with a smaller
+   `-fkiln-stack-size=`, need not have 256 MiB or a matching guard), and
+   a session runs one evaluation at a time (`&mut self`). A run on
+   another thread is still refused before it reaches Kiln, as an error of
+   the worker that ends nothing (lifting the check is proposed in
+   `docs/wp/WP-148.md` and deferred to supervisor decision). The compiling
+   thread has a stack of 256 MiB:
    with the template depth of §2.1 rule 1, each recursion a run can drive
    (constexpr calls, which the evaluator keeps off the native stack and
    the depth budget bounds; class, variable, function and alias template
@@ -330,17 +339,18 @@ A run **completes** or **fails**.
    refused, its `errc`, its message, and the place in the subject that the
    offending value denotes, if it denotes one. The same failure in many
    subject units is shown once with a count and one example unit.
-   **The refusal reported** is the run's most recent, when the type of
-   the uncaught exception is `slip::v0::error`: since Kiln WP-2480 (in the
-   pin since WP-066) Kiln gives the type fully qualified, as
-   `display_string_of` spells it (before, as written and unqualified, so
-   a class of the transform's named `error` in any scope was taken for
-   it). Slip still does not ask which object was thrown, so this is wrong
-   in two cases: a transform that rethrows an older `slip::error` after a
-   newer refusal (the newer is reported); a class derived from
-   `slip::error` (reported with no refusal). Reading the thrown object,
-   which Kiln now gives, is WP-138's. The message is never parsed out of
-   Kiln's rendering.
+   **The refusal reported** is that of the thrown object itself: since
+   WP-148 (using Kiln WP-2480, `RunError::Uncaught`'s class entity and
+   frozen value), the host matches the `slip::v0::error` class entity
+   declared under `<resource>/include` — either directly or as a direct
+   or virtual base subobject of a derived class — and reads its failure
+   ordinal `__n` to look up that refusal in the run's failure table. A
+   class named `error` in another namespace has no refusal; rethrowing an
+   older `slip::error` after a newer refusal reports the older refusal;
+   and throwing a class derived from `slip::error` carries its base's
+   refusal (unless ambiguous across distinct `slip::error` subobjects
+   holding different ordinals, in which case no refusal is attached). The
+   message is never parsed out of Kiln's rendering.
 4. A subject unit whose run failed has not been examined. Slip must not
    apply the edits of a Slip run in which a run failed unless told to.
    Such a Slip run is at best `verified_with_residue`
@@ -663,7 +673,10 @@ with token sequence `T(X)` after preprocessing:
    with `__VA_OPT__`, `_Pragma`), the range is narrower or null, never
    wider; `spec/landed/api/WP-084.md` decision 3 lists those shapes. This
    section was silent on both until that file, which also records how the
-   tier is derived from the source manager's rules.
+   tier is derived from the source manager's rules. A `>` split off a
+   `>>`, `>=` or `>>=` token to close a template argument list is located
+   at that single byte (Kiln WP-2542, `Ast::split_greaters`;
+   `spec/landed/exec/WP-148.md`).
 7. `spec/macros.md` will define tiers for all of Slip. Until it is
    written this section is the definition for the API.
 
