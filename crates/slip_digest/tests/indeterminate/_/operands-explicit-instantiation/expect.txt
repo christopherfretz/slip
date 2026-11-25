@@ -1,1 +1,4 @@
 indeterminate ft<4>()::<operands>
+indeterminate Q<4>::f()::<operands>
+indeterminate fx<Wr<int>>(Wr<int>)::<operands>
+indeterminate vt<int>::<operands>

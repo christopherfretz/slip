@@ -1,3 +1,11 @@
 # WP-156 fix round 1 (S1).
 exact derived
 removed lib::make(lib::X)
+derived-changed p1<lib::X>(lib::X, Q<4> *)::<operands>
+derived-changed p2<lib::X>(lib::X, int *)::<operands>
+derived-changed p3<lib::X>(lib::X, int (*)(int))::<operands>
+derived-changed p4(Q<4> *)::<operands>
+derived-changed p5(int (*)())::<operands>
+derived-changed p6<lib::X>(lib::X, const int *)::<operands>
+derived-changed p7<lib::X>(lib::X, Q<4> (*)())::<operands>
+derived-added make<lib::X>(lib::X)

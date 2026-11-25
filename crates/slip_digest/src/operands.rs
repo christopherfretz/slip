@@ -59,7 +59,9 @@ use slip_kiln::kiln::ast::expr::{
     ExprDeps, ExprFlags, ExprKind as K, GenericControl, TypeidOperand,
 };
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
-use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TemplateArg, TypeOfOperand, TypeView};
+use slip_kiln::kiln::ast::types::{
+    ArgView, ExcSpec, Nns, TemplateArg, TemplateName, TypeOfOperand, TypeView,
+};
 use slip_kiln::kiln::ast::{
     Ast, ArgListId, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
 };
@@ -189,6 +191,13 @@ pub(crate) struct Tu {
     /// ([`holds`]), not instantiation-dependent: what an explicit
     /// instantiation's written argument or declarator may have spelt.
     held: HashSet<TypeId>,
+    /// The class templates (first declarations) an alias template's
+    /// target names, `template <class T> using A = Q<T>;`: a declarator's
+    /// qualifier `A<sizeof(f(x))>::` leaves no type in the arena (Kiln
+    /// substitutes the alias at once), so a specialisation of `Q` can be
+    /// named by one. A class an alias template names outright
+    /// (`using A = P;`) is in [`Tu::named`].
+    aliased: HashSet<DeclId>,
 }
 
 /// Whether the walk collects operands now: the unit has an operand unit
@@ -574,8 +583,11 @@ fn in_named_class(w: &mut Walk<'_>, mut c: Option<DeclId>, stop: Option<DeclId>)
     if classes.is_empty() {
         return false;
     }
-    let named = &tu(w).named;
-    classes.iter().any(|x| named.contains(x))
+    let tu = tu(w);
+    classes.iter().any(|&x| {
+        tu.named.contains(&x)
+            || ast.spec_info(x).is_some_and(|(_, i)| tu.aliased.contains(&ast.first(i.template)))
+    })
 }
 
 /// The translation unit's facts ([`Tu`]), computed on first use.
@@ -615,6 +627,41 @@ fn tu_of(ast: &Ast) -> Tu {
                     named(ast, t, &mut out);
                 }
             }
+            _ => {}
+        }
+    }
+    // An alias template's target (the template-id that names it, with its
+    // arguments, is substituted away when it is a declarator's qualifier).
+    for i in 1..=ast.decls.len() {
+        let Ok(i) = u32::try_from(i) else { break };
+        let d = DeclId::new(i);
+        if ast.decls.get(d).kind() != DeclKind::TypeAliasTemplate {
+            continue;
+        }
+        let Some(target) = ast
+            .template_info(d)
+            .and_then(|i| i.pattern)
+            .and_then(|p| ast.decls.get(p).ty())
+            .and_then(|q| match types.view(q.ty()) {
+                TypeView::Typedef { underlying, .. } => Some(underlying),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        match types.canonical_view(target) {
+            TypeView::Record(c) => {
+                out.named.insert(ast.first(c));
+            }
+            TypeView::TemplateSpecialization { name, .. } => {
+                if let TemplateName::Template(t) =
+                    types.template_name_view(types.canonical_template_name(name))
+                {
+                    out.aliased.insert(ast.first(t));
+                }
+            }
+            // Another target names no class, or one a dependent name
+            // finds (`typename T::type`): a limit (`spec/digest.md` §2.4).
             _ => {}
         }
     }
@@ -1114,6 +1161,16 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
                 lists.push(l);
             }
         }
+        // A dependent qualified name keeps its qualifier on the node, not
+        // in `expr_nns` (`roles.rs`: the one expression whose field is
+        // an `Nns`): `Q<sizeof(f(x))>::template In<T>::v` in a pattern.
+        K::DependentScopeDeclRefExpr => {
+            if let Some(q) = NnsId::try_new(n.a())
+                && !quals.contains(&q)
+            {
+                quals.push(q);
+            }
+        }
         K::CStyleCastExpr
         | K::CXXFunctionalCastExpr
         | K::CXXStaticCastExpr
@@ -1228,7 +1285,6 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
         | K::SourceLocExpr
         | K::UnresolvedLookupExpr
         | K::UnresolvedMemberExpr
-        | K::DependentScopeDeclRefExpr
         | K::CXXDependentScopeMemberExpr
         | K::SubstNonTypeTemplateParmExpr
         | K::SubstNonTypeTemplateParmPackExpr

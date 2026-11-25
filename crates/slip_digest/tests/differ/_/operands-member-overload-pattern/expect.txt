@@ -1,3 +1,6 @@
 # WP-156 fix round 1 (S1).
 exact derived
 removed lib::make(lib::X)
+changed template <class> int p_um(C2, type-parameter-0-0)
+derived-changed template <class> int p_um(C2, type-parameter-0-0)::<operands>
+derived-added make<lib::X>(lib::X)

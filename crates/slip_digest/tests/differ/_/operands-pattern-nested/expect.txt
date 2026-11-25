@@ -1,3 +1,6 @@
 # WP-156 fix round 1.
 exact derived
 removed lib::make(lib::X)
+derived-changed template <class> void f22(type-parameter-0-0, typename In<type-parameter-0-0>::t)::<operands>
+derived-changed template <class> void pf(type-parameter-0-0, Wr<int>)::<operands>
+derived-added make<lib::X>(lib::X)

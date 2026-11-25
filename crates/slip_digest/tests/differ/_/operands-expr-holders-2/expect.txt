@@ -1,3 +1,10 @@
 # WP-156 fix round 1.
 exact derived
 removed lib::make(lib::X)
+derived-changed e_cv()::<operands>
+derived-changed e_offs::<operands>
+derived-changed e_pseudo(int *)::<operands>
+derived-changed e_req::<operands>
+derived-changed e_reqp::<operands>
+derived-changed e_vaarg(int, ...)::<operands>
+derived-added make<lib::X>(lib::X)

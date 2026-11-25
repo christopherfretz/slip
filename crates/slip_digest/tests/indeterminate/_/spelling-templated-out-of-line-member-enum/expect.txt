@@ -1,1 +1,2 @@
 indeterminate S::E
+indeterminate S::E::<operands>

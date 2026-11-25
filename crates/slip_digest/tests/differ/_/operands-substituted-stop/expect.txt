@@ -1,3 +1,12 @@
 # WP-156 fix round 1 (S1).
 exact derived
 removed lib::make(lib::X)
+derived-changed S1<lib::X>::m::<operands>
+derived-changed s2::<operands>
+derived-changed s3::<operands>
+derived-changed ss::<operands>
+derived-changed u1::<operands>
+derived-changed u2::<operands>
+derived-changed u3::<operands>
+derived-changed u5::<operands>
+derived-added make<lib::X>(lib::X)
