@@ -393,7 +393,7 @@ and lines starting with `#` are skipped:
 | `allow` | `residue`, `unparsed`, `partial` or `errors`: the run is given `--allow-<value>`; may repeat | none |
 | `oracle` | `no-<oracle> <reason>` turns one oracle of §6.4 off for this test | all on |
 | `require` | `case-insensitive`: a host or volume capability the test needs (may repeat; no duplicates); if unavailable, the test is `SKIP` (or `ERROR` under `SLIP_REQUIRE_ALL=1`) | none |
-| `symlink` | `<link> -> <target>`: a symbolic link the runner creates in the work tree before each run (relative `<link>` not colliding with `pre/` or another symlink, relative `<target>` staying inside the tree; never stored in git; may repeat) | none |
+| `symlink` | `<link> -> <target>`: a symbolic link the runner creates in the work tree before each run (relative `<link>` not colliding with `pre/` or another symlink, relative `<target>` staying inside the tree and passing through no other declared symlink; never stored in git; may repeat) | none |
 | `post` | `none`: the run may write and writes nothing (below) | absent |
 | `timeout` | the seconds each invocation (of `slip`, and of clang by the clang oracle) may take, 1 to 86400 | 600 |
 | `xfail` | the reason the test is expected to fail | absent |

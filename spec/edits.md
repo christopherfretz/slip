@@ -1180,7 +1180,10 @@ on. `Refusal.display` (since version 3, `docs/wp/WP-160.md`) carries the
 joined display name (§5.2 rule 1) of `Refusal.subject` so that a refusal
 naming a subject not in `EditSet.subjects` (such as `mixed_follower` or
 an unselected subject of `mixed_set`) is printed with its display rather
-than its key id (§10.5). Older versions (1 and 2) are refused
+than its key id (§10.5). Changing the container version byte from 2 to 3
+changes every edit set content id — sets with no refusal included — and
+every content id built from one (`Overlay`, `TransformResult`,
+`TransformRun`). Older versions (1 and 2) are refused
 (`model.md` §2, `UnsupportedVersion`): no reader of earlier versions is
 kept before a release.
 
@@ -1210,7 +1213,7 @@ row's rules and messages).
 | `first` has at most 8 entries and at most `observers`; `notes` at most 8 | the field | its path |
 | `changed`, `kept`, `unresolved`, `refusals`, `reports`, `failures` strictly ascending in their keys | that record | its path |
 | a refusal's `reason` is not `none` iff its cause is `site_refused` | the field | `sections.set.refusals[i].reason` |
-| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `display` absent when `subject` is absent; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….display`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
+| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `display` absent when `subject` is absent, and equal to that subject's `display` in `subjects` when both are present; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….display`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
 | the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
 | `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit; a refused set has a refusal | the `state` field | `sections.set.state` |
 | `instances` strictly ascending by `instance`; each place the range of an edit or of a refusal of a site; an instance's `subjects` strictly ascending; `first` as above | that record, its `subjects`, its `first` | `sections.set.instances[i]`, `….instance.subjects`, `….first` |

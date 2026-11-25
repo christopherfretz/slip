@@ -260,7 +260,13 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
-        d.line(line, &pre).map_err(|e| format!("test.txt:{n}: {e}"))?;
+        d.line(n, line, &pre).map_err(|e| format!("test.txt:{n}: {e}"))?;
+    }
+    let declared_links: std::collections::BTreeSet<&str> =
+        d.symlinks.iter().map(|(_, s)| s.link.as_str()).collect();
+    for (n, s) in &d.symlinks {
+        check_symlink_target(&s.link, &s.target, &declared_links)
+            .map_err(|e| format!("test.txt:{n}: {e}"))?;
     }
     let missing_run = d.run.is_none();
     let (Some(run), Some(state)) = (d.run, d.state) else {
@@ -308,7 +314,7 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
     oracle_off.sort();
     let mut require = d.require;
     require.sort();
-    let mut symlinks = d.symlinks;
+    let mut symlinks: Vec<Symlink> = d.symlinks.into_iter().map(|(_, s)| s).collect();
     symlinks.sort();
     let parsed = Test {
         dir: dir.to_owned(),
@@ -463,7 +469,7 @@ struct Directives {
     allow: Vec<Allow>,
     oracle_off: Vec<(Oracle, String)>,
     require: Vec<Capability>,
-    symlinks: Vec<Symlink>,
+    symlinks: Vec<(usize, Symlink)>,
     xfail: Option<String>,
     post_none: bool,
     timeout: Option<u64>,
@@ -487,7 +493,7 @@ fn words(value: &str) -> Result<Vec<String>, String> {
 
 impl Directives {
     #[allow(clippy::too_many_lines, reason = "one arm per directive of spec/harness.md §6.2")]
-    fn line(&mut self, line: &str, pre: &Files) -> Result<(), String> {
+    fn line(&mut self, line_no: usize, line: &str, pre: &Files) -> Result<(), String> {
         let Some((name, value)) = line.split_once(": ") else {
             return Err(format!("`{line}` is not `<name>: <value>`"));
         };
@@ -626,22 +632,22 @@ impl Directives {
                 if pre.contains_key(path) {
                     return Err(format!("symlink: `{path}` is already in pre/"));
                 }
-                if self.symlinks.iter().any(|s| s.link == path) {
+                if self.symlinks.iter().any(|(_, s)| s.link == path) {
                     return Err(format!("symlink: `{path}` given twice"));
                 }
                 for anc in ancestors(path) {
                     if matches!(pre.get(anc), Some(Entry::File { .. })) {
                         return Err(format!("symlink: `{path}` sits under file `{anc}` of pre/"));
                     }
-                    if self.symlinks.iter().any(|s| s.link == anc) {
+                    if self.symlinks.iter().any(|(_, s)| s.link == anc) {
                         return Err(format!("symlink: `{path}` sits under symlink `{anc}`"));
                     }
                 }
-                if self.symlinks.iter().any(|s| s.link.starts_with(&format!("{path}/"))) {
+                if self.symlinks.iter().any(|(_, s)| s.link.starts_with(&format!("{path}/"))) {
                     return Err(format!("symlink: `{path}` is a prefix of another symlink"));
                 }
-                check_symlink_target(path, target)?;
-                self.symlinks.push(Symlink { link: path.to_owned(), target: target.to_owned() });
+                self.symlinks
+                    .push((line_no, Symlink { link: path.to_owned(), target: target.to_owned() }));
             }
             "xfail" => once(&mut self.xfail, "xfail", value.to_owned())?,
             "post" => {
@@ -697,9 +703,14 @@ fn ancestors(p: &str) -> impl Iterator<Item = &str> {
     p.match_indices('/').map(|(i, _)| &p[..i])
 }
 
-/// A `symlink` target: relative, no empty components, and resolves inside the
-/// tree from `link`'s parent directory.
-fn check_symlink_target(link: &str, target: &str) -> Result<(), String> {
+/// A `symlink` target: relative, no empty components, resolves inside the
+/// tree from `link`'s parent directory, and passes through no declared
+/// symbolic link (which could otherwise make a `..` escape the tree on disk).
+fn check_symlink_target(
+    link: &str,
+    target: &str,
+    links: &std::collections::BTreeSet<&str>,
+) -> Result<(), String> {
     if target.starts_with('/') || target.split('/').any(str::is_empty) {
         return Err(format!("symlink: target `{target}` is not a relative path"));
     }
@@ -715,7 +726,15 @@ fn check_symlink_target(link: &str, target: &str) -> Result<(), String> {
                     return Err(format!("symlink: target `{target}` escapes the tree"));
                 }
             }
-            _ => parts.push(c),
+            _ => {
+                parts.push(c);
+                let cur = parts.join("/");
+                if links.contains(cur.as_str()) {
+                    return Err(format!(
+                        "symlink: target `{target}` passes through declared symlink `{cur}`"
+                    ));
+                }
+            }
         }
     }
     if parts.is_empty() {

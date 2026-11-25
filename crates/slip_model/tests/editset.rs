@@ -2445,11 +2445,12 @@ fn set_refusal_fields() {
         );
     }
     for c in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
-        one(Refusal { subject: Some(d(0x10)), display: Some("a::f".to_owned()), ..valid(c) })
+        one(Refusal { subject: Some(d(0x10)), display: Some("n::f".to_owned()), ..valid(c) })
             .validate()
             .unwrap();
     }
-    // `display` only when `subject` is present.
+    // `display` only when `subject` is present, and equal to the subject's
+    // display in `subjects` when both are present.
     for c in alone {
         let what = rejected(
             &one(Refusal { display: Some("a::f".to_owned()), ..valid(c) }),
@@ -2463,6 +2464,18 @@ fn set_refusal_fields() {
             "sections.set.refusals[0].display",
         );
         assert_eq!(what, "a refusal without a subject has a display");
+    }
+    for c in Cause::ALL.into_iter().filter(|&c| subject_cause(c) || c.is_of_site()) {
+        let what = rejected(
+            &one(Refusal { subject: Some(d(0x10)), display: Some("other".to_owned()), ..valid(c) }),
+            "sections.set.refusals[0].display",
+        );
+        assert_eq!(what, "a refusal's display differs from its subject's display", "{c:?}");
+        // A subject not in `EditSet.subjects` (e.g. an unselected follower)
+        // may carry its own display.
+        one(Refusal { subject: Some(d(0x99)), display: Some("unselected".to_owned()), ..valid(c) })
+            .validate()
+            .unwrap();
     }
     // A macro only for a refusal of a site.
     let m = Some(MacroSite { name_start: 1, name: b"M".to_vec() });

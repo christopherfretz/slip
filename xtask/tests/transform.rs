@@ -682,11 +682,24 @@ fn s6_2_parse_malformed() {
         ("symlink: l -> /abs\n", "test.txt:4: symlink: target `/abs` is not a relative path"),
         ("symlink: l -> ../out\n", "test.txt:4: symlink: target `../out` escapes the tree"),
         ("symlink: l -> .\n", "test.txt:4: symlink: target `.` names the tree root"),
+        (
+            "symlink: a/b/up -> ../../c\nsymlink: z -> a/b/up/../..\n",
+            "test.txt:5: symlink: target `a/b/up/../..` passes through declared symlink `a/b/up`",
+        ),
+        (
+            "symlink: z -> a/b/up/../..\nsymlink: a/b/up -> ../../c\n",
+            "test.txt:4: symlink: target `a/b/up/../..` passes through declared symlink `a/b/up`",
+        ),
+        (
+            "symlink: l -> l\n",
+            "test.txt:4: symlink: target `l` passes through declared symlink `l`",
+        ),
     ];
     for (extra, want) in cases {
         let c = Case::new("malformed");
         c.write("test.txt", &format!("{base}{extra}"));
         c.write("pre/a.cpp", "");
+        c.write("pre/c/x.h", "");
         let e = parse_test(&c.dir()).unwrap_err();
         assert!(e.starts_with(want), "{extra:?}: {e}");
     }

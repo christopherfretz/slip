@@ -753,6 +753,13 @@ fn refusal_violation(x: &EditSet) -> Violation {
             ))
         } else if r.subject.is_none() && r.display.is_some() {
             Some((Loc::RefusalDisplay(i), "a refusal without a subject has a display"))
+        } else if let (Some(id), Some(disp)) = (r.subject, r.display.as_deref())
+            && x.subjects
+                .binary_search_by_key(&id, |s| s.id)
+                .ok()
+                .is_some_and(|j| x.subjects[j].display != disp)
+        {
+            Some((Loc::RefusalDisplay(i), "a refusal's display differs from its subject's display"))
         } else if !c.is_of_site() && r.macro_site.is_some() {
             Some((Loc::RefusalMacro(i), "a refusal that is not of a site has a macro"))
         } else if r.other.is_some()
