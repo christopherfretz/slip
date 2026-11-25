@@ -609,9 +609,13 @@ or not the holder had an operand:
   <> int Q<sizeof(make(x))>::s = 5;`); a class an alias template names
   (`template <int> using AL = Pl;`, then `int AL<sizeof(make(x))>::s`);
   a specialisation of a class template an alias template names
-  (`template <class T> using A2 = Q2<T>;`). Kiln keeps no declarator's
-  qualifier as written, and an alias template's template-id leaves no
-  type in the arena. A limit by name: an alias template whose target a
+  (`template <class T> using A2 = Q2<T>;`); a specialisation of a
+  class template whose arguments hold a non-type argument, or a type
+  argument that is (canonically) a type of the arena that holds an
+  operand (`template <> int Q<sizeof(make(x))>::s = 5;` inside a
+  namespace whose other code names no `Q<4>`). Kiln keeps no
+  declarator's qualifier as written, and neither an alias template's
+  template-id nor a declarator qualifier's leaves a type in the arena. A limit by name: an alias template whose target a
   dependent name finds (`typename T::type`) names a class the arena
   cannot tell, and is not failed closed.
 - `operands/splice`: a splice in a written type or qualifier.
