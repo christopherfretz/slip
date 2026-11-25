@@ -2726,7 +2726,11 @@ and the namespaces (`left_kept`, not counted in `left`: a namespace is
 never `left`, its members count by their own rows; WP-118 R6.4). `hints` are the files of §9.4's
 hint. The reader's rows are `spec/landed/verify/WP-118.md` §4.4; an
 index out of range for the run's `Declared` makes the run
-`incomplete`.
+`incomplete`. With an empty `Declared.files.rebuilt` the section is
+still written when `hints` is not empty: the one exception to
+WP-118's P0 (an empty list changes no byte), accepted before the first
+release because no shard outlives the build that wrote it
+(`digest.md` §11).
 
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 `binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
