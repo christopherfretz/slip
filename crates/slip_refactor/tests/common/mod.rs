@@ -1,5 +1,5 @@
 //! What the tests of `slip_refactor` share: where they write the trees that a
-//! front endslip_refactor reads (`spec/harness.md` §11.5).
+//! front end reads (`spec/harness.md` §11.5).
 
 #![allow(dead_code, reason = "each test file uses a part")]
 

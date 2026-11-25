@@ -162,10 +162,10 @@ pub fn self_test(fallback: &str) {
     let busy = File::create(running.join(LOCK)).unwrap();
     busy.lock().unwrap();
     let excludes = File::open(keep.join(LOCK)).unwrap().try_lock().is_err();
-    assert_eq!(sweep(&at, &keep, Duration::from_secs(3600)), Vec::<PathBuf>::new(), "too young");
+    assert_eq!(sweep(&at, &keep, Duration::from_hours(1)), Vec::<PathBuf>::new(), "too young");
     let removed = sweep(&at, &keep, Duration::ZERO);
     if excludes {
-        assert_eq!(removed, [ended.clone()]);
+        assert_eq!(removed, std::slice::from_ref(&ended));
     } else {
         eprintln!("{}: a lock does not exclude another here: nothing swept", at.display());
         assert!(removed.is_empty());

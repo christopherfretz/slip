@@ -11,8 +11,6 @@
 
 mod common;
 
-use std::path::PathBuf;
-
 use slip_digest::{Detail, Input, Options};
 use slip_kiln::{ParseOptions, parse_observer_with};
 use slip_model::keys::RuleTable;

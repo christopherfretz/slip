@@ -8,8 +8,6 @@
 
 mod common;
 
-use std::path::Path;
-
 use slip_digest::{Detail, Input, Options};
 use slip_kiln::ParseOptions;
 use slip_kiln::tree::Tree;

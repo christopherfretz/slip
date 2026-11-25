@@ -19,7 +19,7 @@ pub mod work_root;
 /// The directory under which a test makes the trees a front end, `slip`
 /// or `slip_apply` reads: under `$SLIP_TEST_ROOT` when set, else
 /// `CARGO_TARGET_TMPDIR` (`spec/harness.md` §11.5).
-pub fn work_root() -> std::path::PathBuf {
+pub fn work_root() -> PathBuf {
     work_root::work_root_or(env!("CARGO_TARGET_TMPDIR"))
 }
 
