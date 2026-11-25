@@ -1756,3 +1756,23 @@ fn s8_help_lists_reduce_and_apply() {
         assert!(out.stdout.contains(line), "{line}");
     }
 }
+
+/// §7.2 (`spec/landed/edits/WP-147.md`, row L2): `--relative-to` given in
+/// another case than on disk names the same directory: the patch is
+/// written, its names relative to it. Before WP-147 the directory's real path
+/// kept the spelling asked (`<root>/SRC`), no overlay file was inside it
+/// by bytes, and `apply` exited 2 ("not inside `--relative-to`").
+#[test]
+fn s7_2_relative_to_in_another_case() {
+    let (fx, set, overlay) = agreed("relative-case", Fx::rename);
+    if skip_unless_case_insensitive(&fx, "s7_2_relative_to_in_another_case") {
+        return;
+    }
+    let r = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    let patch = fx.root.join("out.patch");
+    let other = fx.root.join("SRC");
+    let out = apply_patch(&fx, &r, &patch, &["--relative-to", other.to_str().unwrap()]);
+    out.expect(0);
+    let text = fs::read_to_string(&patch).unwrap();
+    assert!(text.starts_with("--- a.cc\n+++ a.cc\n"), "{text}");
+}

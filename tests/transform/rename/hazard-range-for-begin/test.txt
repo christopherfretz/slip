@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R17. A member `begin` that a range-based `for` reaches without a token: rename claims nothing there, the post-image does not parse. Not verified.
+spec: pitfalls §3
+spec: edits §9.3
+run: rename --from a::C::begin --to first
+state: not_verified

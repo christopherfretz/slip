@@ -1,0 +1,4 @@
+# A function defined as a friend in a class, found by argument-dependent lookup, and declared again at namespace scope.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

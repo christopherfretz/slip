@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R04. The new name is a customisation point that a dependency's template calls unqualified: the instantiation now finds `a::g` by argument-dependent lookup instead of the dependency's fallback. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

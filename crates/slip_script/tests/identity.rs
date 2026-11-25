@@ -171,3 +171,33 @@ fn s2_2_the_encoding_is_pinned() {
 }
 
 const PINNED: &str = "744e71c0b72f57e6e4fda365d19fa72faf7e7523c9e7a4af7c4020dfa45e736f";
+
+// §2.2 and `spec/edits.md` §2.1 (WP-147, S1): a file the unit read is
+// named by its spelling on disk, whatever case the `#include` wrote it in
+// (on a volume that finds it so), and the id is the formula's over that
+// name. Every spelling of an include is in the bytes or the command line
+// the id hashes, so this is what makes the id one per file read.
+#[test]
+fn s2_2_a_file_read_is_named_by_its_spelling_on_disk() {
+    let dir = scratch("spelled");
+    std::fs::create_dir_all(dir.join("inc")).unwrap();
+    let part = dir.join("inc/part.h");
+    std::fs::write(&part, "constexpr int part = 1;\n").unwrap();
+    let asked = dir.join("INC/Part.h");
+    if !asked.exists() {
+        eprintln!("skipped: {} is on a volume where `INC/Part.h` names no file", dir.display());
+        return;
+    }
+    let f = file(
+        "spelled",
+        &with_meta(&format!("#include \"{}\"\nconsteval void transform() {{}}", asked.display())),
+    );
+    let (id, files, triple, predefines) = loaded(&f, &[]);
+    let names: Vec<String> =
+        files.iter().map(|f| String::from_utf8_lossy(&f.path).into_owned()).collect();
+    assert!(names.contains(&part.display().to_string()), "{names:?}");
+    assert!(!names.contains(&asked.display().to_string()), "{names:?}");
+    let line =
+        TransformCommand::new(resource().join("include"), &[], f.clone()).unwrap().command_line();
+    assert_eq!(id, transform_id(API_LEVEL, &host_version(), &line, &triple, &predefines, &files));
+}

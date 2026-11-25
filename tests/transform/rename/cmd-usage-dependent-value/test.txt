@@ -1,0 +1,4 @@
+# `--dependent` with a value that is not `offer`, `refuse` or `leave`: usage.
+spec: edits §10.1
+run: rename --from a::f --to g --dependent sometimes
+state: usage

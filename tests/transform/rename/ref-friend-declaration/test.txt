@@ -1,0 +1,4 @@
+# A friend declaration of a namespace function, the function using the friendship (R11's friend left would not parse).
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

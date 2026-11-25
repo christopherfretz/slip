@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R13, through using-directives: `c` nominates `a` and `b`; after the rename `g(1)` finds `a::g` and `b::g`, ambiguous, and the post-image does not parse. No scope the name enters declares `g`, so it is left to verification: not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

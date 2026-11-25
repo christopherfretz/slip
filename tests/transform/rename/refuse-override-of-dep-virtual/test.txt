@@ -1,0 +1,5 @@
+# An override of a virtual function declared in `dep/`: the link makes the read-only base function a subject, `read_only`, refused.
+spec: edits §9.5
+spec: edits §9.2
+run: rename --from a::D::f --to g
+state: refused

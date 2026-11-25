@@ -974,12 +974,12 @@ slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]�
            [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
 slip map   (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            (--from <qualified name> --to <identifier> [--kind function|variable]
-            [--dependent offer|refuse]
+            [--dependent offer|refuse|leave]
             | --transform <file.cpp> [--transform-arg <option>]… [--indivisible])
            --owned <path>… [--readonly <path>]…
            [the store, selection, memory, timeout and worker options of `parse`]
 slip rename --from <qualified name> --to <identifier> [--kind function|variable]
-           [--dependent offer|refuse]
+           [--dependent offer|refuse|leave]
            (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            --owned <path>… [--readonly <path>]…
            [--write | --patch <file>] [--relative-to <dir>] [--report <file>]
@@ -1082,7 +1082,9 @@ observers of a plan: each `ok` shard carries the observer's `digests`.
 - `--db …`: the plan is built and published as by `plan`, with the same
   output, and then parsed. Exactly one of `--plan` and `--db` is given.
 - `--only` keeps the observers whose main file path contains the substring
-  (any of them, if repeated); `--limit` then keeps the first `n` in plan
+  (any of them, if repeated), bytes against bytes: the path is the real
+  path spelled on disk (`edits.md` §2.1, "One spelling"), so the filter
+  matches what `ls` shows, case and all (so does `units --match`); `--limit` then keeps the first `n` in plan
   order. If a non-empty plan is left with no observer, a warning is printed
   and the phase runs over nothing:
   `slip: warning: the selection keeps none of the plan's <n> observer(s); the phase runs over nothing`.

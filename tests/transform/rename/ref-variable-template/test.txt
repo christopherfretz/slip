@@ -1,0 +1,4 @@
+# A variable template, its partial specialisation (`v<T*>`) and uses with arguments.
+spec: edits §9.3
+run: rename --from a::v --to w --kind variable
+state: verified

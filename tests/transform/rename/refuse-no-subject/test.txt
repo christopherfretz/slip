@@ -1,0 +1,4 @@
+# No entity has the name: `no_subject`.
+spec: edits §5.2
+run: rename --from a::nothing --to g
+state: refused

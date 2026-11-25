@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R12. `__func__` as a value is symbolic in the digest: renaming the function verifies (R12 subject 1).
+spec: pitfalls §3
+spec: edits §9.3
+run: rename --from a::f --to longer
+state: verified

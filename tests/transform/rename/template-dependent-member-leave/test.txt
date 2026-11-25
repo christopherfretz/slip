@@ -1,0 +1,5 @@
+# `t.f()` under the default `leave`: `unresolved` (residue `dependent`); the instantiation of the post-image does not parse. Not verified.
+spec: edits §9.4
+spec: edits §8.4
+run: rename --from a::S::f --to g
+state: not_verified

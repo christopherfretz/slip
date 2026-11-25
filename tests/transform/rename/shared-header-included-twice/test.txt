@@ -1,0 +1,5 @@
+# A header with no guard included twice by one file, once through a second spelling (`./h.h`): one observer derives each claim twice (two votes), one edit.
+spec: edits §4.3
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

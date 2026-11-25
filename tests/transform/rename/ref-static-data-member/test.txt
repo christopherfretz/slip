@@ -1,0 +1,4 @@
+# A static data member: its declaration, its out-of-line definition, qualified and member-access uses.
+spec: edits §9.3
+run: rename --from a::C::count --to total --kind variable
+state: verified

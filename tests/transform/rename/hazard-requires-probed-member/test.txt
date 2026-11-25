@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R07 subject 2: the probed member itself is renamed, and `if constexpr (requires { t.f(); })` would take its other branch. The probe's name is dependent and left (`unresolved`); not verified.
+spec: pitfalls §3
+spec: edits §9.4
+run: rename --from a::S::f --to g
+state: not_verified

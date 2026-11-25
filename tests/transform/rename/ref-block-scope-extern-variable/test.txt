@@ -1,0 +1,5 @@
+# A variable: its definition, a block-scope `extern` declaration and uses.
+spec: edits §9.3
+spec: edits §9.1
+run: rename --from a::v --to w
+state: verified

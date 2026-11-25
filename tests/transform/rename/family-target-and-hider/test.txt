@@ -1,0 +1,5 @@
+# edits §9.2's example: `struct A { void f(int); }; struct B : A { virtual void f(); }; struct D : B { void f() override; using B::f; };` from `n::B::f`: target and hider renamed together, the using-declaration rewritten to `using B::g;`. Verifies.
+spec: edits §9.2
+run: rename --from n::B::f --to g
+state: verified
+oracle: no-back edits §9.5: the inverse rename is refused name_taken, since a class derived from (or a base of) the class of the renamed member declares the old name; the rule is not symmetric

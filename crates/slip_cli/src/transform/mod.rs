@@ -1,17 +1,24 @@
-//! The stage commands of a transform that need no parse, `reduce` and
-//! `apply` (`spec/exec.md` §8.12, §8.14; `spec/edits.md` §10.2, §10.5),
+//! The commands of a transform (`spec/exec.md` §8.11 to §8.14;
+//! `spec/edits.md` §10): `map`, `reduce`, `check`, `apply` and `rename`,
 //! and the glue between the Kiln-free crates (`slip_reduce`, `slip_apply`,
-//! `slip_verify::conclude`) and the store. Work package WP-075; what the
-//! specs leave open and this module decides is
-//! `spec/landed/edits/WP-075.md`.
+//! `slip_verify::conclude`) and the store. Work packages WP-075 (`reduce`,
+//! `apply`) and WP-076 (`map`, `check`, `rename`); what the specs leave
+//! open and these modules decide is `spec/landed/edits/WP-075.md` and
+//! `spec/landed/edits/WP-076.md`.
 //!
 //! The commands ask, they do not decide: whether a result may be written
 //! is `slip_verify::conclude::permits`'s answer, and the ownership a write
 //! checks is the request's, found through the result.
 
 pub mod apply;
+pub mod check;
 pub mod lines;
+pub mod map;
 pub mod reduce;
+pub mod rename;
+pub mod report;
+pub mod residue;
+pub mod run_record;
 pub mod store;
 
 use std::fmt;

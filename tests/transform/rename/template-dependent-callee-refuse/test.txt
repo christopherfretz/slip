@@ -1,0 +1,4 @@
+# The same under `--dependent refuse`: `refuse(instantiated)`, refused.
+spec: edits §9.4
+run: rename --from a::f --to g --dependent refuse
+state: refused

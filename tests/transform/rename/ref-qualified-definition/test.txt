@@ -1,0 +1,5 @@
+# A declaration in a header, the definition with a qualified declarator-id (only the last name changes), a qualified and an unqualified call.
+spec: edits §9.3
+spec: edits §9.1
+run: rename --from a::f --to g
+state: verified

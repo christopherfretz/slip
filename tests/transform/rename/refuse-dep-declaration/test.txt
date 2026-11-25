@@ -1,0 +1,5 @@
+# The function is declared in a read-only file under `dep/`: `read_only`, the run is refused (`subject_read_only`) and nothing is written.
+spec: edits §9.5
+spec: edits §5.2
+run: rename --from a::f --to g
+state: refused

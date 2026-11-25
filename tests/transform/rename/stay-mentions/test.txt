@@ -1,0 +1,6 @@
+# The name in comments and string and character literals is no reference: not edited, listed as mentions, which never change the state.
+spec: edits §4.2
+spec: edits §9.3
+spec: edits §8.4
+run: rename --from a::f --to g
+state: verified

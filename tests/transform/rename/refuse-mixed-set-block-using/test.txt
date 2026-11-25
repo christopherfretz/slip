@@ -1,0 +1,5 @@
+# A block-scope using-declaration (no key, no follower) names both the subject and a function that is not one: `refuse(mixed_set)`.
+spec: edits §9.2
+spec: edits §5.2
+run: rename --from a::f --to g
+state: refused

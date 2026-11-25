@@ -1,0 +1,5 @@
+# A file that only mentions the name, in a comment, and that no observer reads: a mention, never residue; the state stays `verified`.
+spec: edits §8.4
+spec: edits §8.5
+run: rename --from a::f --to g
+state: verified

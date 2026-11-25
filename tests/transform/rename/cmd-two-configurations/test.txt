@@ -1,0 +1,5 @@
+# A database with two configurations of one file: the function exists in one (`-DHAVE_F`) and is absent from the other (a skipped group). The edits come from the first; the second compiles the same bytes as before.
+spec: edits §10.1
+spec: edits §5.4
+run: rename --from a::f --to g
+state: verified

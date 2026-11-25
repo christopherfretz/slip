@@ -1,0 +1,6 @@
+# A macro named like the old name, in a file that does not see the function: its definition and its use are no references; the definition's name is residue `not_compiled` (edits §8.4: a macro definition), so the run is verified with residue and writes under `allow: residue`. A macro `g` beside it gives the inverse rename (the back oracle) residue of its own.
+spec: edits §4.2
+spec: edits §8.4
+run: rename --from a::f --to g
+state: verified_with_residue
+allow: residue

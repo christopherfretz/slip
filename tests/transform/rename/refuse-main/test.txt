@@ -1,0 +1,4 @@
+# `main` is `unsupported`.
+spec: edits §9.5
+run: rename --from main --to start
+state: refused

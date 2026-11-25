@@ -1,0 +1,4 @@
+# An enumerator of a scoped enumeration named like the old name is kept.
+spec: edits §4.2
+run: rename --from a::v --to w --kind variable
+state: verified

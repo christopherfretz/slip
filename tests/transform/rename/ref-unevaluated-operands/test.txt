@@ -1,0 +1,4 @@
+# The name in unevaluated operands: `decltype`, `sizeof`, `noexcept` (the operand and a noexcept-specifier), `alignof` of its type.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

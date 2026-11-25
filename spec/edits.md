@@ -81,21 +81,99 @@ built (§10.1); an entry that does not exist is an `Input` error.
 **One spelling.** Ownership compares bytes, and so does every path a
 record names; but some volumes find a name in any case (or any Unicode
 normalisation), and the real path such a volume gives keeps the spelling
-it was asked for. So apply touches a file only under the one spelling
-its directories have: before any ownership decision, every component
-of the path, from `/` down, must equal byte for byte a name its
-directory lists (`read_dir`). A component that does not, where a listed
-name differs from it only in case or the path finds something all the
-same, is refused (`not_canonical`, naming the path given and, when a
-listed name differs only in case, the spelling on disk), and nothing is
-touched. Otherwise there is nothing at the path, and the checks that
-follow find it missing. Without this, `src/Vendor/x.h` would pass for a
+it was asked for. So a file has **one spelling**: the bytes its
+directories list (`read_dir`), component by component from `/` down.
+Every place a path enters Slip gives it that spelling, through one
+function (`slip_spelling`, `spec/landed/edits/WP-147.md`): the compile
+database's main files and the database itself (`cdb.md` §5, §7), every
+input of a parse (`model.md` §8.4) and every file a transform unit read
+(`api.md` §2.2), and `--owned`, `--readonly`, `--relative-to`. The
+real path (`canonicalize`) is walked:
+
+- a directory need not be listed where it is seen not to fold: a
+  component whose every byte is ASCII and which has an ASCII letter finds,
+  with the case of every ASCII letter swapped, nothing or another file
+  (`lstat`, device and inode), in a directory whose lookups are trusted.
+  A directory is trusted when the mount that holds it (in
+  `/proc/self/mountinfo`, the line whose mount point is the longest one at
+  or above the directory) names the directory's device (`st_dev`, as
+  `major:minor`) and is of one of the types `ext2`, `ext3`, `ext4`, `xfs`,
+  `btrfs`, `tmpfs`, `f2fs` (local kernel file systems: a lookup's answer
+  is the directory's, every time), and every other line of that device is
+  of one of them too. The device alone decides nothing: a file system may
+  report a device of its own choosing (this workspace's FUSE mount reports
+  0:45 where its line says 0:47), and a device no line names, or a
+  directory whose holder names another device, is not trusted. `overlay` is not (its answers are its layers', which mountinfo
+  does not show cheaply); nor is FUSE (a host mount was seen to answer a
+  lookup in another case one time and not the next), NFS, CIFS, 9p or
+  virtiofs. Adding a type later is safe; removing one is not. Folding is
+  decided per directory, on the directory's own device (ext4, f2fs and
+  tmpfs fold per directory), never per mount;
+- everywhere else the directory is listed, once per process (once per
+  call in apply), and a component passes only when it is, byte for byte, a
+  listed name. A component that is not is the listed name that is the
+  same file (`lstat`, device and inode), found among the names equal to it
+  but for ASCII case, then the non-ASCII names; if neither has it, the
+  directory is listed again (once per walk: a file made since the
+  listing is a name of the new one), and only then are the rest of the
+  names tried, over the fresh listing; a component
+  with a non-ASCII byte, or with no ASCII letter in a directory not yet
+  decided, always lists its directory (a casefolding directory finds a
+  stored `1\u{200B}3` as `13`; it compares a name that is not UTF-8 by its
+  bytes, so such a probe proves nothing). A lookup that finds nothing
+  never passes a component: the path is **missing**.
+- Without `/proc/self/mountinfo` (not Linux) every directory is listed. A
+  directory that must be listed and cannot be (search permission without
+  read) is an `Input` error, status 3 (for the compile database's main
+  files, `cdb.md` §5: the entry is excluded, `missing_file`); on a
+  trusted case-sensitive device it is probed, not listed. A listing that
+  failed is not kept: the next question lists again.
+- **The tree does not change during a run** (a stated limit). The walk
+  keeps what it learnt for its life (once per process; once per call in
+  apply): on a volume that folds, a file or directory renamed in case
+  only, or removed and made again in another case, after the walk passed
+  it keeps its old spelling in that process (the old spelling still finds
+  it, so nothing tells the walk); on one that does not fold the new name
+  is found again (a probe, or a listing made again). A long-lived worker
+  then names the inputs of its later shards, and the edits of their
+  units, by the old spelling, and those shards' ids differ from a fresh
+  process's. Nothing before apply refuses it; apply walks afresh and
+  refuses such an edit (`not_canonical`, naming the new spelling), so the
+  change fails closed at apply.
+
+Apply checks rather than gives: before any ownership decision a path must
+be its own spelling. A path that is not is refused (`not_canonical`,
+naming the path given and the spelling on disk when one listed name of
+each directory is the file it finds), a path that finds nothing is refused
+`stale_file` (apply replaces only files that are there; on a volume that
+answers lookups inconsistently "nothing" is the answer that would pass a
+read-only file), and nothing is touched. `--write` (§7.3 step 1),
+`--patch` (§7.2) and `--recover` check it (`--recover` reports a path
+that finds nothing itself, without looking it up again: restoring
+creates nothing there). Without this, `src/Vendor/x.h` would pass for a
 file of `src/` that a `readonly` entry `src/vendor` carves out, and one
-file could be named twice in one overlay. `--write` (§7.3 step 1),
-`--patch` (§7.2) and `--recover` check it. That reduce and the front
-end give a file one spelling from the start is work package WP-147;
-until it lands, reduce accepts an edit set naming such a path, and
-apply refuses it.
+file could be named twice in one overlay.
+
+Where a request's ownership or a declaration's `files` are read for a
+run, every entry must exist and be its own spelling (`Input`, status 3,
+naming the entry and its spelling on disk): the command line gives them
+that spelling, so one that is not was written by hand or the volume
+changed, and an entry in another case than the paths covers none of
+them (a `readonly` one would protect nothing). Apply checks it, with its
+own walk, before any path is checked against the ownership: `--write`,
+`--patch` and `--recover`, every entry, owned and read-only, of the
+ownership apply decides by (the request's; for `--recover`, the request
+of the edit set of the overlay the journal names). The worker, the
+verify job's read of a declaration and the map phase's read of a
+request do not check it yet (`spec/landed/edits/WP-147.md`, the
+follow-up); apply is the last check before a write, and holds.
+
+Two hard links are two names by design: ownership is by path, and a hard
+link of a read-only file under an owned directory is owned, as a copy
+would be. A symbolic link is resolved by `canonicalize`. A volume that
+numbers one file twice under two spellings (CIFS with `noserverino`, some
+FUSE file systems) is not supported: the front end then has two files
+where there is one, as clang does.
 
 This is the ownership `api.md` §6.6 rule 6 cites: `is_editable(r)` is
 true exactly when `r` is not null and its file is owned.
@@ -1279,11 +1357,9 @@ whatever spelling the file is reached; every other read goes to the file
 system. An overlay's paths are absolute only: a relative one is refused
 (it would resolve against the process's directory, not the command's).
 An entry is matched to the file a unit reads by the file's identity, not
-by its path text, and a shard records an input under the spelling the
-unit reached it by (on a case-insensitive volume, `#include "h.h"`
-reaching the entry `…/H.h`); so a consumer never matches an input to an
-entry by path, and asks the parse which of its files were overlaid
-(`slip_kiln::Unit::overlaid`). The post-image has the pre-image's paths,
+by its path text; a consumer asks the parse which of its files were
+overlaid (`slip_kiln::Unit::overlaid`) rather than matching an input to
+an entry by path. Both are spelled as on disk (§2.1, "One spelling"). The post-image has the pre-image's paths,
 so a subject path (`digest.md` §11) is the file's real path in both
 images. The verify job
 through an overlay is `verify.md` §5.1, "The overlay form".
@@ -1310,7 +1386,8 @@ overlay and the pre-image bytes:
 - A patch is something the user applies, so it never carries what
   `--write` would refuse by path: before anything is written, every
   file the patch would hold must be spelled as on disk and owned (§2.1,
-  `not_canonical`, `not_owned`, §7.3 step 1), and its bytes must be the
+  `not_canonical`, `stale_file` for a path that finds nothing,
+  `not_owned`, §7.3 step 1), and its bytes must be the
   `pre` image (`stale_file`). A refusal writes no patch (§10.5:
   status 1).
 
@@ -1341,7 +1418,8 @@ The **staged name** of an overlay file is, in the file's own directory,
    file with one hard link, its owner's write bit is set, its directory is
    writable, nothing has its staged name, and its bytes have the `pre`
    size and digest. First, for every file, its spelling (§2.1, "One
-   spelling"), then its ownership, then the rest. Any failure refuses the
+   spelling": a path that finds nothing is `stale_file` here), then its
+   ownership, then the rest. Any failure refuses the
    write (`not_canonical`, `not_owned`, `not_regular`, `hard_linked`,
    `read_only`, `not_writable`, `staged_exists`, `stale_file`) and
    nothing is touched. A store with an
@@ -1566,8 +1644,18 @@ whether that observer has an entity a rule renames. With no rules, an
 observer that read no overlay file is `unchanged` and gets no job
 (`verify.md` §5.5).
 
-An observer **read** an overlay file if the file's path is in the
-`inputs` of its map shard.
+An observer **read** an overlay file if some path in the `inputs` of its
+map shard is the file: the overlay's path itself, or else a path that
+is the same file by identity (device and inode, links followed: a hard
+link, another spelling on a case-insensitive volume), as §7.1 matches
+an entry to the file a unit reads. The coordinator looks each distinct
+path up once a run. An input it cannot look up, or an overlay file it
+cannot, is taken as read: the observer gets a job, which reads its
+files itself. The trusted base does not take the coordinator's choice
+for `unchanged`: it is given the identities found, by path, and refuses
+`unchanged` (the observer is `failed`) when one of the observer's inputs
+or one of the overlay's files has none, or when an input has the
+identity of an overlay file.
 
 ("Open questions": a trusted filter of keys in the map shard would let
 most observers that read no overlay file skip the job.)
@@ -2367,7 +2455,9 @@ exactly one file of its kind in the store, as for `--plan` (`exec.md`
      sets the request's flag. The budgets are the defaults of `api.md`
      §2.5.
    - `--dependent offer|refuse|leave` (a rename; default `leave`) sets the
-     request's `dependent` (§3, §9.4).
+     request's `dependent` (§3, §9.4). `map` and `rename` accept it; with
+     `--transform` it is a usage error, and `reduce`, `check` and `apply`
+     refuse it as an option not theirs.
    - `--owned` and `--readonly` are made real paths.
 3. Takes a new round (§8) and runs the phase of `exec.md` §5 with jobs
    that carry the request's id (`Job.transform`).
@@ -2390,7 +2480,14 @@ The whole run of a script as one command is M3's
 - `reduce` runs §5 over the map shards of a round, with the request the
   shards name, and publishes the edit set and the declared changes. It
   prints `edits <id>`, `state <state>`, and `declared <id>` if there is
-  one.
+  one. An edit set is always of a finished map phase, and this is
+  `reduce`'s promise: before it reads anything else, every observer the
+  round's map phase selected has a map shard of the round, `ok` or not
+  (§8.2). One with none, or with bytes that are not its shard (an
+  interrupted `map`: its job cancelled or never started), is an input
+  error naming its main file, the same as `check`'s, whatever
+  `--allow-unparsed` says; no edit set is written. `apply` cannot know
+  the round and does not check it again.
 - `check` takes an edit set, which need not be the one reduce made, builds
   the overlay, runs the verify phase (§8.2, §8.3), scans and concludes.
   `--declared` defaults to the declared changes of the edit set (§6.2),
@@ -2668,15 +2765,6 @@ and nothing under it.
   a run output to the section and back loses nothing.
 
 ## Open questions
-
-- **Case-insensitive volumes against `readonly` entries** (§2.1).
-  Ownership is decided on path bytes; on a case-insensitive volume
-  `/src/Gen` and `/src/gen` are one directory, so a `readonly` entry
-  spelled in another case than the overlay's real path does not carve
-  the file out. Real paths come from the front end's canonical spelling,
-  which makes this unlikely but not impossible; settling it needs the
-  volume's case rule (or a check that every ownership entry exists with
-  that exact spelling).
 
 - **What `api.md` lacks that a native producer has** (§4.8): a way to
   say `keep` (`api.md` §7.3 rule 7), to say `refuse` with a

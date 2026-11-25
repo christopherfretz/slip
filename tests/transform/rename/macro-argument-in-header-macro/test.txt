@@ -1,0 +1,5 @@
+# A macro defined in a header, invoked in a source file with the name as its argument, and an argument nested in two invocations.
+spec: edits §2.2
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

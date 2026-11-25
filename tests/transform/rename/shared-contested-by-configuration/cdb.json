@@ -1,0 +1,25 @@
+[
+ {
+  "directory": "@ROOT@",
+  "file": "@ROOT@/x.cpp",
+  "arguments": [
+   "kiln",
+   "-std=c++20",
+   "-I@ROOT@",
+   "-c",
+   "@ROOT@/x.cpp"
+  ]
+ },
+ {
+  "directory": "@ROOT@",
+  "file": "@ROOT@/y.cpp",
+  "arguments": [
+   "kiln",
+   "-std=c++20",
+   "-DALT",
+   "-I@ROOT@",
+   "-c",
+   "@ROOT@/y.cpp"
+  ]
+ }
+]

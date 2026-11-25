@@ -1,0 +1,4 @@
+# The function as a template argument, with and without `&`.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

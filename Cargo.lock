@@ -188,6 +188,7 @@ name = "slip_apply"
 version = "0.0.0"
 dependencies = [
  "slip_model",
+ "slip_spelling",
 ]
 
 [[package]]
@@ -195,6 +196,7 @@ name = "slip_cdb"
 version = "0.0.0"
 dependencies = [
  "slip_model",
+ "slip_spelling",
 ]
 
 [[package]]
@@ -210,6 +212,7 @@ dependencies = [
  "slip_reduce",
  "slip_refactor",
  "slip_script",
+ "slip_spelling",
  "slip_verify",
 ]
 
@@ -245,6 +248,7 @@ dependencies = [
  "kiln_source",
  "slip_cdb",
  "slip_model",
+ "slip_spelling",
 ]
 
 [[package]]
@@ -277,7 +281,12 @@ dependencies = [
  "slip_kiln",
  "slip_model",
  "slip_script",
+ "slip_spelling",
 ]
+
+[[package]]
+name = "slip_spelling"
+version = "0.0.0"
 
 [[package]]
 name = "slip_verify"

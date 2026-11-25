@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R03: an override written without `override` is linked by the front end's record of overriding, not by its spelling, and renamed.
+spec: edits §9.2
+spec: pitfalls §3
+run: rename --from n::B::f --to g
+state: verified

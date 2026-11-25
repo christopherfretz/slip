@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R02. A member renamed to the name of a base-class member that the class uses unqualified: the class's bases declare the new name, `name_taken`, refused.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::D::f --to g
+state: refused

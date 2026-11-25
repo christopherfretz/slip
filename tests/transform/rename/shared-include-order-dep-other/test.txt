@@ -1,0 +1,5 @@
+# Two commands reach different files through one include line: the owned `inc/h.h` declares the subject, the read-only `dep/h.h` an unrelated `d::f`, which keeps its name. Only the owned files change.
+spec: edits §2.1
+spec: edits §4.2
+run: rename --from a::f --to g
+state: verified

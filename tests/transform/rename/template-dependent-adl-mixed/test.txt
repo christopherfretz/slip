@@ -1,0 +1,4 @@
+# The argument-dependent case that must not verify: `f(t)` in `call` binds the subject for `call<int>` and `b::f` for `call<b::S>`. Mixed over the instantiations: `refuse(mixed_instances)`, refused.
+spec: edits §9.4
+run: rename --from a::f --to g --dependent offer
+state: refused

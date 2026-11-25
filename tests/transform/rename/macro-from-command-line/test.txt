@@ -1,0 +1,6 @@
+# A name from `-D` on the command line is written in a buffer that is not a file (tier X): `refuse(not_a_file)`, refused.
+spec: edits §2.2
+spec: edits §2.3
+run: rename --from a::f --to g
+state: refused
+args: -DCALLF=a::f

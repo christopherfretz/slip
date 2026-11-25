@@ -131,7 +131,7 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
             // `mismatch` need it as well, `state` taking either as
             // `failed` without an `ok` one.)
             Some(Status::Ok | Status::Diagnosed | Status::Rejected) => {
-                map_status(&store, &plan_id, &o.id)?
+                map_status(&store, &plan_id, 0, &o.id)?
             }
             Some(Status::Failed) | None => None,
         };
@@ -207,13 +207,13 @@ fn print(
 
 /// What `verify` appends to the worker command of `parse` (§8.7): both
 /// always passed.
-fn worker_options(findings: u64, locate: u64) -> [OsString; 4] {
+pub(crate) fn worker_options(findings: u64, locate: u64) -> [OsString; 4] {
     ["--findings".into(), findings.to_string().into(), "--locate".into(), locate.to_string().into()]
 }
 
 /// The `shard` of each observer's last `Job` entry in the run record (the
 /// entries are in completion order; `None`: the last attempt wrote none).
-fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
+pub(crate) fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
     record.jobs.iter().map(|j| (j.observer, j.shard)).collect()
 }
 
@@ -222,7 +222,7 @@ fn last_shards(record: &RunRecord) -> HashMap<Digest, Option<Digest>> {
 /// content id is the `shard` of the observer's last entry in the run
 /// record. Anything else is no shard (`Report::add` with `None`: the
 /// observer is `failed`).
-fn this_runs_shard(
+pub(crate) fn this_runs_shard(
     store: &Store,
     plan: &Digest,
     round: u64,
@@ -245,26 +245,55 @@ fn ours(bytes: &[u8], expected: &Digest) -> Option<Shard> {
     }
 }
 
-/// The observer's map shard of round 0 as the run reads it: its status and
-/// content id, from one decode (`None`: absent; `MapShard::Unusable`: bytes
-/// that are not a valid shard of phase `map`, round 0 and this observer).
-/// The id is what a `verified` or `mismatch` verdict must name as its `pre`
-/// (`spec/verify.md` §9.3, WP-114).
-fn map_status(store: &Store, plan: &Digest, observer: &Digest) -> Result<Option<MapShard>> {
+/// What is at the address of an observer's map shard of a round.
+pub(crate) enum MapRead {
+    /// A valid shard of phase `map`, that round and the observer, and its
+    /// content id.
+    Shard(Box<Shard>, Digest),
+    /// Bytes that are not that.
+    Unusable,
+}
+
+/// The observer's map shard of `round` as read from the store, from one
+/// decode (`None`: absent). Shared by `slip verify` (round 0) and `slip check` (the
+/// transform's round, WP-076).
+pub(crate) fn read_map_shard(
+    store: &Store,
+    plan: &Digest,
+    round: u64,
+    observer: &Digest,
+) -> Result<Option<MapRead>> {
     let bytes = store
-        .read_shard(plan, Phase::Map, 0, observer)
+        .read_shard(plan, Phase::Map, round, observer)
         .map_err(|e| commands::store_failure(store.root(), &e))?;
     Ok(bytes.map(|b| match Shard::from_bytes_with_id(&b) {
-        Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == 0 => {
-            MapShard::Read { status: s.outcome.status, id }
+        Ok((s, id)) if s.observer == *observer && s.phase == Phase::Map && s.round == round => {
+            MapRead::Shard(Box::new(s), id)
         }
-        _ => MapShard::Unusable,
+        _ => MapRead::Unusable,
+    }))
+}
+
+/// The observer's map shard of `round` as the run reads it: its status and
+/// content id (`None`: absent; `MapShard::Unusable`: bytes that are not a
+/// valid shard of phase `map`, that round and this observer). The id is
+/// what a `verified` or `mismatch` verdict must name as its `pre`
+/// (`spec/verify.md` §9.3, WP-114).
+pub(crate) fn map_status(
+    store: &Store,
+    plan: &Digest,
+    round: u64,
+    observer: &Digest,
+) -> Result<Option<MapShard>> {
+    Ok(read_map_shard(store, plan, round, observer)?.map(|r| match r {
+        MapRead::Shard(s, id) => MapShard::Read { status: s.outcome.status, id },
+        MapRead::Unusable => MapShard::Unusable,
     }))
 }
 
 /// The JSON report, written to a file beside `path` and renamed over it
 /// (§8.7), so that a reader sees no report or a whole one.
-fn write_report(path: &Path, report: &json::Value) -> Result<()> {
+pub(crate) fn write_report(path: &Path, report: &json::Value) -> Result<()> {
     let failure = |e: &dyn std::fmt::Display| Failure::Input(format!("{}: {e}", path.display()));
     let mut text = json::write_pretty(report).map_err(|e| failure(&e))?;
     if !text.ends_with('\n') {
@@ -430,11 +459,11 @@ mod tests {
             bytes.outcome.status = Status::Ok;
             bytes.to_bytes()
         };
-        assert_eq!(map_status(&store, &plan, &a).unwrap(), None, "absent");
+        assert_eq!(map_status(&store, &plan, 0, &a).unwrap(), None, "absent");
         let ok = map(a, Phase::Map, 0);
         at(&a, &ok);
         let want = MapShard::Read { status: Status::Ok, id: content_id(&ok).unwrap() };
-        assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(want));
+        assert_eq!(map_status(&store, &plan, 0, &a).unwrap(), Some(want));
         for (wrong, why) in [
             (map(b, Phase::Map, 0), "another observer's"),
             (map(a, Phase::Verify, 0), "another phase's"),
@@ -442,7 +471,11 @@ mod tests {
             (b"not a shard".to_vec(), "not a shard"),
         ] {
             at(&a, &wrong);
-            assert_eq!(map_status(&store, &plan, &a).unwrap(), Some(MapShard::Unusable), "{why}");
+            assert_eq!(
+                map_status(&store, &plan, 0, &a).unwrap(),
+                Some(MapShard::Unusable),
+                "{why}"
+            );
         }
         drop(store);
         std::fs::remove_dir_all(&dir).unwrap();

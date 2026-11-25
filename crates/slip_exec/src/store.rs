@@ -546,6 +546,13 @@ impl Store {
         self.root().join("declared").join(format!("{id}.decl"))
     }
 
+    /// Every declared changes' id that starts with `hex_prefix`, ascending;
+    /// as [`Store::find_plan`] (`slip check --declared <id>`,
+    /// `spec/edits.md` §10).
+    pub fn find_declared(&self, hex_prefix: &str) -> Result<Vec<Digest>> {
+        find_ids(&self.root().join("declared"), "decl", hex_prefix)
+    }
+
     /// Publishes declared changes under their content id, which is
     /// returned. The bytes must be a valid `DECL` file (kind `DECL`, decoded
     /// and checked in full); anything else is `Invalid` and nothing is

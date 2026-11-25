@@ -1,0 +1,5 @@
+# Functions named like the target in another namespace, a nested namespace and a class of the target's namespace are no seeds and keep their names.
+spec: edits §4.2
+spec: edits §9.1
+run: rename --from a::f --to g
+state: verified

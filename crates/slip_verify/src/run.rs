@@ -437,6 +437,20 @@ struct OverlayRun {
     fold: Fold,
 }
 
+/// A file's identity on the file system: device and inode, links followed
+/// ([`Report::identities`]).
+pub type FileId = (u64, u64);
+
+/// What [`Report::identities`] was given, and the overlay's part of it.
+#[derive(Clone, Debug)]
+struct Identities {
+    ids: BTreeMap<Vec<u8>, FileId>,
+    /// The identities of the overlay's files.
+    overlaid: BTreeSet<FileId>,
+    /// The first overlay file with no identity in `ids`.
+    unknown: Option<Vec<u8>>,
+}
+
 /// The report of one run (§7.1), built one observer at a time.
 #[derive(Clone, Debug)]
 pub struct Report {
@@ -491,6 +505,9 @@ pub struct Report {
     all_good: bool,
     /// `--strict-names` (§7.1, WP-112): each note is a finding.
     strict_names: bool,
+    /// The file identities the caller found ([`Report::identities`]), and
+    /// the overlay's files' among them; `None` until given.
+    identities: Option<Identities>,
     /// The notes `names_changed` of the `verified` and `mismatch` shards,
     /// by key.
     names: BTreeMap<Digest, NameGroup>,
@@ -537,6 +554,7 @@ impl Report {
             all_good: true,
             strict_names: false,
             names: BTreeMap::new(),
+            identities: None,
         }
     }
 
@@ -579,6 +597,41 @@ impl Report {
     pub fn pre_round(&mut self, pre: u64) {
         assert!(self.selected == 0, "Report::pre_round after Report::add");
         self.pre = pre;
+    }
+
+    /// Before the first `add`, after [`Report::overlay`]: the identity of
+    /// files by path, as the caller found them on the file system (device
+    /// and inode, links followed; `spec/edits.md` §8.2). The report does
+    /// no I/O: [`Report::add_unchanged_at`] takes an observer to have read
+    /// an overlay file when one of its inputs has the identity of one of
+    /// the overlay's files, and fails closed on an omission: an overlay
+    /// file or an input with no identity here makes the observer `Failed`,
+    /// as does a run in which this was never called. What the report
+    /// cannot check is that an identity given is the file's: a caller that
+    /// gives an input a wrong identity, different from the overlay file it
+    /// is, can make an observer that read that file `Unchanged`.
+    ///
+    /// # Panics
+    ///
+    /// If called after an `add`, before `overlay`, or twice: each is a
+    /// defect of the caller.
+    pub fn identities(&mut self, ids: BTreeMap<Vec<u8>, FileId>) {
+        assert!(self.selected == 0, "Report::identities after Report::add");
+        assert!(self.identities.is_none(), "Report::identities called twice");
+        let o = self.overlay.as_ref().expect("Report::identities before Report::overlay");
+        let mut overlaid = BTreeSet::new();
+        let mut unknown = None;
+        for f in &o.overlay.files {
+            match ids.get(&f.path) {
+                Some(id) => {
+                    overlaid.insert(*id);
+                }
+                None => {
+                    unknown.get_or_insert_with(|| f.path.clone());
+                }
+            }
+        }
+        self.identities = Some(Identities { ids, overlaid, unknown });
     }
 
     /// Whether the run has rules (`Declared.rules` not empty).
@@ -845,6 +898,127 @@ impl Report {
                 },
             );
         }
+    }
+
+    /// An observer that got no verify job because it is **unchanged**
+    /// (§5.5, `spec/edits.md` §8.2; `spec/landed/edits/WP-076.md` §2): one
+    /// call per such observer, as [`Report::add_at`] for the others, with
+    /// `map` its map shard of the run's pre round. The report decides
+    /// "unchanged" itself, from that shard, and does not take the caller's
+    /// word for it: the observer is `Unchanged` only if the run has an
+    /// overlay ([`Report::overlay`]) and no rule, and `map` is this
+    /// observer's shard of phase `map` and round `pre_round`, `ok`, with
+    /// `inputs`, none of which is a file of the overlay, by path or by
+    /// the identities given ([`Report::identities`]: an input or an
+    /// overlay file with none, or no identities given, is not
+    /// unchanged). Anything else makes it `Failed`, with the reason as its
+    /// message.
+    ///
+    /// # Panics
+    ///
+    /// As [`Report::add_at`].
+    pub fn add_unchanged_at(&mut self, position: u64, observer: &Digest, main: &[u8], map: &Shard) {
+        assert!(
+            position < self.header.plan_observers,
+            "Report::add_unchanged_at: position {position} is not in the plan of {}",
+            self.header.plan_observers
+        );
+        assert!(
+            !self.positions.contains(&position),
+            "Report::add_unchanged_at: position {position} added twice"
+        );
+        assert!(
+            !self.observers.contains(observer),
+            "Report::add_unchanged_at: an observer added twice"
+        );
+        self.positions.insert(position);
+        self.observers.insert(*observer);
+        self.selected += 1;
+        self.stale_flat = OnceCell::new();
+        self.outcomes = OnceCell::new();
+        let why = self.not_unchanged(observer, map);
+        let state = if why.is_none() { State::Unchanged } else { State::Failed };
+        self.states[state.index()] += 1;
+        self.all_good &= state == State::Unchanged;
+        if let Some(message) = why {
+            self.not_verified.insert(
+                position,
+                NotVerified {
+                    observer: *observer,
+                    main: main.to_vec(),
+                    state,
+                    message,
+                    findings: 0,
+                    indeterminate: 0,
+                    listed: 0,
+                },
+            );
+        }
+    }
+
+    /// Why an observer given to [`Report::add_unchanged_at`] is not
+    /// unchanged; `None` when it is.
+    fn not_unchanged(&self, observer: &Digest, map: &Shard) -> Option<String> {
+        let Some(o) = &self.overlay else {
+            return Some("the observer got no verify job in a run without an overlay".to_owned());
+        };
+        if self.has_rules() {
+            return Some("the observer got no verify job in a run with rules".to_owned());
+        }
+        if map.observer != *observer || map.phase != Phase::Map || map.round != self.pre {
+            return Some(format!(
+                "the observer got no verify job and its map shard is not its shard of phase map, \
+                 round {}",
+                self.pre
+            ));
+        }
+        if map.outcome.status != Status::Ok {
+            return Some("the observer got no verify job and its map shard is not ok".to_owned());
+        }
+        let Some(inputs) = &map.inputs else {
+            return Some(
+                "the observer got no verify job and its map shard has no inputs".to_owned(),
+            );
+        };
+        if let Some(read) = inputs.iter().find(|i| o.overlay.find(&i.path).is_some()) {
+            return Some(format!(
+                "the observer got no verify job and its map shard read the overlay's {}",
+                String::from_utf8_lossy(&read.path)
+            ));
+        }
+        // By identity (`spec/edits.md` §8.2): a file of the overlay may be
+        // read under another spelling (a hard link, a case-insensitive
+        // volume).
+        let Some(ids) = &self.identities else {
+            return Some(
+                "the observer got no verify job and the run gave no file identities".to_owned(),
+            );
+        };
+        if let Some(path) = &ids.unknown {
+            return Some(format!(
+                "the observer got no verify job and the overlay's {} has no identity",
+                String::from_utf8_lossy(path)
+            ));
+        }
+        for i in inputs {
+            match ids.ids.get(&i.path) {
+                None => {
+                    return Some(format!(
+                        "the observer got no verify job and its input {} has no identity",
+                        String::from_utf8_lossy(&i.path)
+                    ));
+                }
+                Some(id) if ids.overlaid.contains(id) => {
+                    return Some(format!(
+                        "the observer got no verify job and its map shard read an overlay file \
+                         as {}",
+                        String::from_utf8_lossy(&i.path)
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        None
     }
 
     /// The `spellings` and `rule_use` of an `ok` shard the state table

@@ -99,7 +99,8 @@ TransformId = H("slip.transform.v0",
                 the command line of §2.1 with <resource> and every path as given,
                 the target (§2.1 rule 3): its triple, the digest of the predefines,
                 for each file the unit read, in the order first read:
-                    its path as given, the digest of its content)
+                    its path as given (spelled on disk when it is a real
+                    path, edits.md §2.1), the digest of its content)
 ```
 
 `H` is the hash of `spec/model.md` §3, over the record (`spec/model.md`

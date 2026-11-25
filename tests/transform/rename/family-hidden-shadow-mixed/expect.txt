@@ -1,0 +1,19 @@
+plan <id>
+observers 1
+excluded not_a_compile 0
+excluded unsupported_language 0
+excluded unsupported_flag 0
+excluded missing_file 0
+excluded malformed_entry 0
+excluded unsupported_compiler 0
+transform <id>
+round 1
+map: selected 1, ok 1, not ok 0, failed runs 0
+edits <id>
+state refused
+edit 0 in 0 file(s); shared 0; most observers 0; nested 0
+kept 2; unresolved 0
+refused mixed_follower 1
+result <id>
+state refused
+refusal mixed_follower: <id> (1 observer(s), first a.cpp)
