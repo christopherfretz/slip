@@ -1,0 +1,136 @@
+//! `cargo xtask fscheck` (spec/harness.md §11.2) over a temporary
+//! directory.
+//!
+//! The rows run with few rounds and the output has its form. The status is
+//! 0 when every row relied on is clean: on a file system that passes.
+//! These tests cannot make a row fail through the file system (the
+//! workspace mount fails `link-unlink-create`, `link-rename-over` and
+//! perhaps `tmp-again-after-link` only sometimes, and a local file system
+//! never), so they plant a wrong read through the reader instead, and they
+//! assert nothing about the rows not relied on.
+
+mod common;
+
+use common::Fixture;
+use std::path::Path;
+use xtask::fscheck::{self, DEFAULT_ROUNDS, ROWS, Request};
+
+fn args(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| (*s).to_owned()).collect()
+}
+
+fn run(req: &Request, read: fscheck::Reader<'_>) -> (u8, Vec<String>) {
+    let mut lines = Vec::new();
+    let code = fscheck::run(req, read, &mut |l| lines.push(l.to_owned()));
+    (code, lines)
+}
+
+// §11.2: the command line.
+#[test]
+fn s11_2_parse() {
+    let r = fscheck::parse(&args(&["d"])).unwrap();
+    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 9));
+    let r = fscheck::parse(&args(&[
+        "--row",
+        "unique-tmp-link",
+        "d",
+        "--rounds",
+        "5",
+        "--row",
+        "link-read-both",
+    ]))
+    .unwrap();
+    assert_eq!(r.rounds, 5);
+    // In the order of the table, whatever the order of the options.
+    let names: Vec<&str> = r.rows.iter().map(|r| r.name).collect();
+    assert_eq!(names, ["link-read-both", "unique-tmp-link"]);
+    for bad in [
+        &[][..],
+        &["d", "e"],
+        &["d", "--rounds"],
+        &["d", "--rounds", "0"],
+        &["d", "--rounds", "+3"],
+        &["d", "--rounds", "1", "--rounds", "2"],
+        &["d", "--row", "nosuch"],
+        &["d", "--fast"],
+        &[""],
+    ] {
+        assert!(fscheck::parse(&args(bad)).is_err(), "{bad:?}");
+    }
+}
+
+// §11.2: every row runs, prints its line, and leaves nothing behind; a
+// file system on which every relied-on row is clean gives status 0.
+#[test]
+fn s11_2_rows_run() {
+    let f = Fixture::empty("fscheck-rows");
+    let req = Request { dir: f.root().to_owned(), rounds: 20, rows: ROWS.to_vec() };
+    let (code, lines) = run(&req, &|p| std::fs::read(p));
+    assert_eq!(lines[0], format!("fscheck: {}: 20 rounds per row", f.root().display()));
+    let rows: Vec<&String> = lines.iter().filter(|l| l.contains(" rounds 20 wrong ")).collect();
+    assert_eq!(rows.len(), ROWS.len(), "{lines:#?}");
+    for (line, row) in rows.iter().zip(ROWS) {
+        assert!(line.starts_with(row.name), "{line}");
+        let relied = if row.relied { "  relied on: " } else { "  not relied on: " };
+        assert!(line.contains(relied) && line.ends_with(row.what), "{line}");
+    }
+    // The relied-on rows are clean here (that is what the harness and the
+    // store need of a file system); the others are not asserted.
+    for row in ROWS.iter().filter(|r| r.relied) {
+        let line = rows.iter().find(|l| l.starts_with(row.name)).unwrap();
+        assert!(line.contains(" wrong 0 "), "{line}");
+    }
+    assert_eq!(code, 0, "{lines:#?}");
+    assert_eq!(lines.last().unwrap(), "fscheck: ok");
+    assert_eq!(std::fs::read_dir(f.root()).unwrap().count(), 0, "the rows' directories removed");
+}
+
+// §11.2: a wrong read of a relied-on row is counted, its first is shown,
+// and the status is 1; one of a row not relied on is counted and the
+// status stays 0.
+#[test]
+fn s11_2_a_wrong_read_fails_a_relied_row() {
+    let f = Fixture::empty("fscheck-plant");
+    // Every read of a tree name gives other bytes.
+    let planted = |p: &Path| -> std::io::Result<Vec<u8>> {
+        if p.parent().is_some_and(|d| d.ends_with("tree")) {
+            Ok(b"planted\n".to_vec())
+        } else {
+            std::fs::read(p)
+        }
+    };
+    let row = |name: &str| *ROWS.iter().find(|r| r.name == name).unwrap();
+    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("link-read-both")] };
+    let (code, lines) = run(&req, &planted);
+    assert_eq!(code, 1, "{lines:#?}");
+    assert!(lines[1].starts_with("link-read-both") && lines[1].contains(" wrong 6 "), "{lines:#?}");
+    assert!(
+        lines[2].starts_with("  first: ")
+            && lines[2].ends_with("read `planted`, not `pre 0 detail`")
+    );
+    assert_eq!(lines.last().unwrap(), "fscheck: FAILED (link-read-both)");
+
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 3,
+        rows: vec![row("link-unlink-create"), row("copy-unlink-create")],
+    };
+    let (code, lines) = run(&req, &planted);
+    assert_eq!(code, 1);
+    assert!(lines[1].contains(" wrong 3 ") && lines[1].contains("not relied on"), "{lines:#?}");
+    assert_eq!(lines.last().unwrap(), "fscheck: FAILED (copy-unlink-create)");
+
+    let req = Request { dir: f.root().to_owned(), rounds: 2, rows: vec![row("link-rename-over")] };
+    let (code, lines) = run(&req, &planted);
+    assert_eq!((code, lines.last().unwrap().as_str()), (0, "fscheck: ok"), "{lines:#?}");
+}
+
+// §11.2: a directory that does not exist is status 1.
+#[test]
+fn s11_2_no_directory() {
+    let f = Fixture::empty("fscheck-none");
+    let req = Request { dir: f.path("none"), rounds: 1, rows: ROWS.to_vec() };
+    let (code, lines) = run(&req, &|p| std::fs::read(p));
+    assert_eq!(code, 1);
+    assert!(lines[0].starts_with(&format!("fscheck: {}: ", f.path("none").display())), "{lines:?}");
+}

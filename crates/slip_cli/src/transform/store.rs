@@ -129,14 +129,19 @@ static JOURNAL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl slip_apply::JournalStore for StoreJournal<'_> {
     /// Atomic, durable and exclusive (`spec/landed/edits/WP-063.md` §6):
-    /// a temporary file in this process's scratch directory, written and
+    /// a temporary file in this process's scratch directory, named
+    /// `journal.<t>.<n>.tmp` with [`slip_exec::store::process_token`], written and
     /// synced, hard-linked to the journal's name (which fails with
     /// `AlreadyExists` if the name exists), the temporary removed and the
     /// store's directory synced.
     fn publish(&self, bytes: &[u8]) -> io::Result<()> {
         let scratch = self.0.scratch_dir().map_err(to_io)?;
         let n = JOURNAL_SEQ.fetch_add(1, Ordering::SeqCst);
-        let tmp = scratch.join(format!("journal.{n}.tmp"));
+        // Never made again by a later process with this pid (whose scratch
+        // directory has the same name) while the journal, the temporary's
+        // old file, is alive (`spec/harness.md` §11).
+        let token = slip_exec::store::process_token();
+        let tmp = scratch.join(format!("journal.{token}.{n}.tmp"));
         let written = (|| {
             let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             f.write_all(bytes)?;
@@ -356,4 +361,45 @@ pub fn map_phase_finished(
 /// The path of `path` (bytes) for a message.
 pub(crate) fn lossy(path: &[u8]) -> String {
     String::from_utf8_lossy(path).into_owned()
+}
+
+/// `spec/landed/harness/WP-159.md` item 4, the journal's sequence.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slip_apply::JournalStore as _;
+    use slip_exec::store::Access;
+    use std::os::unix::fs::MetadataExt as _;
+
+    // The journal: a temporary in the scratch directory, linked to
+    // `write.journal`, unlinked. Beside the names an earlier process with
+    // this pid made there (`journal.<n>.tmp`), the publish succeeds and
+    // leaves them alone; the journal is then its file's one name, and the
+    // second publish is refused while it exists. Kills "a temporary name
+    // reused".
+    #[test]
+    fn the_journal_temporary_is_never_made_again() {
+        let d = std::env::temp_dir().join(format!("slip-cli-journal-unit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let store = Store::open(&d, Access::Exclusive).unwrap();
+        let scratch = store.scratch_dir().unwrap();
+        let next = JOURNAL_SEQ.load(Ordering::SeqCst);
+        for n in next..next + 8 {
+            fs::write(scratch.join(format!("journal.{n}.tmp")), "earlier\n").unwrap();
+        }
+        let j = StoreJournal(&store);
+        j.publish(b"journal one").unwrap();
+        assert_eq!(j.read().unwrap().as_deref(), Some(&b"journal one"[..]));
+        assert_eq!(fs::metadata(store.journal_path()).unwrap().nlink(), 1);
+        let err = j.publish(b"journal two").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(j.read().unwrap().as_deref(), Some(&b"journal one"[..]));
+        for n in next..next + 8 {
+            let p = scratch.join(format!("journal.{n}.tmp"));
+            assert_eq!(fs::read_to_string(&p).unwrap(), "earlier\n");
+        }
+        j.remove().unwrap();
+        drop(store);
+        let _ = fs::remove_dir_all(&d);
+    }
 }

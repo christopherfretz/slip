@@ -11,7 +11,7 @@
 //!   shards/<plan id>/<phase>.<round>/<observer id>.shard
 //!   runs/<plan id>/<phase>.<round>.<started_unix_ns>.run
 //!   logs/<plan id>/<phase>.<round>/<observer id>.<attempt>.log
-//!   tmp/<pid>.<n>.tmp                         files being written by process <pid>
+//!   tmp/<pid>.<t>.<n>.tmp                     files being written by process <pid>
 //!   tmp/<pid>.d/                              scratch directory of process <pid>
 //! ```
 //!
@@ -135,6 +135,29 @@ pub fn phase_name(phase: Phase) -> &'static str {
 /// Process-wide counter for the names of `tmp/` files.
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// The name of this process's `n`-th `tmp/` file, `<pid>.<t>.<n>.tmp`:
+/// `<t>` is [`process_token`], so that no later process with the same
+/// pid makes the name again (§2.1 "`tmp/` names"; on a file system that
+/// confuses the names of a hard-linked file, a name made again while
+/// another name of its old file is alive can make that name read as the
+/// new file, `spec/harness.md` §11).
+fn tmp_name(n: u64) -> String {
+    format!("{}.{}.{n}.tmp", std::process::id(), process_token())
+}
+
+/// This process's token: the time of its first call, in nanoseconds since
+/// the Unix epoch (0 if the clock is before it). Two processes with one
+/// pid are never alive at once, and the later one's first call comes
+/// after the earlier one's.
+pub fn process_token() -> u64 {
+    static TOKEN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TOKEN.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+    })
+}
+
 /// What a `Store` and its signal cleanup share.
 #[derive(Debug)]
 struct Inner {
@@ -185,7 +208,7 @@ impl Inner {
     fn write_tmp(&self, bytes: &[u8]) -> Result<PathBuf> {
         let dir = self.tmp_dir();
         let n = TMP_SEQ.fetch_add(1, Ordering::SeqCst);
-        let path = dir.join(format!("{}.{n}.tmp", std::process::id()));
+        let path = dir.join(tmp_name(n));
         {
             // Created under the lock, so a concurrent `clean` either sees
             // the file or makes us refuse to create it.
@@ -383,7 +406,7 @@ impl Store {
             // Take over: move the stale lock aside, then check that what we
             // moved is the stale lock and not one a racing opener just made.
             let n = TMP_SEQ.fetch_add(1, Ordering::SeqCst);
-            let aside = self.inner.tmp_dir().join(format!("{}.{n}.tmp", std::process::id()));
+            let aside = self.inner.tmp_dir().join(tmp_name(n));
             match fs::rename(&lock, &aside) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -1156,4 +1179,92 @@ fn initialise(root: &Path) -> Result<()> {
     let result = staging.publish(&root.join("VERSION"), VERSION_TEXT.as_bytes());
     staging.clean();
     result
+}
+
+/// The sequences of `spec/landed/harness/WP-159.md` item 4 that need this
+/// module's counter: a `tmp/` name is never one an earlier process with
+/// this pid could have made.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("slip-exec-store-unit-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    // spec/exec.md §2.1 "`tmp/` names": `<pid>.<t>.<n>.tmp`, the token the
+    // same for every name of the process, and the pid what cleaning reads.
+    #[test]
+    fn tmp_names_carry_the_process_token() {
+        let pid = std::process::id();
+        let t = process_token();
+        assert!(t > 0);
+        assert_eq!(process_token(), t);
+        assert_eq!(tmp_name(7), format!("{pid}.{t}.7.tmp"));
+        assert_eq!(pid_prefix(&tmp_name(7)), Some(pid));
+        assert_ne!(tmp_name(7), format!("{pid}.7.tmp"));
+    }
+
+    // spec/exec.md §2.1: what an earlier process with this pid left in
+    // `tmp/` under the names it made (`<pid>.<n>.tmp` for the counters
+    // this process is about to use) is not made again: the publishes
+    // and the lock succeed beside it, and leave it as it was. Kills "a
+    // temporary name reused".
+    #[test]
+    fn an_earlier_process_names_are_not_made_again() {
+        let d = scratch("earlier");
+        let store = Store::open(&d, Access::Shared).unwrap();
+        let pid = std::process::id();
+        let next = TMP_SEQ.load(Ordering::SeqCst);
+        let old: Vec<PathBuf> = (next..next + 64)
+            .flat_map(|n| {
+                [
+                    format!("{pid}.{n}.tmp"),
+                    tmp_name(n).replace(&format!(".{}", process_token()), ".1"),
+                ]
+            })
+            .map(|name| d.join("tmp").join(name))
+            .collect();
+        for p in &old {
+            fs::write(p, "earlier\n").unwrap();
+        }
+        let blob = store.publish_blob(b"now\n").unwrap();
+        assert_eq!(store.read_blob(&blob).unwrap().as_deref(), Some(&b"now\n"[..]));
+        drop(store);
+        let store = Store::open(&d, Access::Exclusive);
+        // The planted names start with this live pid: stale cleaning
+        // keeps them, and the lock was taken beside them.
+        let store = store.unwrap();
+        assert_eq!(fs::read_to_string(d.join("lock")).unwrap(), format!("{pid}\n"));
+        for p in &old {
+            assert_eq!(fs::read_to_string(p).unwrap(), "earlier\n", "{}", p.display());
+        }
+        drop(store);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    // spec/exec.md §2.1 "The lock": written under `tmp/`, linked to `lock`,
+    // the temporary unlinked: `lock` is then the file's one name, and no
+    // `tmp/` entry of this process is left.
+    #[test]
+    fn the_lock_is_one_name_of_its_file() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = scratch("lock");
+        let store = Store::open(&d, Access::Exclusive).unwrap();
+        assert_eq!(fs::metadata(d.join("lock")).unwrap().nlink(), 1);
+        let mine = format!("{}.", std::process::id());
+        let left: Vec<String> = fs::read_dir(d.join("tmp"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(&mine))
+            .collect();
+        assert_eq!(left, Vec::<String>::new());
+        drop(store);
+        assert!(!d.join("lock").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
 }

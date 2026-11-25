@@ -3,9 +3,9 @@
 //! `measure` runs, in process and one observer at a time, what
 //! `spec/harness.md` §10.2 runs for one case of `bench/demo1/`: the plan of
 //! the corpus's compilation database, the map task over the selection, the
-//! case's tree (a tree of hard links to the corpus's roots, the case's
-//! `base` and then its `edit.txt` applied, each edited file written as a
-//! new file), its `declared.txt` resolved as `slip declare` resolves it
+//! case's tree (a tree of hard links to the corpus's roots in which the
+//! files the case's `base` and then its `edit.txt` write are new files,
+//! never linked: `spec/harness.md` §11.3), its `declared.txt` resolved as `slip declare` resolves it
 //! (`slip_cli::declare` over the records of the case's `observers`), and
 //! the verify task over the selection. It counts what the item asks:
 //! the units with a names entry, the notes, and the verdicts beside them.
@@ -96,17 +96,24 @@ fn demo(text: &str) -> Demo {
     d
 }
 
-/// A tree of hard links to `from` at `to` (directories made, files linked).
-/// A file that cannot be linked is an error: a copy of a corpus's root is
-/// not what this command should make by accident.
-fn link_tree(from: &Path, to: &Path) {
+/// A tree of hard links to `from` at `to` (directories made, files
+/// linked), in which every file `written` names (relative to `rel`) is
+/// written as a new file instead and never linked: a name that is a hard
+/// link is never replaced (`spec/harness.md` §11.3; on a mount that
+/// confuses the names of a linked file, replacing one made the pristine
+/// file read as the edited one). A file that cannot be linked is an
+/// error: a copy of a corpus's root is not what this command should make
+/// by accident.
+fn link_tree(from: &Path, to: &Path, rel: &Path, written: &BTreeMap<PathBuf, String>) {
     std::fs::create_dir_all(to).unwrap();
     for e in std::fs::read_dir(from).unwrap_or_else(|e| panic!("{}: {e}", from.display())) {
         let e = e.unwrap();
-        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let (src, dst, r) = (e.path(), to.join(e.file_name()), rel.join(e.file_name()));
         let t = e.file_type().unwrap();
         if t.is_dir() {
-            link_tree(&src, &dst);
+            link_tree(&src, &dst, &r, written);
+        } else if let Some(text) = written.get(&r) {
+            write_new(&dst, text);
         } else if t.is_file() {
             std::fs::hard_link(&src, &dst)
                 .unwrap_or_else(|e| panic!("cannot link {}: {e}", src.display()));
@@ -116,10 +123,22 @@ fn link_tree(from: &Path, to: &Path) {
     }
 }
 
-/// Applies `edit.txt` (`spec/harness.md` §10.1) to the tree `tree` (paths
-/// relative to the corpus's `src/`), each edited file written as a new
-/// file.
-fn apply_edit(tree: &Path, text: &str) {
+/// Creates `path`, which must not exist, with `text`.
+fn write_new(path: &Path, text: &str) {
+    use std::io::Write as _;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    f.write_all(text.as_bytes()).unwrap();
+}
+
+/// Applies `edit.txt` (`spec/harness.md` §10.1) to `written`, the new
+/// contents of the files the case writes (paths relative to the corpus's
+/// `src/`); a file not in it yet is read from `src`. Nothing is written.
+fn apply_edit(src: &Path, written: &mut BTreeMap<PathBuf, String>, text: &str) {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut file: Option<PathBuf> = None;
     let mut i = 0;
@@ -128,8 +147,12 @@ fn apply_edit(tree: &Path, text: &str) {
         let line = lines[i].trim_end_matches('\n');
         i += 1;
         if let Some(p) = line.strip_prefix("file ") {
-            file = Some(tree.join(p.trim()));
-            assert!(file.as_ref().unwrap().is_file(), "edit.txt {i}: no file {p}");
+            let rel = PathBuf::from(p.trim());
+            assert!(
+                written.contains_key(&rel) || src.join(&rel).is_file(),
+                "edit.txt {i}: no file {p}"
+            );
+            file = Some(rel);
         } else if line == "replace" || line == "replace all" {
             let all = line == "replace all";
             let (mut old, mut new) = (String::new(), String::new());
@@ -143,26 +166,28 @@ fn apply_edit(tree: &Path, text: &str) {
                 i += 1;
             }
             i += 1;
-            let path =
-                file.as_ref().unwrap_or_else(|| panic!("edit.txt {i}: replace without file"));
-            let text = std::fs::read_to_string(path).unwrap();
+            let rel = file.clone().unwrap_or_else(|| panic!("edit.txt {i}: replace without file"));
+            let text = written
+                .remove(&rel)
+                .unwrap_or_else(|| std::fs::read_to_string(src.join(&rel)).unwrap());
             let n = text.matches(&old).count();
             assert!(n == 1 || (all && n > 0), "edit.txt {i}: old text found {n} times");
             let out = if all { text.replace(&old, &new) } else { text.replacen(&old, &new, 1) };
-            std::fs::remove_file(path).unwrap();
-            std::fs::write(path, out).unwrap();
+            written.insert(rel, out);
             entries += 1;
         } else if let Some(p) = line.strip_prefix("create ") {
-            let path = tree.join(p.trim());
-            assert!(!path.exists(), "edit.txt {i}: {p} exists");
+            let rel = PathBuf::from(p.trim());
+            assert!(
+                !written.contains_key(&rel) && !src.join(&rel).exists(),
+                "edit.txt {i}: {p} exists"
+            );
             let mut body = String::new();
             while lines[i].trim_end_matches('\n') != "end" {
                 body.push_str(lines[i]);
                 i += 1;
             }
             i += 1;
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, body).unwrap();
+            written.insert(rel, body);
             entries += 1;
         } else {
             assert!(line.trim().is_empty(), "edit.txt {i}: `{line}`");
@@ -237,21 +262,32 @@ fn declare(text: &str, image: &Image, declarers: &[&Observer]) -> Declared {
     finish(&lines, resolved, &mapped).unwrap_or_else(|e| panic!("declared.txt: {e}"))
 }
 
-/// The case's tree at `tree` (hard links to the roots of `src`, its
-/// base's edits and then its own applied) and the image mapping each root
-/// to it.
+/// The case's tree at `tree` (hard links to the roots of `src`, with the
+/// files its base's edits and then its own write written as new files)
+/// and the image mapping each root to it.
 fn case_image(demo_dir: &Path, d: &Demo, case_dir: &Path, src: &Path, tree: &Path) -> Image {
-    for root in &d.roots {
-        link_tree(&src.join(root), &tree.join(root));
-    }
+    // The files the case writes are known before the tree is made.
     let mut chain = vec![case_dir.to_path_buf()];
     while let Ok(b) = std::fs::read_to_string(chain.last().unwrap().join("base")) {
         chain.push(demo_dir.join("cases").join(b.trim()));
     }
+    let mut written = BTreeMap::new();
     for dir in chain.iter().rev() {
         if let Ok(e) = std::fs::read_to_string(dir.join("edit.txt")) {
-            apply_edit(tree, &e);
+            apply_edit(src, &mut written, &e);
         }
+    }
+    for root in &d.roots {
+        link_tree(&src.join(root), &tree.join(root), Path::new(root), &written);
+    }
+    // Created files (in no directory of `src`), then every written file
+    // read back: a check, not the guarantee.
+    for (rel, text) in &written {
+        if !tree.join(rel).exists() {
+            write_new(&tree.join(rel), text);
+        }
+        let back = std::fs::read_to_string(tree.join(rel)).unwrap();
+        assert!(back == *text, "{}: read back other bytes than were written", rel.display());
     }
     let maps = d
         .roots

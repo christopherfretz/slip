@@ -1384,8 +1384,14 @@ mod disk {
 
     impl JournalStore for Store {
         fn publish(&self, bytes: &[u8]) -> io::Result<()> {
-            // Exclusive: a hard link fails if the journal exists.
-            let tmp = self.0.join("write.journal.tmp");
+            // Exclusive: a hard link fails if the journal exists. The
+            // temporary's name is never used again: made again while the
+            // journal (its old file) exists, the journal could read as the
+            // new temporary on a mount that confuses the names of a
+            // hard-linked file (spec/harness.md §11.2, `tmp-again-after-link`).
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let tmp = self.0.join(format!("write.journal.{}.{n}.tmp", std::process::id()));
             std::fs::write(&tmp, bytes)?;
             std::fs::File::open(&tmp)?.sync_all()?;
             let linked = std::fs::hard_link(&tmp, self.0.join("write.journal"));
@@ -1656,7 +1662,8 @@ fn s7_3_disk_refusals() {
     let tree = slip_apply::fs::DiskTree;
     let try_write = || write(&o, id, &disk::own(&r), &tree, &store, &store);
     let a = r.join("tree/a.cc");
-    // A hard link.
+    // A hard link: the refusal is by identity. It is removed before any
+    // write, so no name of a linked file is replaced (spec/harness.md §11.4).
     std::fs::hard_link(&a, r.join("tree/a2.cc")).unwrap();
     assert_eq!(try_write(), Err(WriteError::Refused(Refused::HardLinked(disk::bytes(&a)))));
     std::fs::remove_file(r.join("tree/a2.cc")).unwrap();

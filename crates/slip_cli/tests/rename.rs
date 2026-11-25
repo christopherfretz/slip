@@ -1166,6 +1166,7 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
     let h = "#pragma once\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
     t.write("src/h.h", h);
     if link {
+        // Identity; `rename` without `--write` replaces neither name (spec/harness.md §11.4).
         std::fs::hard_link(t.path("src/h.h"), t.path(&format!("src/{spelled}"))).unwrap();
     } else if !t.path(&format!("src/{spelled}")).exists() {
         return None;
@@ -1672,6 +1673,7 @@ fn s10_2_a_given_declaration_exempts_only_what_the_set_derives() {
 #[test]
 fn s8_4_a_file_is_scanned_once_by_identity() {
     let t = Tree::three_files("residue-identity");
+    // Identity; `rename` without `--write` replaces neither name (spec/harness.md §11.4).
     std::fs::hard_link(t.path("src/h.h"), t.path("src/hl.h")).unwrap();
     let plan = t.plan("store");
     let out = rename(&t, &plan, &[]);
