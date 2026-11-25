@@ -135,6 +135,10 @@ impl Files for Mem {
     fn read(&self, path: &[u8]) -> io::Result<Vec<u8>> {
         self.0.get(path).cloned().ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
     }
+
+    fn identity(&self, _: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
 }
 
 fn piece(p: &output::Piece) -> Piece {

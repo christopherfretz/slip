@@ -262,6 +262,10 @@ impl Tree for World {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let s = self.0.borrow();
         let there = s.files.contains_key(p) || is_dir_of(p, s.files.keys().map(Vec::as_slice));
@@ -1684,13 +1688,22 @@ mod disk {
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
         }
+        fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+            DiskTree.real_path(p)
+        }
         fn consistent(&self, dir: &[u8], dev: u64) -> bool {
             DiskTree.consistent(dir, dev)
         }
     }
 
     pub fn root(name: &str) -> PathBuf {
-        let d = common::work_root().join(format!("wp063-write-{name}-{}", std::process::id()));
+        root_in(&common::work_root(), name)
+    }
+
+    /// `root` under `base`: the folding root for a test about spelling on
+    /// a volume that folds (`common::folding_root`).
+    pub fn root_in(base: &Path, name: &str) -> PathBuf {
+        let d = base.join(format!("wp063-write-{name}-{}", std::process::id()));
         if d.exists() {
             common::remove_tree(&d);
         }
@@ -1798,6 +1811,9 @@ mod disk {
         }
         fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
             DiskTree.identity(p)
+        }
+        fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+            DiskTree.real_path(p)
         }
         fn consistent(&self, dir: &[u8], dev: u64) -> bool {
             DiskTree.consistent(dir, dev)
@@ -2131,6 +2147,10 @@ impl Tree for Folding {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     /// A file or directory is found in any case; its identity is that of
     /// its folded spelling.
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
@@ -2240,10 +2260,12 @@ fn s2_1_a_missing_path_is_left_to_the_checks_after() {
 /// write is `StaleFile`. Either way nothing is written.
 #[test]
 fn s2_1_disk_another_case() {
-    let r = disk::root("case");
+    let (base, folds) = common::folding_checked("s2_1_disk_another_case");
+    let r = disk::root_in(&base, "case");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let insensitive = r.join("tree/VENDOR/x.h").exists();
+    assert_eq!(insensitive, folds, "{} and the probe disagree", r.display());
     let other = disk::bytes(&r.join("tree/Vendor/x.h"));
     let mut o = Overlay {
         edits: Digest([1; 32]),
@@ -2267,10 +2289,6 @@ fn s2_1_disk_another_case() {
             }))
         );
     } else {
-        eprintln!(
-            "s2_1_disk_another_case: {} is case-sensitive: the other case finds nothing",
-            r.display()
-        );
         assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(other))));
     }
     assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
@@ -2285,10 +2303,12 @@ fn s2_1_disk_another_case() {
 /// exist". Never `Ok`, and nothing written.
 #[test]
 fn s2_1_disk_readonly_entry_in_another_case() {
-    let r = disk::root("entry");
+    let (base, probed) = common::folding_checked("s2_1_disk_readonly_entry_in_another_case");
+    let r = disk::root_in(&base, "entry");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let folds = r.join("tree/VENDOR/x.h").exists();
+    assert_eq!(folds, probed, "{} and the probe disagree", r.display());
     let (o, id) = one_file(r.join("tree/vendor/x.h").to_str().unwrap(), b"int v;\n", b"int w;\n");
     let own = Ownership {
         owned: vec![disk::bytes(&r.join("tree"))],
@@ -2300,13 +2320,54 @@ fn s2_1_disk_readonly_entry_in_another_case() {
     let want = if folds {
         format!("is not spelled as on disk ({:?})", r.join("tree/vendor").to_string_lossy())
     } else {
-        eprintln!("s2_1_disk_readonly_entry_in_another_case: {} does not fold", r.display());
         "does not exist".to_string()
     };
     for got in [got, written.map(|_| ())] {
         assert!(matches!(&got, Err(WriteError::Invalid(m)) if m.ends_with(&want)), "{got:?}");
     }
     assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
+    common::remove_tree(&r);
+}
+
+/// WP-151 review N1 (`spec/edits.md` §2.1): an ownership entry reached
+/// through a symbolic link (`tree/vlink` to `tree/vendor`) is not its own
+/// real path, so a read-only one would protect nothing (the overlay's
+/// paths are real paths). `slip_apply` refuses it alone, without the
+/// CLI's check: `check_owned` and `write` (`recover` asks the same
+/// function), `Invalid` naming the entry and its real path; nothing
+/// written. The
+/// control: the entry by its real path is `not_owned`. Under the work
+/// root.
+#[test]
+fn s2_1_disk_entry_through_a_link() {
+    let r = disk::root("entry-link");
+    std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
+    std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
+    std::os::unix::fs::symlink(r.join("tree/vendor"), r.join("tree/vlink")).unwrap();
+    let x = r.join("tree/vendor/x.h");
+    let (o, id) = one_file(x.to_str().unwrap(), b"int v;\n", b"int w;\n");
+    let own = |readonly: &str| Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![disk::bytes(&r.join(readonly))],
+    };
+    let tree = slip_apply::fs::DiskTree;
+    let store = disk::Store(r.join("store"));
+    let want = format!(
+        "ownership: the readonly entry {:?} is not spelled as on disk ({:?})",
+        r.join("tree/vlink").to_string_lossy(),
+        r.join("tree/vendor").to_string_lossy()
+    );
+    let link = own("tree/vlink");
+    for got in [
+        slip_apply::check_owned(&o, &link, &tree),
+        write(&o, id, &link, &tree, &store, &store).map(|_| ()),
+    ] {
+        assert_eq!(got, Err(WriteError::Invalid(want.clone())));
+    }
+    assert_eq!(std::fs::read(&x).unwrap(), b"int v;\n");
+    let real = own("tree/vendor");
+    let got = slip_apply::check_owned(&o, &real, &tree);
+    assert!(matches!(&got, Err(WriteError::Refused(_))), "the control is not_owned: {got:?}");
     common::remove_tree(&r);
 }
 
@@ -2325,10 +2386,18 @@ fn s2_1_disk_readonly_entry_in_another_case() {
 /// On a volume that does not fold, the path finds nothing: `StaleFile`.
 #[test]
 fn s2_1_disk_another_normalisation() {
-    let r = disk::root("nfd");
+    let (base, probed) = common::folding_checked("s2_1_disk_another_normalisation");
+    let r = disk::root_in(&base, "nfd");
     let (nfc, nfd) = ("tree/caf\u{e9}.h", "tree/cafe\u{301}.h");
     std::fs::write(r.join(nfc), "int v;\n").unwrap();
     let folds = std::fs::symlink_metadata(r.join(nfd)).is_ok();
+    // The folding root folds case; on this project's host, normalisation
+    // too, so the folding half must run where the case half does.
+    assert!(
+        folds || !probed || !common::work_root::source_folds(),
+        "{} does not fold NFD",
+        r.display()
+    );
     let (o, id) = one_file(r.join(nfd).to_str().unwrap(), b"int v;\n", b"int w;\n");
     let own = Ownership { owned: vec![disk::bytes(&r.join("tree"))], readonly: vec![] };
     let store = disk::Store(r.join("store"));
@@ -2415,6 +2484,10 @@ impl Tree for Inconsistent {
             }
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
+    }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
     }
     /// As `get`: another spelling misses the first time it is asked.
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
@@ -2512,6 +2585,10 @@ impl Tree for Unlistable {
         }
         Ok(if names.is_empty() { None } else { Some(names.into_iter().collect()) })
     }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
+    }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         let there = self.0.iter().any(|(f, _)| f == p)
             || is_dir_of(p, self.0.iter().map(|(f, _)| f.as_slice()));
@@ -2584,6 +2661,10 @@ impl Tree for TwoNames {
             b"/w" => Some(vec![b"X.h".to_vec(), b"x.h".to_vec()]),
             _ => None,
         })
+    }
+    /// No links: the path as given (the walk decides whether it is there).
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(p.to_vec()))
     }
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         Ok(match p.to_ascii_lowercase().as_slice() {
@@ -2676,4 +2757,13 @@ fn s7_3_recover_reports_a_path_the_walk_finds_missing() {
         Ok(Some(Recovered { reported: vec![asked.as_bytes().to_vec()], ..Recovered::default() }))
     );
     assert!(w.0.borrow().journal.is_some(), "the journal is kept");
+}
+
+/// The folding tests' guard (WP-151, `spec/harness.md` §11.5): fails when
+/// the source tree's volume folds and the folding root's does not, so
+/// that every test about a volume that folds skipping cannot pass unseen;
+/// says which kind each root is.
+#[test]
+fn s11_5_folding_root() {
+    common::work_root::folding_guard(env!("CARGO_TARGET_TMPDIR"));
 }

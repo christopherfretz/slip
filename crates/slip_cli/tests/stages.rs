@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use slip_apply::journal::{Journal, JournalEntry, staged_name};
+use slip_cli::transform::reduce::reduce_round;
 use slip_exec::store::{Access, Object, Store};
 use slip_model::declared::Declared;
 use slip_model::edits::{
@@ -165,6 +166,10 @@ impl slip_apply::Files for Disk {
     fn read(&self, path: &[u8]) -> std::io::Result<Vec<u8>> {
         fs::read(std::ffi::OsStr::from_bytes(path))
     }
+
+    fn identity(&self, path: &[u8]) -> std::io::Result<Option<(u64, u64)>> {
+        slip_apply::Files::identity(&slip_cli::transform::store::DiskFiles, path)
+    }
 }
 
 /// A claim of one observer: `path`, `[lo, lo + 1)`, its stance, the
@@ -213,9 +218,15 @@ impl S {
 
 impl Fx {
     fn new(name: &str) -> Fx {
+        Fx::new_in(&common::work_root(), name)
+    }
+
+    /// A fixture under `base`: the work root, or the folding root for a
+    /// test about spelling on a volume that folds (`common::folding_root`).
+    fn new_in(base: &Path, name: &str) -> Fx {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = common::work_root().join(format!("wp075-{name}-{}-{n}", std::process::id()));
+        let root = base.join(format!("wp075-{name}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         // Real paths: the store, the shards and the overlay name them.
@@ -897,7 +908,12 @@ fn s10_5_reduce_report_lines_and_the_cut() {
 
 /// A fixture with the agreed rename reduced, its overlay published.
 fn agreed(name: &str, request: fn(&Fx) -> Transform) -> (Fx, Digest, Digest) {
-    let fx = Fx::new(name);
+    agreed_in(&common::work_root(), name, request)
+}
+
+/// [`agreed`] under `base`.
+fn agreed_in(base: &Path, name: &str, request: fn(&Fx) -> Transform) -> (Fx, Digest, Digest) {
+    let fx = Fx::new_in(base, name);
     let (_, set_id, out) = fx.reduced(&request(&fx), &agreeing());
     out.expect(0);
     let (overlay, _) = fx.overlay(set_id);
@@ -1461,15 +1477,19 @@ impl Fx {
     }
 }
 
-/// Says which kind of volume the one-spelling tests ran on; with
-/// `SLIP_TEST_VOLUME` set (`case-insensitive` or `case-sensitive`), fails
-/// unless it is that kind, so that a run can require the tests that need
-/// a case-insensitive volume to have run rather than skipped.
+/// Says which kind of volume the one-spelling tests ran on (the folding
+/// root's; the work root's too); with `SLIP_TEST_VOLUME` set
+/// (`case-insensitive` or `case-sensitive`), fails unless the folding root
+/// is that kind, so that a run can require the tests that need a
+/// case-insensitive volume to have run rather than skipped.
 #[test]
 fn s2_1_the_volume_of_the_tests() {
-    let fx = Fx::new("volume");
+    let work = Fx::new("volume");
+    let kind = if work.case_insensitive() { "case-insensitive" } else { "case-sensitive" };
+    eprintln!("the volume of the work root {} is {kind}", work.root.display());
+    let fx = Fx::new_in(&common::folding_root(), "volume");
     let kind = if fx.case_insensitive() { "case-insensitive" } else { "case-sensitive" };
-    eprintln!("the volume of {} is {kind}", fx.root.display());
+    eprintln!("the volume of the folding root {} is {kind}", fx.root.display());
     if let Ok(want) = std::env::var("SLIP_TEST_VOLUME") {
         assert_eq!(kind, want, "the volume is not the kind `SLIP_TEST_VOLUME` asks for");
     }
@@ -1477,16 +1497,12 @@ fn s2_1_the_volume_of_the_tests() {
 
 /// The skip of a test that needs a volume that finds a name in another
 /// case: `true` (and a line saying so) when the fixture's volume does not.
+/// Through `common::folding_volume`, which panics on the gate's host when
+/// the folding root does not fold; `fx` must be under it.
 fn skip_unless_case_insensitive(fx: &Fx, test: &str) -> bool {
-    if fx.case_insensitive() {
-        return false;
-    }
-    eprintln!(
-        "{test}: skipped: {} is on a case-sensitive volume, where another case is another \
-         name (no file is found under it)",
-        fx.root.display()
-    );
-    true
+    let folds = common::folding_volume(test).is_some();
+    assert!(!folds || fx.case_insensitive(), "{test}: {} does not fold", fx.root.display());
+    !folds
 }
 
 /// §2.1 "one spelling", §7.3 step 1, §7.2: on a volume that finds names
@@ -1497,17 +1513,17 @@ fn skip_unless_case_insensitive(fx: &Fx, test: &str) -> bool {
 /// written. The control: the exact spelling is `not_owned`.
 #[test]
 fn s2_1_another_case_of_a_readonly_directory_refused() {
-    let fx = Fx::new("case-readonly");
+    let fx = Fx::new_in(&common::folding_root(), "case-readonly");
     if skip_unless_case_insensitive(&fx, "s2_1_another_case_of_a_readonly_directory_refused") {
         return;
     }
     let mut request = fx.rename();
     request.ownership.readonly = vec![bytes_of(&fx.root.join("src/vendor"))];
-    let (_, set, out) = fx.reduced(&request, &agreeing());
-    out.expect(0);
     fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
     let x = fx.root.join("src/vendor/x.h");
     fs::write(&x, "int v;\n").unwrap();
+    let (_, set, out) = fx.reduced(&request, &agreeing());
+    out.expect(0);
     let (r, _) = hand(&fx, set, &[(bytes_of(&x), b"int v;\n", b"int w;\n")]);
     let out = apply_write(&fx, &r, &[]);
     out.expect(1);
@@ -1537,7 +1553,7 @@ fn s2_1_another_case_of_a_readonly_directory_refused() {
 /// `src/a.cc`) is refused, `not_canonical`; the tree is untouched.
 #[test]
 fn s2_1_a_file_name_in_another_case_refused() {
-    let (fx, set, _) = agreed("case-file", Fx::rename);
+    let (fx, set, _) = agreed_in(&common::folding_root(), "case-file", Fx::rename);
     if skip_unless_case_insensitive(&fx, "s2_1_a_file_name_in_another_case_refused") {
         return;
     }
@@ -1558,7 +1574,7 @@ fn s2_1_a_file_name_in_another_case_refused() {
 /// staged: no staged file, no journal, the file its pre-image.
 #[test]
 fn s2_1_two_spellings_of_one_file_refused_before_staging() {
-    let (fx, set, _) = agreed("case-two", Fx::rename);
+    let (fx, set, _) = agreed_in(&common::folding_root(), "case-two", Fx::rename);
     if skip_unless_case_insensitive(&fx, "s2_1_two_spellings_of_one_file_refused_before_staging") {
         return;
     }
@@ -1657,7 +1673,7 @@ fn s7_3_recover_refuses_a_journal_not_of_its_overlay() {
 /// overlay) naming `src/A.cc` is refused, status 3, the journal kept.
 #[test]
 fn s7_3_recover_refuses_a_path_not_spelled_as_on_disk() {
-    let (fx, set, _) = agreed("recover-case", Fx::rename);
+    let (fx, set, _) = agreed_in(&common::folding_root(), "recover-case", Fx::rename);
     if skip_unless_case_insensitive(&fx, "s7_3_recover_refuses_a_path_not_spelled_as_on_disk") {
         return;
     }
@@ -1798,7 +1814,7 @@ fn s8_help_lists_reduce_and_apply() {
 /// by bytes, and `apply` exited 2 ("not inside `--relative-to`").
 #[test]
 fn s7_2_relative_to_in_another_case() {
-    let (fx, set, overlay) = agreed("relative-case", Fx::rename);
+    let (fx, set, overlay) = agreed_in(&common::folding_root(), "relative-case", Fx::rename);
     if skip_unless_case_insensitive(&fx, "s7_2_relative_to_in_another_case") {
         return;
     }
@@ -1922,4 +1938,245 @@ fn s2_1_declared_changes_under_another_id_are_refused() {
     out.expect(3);
     assert!(out.stderr.contains("the file's content id is not its name"), "{out:#?}");
     assert!(out.stderr.contains(&d), "{out:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// WP-151 item 1 (row T1): a request's ownership entries read from the store
+
+/// The folding tests' guard (WP-151, `spec/harness.md` §11.5): fails when
+/// the source tree's volume folds and the folding root's does not, so
+/// that every test about a volume that folds skipping cannot pass unseen;
+/// says which kind each root is.
+#[test]
+fn s11_5_folding_root() {
+    common::work_root::folding_guard(env!("CARGO_TARGET_TMPDIR"));
+}
+
+/// `src/dep/x.h` and `src/café/y.h` (NFC): directories a request carves
+/// out read-only that no edit of [`agreeing`] touches.
+fn with_dependencies(fx: &Fx) {
+    for (dir, file) in [("dep", "x.h"), ("caf\u{e9}", "y.h")] {
+        fs::create_dir_all(fx.root.join("src").join(dir)).unwrap();
+        fs::write(fx.root.join("src").join(dir).join(file), "int x;\n").unwrap();
+    }
+}
+
+/// The real path of `src/<rel>`, as bytes (spelled as asked).
+fn src_entry(fx: &Fx, rel: &str) -> Vec<u8> {
+    bytes_of(&fx.root.join("src").join(rel))
+}
+
+/// The agreed rename's request with `readonly` (and `src/` owned), its
+/// round published as `map` would leave it (the request in the store, a
+/// map shard per observer naming it).
+fn round_with_readonly(fx: &Fx, readonly: Vec<u8>) -> ((Plan, Digest), Transform, Digest) {
+    let mut request = fx.rename();
+    request.ownership.readonly = vec![readonly];
+    let plan = fx.plan();
+    let id = fx.round(&plan, ROUND, &request, &agreeing());
+    (plan, request, id)
+}
+
+/// The three commands that read the round's request from the store, each
+/// with the hand-written request whose read-only entry is `entry`: `slip
+/// reduce` and `slip check` refuse with status 3 before anything is
+/// published or any job runs, and `slip apply` of a result of that request
+/// (its edit set made by `reduce_round`, which takes the request in
+/// memory) refuses with status 3 and writes nothing. `why` ends the line.
+fn refused_at_each(fx: &Fx, entry: Vec<u8>, why: &str) {
+    let line = format!("ownership: the readonly entry {} {why}", String::from_utf8_lossy(&entry));
+    let (plan, request, id) = round_with_readonly(fx, entry);
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&line), "{out:#?}");
+    assert_eq!(out.value("edits"), None, "no edit set: {out:#?}");
+    let (p, r) = (plan.1.to_string(), ROUND.to_string());
+    let out = fx.slip(&["check", "--plan", &p, "--round", &r, "--edits", "0000"]);
+    out.expect(3);
+    assert!(out.stderr.contains(&line), "{out:#?}");
+    assert_eq!(out.value("transform"), None, "before the edit set is read: {out:#?}");
+
+    let store = fx.store();
+    let selected: Vec<usize> = (0..plan.0.observers.len()).collect();
+    let (set_id, _, _) =
+        reduce_round(&store, plan.1, &plan.0, ROUND, &selected, (id, &request), 1).unwrap();
+    let (overlay, _) = fx.overlay(set_id);
+    let result = fx.publish_result(&fx.result(set_id, Some(overlay), State::Verified));
+    let out = apply_write(fx, &result, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&line), "{out:#?}");
+    assert!(fx.tree_is_pre());
+    assert!(!store.journal_path().exists());
+}
+
+/// §2.1 "One spelling" (WP-151 item 1): an entry of a request read from
+/// the store that does not exist is refused at `reduce`, `check` and
+/// `apply` (status 3), never passed: on a volume that answers lookups
+/// inconsistently, "missing" is the answer that would let it carve
+/// nothing. The control: the entry as on disk passes each (`reduce` 0,
+/// `check` past the request to the next thing it reads, `apply` writes).
+/// Any volume.
+#[test]
+fn s2_1_a_request_entry_that_does_not_exist() {
+    let fx = Fx::new("t1-missing");
+    with_dependencies(&fx);
+    refused_at_each(&fx, src_entry(&fx, "nope"), "does not exist");
+
+    let fx = Fx::new("t1-control");
+    with_dependencies(&fx);
+    let (plan, request, id) = round_with_readonly(&fx, src_entry(&fx, "dep"));
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(0);
+    let set = out.digest("edits");
+    // `check` past the request (nothing here parses: the edit set it is
+    // given is not in the store, the next thing it reads).
+    let (p, r) = (plan.1.to_string(), ROUND.to_string());
+    let out = fx.slip(&["check", "--plan", &p, "--round", &r, "--edits", "0000"]);
+    out.expect(3);
+    assert!(!out.stderr.contains("ownership:"), "{out:#?}");
+    assert!(out.stderr.contains("edit set 0000: none in the store"), "{out:#?}");
+    let _ = (request, id);
+    let (overlay, _) = fx.overlay(set);
+    let result = fx.publish_result(&fx.result(set, Some(overlay), State::Verified));
+    apply_write(&fx, &result, &[]).expect(0);
+    assert!(fx.tree_is_post());
+}
+
+/// §2.1 "One spelling" (WP-151 item 1, row T1): a hand-written request
+/// whose read-only entry is in another case (`src/DEP` for `src/dep`), or
+/// in another Unicode normalisation (`src/café` in NFD for the NFC name
+/// on disk), carves nothing out of the paths, which are spelled on disk;
+/// `reduce`, `check` and `apply` refuse it with status 3 naming the entry
+/// and its spelling on disk. An owned entry is checked as a read-only one
+/// is. On the folding root; skipped on a volume that does not fold.
+#[test]
+fn s2_1_a_request_entry_not_spelled_on_disk() {
+    let fx = Fx::new_in(&common::folding_root(), "t1-case");
+    if skip_unless_case_insensitive(&fx, "s2_1_a_request_entry_not_spelled_on_disk") {
+        return;
+    }
+    with_dependencies(&fx);
+    let disk = |rel: &str| {
+        format!("is not spelled as on disk ({})", fx.root.join("src").join(rel).display())
+    };
+    refused_at_each(&fx, src_entry(&fx, "DEP"), &disk("dep"));
+    let fx = Fx::new_in(&common::folding_root(), "t1-nfd");
+    with_dependencies(&fx);
+    let disk = |rel: &str| {
+        format!("is not spelled as on disk ({})", fx.root.join("src").join(rel).display())
+    };
+    refused_at_each(&fx, src_entry(&fx, "cafe\u{301}"), &disk("caf\u{e9}"));
+
+    // The owned entry, in another case.
+    let fx = Fx::new_in(&common::folding_root(), "t1-owned");
+    let mut request = fx.rename();
+    let upper = bytes_of(&fx.root.join("SRC"));
+    request.ownership.owned = vec![upper.clone()];
+    let plan = fx.plan();
+    fx.round(&plan, ROUND, &request, &agreeing());
+    let out = fx.reduce(plan.1, ROUND, &[]);
+    out.expect(3);
+    let line = format!(
+        "ownership: the owned entry {} is not spelled as on disk ({})",
+        String::from_utf8_lossy(&upper),
+        fx.root.join("src").display()
+    );
+    assert!(out.stderr.contains(&line), "{out:#?}");
+}
+
+// ----- WP-151 fix round: forged requests at apply (the review's probes) ------
+
+/// A forged request owning `src/`, whose read-only `entry` was meant to
+/// carve out `src/vendor`, made into a round and an edit set without the
+/// command line (`reduce_round` with the request in memory), and an
+/// overlay writing `src/vendor/x.h`, spelled on disk. The stored ownership
+/// makes that file owned, so only the entry check stands between it and a
+/// write: `apply --write`, `--patch` and `--recover` each refuse with
+/// status 3, naming the entry, and `x.h` is never written; `--recover`
+/// keeps the journal and says what ends it. Returns the `--recover` output.
+fn forged_entry_refused_by_apply(fx: &Fx, entry: &[u8]) -> Out {
+    fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
+    let x = fx.root.join("src/vendor/x.h");
+    fs::write(&x, "int v;\n").unwrap();
+    let mut request = fx.rename();
+    request.ownership.readonly = vec![entry.to_vec()];
+    assert!(request.ownership.is_owned(&bytes_of(&x)), "the forged entry protects nothing");
+    let plan = fx.plan();
+    let id = fx.round(&plan, ROUND, &request, &agreeing());
+    let store = fx.store();
+    let selected: Vec<usize> = (0..plan.0.observers.len()).collect();
+    let (set_id, _, _) =
+        reduce_round(&store, plan.1, &plan.0, ROUND, &selected, (id, &request), 1).unwrap();
+    let (r, oid) = hand(fx, set_id, &[(bytes_of(&x), b"int v;\n", b"int w;\n")]);
+    let entry_text = String::from_utf8_lossy(entry).into_owned();
+    let out = apply_write(fx, &r, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert_eq!(fs::read_to_string(&x).unwrap(), "int v;\n");
+    assert!(!store.journal_path().exists());
+    let patch = fx.root.join("p.patch");
+    let out = apply_patch(fx, &r, &patch, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert!(!patch.exists());
+    fx.put_journal(&Journal::of_write(&fx.overlay_of(oid), oid).to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert!(
+        out.stderr.contains("nothing was changed, the journal is kept")
+            && out.stderr.contains("then run `slip apply --recover` again"),
+        "{out:#?}"
+    );
+    assert!(!out.stderr.contains("cannot be found"), "{out:#?}");
+    assert_eq!(fs::read_to_string(&x).unwrap(), "int v;\n");
+    assert!(store.journal_path().exists());
+    out
+}
+
+/// §2.1 (WP-151 review, attack 1): the forged entry is `SRC/Vendor` for
+/// `src/vendor`, on a volume that folds. On the folding root.
+#[test]
+fn s2_1_a_forged_entry_in_another_case_is_refused_by_apply() {
+    let Some(base) =
+        common::folding_volume("s2_1_a_forged_entry_in_another_case_is_refused_by_apply")
+    else {
+        return;
+    };
+    let fx = Fx::new_in(&base, "forged-case");
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&fx.root.join("SRC/Vendor")));
+    let disk = format!("is not spelled as on disk ({})", fx.root.join("src/vendor").display());
+    assert!(out.stderr.contains(&disk), "{out:#?}");
+}
+
+/// §2.1 (WP-151 review, attack 2): the forged entry reaches `src/vendor`
+/// through a symbolic link (`vlink`): not its own real path. Under the
+/// work root.
+#[test]
+fn s2_1_a_forged_entry_through_a_link_is_refused_by_apply() {
+    let fx = Fx::new("forged-link");
+    fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
+    std::os::unix::fs::symlink(fx.root.join("src/vendor"), fx.root.join("vlink")).unwrap();
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&fx.root.join("vlink")));
+    let disk = format!("is not spelled as on disk ({})", fx.root.join("src/vendor").display());
+    assert!(out.stderr.contains(&disk), "{out:#?}");
+}
+
+/// §2.1, §7.3 (WP-151 review, attack 3, and F3): the forged entry
+/// `src/nope` does not exist. `--recover` refuses, keeps the journal and
+/// says that the entry must exist again; once the directory is made, as
+/// the request records it, `--recover` ends the unfinished write (status
+/// 0, the journal gone, `x.h` its pre-image). Under the work root.
+#[test]
+fn s7_3_recover_refused_until_the_entry_exists_again() {
+    let fx = Fx::new("forged-missing");
+    let nope = fx.root.join("src/nope");
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&nope));
+    let line = format!("ownership: the readonly entry {} does not exist", nope.display());
+    assert!(out.stderr.contains(&line), "{out:#?}");
+    fs::create_dir_all(&nope).unwrap();
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(0);
+    assert!(!fx.store().journal_path().exists(), "{out:#?}");
+    assert_eq!(fs::read_to_string(fx.root.join("src/vendor/x.h")).unwrap(), "int v;\n");
 }

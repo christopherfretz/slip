@@ -559,10 +559,15 @@ fn load_declared(store: &Store, x: &OsString) -> Result<(Digest, Declared), Comm
     let decode = |bytes: &[u8]| -> Result<Declared, String> {
         let d = Declared::from_bytes(bytes).map_err(|e| e.to_string())?;
         // As `verify --declared` (`spec/verify.md` §2.1).
-        match d.rules().refused() {
-            Some((index, why)) => Err(format!("rule {index}: {why}")),
-            None => Ok(d),
+        if let Some((index, why)) = d.rules().refused() {
+            return Err(format!("rule {index}: {why}"));
         }
+        // The run's files, as a request's ownership (`spec/edits.md`
+        // §2.1, WP-151): before the file is published.
+        if let Some(files) = d.files() {
+            commands::entries_on_disk(files)?;
+        }
+        Ok(d)
     };
     id_or_file(
         store,

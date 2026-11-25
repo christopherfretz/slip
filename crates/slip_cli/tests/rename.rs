@@ -35,9 +35,15 @@ struct Tree {
 
 impl Tree {
     fn new(name: &str) -> Tree {
+        Tree::new_in(&common::work_root(), name)
+    }
+
+    /// A tree under `base`: the work root, or the folding root for a test
+    /// about spelling on a volume that folds (`common::folding_root`).
+    fn new_in(base: &Path, name: &str) -> Tree {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = common::work_root().join(format!("wp076-{}-{n}-{name}", std::process::id()));
+        let root = base.join(format!("wp076-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         Tree { root: std::fs::canonicalize(&root).unwrap() }
@@ -1163,7 +1169,9 @@ fn s10_6_rename_interrupted_after_its_verify_phase() {
 /// `None` when the volume does not make `spelled` the file `h.h` (a
 /// case-sensitive volume, for `H.h`).
 fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<TransformResult> {
-    let t = Tree::new(name);
+    // A hard link only under the work root; another case only where the
+    // volume folds (the folding root, which never holds a link).
+    let t = if link { Tree::new(name) } else { Tree::new_in(&common::folding_root(), name) };
     let h = "#pragma once\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
     t.write("src/h.h", h);
     if link {
@@ -1254,9 +1262,10 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
 
 #[test]
 fn s8_2_unchanged_by_identity_case_spelling() {
-    if unchanged_by_identity("identity-case", "H.h", false).is_none() {
-        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
+    if common::folding_volume("s8_2_unchanged_by_identity_case_spelling").is_none() {
+        return;
     }
+    assert!(unchanged_by_identity("identity-case", "H.h", false).is_some());
 }
 
 #[test]
@@ -1846,13 +1855,13 @@ fn s8_4_the_scan_refuses_a_file_changed_since_the_map_phase() {
 // ----- one file under two spellings (WP-076 fix round, B3) ------------------
 
 /// Whether the tree's volume makes `src/H.h` the file `src/h.h` (case-
-/// insensitive); the tests below need it, and say when they skip.
-fn case_insensitive(t: &Tree) -> bool {
-    let yes = t.path("src/H.h").exists();
-    if !yes {
-        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
-    }
-    yes
+/// insensitive), through `common::folding_volume` (which panics on the
+/// gate's host when the folding root does not fold, and says when a test
+/// skips); the tree must be under the folding root.
+fn case_insensitive(t: &Tree, test: &str) -> bool {
+    let folds = common::folding_volume(test).is_some();
+    assert!(!folds || t.path("src/H.h").exists(), "{test}: the tree does not fold");
+    folds
 }
 
 // §8.2, B3: the reviewer's probe. `b.cpp` reaches the overlay's `h.h` as
@@ -1861,10 +1870,10 @@ fn case_insensitive(t: &Tree) -> bool {
 // writes nothing.
 #[test]
 fn s8_2_case_spelling_is_not_unchanged() {
-    let t = Tree::new("case-spelling");
+    let t = Tree::new_in(&common::folding_root(), "case-spelling");
     let h = "#pragma once\nint f(int);\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
     t.write("src/h.h", h);
-    if !case_insensitive(&t) {
+    if !case_insensitive(&t, "s8_2_case_spelling_is_not_unchanged") {
         return;
     }
     t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
@@ -1920,9 +1929,9 @@ fn s8_2_case_spelling_is_not_unchanged() {
 // WP-151.)
 #[test]
 fn s8_1_one_file_under_two_spellings_in_the_set() {
-    let t = Tree::new("case-two-spellings");
+    let t = Tree::new_in(&common::folding_root(), "case-two-spellings");
     t.write("src/h.h", "#pragma once\nint f(int);\n");
-    if !case_insensitive(&t) {
+    if !case_insensitive(&t, "s8_1_one_file_under_two_spellings_in_the_set") {
         return;
     }
     t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");

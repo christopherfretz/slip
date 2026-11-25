@@ -1332,19 +1332,25 @@ output.
   worker's own options. The map task ignores them.
 - **The verify task**, per job: reads `declared/<id>.decl` from the job's
   store and checks that it is a valid `DECL` whose content id is
-  `post.declared`; makes the image from `post.image` (for the overlay
+  `post.declared`, and that each entry of its `files` exists and is
+  spelled as on disk (`spec/edits.md` §2.1); makes the image from `post.image` (for the overlay
   form: reads `overlays/<id>.ovly` and checks it the same way,
   `spec/verify.md` §5.1); then does `spec/verify.md` §5.2. A job
   without `post`, a container that is absent or invalid or has another
   id, and an image that breaks `spec/verify.md` §5.1 are each `Err` (the
   worker answers `Failed`), naming which. For the overlay form that
-  includes a blob that is absent, does not hash to its name or is not of
-  the overlay's size, and an overlay two of whose entries are one file
+  includes a declaration `files` entry that does not exist or is not
+  spelled as on disk (naming the entry), a blob that is absent, does not
+  hash to its name or is not of the overlay's size, and an overlay two of whose entries are one file
   now (both paths named; `spec/verify.md` §5.1 "Loading"); an overlay
   file gone from disk is not one (the observer is `not_parsed` or
   `unverifiable`). The `Declared`, its
   `RuleTable` and an overlay are kept from one job to the next while
   the ids are the same.
+- **The map task with a `transform`** reads `transforms/<id>.trfm` and
+  checks its content id, then that each entry of its ownership exists
+  and is spelled as on disk (`spec/edits.md` §2.1); an entry that is not
+  is `Err`, naming it, before any parse.
 - **A job that does not fit its phase** (a map job with a `post`, a
   verify job with a `transform`) is `Err`, naming the field.
 - The front end runs under Kiln's stack guard (`spec/model.md` §8.4):
@@ -1379,7 +1385,13 @@ instances of the rows above, and 2, 70 and a signal are as above.
   `slip: plan <prefix>: no plan in the store <root> has an id starting with it`
   and `slip: plan <prefix>: <n> plans have an id starting with it: <ids>`.
   `pool::run` returning `PoolError::Store` or `PoolError::Io` is also
-  status 3 (`slip: parse: <error>` for the latter).
+  status 3 (`slip: parse: <error>` for the latter). An ownership or
+  declaration `files` entry that does not exist or is not spelled as on
+  disk (`spec/edits.md` §2.1) is
+  `slip: <container>: ownership: the <owned|readonly> entry <entry> is not spelled as on disk (<spelling>)`,
+  or `... does not exist`, before the first job; `<container>` is the
+  record's path in the store, the declaration file given, or
+  `the request` for `map` and `rename`.
 - **Status 70.** `run` (every command but `__worker`) installs, once per
   process, a panic hook that prints nothing and records the first panic's
   `<message> (<file>:<line>)`. `run` wraps the command in `catch_unwind`;
