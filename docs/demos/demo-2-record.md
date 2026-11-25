@@ -209,3 +209,24 @@ to be filled by the run
 
 `not_plain` refusals at a macro invocation (`not_plain_at_macro`): to be
 filled by the run.
+
+## The claims of demo-2.md §5 the runs support
+
+For each claim of §5, whether the runs support it and by which run's
+lines, measurements or result file; a claim no run supports is not
+made.
+
+| Claim (demo-2.md §5) | Supported by |
+|---|---|
+| Kiln resolves the post-image to the same program, for every observer that parses | to be filled by the run |
+| No observer still declares the entity under its old name | to be filled by the run |
+| Every rewritten reference names the entity it named before | to be filled by the run |
+| The edit set is a function of the inputs (one worker or twelve) | to be filled by the run |
+| Each shared-header site claimed by thousands of observers and applied once | to be filled by the run |
+| Clang accepts what it accepted; builds the function's post-image; the inverse restores the tree | to be filled by the run |
+| The refused target refused before anything was parsed twice, with its five tokens; the rejected target rejected by verification | to be filled by the run |
+
+## Findings
+
+Every prediction of demo-2.md §2 that did not hold, with what differed
+(WP-079 "Tests"): to be filled by the run.

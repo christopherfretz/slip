@@ -684,7 +684,9 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
   `unused_rules`), `spellings` (`obligations`, `passed`, `failed`) and
   `residue` (a count per category) and `not_plain_at_macro` (the edit
-  set's refusals with reason `not_plain` at a macro invocation), then
+  set's refusals with reason `not_plain` that have a `macro`, i.e. the
+  name was read from an expansion: a whole-invocation range, or a
+  spelling that is not plain inside a macro argument), then
   `measured`: the transform run's
   `wall_ns`, per step `wall_ns`, `cpu_ns` and `peak_rss`, per phase
   record §7.1's measurements, and each check's `wall_ns`. No absolute
