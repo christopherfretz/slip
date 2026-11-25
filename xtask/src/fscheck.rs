@@ -70,8 +70,13 @@ pub const ROWS: &[Row] = &[
     Row { name: "tmp-again-after-rename", relied: true, what: "T renamed to D; T created again" },
     Row {
         name: "unique-tmp-link",
-        relied: true,
+        relied: false,
         what: "T linked to L and unlinked; T's name never used again",
+    },
+    Row {
+        name: "create-new-read",
+        relied: true,
+        what: "L created exclusively, written, synced, read; a claim listed and removed",
     },
     Row {
         name: "inode-stable",
@@ -127,7 +132,7 @@ pub const DEFAULT_ROUNDS: u64 = 20_000;
 const USAGE: &str = "usage: cargo xtask fscheck <dir> [--rounds <n>] [--row <name>]…\n\
 rows: link-unlink-create link-rename-over copy-unlink-create copy-rename-over\n      \
 fresh-beside-links link-read-both tmp-again-after-link tmp-again-after-rename\n      \
-unique-tmp-link inode-stable";
+unique-tmp-link create-new-read inode-stable";
 
 /// Parses the arguments after `fscheck`; `Err` is a usage error's message.
 pub fn parse(args: &[String]) -> Result<Request, String> {
@@ -341,6 +346,29 @@ impl Probe<'_> {
     }
 }
 
+impl Probe<'_> {
+    /// Lists `dir` and counts a wrong read if `name` is in it and should
+    /// not be, or is not and should.
+    fn listed(&mut self, dir: &Path, name: &str, want: bool) {
+        let got = fs::read_dir(dir).map(|entries| {
+            entries.filter_map(Result::ok).any(|e| e.file_name().to_str() == Some(name))
+        });
+        if got.as_ref().ok() == Some(&want) {
+            return;
+        }
+        self.wrong += 1;
+        if self.first.is_none() {
+            let shown = match got {
+                Ok(true) => "lists".to_owned(),
+                Ok(false) => "does not list".to_owned(),
+                Err(e) => format!("could not be listed ({e}); it should list"),
+            };
+            let should = if want { "it should" } else { "it should not" };
+            self.first = Some(format!("{} {shown} {name}; {should}", dir.display()));
+        }
+    }
+}
+
 fn at(path: &Path, e: &io::Error) -> String {
     format!("{}: {e}", path.display())
 }
@@ -359,6 +387,14 @@ fn create(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut f =
         fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, &e))?;
     f.write_all(bytes).map_err(|e| at(path, &e))
+}
+
+/// Creates `path`, which must not exist, with `bytes`, and syncs it (the
+/// store's lock and journal, `spec/exec.md` §2.1).
+fn create_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut f =
+        fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, &e))?;
+    f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| at(path, &e))
 }
 
 fn link(from: &Path, to: &Path) -> Result<(), String> {
@@ -537,6 +573,24 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             create(&t, &pre)?;
             link(&t, &l)?;
             unlink(&t)?;
+            p.check(&l, &pre);
+        }
+        "create-new-read" => {
+            // The store's lock (`spec/exec.md` §2.1 "The lock"): a stale
+            // lock removed and the name created again in place, written,
+            // synced and read by name; a claim of a name never used
+            // before created, seen by a listing, removed, and no longer
+            // seen. The journal is the lock's first half.
+            let l = tree.join(format!("lock{k}"));
+            let claim = format!("{i}.claim");
+            let c = tmp.join(&claim);
+            start(&[&l])?;
+            create_synced(&l, &pre)?;
+            p.check(&l, &pre);
+            create(&c, b"")?;
+            p.listed(&tmp, &claim, true);
+            fs::remove_file(&c).map_err(|e| at(&c, &e))?;
+            p.listed(&tmp, &claim, false);
             p.check(&l, &pre);
         }
         other => unreachable!("no row `{other}`"),

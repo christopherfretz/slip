@@ -29,7 +29,7 @@ fn run(req: &Request, read: fscheck::Reader<'_>) -> (u8, Vec<String>) {
 #[test]
 fn s11_2_parse() {
     let r = fscheck::parse(&args(&["d"])).unwrap();
-    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 10));
+    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 11));
     let r = fscheck::parse(&args(&[
         "--row",
         "unique-tmp-link",
@@ -121,6 +121,23 @@ fn s11_2_a_wrong_read_fails_a_relied_row() {
     assert_eq!(lines.last().unwrap(), "fscheck: FAILED (copy-unlink-create)");
 
     let req = Request { dir: f.root().to_owned(), rounds: 2, rows: vec![row("link-rename-over")] };
+    let (code, lines) = run(&req, &planted);
+    assert_eq!((code, lines.last().unwrap().as_str()), (0, "fscheck: ok"), "{lines:#?}");
+
+    // WP-161: the store's lock and journal rely on `create-new-read`, and
+    // no longer on `unique-tmp-link`.
+    assert!(row("create-new-read").relied);
+    assert!(!row("unique-tmp-link").relied);
+    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("create-new-read")] };
+    let (code, lines) = run(&req, &planted);
+    assert_eq!(code, 1, "{lines:#?}");
+    assert!(
+        lines[1].starts_with("create-new-read") && lines[1].contains(" wrong 6 "),
+        "{lines:#?}"
+    );
+    assert!(lines[2].ends_with("read `planted`, not `pre 0 detail`"), "{lines:#?}");
+    assert_eq!(lines.last().unwrap(), "fscheck: FAILED (create-new-read)");
+    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("unique-tmp-link")] };
     let (code, lines) = run(&req, &planted);
     assert_eq!((code, lines.last().unwrap().as_str()), (0, "fscheck: ok"), "{lines:#?}");
 }

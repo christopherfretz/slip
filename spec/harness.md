@@ -1703,7 +1703,7 @@ goes on.
 | `tmp-again-after-link` | `T` linked to `L` and unlinked; `T` created again | nothing (the store's lock and journal before WP-159) |
 | `tmp-again-after-rename` | `T` renamed to `D`; `T` created again | the patch's and a report's temporary, staged names |
 | `unique-tmp-link` | `T` linked to `L` and unlinked; `T`'s name never used again | nothing (the store's lock and journal before WP-161) |
-| `create-new-read` | `L` created exclusively, written and synced in place, read by name; a claim `C` created exclusively (a name never used again), listed by its directory, removed | the store's lock, its claims and the journal (`spec/exec.md` §2.1) |
+| `create-new-read` | `L` created exclusively, written and synced in place, read by name; a claim `C` created exclusively (a name never used again), listed by its directory, removed and no longer listed; `L` read again | the store's lock, its claims and the journal (`spec/exec.md` §2.1) |
 | `inode-stable` | files created fresh, their device and inode numbers read, read again at once and 2 s later | a test's work directory (§11.5) |
 
 Output: `fscheck: <dir>: <n> rounds per row`, then per row
