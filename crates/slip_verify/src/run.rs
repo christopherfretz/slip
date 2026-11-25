@@ -1571,6 +1571,8 @@ impl Report {
     /// file` line, at most [`REBUILT_FILE_MAX`]; per hinted file a `hint:`
     /// line over the observers that are `mismatch` or stale for a rule,
     /// and only those, at most [`HINT_MAX`].
+    ///
+    /// The transform commands print the same lines ([`Report::rebuilt_lines`]).
     fn rebuilt_text(&self, out: &mut String) {
         if !self.has_rebuilt() {
             return;
@@ -1629,6 +1631,15 @@ impl Report {
         if shown.len() > HINT_MAX {
             let _ = writeln!(out, "hint: {} more (see the report)", shown.len() - HINT_MAX);
         }
+    }
+
+    /// The lines of WP-118 R7.3 and R1.3 alone (empty when the report has
+    /// no `"rebuilt"` member), for the transform commands' output
+    /// (`spec/edits.md` §10.5, after the `agreement:` line).
+    pub fn rebuilt_lines(&self) -> String {
+        let mut out = String::new();
+        self.rebuilt_text(&mut out);
+        out
     }
 
     /// The failed obligations of §10.5, in the obligations' order:

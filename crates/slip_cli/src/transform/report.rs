@@ -28,9 +28,14 @@ pub const FINDING_GROUPS_MAX: usize = 64;
 /// step ran (a rename's run that was not cut short); the `verify:`,
 /// `agreement:` and `spellings:` lines are those of a verify phase that
 /// finished (a verdict).
+///
+/// `report`, the verify phase's, gives the `rebuilt`, `unused rebuilt`,
+/// `rebuilt file` and `hint:` lines after the `agreement:` line (WP-118,
+/// `spec/verify.md` §9.4): the result does not record them (limit L9).
 pub fn result_summary(
     result_id: Digest,
     result: &TransformResult,
+    report: Option<&Report>,
     scanned: bool,
     out: &mut dyn Write,
 ) {
@@ -54,6 +59,9 @@ pub fn result_summary(
             result.agreement.len(),
             result.unused.len()
         );
+        if let Some(r) = report {
+            let _ = out.write_all(r.rebuilt_lines().as_bytes());
+        }
         let _ = writeln!(
             out,
             "spellings: passed {}, failed {}",

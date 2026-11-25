@@ -447,7 +447,7 @@ pub fn check(
         .map_err(|e| store_error(store, &e))?;
     record.result = Some(result_id);
     record.steps.push(clock.end(None));
-    result_summary(result_id, &result, scanned, out);
+    result_summary(result_id, &result, report.as_ref(), scanned, out);
     let _ = out.flush();
     Ok(Checked {
         result_id,
