@@ -1627,3 +1627,56 @@ pub(crate) fn counters(w: &Walk<'_>, out: &mut Vec<slip_model::Counter>) {
     push("deduced", c.deduced);
     push("unkept", c.unkept);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn written(key: u8, kind: KeyKind, cause: Option<Cause>, owner: Option<u8>) -> Written {
+        let d = |b: u8| Digest([b; 32]);
+        Written {
+            entity: None,
+            read: None,
+            key: d(key),
+            kind,
+            digest: d(key.wrapping_add(100)),
+            cause,
+            class: GroupClass::Derived,
+            file: Vec::new(),
+            resolved: None,
+            default_argument: None,
+            owner: owner.map(d),
+            collided: false,
+            view: None,
+            denotes: None,
+            emitted: false,
+            operands: (kind == KeyKind::Operands).then_some(KeyKind::Class),
+        }
+    }
+
+    // WP-156 fix round 1 (S4, mutation R08). At Kiln's pin no digest test
+    // reaches `inherit_causes` with a cause `unit` did not already copy:
+    // a parent's walk cause is copied when the operand unit is made, a
+    // collision reaches it as a part of its owner
+    // (`units::mark_part_collisions`), and a taint
+    // (`units::apply_taints`) needs a declaration of a kind whose role is
+    // `Unsupported` (`UsingPack`, `FriendTemplate`, `ImplicitParam`,
+    // `ImplicitConceptSpecialization`), which Kiln never makes. So the
+    // rule is pinned here, on the units directly.
+    #[test]
+    fn an_operand_unit_inherits_its_parents_cause_after_the_walk() {
+        let taint = Cause::Unsupported("DeclKind/UsingPack");
+        let mut units = vec![
+            written(1, KeyKind::Class, Some(taint), None),
+            written(2, KeyKind::Operands, None, Some(1)),
+            written(3, KeyKind::Class, None, None),
+            written(4, KeyKind::Operands, Some(Cause::Unaccounted("x")), Some(3)),
+            written(5, KeyKind::Operands, Some(Cause::Unaccounted("own")), Some(1)),
+        ];
+        inherit_causes(&mut units);
+        assert_eq!(units[1].cause, Some(taint), "the parent's cause is inherited");
+        assert_eq!(units[3].cause, Some(Cause::Unaccounted("x")), "no parent cause: its own");
+        assert_eq!(units[4].cause, Some(merge(Some(taint), Cause::Unaccounted("own"))));
+        assert_eq!(units[0].cause, Some(taint), "a parent is left as it is");
+    }
+}

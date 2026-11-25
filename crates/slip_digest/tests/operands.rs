@@ -15,8 +15,12 @@
 //! | `operands <name>` | both sides have the operand unit of `<name>` (equal) |
 //! | `operands-a <name>` | side A alone has it |
 //! | `operands-b <name>` | side B alone has it |
+//! | `count <counter> <value>` | each side's counter `<counter>` is `<value>` (absent: 0) |
 //!
-//! A file of comments alone says neither side has an operand unit.
+//! A file of comments alone says neither side has an operand unit. A
+//! `count` line pins how many entries a site writes, which no set of
+//! names and no pair shows: an entry written twice on both sides
+//! (WP-156 fix round 1, mutations R09 and R10).
 
 mod common;
 
@@ -25,11 +29,15 @@ use std::path::Path;
 
 use common::Side;
 
-/// The parents named by `expect.txt`: side A's, then side B's.
-fn lines(dir: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+/// What `expect.txt` says: the parents side A names, side B's, and the
+/// counters by name.
+type Expected = (BTreeSet<String>, BTreeSet<String>, Vec<(String, u64)>);
+
+/// The lines of `expect.txt`.
+fn lines(dir: &Path) -> Result<Expected, String> {
     let text = std::fs::read_to_string(dir.join("expect.txt"))
         .map_err(|e| format!("expect.txt: {e} (an operands test names its operand units)"))?;
-    let (mut a, mut b) = (BTreeSet::new(), BTreeSet::new());
+    let (mut a, mut b, mut counts) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -49,18 +57,38 @@ fn lines(dir: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
             "operands-b" => {
                 b.insert(name);
             }
+            "count" => {
+                let (counter, value) = name
+                    .split_once(' ')
+                    .and_then(|(c, v)| Some((c.to_owned(), v.trim().parse::<u64>().ok()?)))
+                    .ok_or_else(|| format!("expect.txt:{}: `count <counter> <value>`", i + 1))?;
+                counts.push((counter, value));
+            }
             _ => return Err(format!("expect.txt:{}: unknown word `{word}`", i + 1)),
         }
     }
-    Ok((a, b))
+    Ok((a, b, counts))
 }
 
 fn one(dir: &Path) -> Result<(), String> {
-    let (want_a, want_b) = lines(dir)?;
+    let (want_a, want_b, counts) = lines(dir)?;
     let a = common::digest_side(dir, Side::A)?;
     let b = common::digest_side(dir, Side::B)?;
     let (got_a, got_b) = common::pairs::judge_operands(&a, &b)?;
     let mut problems = Vec::new();
+    for (side, d) in [("A", &a), ("B", &b)] {
+        for (counter, want) in &counts {
+            let got = d
+                .output
+                .counters
+                .iter()
+                .find(|c| &c.name == counter)
+                .map_or(0, |c| c.value);
+            if got != *want {
+                problems.push(format!("side {side}: counter `{counter}` is {got}, not {want}"));
+            }
+        }
+    }
     for (side, want, got) in [("A", &want_a, &got_a), ("B", &want_b, &got_b)] {
         for n in got.difference(want) {
             problems.push(format!("side {side}: an operand unit of `{n}` no line names"));

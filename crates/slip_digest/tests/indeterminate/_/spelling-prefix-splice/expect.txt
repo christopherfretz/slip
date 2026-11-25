@@ -1,1 +1,2 @@
 indeterminate template <class> int g(type-parameter-0-0)
+indeterminate template <class> int g(type-parameter-0-0)::<operands>

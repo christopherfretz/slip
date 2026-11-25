@@ -1,0 +1,7 @@
+# WP-156 fix round 1 (S4): one entry per unit.
+operands template <class> void ft(type-parameter-0-0, int)
+operands template <class> void fd(type-parameter-0-0, Wr<int>)
+operands h(lib::X, int)
+operands hd(lib::X, int)
+count digest.operands.units 4
+count digest.operands.site.1 4
