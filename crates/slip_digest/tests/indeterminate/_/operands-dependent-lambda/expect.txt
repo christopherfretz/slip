@@ -1,0 +1,4 @@
+indeterminate template <class> int fl(type-parameter-0-0)
+indeterminate template <class> int fl(type-parameter-0-0)::<operands>
+indeterminate SL::m
+indeterminate SL::m::<operands>
