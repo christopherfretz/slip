@@ -1,0 +1,3 @@
+indeterminate bi::<operands>
+indeterminate bu::<operands>
+indeterminate template <class> _BitInt(32) bt(type-parameter-0-0)::<operands>

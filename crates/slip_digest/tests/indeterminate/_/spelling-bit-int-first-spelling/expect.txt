@@ -1,2 +1,4 @@
 indeterminate template <class> void g(type-parameter-0-0, _BitInt(sizeof (f(T())) * 8))
 indeterminate template <class> void g0(type-parameter-0-0, _BitInt(sizeof (f(T())) * 8))
+indeterminate template <class> void g(type-parameter-0-0, _BitInt(sizeof (f(T())) * 8))::<operands>
+indeterminate template <class> void g0(type-parameter-0-0, _BitInt(sizeof (f(T())) * 8))::<operands>
