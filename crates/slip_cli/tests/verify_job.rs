@@ -4440,3 +4440,87 @@ fn s2_1_negatives_walk_on_folding_volume() {
     };
     assert_eq!(found_moved(&mut image.resolver(), &found, &inputs), None);
 }
+
+// §2.1 (WP-164 fix round 1): on an unlistable directory (`chmod 0o311`, with
+// a non-ASCII file name so `slip_spelling` must list it even on a trusted
+// non-folding volume), `still_there` reports `cannot be resolved` (naming the
+// listing error, not "is gone") and `as_recorded` returns `false` so a subject
+// file in an unlistable directory is refused rather than skipped.
+#[test]
+fn s2_1_still_there_and_as_recorded_on_unlistable_dir() {
+    use slip_model::hash::content_digest;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    let tree = Tree::new("wp164-unlistable", &[("a.cpp", "int f() { return 1; }\n")]);
+    let o = tree.observer();
+    tree.map(&o);
+    let (map, _) = tree.stored_map(&o);
+
+    // 1. Outside file in an unlistable directory: `still_there` reports the
+    // real_path error detail, not "is gone".
+    let ext_dir = tree.base.join("ext");
+    let ext_file = ext_dir.join("caf\u{e9}.h");
+    let ext_bytes = b"int h;\n";
+    write(&ext_file, std::str::from_utf8(ext_bytes).unwrap());
+    let _g1 = Restore(ext_dir.clone());
+    std::fs::set_permissions(&ext_dir, std::fs::Permissions::from_mode(0o311)).unwrap();
+    if std::fs::read_dir(&ext_dir).is_ok() {
+        eprintln!(
+            "s2_1_still_there_and_as_recorded_on_unlistable_dir: skipped: uid can list chmod 0311"
+        );
+        return;
+    }
+
+    let mut pre = map.clone();
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&ext_file),
+        size: ext_bytes.len() as u64,
+        content: content_digest(ext_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(
+        r.contains("cannot be resolved:") && r.contains("cannot be listed"),
+        "expected unlistable detail, got: {r}"
+    );
+    assert!(!r.contains("is gone since the map phase"), "{r}");
+
+    // 2. Subject file in an unlistable directory: `under_subject` is true by
+    // identity, and `as_recorded` returns false on the listing error so
+    // `left_behind` checks it via `still_there` and refuses instead of
+    // skipping.
+    let sub_dir = tree.subject.join("unlisted");
+    let sub_file = sub_dir.join("caf\u{e9}.h");
+    let sub_bytes = b"int x;\n";
+    write(&sub_file, std::str::from_utf8(sub_bytes).unwrap());
+    let _g2 = Restore(sub_dir.clone());
+    std::fs::set_permissions(&sub_dir, std::fs::Permissions::from_mode(0o311)).unwrap();
+
+    let mut pre = map;
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&sub_file),
+        size: sub_bytes.len() as u64,
+        content: content_digest(sub_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(
+        r.contains("cannot be resolved:") && r.contains("cannot be listed"),
+        "expected unlistable detail, got: {r}"
+    );
+}

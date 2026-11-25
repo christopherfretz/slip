@@ -541,15 +541,15 @@ fn wp090_api_tests() {
     );
 }
 
-// §3 `real-path` (WP-164): `canonicalize(` in non-test code of crates/*/src
+// §3 `real-path` (WP-164): `canonicalize` in non-test code of crates/*/src
 // outside crates/slip_spelling requires `// canonicalize: <reason>` on the
 // line directly above.
 #[test]
 fn s3_real_path() {
     let f = Fixture::new("rp");
     // Accepted: slip_spelling itself, crate tests/, xtask/src/, comments and
-    // literals, #[cfg(test)] items, and a call with a non-empty justification
-    // on the line directly above.
+    // literals, #[cfg(test)] items, and an indented call with a non-empty
+    // indented justification on the line directly above.
     f.write(
         "crates/slip_spelling/src/lib.rs",
         "#![forbid(unsafe_code)]\nfn f(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }\n",
@@ -561,47 +561,76 @@ fn s3_real_path() {
     f.write("xtask/src/x.rs", "fn x(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }\n");
     f.write(
         "crates/slip_model/src/ok.rs",
-        "// std::fs::canonicalize(p)\n\
-         const S: &str = \"fs::canonicalize(p)\";\n\
-         fn a(p: &std::path::Path) {\n\
-             // canonicalize: spec/edits.md §2.1\n\
-             let _ = std::fs::canonicalize(p);\n\
-         }\n\
-         #[cfg(test)]\n\
-         #[allow(dead_code)]\n\
-         mod tests {\n\
-             fn t(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }\n\
-         }\n",
+        r#"// std::fs::canonicalize(p)
+const S: &str = "fs::canonicalize(p)";
+fn a(p: &std::path::Path) {
+    // canonicalize: spec/edits.md §2.1
+    let _ = std::fs::canonicalize(p);
+}
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+    fn t(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }
+}
+"#,
     );
     assert_eq!(lint(&f), none());
 
-    // Rejected: bare call on line 1, empty reason, missing space after colon,
-    // justification two lines above, method form, and code after #[cfg(test)].
+    // Rejected: bare call on line 1, indented empty reason, indented missing
+    // space after colon, justification two lines above, method form, function
+    // values and `use` import, code after #[cfg(test)] mod, #[cfg(test)] on
+    // a struct field before `}` and `,`, and #[cfg(test)] on a match arm.
     f.write(
         "crates/slip_model/src/bad.rs",
-        "fn l1(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }\n\
-         fn empty(p: &std::path::Path) {\n\
-             // canonicalize:   \n\
-             let _ = std::fs::canonicalize(p);\n\
-         }\n\
-         fn nospace(p: &std::path::Path) {\n\
-             // canonicalize:reason\n\
-             let _ = fs::canonicalize(p);\n\
-         }\n\
-         fn gap(p: &std::path::Path) {\n\
-             // canonicalize: reason\n\
-             \n\
-             let _ = p.canonicalize();\n\
-         }\n\
-         #[cfg(test)]\n\
-         mod tests {\n\
-             fn inside(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }\n\
-         }\n\
-         fn after(p: &std::path::Path) {\n\
-             let _ = std::fs::canonicalize(p);\n\
-         }\n",
+        r"fn l1(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }
+fn empty(p: &std::path::Path) {
+    // canonicalize:   
+    let _ = std::fs::canonicalize(p);
+}
+fn nospace(p: &std::path::Path) {
+    // canonicalize:reason
+    let _ = fs::canonicalize(p);
+}
+fn gap(p: &std::path::Path) {
+    // canonicalize: reason
+
+    let _ = p.canonicalize();
+}
+#[cfg(test)]
+mod tests {
+    fn inside(p: &std::path::Path) { let _ = std::fs::canonicalize(p); }
+}
+fn after(p: &std::path::Path) {
+    let _ = std::fs::canonicalize(p);
+}
+struct LastField {
+    #[cfg(test)]
+    f: u8
+}
+fn after_field(p: &std::path::Path) {
+    let _ = std::fs::canonicalize(p);
+}
+fn in_match(x: u8, p: &std::path::Path) {
+    match x {
+        #[cfg(test)]
+        0 => {}
+        _ => { let _ = std::fs::canonicalize(p); }
+    }
+    match x {
+        #[cfg(test)]
+        0 => (),
+        _ => { let _ = std::fs::canonicalize(p); }
+    }
+}
+fn fn_values(opt: Option<&std::path::Path>) {
+    let _ = opt.map(std::fs::canonicalize);
+    let _ = opt.and_then(|_| Some(Path::canonicalize));
+    use std::fs::canonicalize as c;
+    let _ = c;
+}
+",
     );
-    let msg = "real-path: calls `canonicalize(`; use `slip_spelling::real_path`, or justify on \
+    let msg = "real-path: names `canonicalize`; use `slip_spelling::real_path`, or justify on \
                the line above with `// canonicalize: <reason>` (spec/edits.md §2.1)";
     assert_eq!(
         lint(&f),
@@ -611,6 +640,12 @@ fn s3_real_path() {
             format!("crates/slip_model/src/bad.rs:8: {msg}"),
             format!("crates/slip_model/src/bad.rs:13: {msg}"),
             format!("crates/slip_model/src/bad.rs:20: {msg}"),
+            format!("crates/slip_model/src/bad.rs:27: {msg}"),
+            format!("crates/slip_model/src/bad.rs:33: {msg}"),
+            format!("crates/slip_model/src/bad.rs:38: {msg}"),
+            format!("crates/slip_model/src/bad.rs:42: {msg}"),
+            format!("crates/slip_model/src/bad.rs:43: {msg}"),
+            format!("crates/slip_model/src/bad.rs:44: {msg}"),
         ]
     );
 }

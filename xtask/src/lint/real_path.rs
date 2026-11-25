@@ -1,6 +1,6 @@
 //! The `real-path` lint (`spec/harness.md` §3, `spec/edits.md` §2.1):
 //! outside `crates/slip_spelling/`, non-test code under `crates/*/src/`
-//! calls `slip_spelling::real_path`, never `canonicalize(`, unless the line
+//! calls `slip_spelling::real_path`, never `canonicalize`, unless the line
 //! directly above carries `// canonicalize: ` with a non-empty reason.
 
 use std::path::Path;
@@ -46,7 +46,8 @@ fn skip_balanced(toks: &[Token<'_>], mut i: usize, open: &str, close: &str) -> u
 }
 
 /// Starting at `#[cfg(test)]`, the index after the annotated item (including
-/// any stacked outer attributes and its `{ ... }` body or terminating `;`).
+/// any stacked outer attributes and its `{ ... }` body, terminating `;` or
+/// `,`, or stopping before an enclosing `}` that was not opened here).
 fn skip_cfg_test_item(toks: &[Token<'_>], mut i: usize) -> usize {
     i += 7;
     while toks.get(i).is_some_and(|t| t.text == "#")
@@ -75,7 +76,8 @@ fn skip_cfg_test_item(toks: &[Token<'_>], mut i: usize) -> usize {
                 i += 1;
             }
             "{" if paren == 0 && bracket == 0 => return skip_balanced(toks, i, "{", "}"),
-            ";" if paren == 0 && bracket == 0 => return i + 1,
+            ";" | "," if paren == 0 && bracket == 0 => return i + 1,
+            "}" if paren == 0 && bracket == 0 => return i,
             _ => i += 1,
         }
     }
@@ -92,7 +94,7 @@ fn justified(lines: &[&str], line: usize) -> bool {
             .is_some_and(|reason| !reason.trim().is_empty())
 }
 
-/// Every un-justified `canonicalize(` call in `text` outside `#[cfg(test)]`
+/// Every un-justified `canonicalize` token in `text` outside `#[cfg(test)]`
 /// items, as 1-based line numbers.
 fn bad_lines(text: &str) -> Vec<usize> {
     let lines: Vec<&str> = text.lines().collect();
@@ -104,7 +106,7 @@ fn bad_lines(text: &str) -> Vec<usize> {
             i = skip_cfg_test_item(&toks, i);
             continue;
         }
-        if toks[i].text == "canonicalize" && toks.get(i + 1).is_some_and(|n| n.text == "(") {
+        if toks[i].text == "canonicalize" {
             let line = toks[i].line;
             if !justified(&lines, line) {
                 out.push(line);
@@ -125,7 +127,7 @@ pub fn check(repo: &Repo) -> Vec<Violation> {
                 path,
                 Some(line),
                 LINT,
-                "calls `canonicalize(`; use `slip_spelling::real_path`, or justify on the line \
+                "names `canonicalize`; use `slip_spelling::real_path`, or justify on the line \
                  above with `// canonicalize: <reason>` (spec/edits.md §2.1)",
             ));
         }
