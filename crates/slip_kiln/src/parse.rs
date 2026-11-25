@@ -627,15 +627,7 @@ fn parse_observer_hooked<R: Send>(
         Some((ovl, real)) => (Some(ovl), real),
         None => (None, Vec::new()),
     };
-    let directory = bytes_path(&observer.command.directory)?;
-    let meta = std::fs::metadata(&directory)
-        .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
-    if !meta.is_dir() {
-        return Err(format!("cannot enter {}: not a directory", directory.display()));
-    }
-    let work_dir = WorkDir::at(&directory)
-        .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
-    let work_dir_path = work_dir.dir().unwrap_or(&directory).to_path_buf();
+    let (work_dir, work_dir_path) = resolve_work_dir(&observer.command.directory)?;
 
     let mut line = front_end_line(&rest);
     let words = written_words(options);
@@ -726,6 +718,20 @@ fn parse_observer_hooked<R: Send>(
         Some((inputs, tally, value)) => Ok((shard(outcome, Some((inputs, tally))), Some(value))),
         None => Ok((shard(outcome, None), None)),
     }
+}
+
+/// Verifies that `directory` exists and is a directory and resolves it as a
+/// [`WorkDir`] with its absolute path for [`FrontEndOptions::working_directory`].
+fn resolve_work_dir(directory: &[u8]) -> Result<(WorkDir, PathBuf), String> {
+    let dir = bytes_path(directory)?;
+    let meta =
+        std::fs::metadata(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("cannot enter {}: not a directory", dir.display()));
+    }
+    let work_dir = WorkDir::at(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
+    let path = work_dir.dir().unwrap_or(&dir).to_path_buf();
+    Ok((work_dir, path))
 }
 
 /// Kiln's options for `options`, with `overlay` (that of

@@ -1267,28 +1267,28 @@ fn measure_written_refs_cost() {
         let (s1, _) = parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
         assert_eq!(s1.outcome.status, Status::Ok, "{label} (written): {:?}", s1.outcome);
         assert_eq!(s0, s1, "{label}: shard must not depend on ParseOptions::written");
-        let mut without_ns = Vec::new();
-        let mut with_ns = Vec::new();
+        let mut without_s = Vec::new();
+        let mut with_s = Vec::new();
         for _ in 0..3 {
             let t0 = std::time::Instant::now();
             parse_observer_with(&obs, Phase::Map, 0, ParseOptions::default(), |_| ()).unwrap();
-            without_ns.push(t0.elapsed().as_nanos());
+            without_s.push(t0.elapsed());
             let t1 = std::time::Instant::now();
             parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
-            with_ns.push(t1.elapsed().as_nanos());
+            with_s.push(t1.elapsed());
         }
-        without_ns.sort_unstable();
-        with_ns.sort_unstable();
-        let med_off = without_ns[1] as f64;
-        let med_on = with_ns[1] as f64;
+        without_s.sort_unstable();
+        with_s.sort_unstable();
+        let med_off = without_s[1].as_secs_f64();
+        let med_on = with_s[1].as_secs_f64();
         let ratio = med_on / med_off;
         let pct = (ratio - 1.0) * 100.0;
         let tokens = s0.counters.iter().find(|c| c.name == "pp.tokens").map_or(0, |c| c.value);
         let files = s0.counters.iter().find(|c| c.name == "inputs.files").map_or(0, |c| c.value);
         println!(
             "MEASURE {label}: files={files} tokens={tokens} ratio={ratio:.3}x ({pct:+.1}%) [raw medians: off={:.1}ms on={:.1}ms]",
-            med_off / 1e6,
-            med_on / 1e6,
+            med_off * 1e3,
+            med_on * 1e3,
         );
     }
 }
