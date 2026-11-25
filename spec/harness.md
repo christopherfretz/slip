@@ -652,6 +652,18 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `--relative-to`, so uses in projects the corpus does not configure are
   residue. A given `--owned` must be under `src/` (real paths), or the
   command stops before `slip` runs.
+- **Census pre-flight (`--expect verified`, `--expect verified_with_residue`,
+  `--accept`).** Runs that need verification (`--expect verified`,
+  `--expect verified_with_residue`, or `--accept`, except when `--expect`
+  explicitly names `refused`, `not_verified` or `incomplete`) first run
+  the census (§9.5) into `<root>/<name>/stores/census` with the same `slip`
+  and `-j`, print the census's last line, and refuse to start (exit status
+  1, one line naming `cargo xtask census <corpus>`) if the census is not
+  clean, unless `--skip-census` is given (which skips the check and appends
+  ` (census skipped)` to the final `corpus rename:` line). `--expect refused`
+  and `--expect not_verified` do not run the census. The census store holds
+  transform-free round-0 map shards and is not reused as `slip-store/`,
+  which holds round-1+ transform shards.
 - **The run.** `slip rename` is given `--kind` and `-j` when the command
   is; its lines are printed as they come. Status 2 or 3, or a run that
   prints no `result` line or a state other than its result's, is an
@@ -1402,6 +1414,71 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
 
 `compare_runs` and `check_identity` are pure, so that the tests need no
 `slip` and no corpus.
+
+### 9.5 Census: causes of indeterminate units
+
+```
+cargo xtask census <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>] [--store <dir>]
+```
+
+Counts indeterminate keys and non-`ok` shards over a configured corpus before
+a run that needs `verified` (`docs/demos/demo-2.md` §1, §6.5). Locating
+`slip`, checking that `<corpus>` is configured, and applying `--only`,
+`--limit` and `-j` follow §9.
+
+- **Store and reuse.** Default store: `<corpus dir>/stores/census`;
+  `--store <dir>` overrides it. The command reads `<store>/census.json` and
+  reuses the newest round-0 map run of the corpus's current plan in
+  `<store>` without running `slip parse` only when all of the following
+  match:
+  1. `format` is `"slip.census.v1"` and `census.json` parses cleanly;
+  2. `slip_digest` equals the content digest (`slip_model::hash::content_digest`)
+     of the `slip` executable's bytes;
+  3. `tool_slip` and `tool_kiln` match `slip --version` and the run record;
+  4. `kiln_pin` matches the repository's `kiln` submodule `HEAD` (or the
+     corpus row's tag when no `kiln` git checkout exists);
+  5. `selection.only` and `selection.limit` match the current arguments;
+  6. `plan` matches `slip plan --db <database> --store <store>`;
+  7. the newest map run of `plan` in `<store>` is round 0, has no missing
+     shards, and covers the exact selected observer set.
+  When any check fails (or when in doubt), `slip parse` runs afresh: if
+  `<store>` lies strictly under `<corpus dir>`, it is removed first via
+  `slip_run::remove_tree`; if `--store` names an existing non-reusable
+  directory outside `<corpus dir>`, the command fails without deleting it.
+- **Aggregation.** Each selected observer's map shard is read from the store
+  through `perf::load` and verified against the run record via
+  `invariants::side`.
+  - For each `ok` shard: every non-zero `digest.indeterminate.<cause>`
+    counter (including `pending.<area>`) is summed into `causes` (keys,
+    observers with at least one, and the first 5 such observers sorted by
+    main file path bytes), and every non-zero `digest.cause.<cause>.<word>`
+    counter is summed into `cause_texts` (keys and observers). To avoid
+    double-counting `pending` alongside `pending.<area>`, total
+    `indeterminate_keys` sums top-level `digest.indeterminate.<cause>`
+    counters (or `pending.<area>` if `pending` is absent, and at least
+    `digest.indeterminate` when present).
+  - Every selected observer whose `side` is not `ok` is counted in `not_ok`
+    and grouped in `not_ok_by_status` (`diagnosed`, `rejected`, `failed`,
+    or `incomplete` for `NoJob`/`NoShard`/`Absent`/`Other`).
+- **Output.** Standard output prints `census <corpus>`, `plan <id>`,
+  `observers`, `ok`, `not_ok` (and per-status counts), `indeterminate_keys`,
+  `indeterminate_observers`, `causes` (sorted by keys descending, name
+  ascending; up to 5 observer paths each), `cause_texts` (keys descending,
+  name ascending), `run <path>`, `json <path>`, and the last line:
+  - `census: clean (<n> observers)` when `observers > 0`, `not_ok == 0`,
+    and `indeterminate_keys == 0`;
+  - `census: <k> indeterminate keys in <m> of <n> observers, <c> causes; <f> not ok`
+    otherwise (with `(no observer selected)` when `n == 0`);
+  - suffixed with ` (selection)` when `--only` or `--limit` was given.
+- **JSON (`<store>/census.json`).** Written atomically (`census.json.tmp`
+  renamed into place) with top-level keys `format` (`"slip.census.v1"`),
+  `corpus`, `plan`, `run`, `tool_slip`, `tool_kiln`, `kiln_pin`,
+  `slip_digest`, `selection` (`only`, `limit`), `clean`, `observers`, `ok`,
+  `not_ok`, `not_ok_by_status`, `indeterminate_keys`,
+  `indeterminate_observers`, `causes` (array of `{cause, keys, observers,
+  sample_observers}`), and `cause_texts` (array of `{name, keys, observers}`).
+- **Exit status:** `0` clean, `1` not clean, `2` for any command or usage
+  error.
 
 ## 10. Demo 1
 

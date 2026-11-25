@@ -26,6 +26,7 @@ mod common;
 
 use common::Fixture;
 use slip_exec::store::{Access, Object, Store};
+use slip_model::digests::{self, Digests, Group, GroupClass};
 use slip_model::edits::{MacroSite, Reason};
 use slip_model::editset::{Cause, EditSet, Refusal, SetState};
 use slip_model::hash::content_digest;
@@ -35,7 +36,7 @@ use slip_model::result::{self, Category, Residue, RunVerdict, State, Tally, Tran
 use slip_model::transform_run::{Step, StepName, TransformRun};
 use slip_model::{
     Command as Cmd, Configuration, Counter, Digest, End, FileRef, Job, Language, Observer, Origin,
-    Phase, Plan, Run, RunRecord, formats,
+    Outcome, Phase, Plan, Run, RunRecord, Shard, Status, formats,
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -64,15 +65,29 @@ echo "$cmd $*" >> "$D/log"
 patch=
 owned=
 write=
+store=
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch) patch=$2; shift ;;
     --owned) owned=$2; shift ;;
+    --store) store=$2; shift ;;
     --write) write=1 ;;
   esac
   shift
 done
 case "$cmd" in
+  --version)
+    echo "slip 0.0.0 (kiln 1.3.0)"
+    exit 0 ;;
+  plan)
+    echo "plan $(cat "$D/census.plan")"
+    exit 0 ;;
+  parse)
+    mkdir -p "$store"
+    cp -r "$D/census.store/." "$store/"
+    echo "plan $(cat "$D/census.plan")"
+    echo "run $store/$(cat "$D/census.run")"
+    exit 0 ;;
   rename)
     if [ -n "$write" ]; then
       if [ ! -e "$D/back.broken" ]; then
@@ -463,7 +478,106 @@ impl World {
         std::fs::write(self.f.path("fake/rename.out"), out).unwrap();
         std::fs::write(self.f.path("fake/rename.status"), status.to_string()).unwrap();
         std::fs::write(self.f.path("fake/edits"), set_id.to_string()).unwrap();
+        self.seed_census(0);
         set_id
+    }
+
+    /// Seeds the stand-in's census store: `indeterminate` keys of cause
+    /// `unsupported` on the first observer (0 = clean).
+    fn seed_census(&self, indeterminate: u64) {
+        let store_dir = self.f.path("fake/census.store");
+        let _ = std::fs::remove_dir_all(&store_dir);
+        let st = Store::open(&store_dir, Access::Exclusive).unwrap();
+        let p = self.plan();
+        let plan_id = st.publish_plan(&p.to_bytes()).unwrap();
+        let mut jobs = Vec::new();
+        for (i, o) in p.observers.iter().enumerate() {
+            let k = if i == 0 { indeterminate } else { 0 };
+            let mut counters = vec![Counter { name: "digest.indeterminate".into(), value: k }];
+            if k > 0 {
+                counters
+                    .push(Counter { name: "digest.indeterminate.unsupported".into(), value: k });
+                counters.push(Counter {
+                    name: "digest.cause.unsupported.exprkind.cxxreflectexpr".into(),
+                    value: k,
+                });
+            }
+            counters.sort();
+            let groups = vec![Group {
+                class: GroupClass::Tu,
+                file: vec![],
+                count: k.max(1),
+                indeterminate: k,
+                digest: d(1),
+                units: None,
+            }];
+            let sh = Shard {
+                observer: o.id,
+                phase: Phase::Map,
+                round: 0,
+                outcome: Outcome {
+                    status: Status::Ok,
+                    errors: 0,
+                    warnings: 0,
+                    message: String::new(),
+                },
+                inputs: Some(Vec::new()),
+                counters,
+                digests: Some(Digests {
+                    scheme: digests::SCHEME,
+                    tu: digests::tu_digest(&groups),
+                    groups,
+                }),
+                verdict: None,
+                edits: None,
+                binding: None,
+                rule_use: None,
+                spellings: None,
+                names: Some(slip_model::names::Names::default()),
+                negatives: None,
+                found: None,
+            };
+            let bytes = sh.to_bytes();
+            let sid = id(&bytes);
+            st.publish_shard(&plan_id, Phase::Map, 0, &o.id, &bytes).unwrap();
+            jobs.push(Job {
+                observer: o.id,
+                attempt: 1,
+                end: End::Completed,
+                shard: Some(sid),
+                queued_ns: 0,
+                wall_ns: 1_000,
+                cpu_ns: 1_000,
+                peak_rss: 1 << 20,
+                estimate: 1 << 20,
+            });
+        }
+        let rec = RunRecord {
+            run: Run {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                plan: plan_id,
+                phase: Phase::Map,
+                round: 0,
+                started_unix_ns: STARTED,
+                wall_ns: 1_000,
+                cores: 4,
+                workers_max: 2,
+                memory_budget: 1 << 30,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        st.publish_run(&plan_id, Phase::Map, 0, STARTED, &rec.to_bytes()).unwrap();
+        let rel = st
+            .run_path(&plan_id, Phase::Map, 0, STARTED)
+            .strip_prefix(&store_dir)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        drop(st);
+        std::fs::write(self.f.path("fake/census.plan"), plan_id.to_string()).unwrap();
+        std::fs::write(self.f.path("fake/census.run"), rel).unwrap();
     }
 
     fn env(&self) -> Env {
@@ -574,14 +688,18 @@ fn s6_5_rename_verifies() {
     assert!(pos.windows(2).all(|p| p[0] < p[1]), "{out}");
     // The lines of `slip rename` are printed.
     assert!(out.contains("\nstate verified\n"), "{out}");
-    // The calls: the corpus rename with --patch and never --write; the
-    // inverse over the copy with --write.
+    // The calls: the pre-flight census (`--version`, `parse`), the corpus
+    // rename with --patch and never --write, `reduce`, and the inverse over
+    // the copy with --write.
     let log = w.log();
     let calls: Vec<&str> =
         log.lines().filter(|l| !l.starts_with("make ") && !l.starts_with("cmake ")).collect();
-    assert_eq!(calls.len(), 3, "{log}");
+    assert_eq!(calls.len(), 5, "{log}");
     let dir = w.dir().display().to_string();
-    let first = calls[0];
+    assert!(calls[0].starts_with("--version"), "{}", calls[0]);
+    assert!(calls[1].starts_with("parse --db "), "{}", calls[1]);
+    assert!(calls[1].contains(&format!("--store {dir}/stores/census -j 2")), "{}", calls[1]);
+    let first = calls[2];
     assert!(first.starts_with("rename --from lib::f --to h --db "), "{first}");
     for word in ["--allow-unparsed", "--allow-residue", "--patch", "--relative-to", "-j 2"] {
         assert!(first.contains(word), "{first}");
@@ -589,9 +707,9 @@ fn s6_5_rename_verifies() {
     assert!(first.contains(&format!("--owned {}", w.src.display())), "{first}");
     assert!(first.contains(&format!("--store {dir}/slip-store")), "{first}");
     assert!(!first.contains("--write"), "{first}");
-    assert!(calls[1].starts_with("reduce --plan "), "{}", calls[1]);
-    assert!(calls[1].contains(&format!("--store {dir}/slip-store")), "{}", calls[1]);
-    let back = calls[2];
+    assert!(calls[3].starts_with("reduce --plan "), "{}", calls[3]);
+    assert!(calls[3].contains(&format!("--store {dir}/slip-store")), "{}", calls[3]);
+    let back = calls[4];
     assert!(back.starts_with("rename --from lib::h --to f --db "), "{back}");
     assert!(back.contains(&format!("{dir}/rename-build/compile_commands.json")), "{back}");
     assert!(back.contains(&format!("--owned {dir}/rename-copy")), "{back}");
@@ -1060,4 +1178,57 @@ fn s6_5_verified_without_a_patch() {
         checks(&out)[0],
         "check state: FAIL (state verified, but slip wrote no patch: its lines say why)"
     );
+}
+
+// §6.5 / §9.5 (WP-166): census pre-flight check on `--expect verified` and
+// `--accept`, bypassed by `--skip-census`, and skipped on `--expect refused`
+// and `--expect not_verified`.
+#[test]
+fn s6_5_census_gate() {
+    // 1. `--expect verified` refused before rename's map phase on unclean census.
+    let w = World::new("rename-census-verified");
+    w.records(&Run1::of(State::Verified));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "verified"]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(
+        out.contains("census: 2 indeterminate keys in 1 of 3 observers, 1 causes; 0 not ok"),
+        "{out}"
+    );
+    assert!(out.contains("cargo xtask census tiny"), "{out}");
+    assert!(!w.log().contains("rename "), "rename must not start: {}", w.log());
+
+    // 2. `--accept` (without `--expect`) also refused on unclean census.
+    let w = World::new("rename-census-accept");
+    w.records(&Run1::of(State::Verified));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--accept"]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(out.contains("cargo xtask census tiny"), "{out}");
+    assert!(!w.log().contains("rename "), "rename must not start: {}", w.log());
+
+    // 3. `--skip-census` starts the rename and notes it in the last line.
+    let w = World::new("rename-census-skip");
+    w.records(&Run1::of(State::Verified));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "verified", "--skip-census"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(out.ends_with("corpus rename: ok (census skipped)\n"), "{out}");
+    assert!(!w.log().contains("parse "), "census must not run: {}", w.log());
+    assert!(w.log().contains("rename "), "rename must run: {}", w.log());
+
+    // 4. `--expect refused` and `--expect not_verified` do not run the census.
+    let w = World::new("rename-census-refused");
+    w.records(&Run1::of(State::Refused));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "refused"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(!w.log().contains("parse "), "refused must not run census: {}", w.log());
+
+    let w = World::new("rename-census-not-verified");
+    w.records(&Run1::of(State::NotVerified));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "not_verified"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(!w.log().contains("parse "), "not_verified must not run census: {}", w.log());
 }
