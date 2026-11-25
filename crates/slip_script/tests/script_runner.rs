@@ -7,6 +7,8 @@
 //! are errors, a transform that reads a file of its directory is an
 //! error, two directories with one transform are one group.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -320,13 +322,12 @@ fn wp090_summary() {
 // ---------------------------------------------------------------------------
 // Discovery, grouping, retirement.
 
-/// A new directory under Cargo's temporary directory.
+/// A new directory under the work root (`common::work_root()`).
 fn scratch(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("script-runner-{}-{n}-{name}", std::process::id()));
+    let dir = common::work_root().join(format!("script-runner-{}-{n}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::canonicalize(&dir).unwrap()
@@ -647,4 +648,10 @@ fn wp095_a_script_run_asks_every_key_of_its_own_server() {
     assert!(out.contains("changed"), "{out}");
     assert!(out.contains("counter api.one_shot_key_servers absent"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }

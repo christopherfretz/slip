@@ -18,11 +18,13 @@
 //! - [`oracles`]: the five oracles;
 //! - [`mutate`]: the mutated edit sets ([`mutate::mutations`]).
 //!
-//! Each test works in `<target>/transform/<area>/<name>/`, removed and
-//! made again by explicit path for each run, with `tree/`, `store/`,
-//! `cdb.json`, `back/` and `determinism/`; it is removed when the test
-//! passes and kept, its path printed, when it does not
-//! (`spec/landed/harness/WP-077.md`).
+//! Each test works in `<base>/<area>/<name>/`, removed and made again by
+//! explicit path for each run, with `tree/`, `store/`, `cdb.json`, `back/`
+//! and `determinism/`; it is removed when the test passes and kept, its
+//! path printed, when it does not (`spec/landed/harness/WP-077.md`). The
+//! base is `$SLIP_TEST_ROOT/transform/<checkout>` when that variable is
+//! set and not empty, else `<target>/transform` ([`work_base`],
+//! `spec/harness.md` §11.5).
 
 pub mod mutate;
 pub mod oracles;
@@ -33,7 +35,7 @@ pub mod tree;
 pub use test_file::{Allow, Expected, Oracle, Test, parse_test};
 
 use slip_exec::jobserver::Pool;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
@@ -95,7 +97,7 @@ pub struct Report {
 }
 
 /// Runs `test` with the executable `slip` in the work directory `work`
-/// (`<target>/transform/<area>/<name>`, refused with `Error` otherwise)
+/// (`<base>/<area>/<name>`, [`work_base`]; refused with `Error` otherwise)
 /// and judges it; `clang` is the compiler of the clang oracle, `None` to
 /// skip it; `bless` rewrites `expect.txt` and `post/` (§6.3).
 pub fn run_one(
@@ -186,6 +188,24 @@ pub fn target_dir(root: &Path) -> PathBuf {
         Some(d) => root.join(d),
         None => root.join("target"),
     }
+}
+
+/// The directory the tests' work directories are made in (§6.3, §11.5):
+/// `<test_root>/transform/<checkout>` when `test_root` (the value of
+/// `$SLIP_TEST_ROOT`) is given and not empty, `<checkout>` the last
+/// component of `root`; else `<target>/transform` ([`target_dir`]). A
+/// `test_root` that is not absolute is an error. The `slip` the runner
+/// builds stays the target directory's.
+pub fn work_base(root: &Path, test_root: Option<&OsStr>) -> Result<PathBuf, String> {
+    let Some(test_root) = test_root.filter(|v| !v.is_empty()) else {
+        return Ok(target_dir(root).join("transform"));
+    };
+    let test_root = Path::new(test_root);
+    if !test_root.is_absolute() {
+        return Err(format!("SLIP_TEST_ROOT={}: not an absolute path", test_root.display()));
+    }
+    let checkout = root.file_name().unwrap_or(OsStr::new("root"));
+    Ok(test_root.join("transform").join(checkout))
 }
 
 const USAGE: &str = "usage: cargo xtask transform [--only <substring>]… [--bless] [-j <n>] \
@@ -284,7 +304,13 @@ pub fn run_all(root: &Path, opts: &Options) -> bool {
         },
     };
     let clang = if opts.no_clang { None } else { find_clang(&|n| std::env::var_os(n)) };
-    let target = target_dir(root);
+    let base = match work_base(root, std::env::var_os("SLIP_TEST_ROOT").as_deref()) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("transform: {e}");
+            return false;
+        }
+    };
 
     let pool = Pool::from_env();
     let jobs = opts.jobs.unwrap_or_else(|| pool.jobs()).min(selected.len()).max(1);
@@ -297,7 +323,7 @@ pub fn run_all(root: &Path, opts: &Options) -> bool {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(dir) = selected.get(i) else { break };
                     let token = pool.acquire();
-                    let r = one(dir, &slip, &target, clang.as_deref(), opts.bless);
+                    let r = one(dir, &slip, &base, clang.as_deref(), opts.bless);
                     drop(token);
                     reports.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[i] = Some(r);
                 }
@@ -405,11 +431,11 @@ fn print_outcomes(
     gate
 }
 
-/// One test: parse it, work out its work directory, run it.
+/// One test: parse it, work out its work directory under `base`, run it.
 fn one(
     dir: &Path,
     slip: &Path,
-    target: &Path,
+    base: &Path,
     clang: Option<&Path>,
     bless: bool,
 ) -> (Report, Option<PathBuf>) {
@@ -421,7 +447,7 @@ fn one(
             return (report, None);
         }
     };
-    let work = target.join("transform").join(&test.area).join(&test.name);
+    let work = base.join(&test.area).join(&test.name);
     let report = run::run_test(&test, slip, &work, clang, bless);
     // A work directory refused by the runner was never made: keep nothing.
     let made = tree::check_work_dir(&work, &test.area, &test.name, &test.dir).is_ok();

@@ -7,6 +7,8 @@
 //! tests say which entity they mean by the place of its first
 //! declaration (`file:line`).
 
+mod common;
+
 use std::time::Instant;
 
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
@@ -1111,7 +1113,7 @@ template <> void A::mt<int>(int x) {}
 #[test]
 fn review_f4_forced_include_orders_first() {
     use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase};
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp083-forced-include");
+    let dir = common::work_root().join("wp083-forced-include");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.cpp"), "namespace q { void h(int); }\n").unwrap();
     std::fs::write(dir.join("x.h"), "namespace q { void h(char); }\n").unwrap();

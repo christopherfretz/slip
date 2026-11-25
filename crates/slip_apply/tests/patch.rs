@@ -164,8 +164,7 @@ fn s7_2_stale_pre_image_and_bad_blob() {
 // The property, through the tools.
 
 fn scratch(name: &str) -> PathBuf {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("wp063-patch-{name}-{}", std::process::id()));
+    let d = common::work_root().join(format!("wp063-patch-{name}-{}", std::process::id()));
     if d.exists() {
         common::remove_tree(&d);
     }
@@ -381,4 +380,10 @@ fn s7_2_large_files() {
     let body: Vec<&str> = d.lines().skip(3).collect();
     assert_eq!(body.iter().filter(|l| l.starts_with('-')).count(), 1, "{d}");
     assert_eq!(body.iter().filter(|l| l.starts_with('+')).count(), 1, "{d}");
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }

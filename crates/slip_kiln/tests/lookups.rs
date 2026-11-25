@@ -7,6 +7,8 @@
 //! The parse changes the process's current directory: every test holds
 //! [`LOCK`] and uses absolute paths only.
 
+mod common;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,8 +35,8 @@ impl Dir {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp052-lookups-{name}-{}-{n}", std::process::id()));
+        let root =
+            common::work_root().join(format!("wp052-lookups-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(&root).unwrap();

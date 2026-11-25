@@ -2,6 +2,8 @@
 //! the post command, subject paths, guard G1's test, and `__FILE__` in a
 //! real parse of a post tree.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -30,15 +32,15 @@ fn words(list: &[&str]) -> Vec<Vec<u8>> {
     list.iter().map(|w| w.as_bytes().to_vec()).collect()
 }
 
-/// A directory of its own under the target directory, removed on drop.
+/// A directory of its own under the work root, removed on drop.
 struct Dir(PathBuf);
 
 impl Dir {
     fn new(name: &str) -> Dir {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp052-image-{name}-{}-{n}", std::process::id()));
+        let base =
+            common::work_root().join(format!("wp052-image-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         Dir(std::fs::canonicalize(&base).unwrap())

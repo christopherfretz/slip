@@ -4,9 +4,9 @@
 //! code generator emits the types as a run-time filter, differ; the same
 //! specification twice is equal. The pair-test harness parses C++17 and
 //! later only (`slip_kiln::snippet`), so this is the production parse
-//! (`parse_observer_with`) of a tree under the target directory.
+//! (`parse_observer_with`) of a tree under the work root (`common::work_root()`).
 
-use std::path::Path;
+mod common;
 
 use slip_digest::{Detail, Input, Options};
 use slip_kiln::ParseOptions;
@@ -17,12 +17,8 @@ use slip_model::{Digest, Status, digests::Unit};
 /// The digest and determinacy of the unit named `name` in `source`,
 /// parsed as C++14.
 fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool) {
-    let tree = Tree::new(
-        Path::new(env!("CARGO_TARGET_TMPDIR")),
-        label,
-        &[("main.cpp", source.as_bytes())],
-    )
-    .expect("the tree");
+    let tree = Tree::new(&common::work_root(), label, &[("main.cpp", source.as_bytes())])
+        .expect("the tree");
     let observer = tree.observer("main.cpp", "c++14", &[]);
     let (shard, got) = tree
         .parse(&observer, &ParseOptions::default(), |unit| {

@@ -7,6 +7,8 @@
 //! The parse changes the process's current directory, so every test here
 //! holds [`LOCK`] and uses absolute paths only.
 
+mod common;
+
 mod support;
 
 use std::path::{Path, PathBuf};
@@ -642,8 +644,8 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
     use slip_kiln::ranges::unit_order;
     use std::cmp::Ordering;
     let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
+    let dir =
+        common::work_root().join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();

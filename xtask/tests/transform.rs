@@ -96,13 +96,20 @@ struct Case {
     name: String,
     /// The fixture's root, canonical.
     root: PathBuf,
+    /// `$SLIP_TEST_ROOT` of the run, if set: the work directory is then
+    /// under it (spec/harness.md §11.5), not under the fixture's target.
+    test_root: Option<PathBuf>,
 }
 
 impl Case {
     fn new(name: &str) -> Case {
         let f = Fixture::empty(&format!("transform-{name}"));
         let root = f.root().canonicalize().unwrap();
-        Case { _fixture: f, name: name.to_owned(), root }
+        Case { _fixture: f, name: name.to_owned(), root, test_root: None }
+    }
+    /// [`Case::new`], run with `$SLIP_TEST_ROOT` set to `test_root`.
+    fn under(name: &str, test_root: &Path) -> Case {
+        Case { test_root: Some(test_root.to_owned()), ..Case::new(name) }
     }
     fn dir(&self) -> PathBuf {
         self.root.join("tests/transform/rename").join(&self.name)
@@ -116,7 +123,11 @@ impl Case {
         std::fs::read_to_string(self.dir().join(rel)).ok()
     }
     fn work(&self) -> PathBuf {
-        self.root.join("target/transform/rename").join(&self.name)
+        let base = match &self.test_root {
+            None => self.root.join("target/transform"),
+            Some(t) => t.join("transform").join(self.root.file_name().unwrap()),
+        };
+        base.join("rename").join(&self.name)
     }
     fn tree(&self) -> PathBuf {
         self.work().join("tree")
@@ -451,7 +462,16 @@ fn standard_ov(
     files: &[(&str, &str, &str)],
     edit: impl FnOnce(String) -> String,
 ) -> (Case, Records) {
-    let c = Case::new(name);
+    standard_in(Case::new(name), test_txt, files, edit)
+}
+
+/// [`standard_ov`] for the case `c`.
+fn standard_in(
+    c: Case,
+    test_txt: &str,
+    files: &[(&str, &str, &str)],
+    edit: impl FnOnce(String) -> String,
+) -> (Case, Records) {
     let set = tree_set(&c);
     let r = c.records_ov("run", &set, State::Verified, |_| {}, &overlay_with(&c, &set, files));
     let script = edit(good_script(&r));
@@ -2937,6 +2957,7 @@ fn xtask_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, 
         .env("CARGO_MANIFEST_DIR", root.join("xtask"))
         .env("CARGO_TARGET_DIR", root.join("target"))
         .env("PATH", root.join("no-such-bin"))
+        .env_remove("SLIP_TEST_ROOT")
         .env_remove("SLIP_CLANG")
         .env_remove("SLIP_REQUIRE_ALL");
     for (k, v) in env {
@@ -2965,8 +2986,12 @@ fn s6_3_the_command() {
     // More tests in the same fixture: the same tree path is not theirs,
     // so each has records of its own.
     let add = |name: &str, txt: &str, edit: &dyn Fn(String) -> String| {
-        let c =
-            Case { _fixture: Fixture::empty("unused"), name: name.to_owned(), root: root.clone() };
+        let c = Case {
+            _fixture: Fixture::empty("unused"),
+            name: name.to_owned(),
+            root: root.clone(),
+            test_root: None,
+        };
         let r = c.records(name, &tree_set(&c), State::Verified, |_| {});
         c.write("test.txt", txt);
         c.write("pre/a.cpp", PRE);
@@ -3168,4 +3193,85 @@ fn s6_3_usage() {
         ),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------- work directories (§11.5)
+
+// §11.5: the base of the work directories: `$SLIP_TEST_ROOT/transform/
+// <checkout>` when set and not empty, else `<target>/transform`; a
+// relative value is refused.
+#[test]
+fn s11_5_work_base() {
+    use std::ffi::OsStr;
+    use xtask::transform::{target_dir, work_base};
+    let root = Path::new("/r/checkout-a");
+    let target = target_dir(root).join("transform");
+    assert_eq!(work_base(root, None), Ok(target.clone()));
+    assert_eq!(work_base(root, Some(OsStr::new(""))), Ok(target));
+    assert_eq!(
+        work_base(root, Some(OsStr::new("/t"))),
+        Ok(PathBuf::from("/t/transform/checkout-a"))
+    );
+    assert_eq!(
+        work_base(root, Some(OsStr::new("t"))),
+        Err("SLIP_TEST_ROOT=t: not an absolute path".to_owned())
+    );
+}
+
+// §11.5: with SLIP_TEST_ROOT set, every work directory is under
+// `$SLIP_TEST_ROOT/transform/<checkout>/`, nothing is made under the
+// target directory, a passing test's is removed and a failing one's kept
+// and printed at that path; unset, they are under the target directory
+// (`s6_3_the_command`).
+#[test]
+fn s11_5_work_directories_under_slip_test_root() {
+    let t = Fixture::empty("transform-test-root");
+    let test_root = t.root().canonicalize().unwrap();
+    let (a, _) = standard_in(
+        Case::under("a-pass", &test_root),
+        &format!("{TEST_TXT}oracle: no-clang none\n"),
+        &[("a.cpp", PRE, POST)],
+        |g| g,
+    );
+    let root = a.root.clone();
+    // A second test in the same fixture.
+    let b = Case {
+        _fixture: Fixture::empty("unused"),
+        name: "b-fail".into(),
+        root: root.clone(),
+        test_root: Some(test_root.clone()),
+    };
+    let r = b.records("b-fail", &tree_set(&b), State::Verified, |_| {});
+    b.write("test.txt", &format!("{TEST_TXT}oracle: no-clang none\n"));
+    b.write("pre/a.cpp", PRE);
+    b.write("pre/fake.txt", &good_script(&r).replace("out map: selected 1", "out map: selected 2"));
+    b.write("post/a.cpp", POST);
+    b.write("expect.txt", &golden(&main_out(&r)));
+
+    let env = [("SLIP_TEST_ROOT", test_root.to_str().unwrap())];
+    let (code, out, _) = xtask_env(&root, &["--slip", FAKE, "--no-clang"], &env);
+    let base = test_root.join("transform").join(root.file_name().unwrap()).join("rename");
+    assert_eq!(a.work(), base.join("a-pass"));
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.starts_with(&format!(
+            "FAIL rename/b-fail: output line 4: expected `map: selected 1, ok 1, not ok 0, \
+             failed runs 0`, got `map: selected 2, ok 1, not ok 0, failed runs 0`\n  kept {}\n\
+             transform: 1 passed, 1 failed\n",
+            base.join("b-fail").display()
+        )),
+        "{out}"
+    );
+    assert!(base.join("b-fail/tree/a.cpp").is_file());
+    assert!(!base.join("a-pass").exists(), "a passing test's directory is removed");
+    assert!(!root.join("target").exists(), "nothing under the target directory");
+    let (code, out, _) = xtask_env(&root, &["--slip", FAKE, "--no-clang", "--only", "a-"], &env);
+    assert_eq!(code, Some(0), "{out}");
+    // A relative value is refused before any test runs.
+    let (code, out, _) = xtask_env(&root, &["--slip", FAKE], &[("SLIP_TEST_ROOT", "rel")]);
+    assert_eq!(
+        (code, out.as_str()),
+        (Some(1), "transform: SLIP_TEST_ROOT=rel: not an absolute path\n")
+    );
+    assert!(!root.join("target").exists() && !root.join("rel").exists());
 }

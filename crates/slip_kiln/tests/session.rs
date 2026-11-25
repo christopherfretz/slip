@@ -7,6 +7,8 @@
 //! `parse_observer_with`, which changes the process's current directory;
 //! nothing here depends on it.
 
+mod common;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,8 +42,7 @@ fn resource_include() -> PathBuf {
 fn scratch(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("session-{}-{n}-{name}", std::process::id()));
+    let dir = common::work_root().join(format!("session-{}-{n}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::canonicalize(&dir).unwrap()
