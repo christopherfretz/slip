@@ -1575,7 +1575,12 @@ The rest of profile mode:
      places (fix round 2): a partial specialisation's own list, of a
      class or a variable template, is read from Kiln's list as written
      (`args_as_written`, Kiln WP-3016/3142) against its canonical list,
-     position by position (`differ/_/converted-arg-partial-own*`); and a
+     position by position (`differ/_/converted-arg-partial-own*`; of a
+     variadic template, whose canonical list holds its pack converted,
+     `T, {0}`, the written arguments the pack covers are read against
+     its elements when they are as many, and the unit is
+     `spelling/converted-argument` when they are not, fix round 3,
+     `differ/_/converted-arg-partial-pack-*`); and a
      declaration written outside a partial specialisation it is a member
      of (an out-of-line member function, static data member or nested
      class, `template<class T> void P<T, n::k>::f() {}`), whose

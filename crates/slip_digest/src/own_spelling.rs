@@ -618,15 +618,28 @@ fn dependent_canonical_args(w: &Walk<'_>, underlying: QualType) -> Option<ArgLis
 
 /// Rule 12 (digest-kinds §4.4 "Spellings"), the one reader of a list
 /// whose canonical form holds converted values: list `read` position by
-/// position, where `written` (the list as written; `read` itself for a
-/// written type) holds an expression and `canonical` a converted value,
-/// the written expression with its profile (`profiled_expr`); elsewhere
-/// `read`'s argument, as `arg` reads it. The lists are zipped
-/// position by position and the zip stops at the shorter: the written
-/// list is shorter only where defaults fill the canonical one, and a
-/// default is read by the unit of the template that holds it (its
-/// default template argument); a pack takes one position in each list
-/// and is never a converted value (Kiln converts no pack's arguments).
+/// position (`read` is `written` itself for a written type, and a
+/// partial specialisation's converted list, which has the canonical
+/// list's shape, for its own list), where `written` (the list as
+/// written) holds an expression and `canonical` a converted value, the
+/// written expression with its profile (`profiled_expr`); elsewhere
+/// `read`'s argument, as `arg` reads it.
+///
+/// Before a pack the three lists hold one argument per parameter, and
+/// the written list is shorter only where defaults fill the canonical
+/// one, which the template's own unit reads (its default template
+/// argument): the zip stops at the shorter. A canonical argument that
+/// is a pack holding a converted value (a partial specialisation of a
+/// variadic template, `P<T, n::k>` with `template<class, int...>`:
+/// the canonical list is `T, {0}`) covers the rest of the written list
+/// (a class or variable template's pack is its last parameter): when
+/// the written arguments from that position are exactly as many as the
+/// pack's elements, each is read against its element as above, a
+/// written pack expansion over a converted value excepted; otherwise
+/// which written argument names which element is not known and the
+/// form is lost (`lost_form`, `CONVERTED_ARGUMENT`), never equal. A
+/// written dependent type's canonical list holds no such pack (Kiln
+/// converts no dependent variadic template-id's arguments).
 fn converted_args(
     w: &mut Walk<'_>,
     s: &mut Stream,
@@ -640,12 +653,62 @@ fn converted_args(
     let written = types.args(written).to_vec();
     let canonical = canonical.map_or_else(Vec::new, |c| types.args(c).to_vec());
     for (i, a) in read.into_iter().enumerate() {
-        let converted =
-            matches!(canonical.get(i).map(TemplateArg::view), Some(ArgView::Value { .. }));
-        match written.get(i).map(TemplateArg::view) {
-            Some(ArgView::Expr { expr: e, profile: _ }) if converted => profiled_expr(w, s, e),
-            _ => arg(w, s, a, here),
+        let c = canonical.get(i).map(TemplateArg::view);
+        if let Some(ArgView::Pack(p)) = c
+            && holds_value(w, p)
+        {
+            let elements = w.ast.types.args(p).to_vec();
+            let rest = written.get(i..).unwrap_or(&[]);
+            let aligned = rest.len() == elements.len()
+                && rest
+                    .iter()
+                    .zip(&elements)
+                    .all(|(x, c)| !(expansion(w, *x) && matches!(c.view(), ArgView::Value { .. })));
+            if !aligned {
+                lost_form(w, s, CONVERTED_ARGUMENT);
+                arg(w, s, a, here);
+                return;
+            }
+            for (x, c) in rest.iter().zip(&elements) {
+                one_converted(w, s, *x, *x, c.view(), here);
+            }
+            return;
         }
+        let x = written.get(i).copied().unwrap_or(a);
+        match c {
+            Some(c) => one_converted(w, s, a, x, c, here),
+            None => arg(w, s, a, here),
+        }
+    }
+}
+
+/// One position of `converted_args`: written argument `x` over canonical
+/// argument `c`, read as rule 12 reads it where `x` is an expression and
+/// `c` a converted value; otherwise `a`, the argument the unit holds.
+fn one_converted(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    a: TemplateArg,
+    x: TemplateArg,
+    c: ArgView,
+    here: Ctx,
+) {
+    match (x.view(), c) {
+        (ArgView::Expr { expr: e, profile: _ }, ArgView::Value { .. }) => profiled_expr(w, s, e),
+        _ => arg(w, s, a, here),
+    }
+}
+
+/// Whether written argument `a` is a pack expansion (`Ns...`,
+/// `Ts...`, `TT...`).
+fn expansion(w: &Walk<'_>, a: TemplateArg) -> bool {
+    match a.view() {
+        ArgView::Expr { expr: e, profile: _ } => w.ast.exprs.get(e).kind() == K::PackExpansionExpr,
+        ArgView::Type(q) => {
+            matches!(w.ast.types.view(q.ty()), TypeView::PackExpansion { .. })
+        }
+        ArgView::TemplateExpansion { .. } => true,
+        _ => false,
     }
 }
 
