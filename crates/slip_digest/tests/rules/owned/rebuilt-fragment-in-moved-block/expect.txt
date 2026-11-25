@@ -1,0 +1,3 @@
+# Equal; frag.inc relied on, its row mapped.
+declares frag.inc rule 1 mapped 1 left 0
+relied frag.inc

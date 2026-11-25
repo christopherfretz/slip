@@ -1135,7 +1135,7 @@ slip verify --plan <id or file> [--round <n>] [--declared <file>]
            [--estimate-base <size>] [--estimate-per-byte <n>]
            [--worker-jobs <n>] [--worker-stack <size>]
 slip declare --plan <id or file> --from <file> --out <file>
-           [--owned <path>]… [--readonly <path>]…
+           [--owned <path>]… [--readonly <path>]… [--rebuilt <path>]…
            [--root <dir>]… [--post <dir>]… [--store <dir>] [--only <substring>]… [--limit <n>]
 slip units --plan <id or file> [--post-image] [--root <dir>]… [--post <dir>]…
            [--store <dir>] [--only <substring>]… [--limit <n>] [--match <substring>]…
@@ -1143,12 +1143,12 @@ slip map   (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
            (--from <qualified name> --to <identifier> [--kind function|variable]
             [--dependent offer|refuse|leave]
             | --transform <file.cpp> [--transform-arg <option>]… [--indivisible])
-           --owned <path>… [--readonly <path>]…
+           --owned <path>… [--readonly <path>]… [--rebuilt <path>]…
            [the store, selection, memory, timeout and worker options of `parse`]
 slip rename --from <qualified name> --to <identifier> [--kind function|variable]
            [--dependent offer|refuse|leave]
            (--plan <id or file> | --db [<name>=]<compile_commands.json>…)
-           --owned <path>… [--readonly <path>]…
+           --owned <path>… [--readonly <path>]… [--rebuilt <path>]…
            [--write | --patch <file>] [--relative-to <dir>] [--report <file>]
            [--allow-residue] [--allow-unparsed] [--allow-partial] [--allow-errors]
            [--residue-ext <list>] [--findings <n>] [--locate <n>]
@@ -1388,7 +1388,7 @@ instances of the rows above, and 2, 70 and a signal are as above.
   status 3 (`slip: parse: <error>` for the latter). An ownership or
   declaration `files` entry that does not exist or is not spelled as on
   disk (`spec/edits.md` §2.1) is
-  `slip: <container>: ownership: the <owned|readonly> entry <entry> is not spelled as on disk (<spelling>)`,
+  `slip: <container>: ownership: the <owned|readonly|rebuilt> entry <entry> is not spelled as on disk (<spelling>)`,
   or `... does not exist`, before the first job; `<container>` is the
   record's path in the store, the declaration file given, or
   `the request` for `map` and `rename`.
@@ -1626,7 +1626,7 @@ as a `DECL` container to `--out`.
   selection must keep at least one observer and at most 64 (an input
   error otherwise, naming the number): every selected observer is parsed
   here, in this process, one after another.
-- `--owned` and `--readonly` (each repeats) are the run's files
+- `--owned`, `--readonly` and `--rebuilt` (each repeats) are the run's files
   (`spec/verify.md` §2.1, `spec/edits.md` §2.1): each entry is made a
   real path (its symbolic links resolved) and the lists are sorted with
   no two equal, as `map` and `rename` make them (§10.1 step 2 of
@@ -1634,8 +1634,12 @@ as a `DECL` container to `--out`.
   no `--owned` is a usage error, `slip: a relocate line needs the run's
   files: --owned`, given after the text is read and before anything else
   (the store, the plan, a parse); there is no default. `--readonly`
-  without `--owned` is a usage error. An entry that does not exist, and
-  one that is both owned and read-only once resolved, are input errors.
+  or `--rebuilt` without `--owned` is a usage error. An entry that does
+  not exist, one given in two of the lists once resolved (`<path>: given
+  as --owned and as --rebuilt`), and `--rebuilt /` are input errors
+  (`edits.md` §10.1). A `--rebuilt` entry that covers no file a selected
+  pre-image read is warned of: `slip: warning: declare: --rebuilt <real
+  path> covers no file of the selected observers` (WP-118).
   Without a `relocate` line the options may be left out; given, they are
   checked and not written. The container's `files` are these lists when
   it has a rule, and none otherwise (`spec/verify.md` §2, rule 6).

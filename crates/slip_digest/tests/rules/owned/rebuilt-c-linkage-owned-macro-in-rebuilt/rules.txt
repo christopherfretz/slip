@@ -1,0 +1,2 @@
+rule function | c_linkage | id gen_init | disc-of pre gen_start() | c_linkage | id gen_start
+# WP-118 R2.2 by the expansion location (review S2): a macro of owned own.h whose body declares extern "C" gen_start, invoked in rebuilt gen.h. The declaration lies in the rebuilt file by its expansion location, so the C-linkage entity is a dependency entity and the rule matches nothing: a difference. Owned, it is renamable (expect-as-owned.txt).

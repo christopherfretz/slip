@@ -140,6 +140,7 @@ fn sample_shard() -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -165,6 +166,7 @@ fn failed_shard() -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -471,6 +473,7 @@ fn small_shard() -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 

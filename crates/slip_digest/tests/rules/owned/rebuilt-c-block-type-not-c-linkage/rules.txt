@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R2.2 (second review N-b, X14): rebuilt gen.h writes namespace legacy and its struct Mine inside an extern "C" block. Neither has language linkage (only functions and variables do), so the C-linkage exception does not apply: owned by the chain, mapped, equal, gen.h relied on. Read-only, the difference.

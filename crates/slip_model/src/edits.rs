@@ -126,6 +126,11 @@ pub enum Reason {
     /// Added by WP-139, item 8: `mixed_instances` is the name some
     /// instantiations bind to a subject and some to another declaration.
     Instantiated = 11,
+    // 12 is unlisted: an interim build gave it to `no_holder`, removed
+    // before any release; no value gets two meanings (§4.2).
+    /// The bytes are in a rebuilt file (§2.1): Slip does not write them;
+    /// the build does. Added by WP-118, without a change of version.
+    Rebuilt = 13,
 }
 
 /// The bits of `Claim::tiers` (§2.2, §4.2): bit t for tier t, bit 4 for X.

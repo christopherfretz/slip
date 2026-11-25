@@ -200,13 +200,13 @@ fn is_image(bytes: &[u8], c: &Content) -> bool {
 
 /// `Invalid` unless every entry is a canonical absolute path (so not
 /// empty: `""` would cover every path), `owned` is not empty, and no entry
-/// is in both lists (`spec/edits.md` §2.1).
+/// is in two of the three lists (`spec/edits.md` §2.1).
 fn check_ownership(o: &Ownership) -> Result<(), WriteError> {
     let bad = |what: String| Err(WriteError::Invalid(format!("ownership: {what}")));
     if o.owned.is_empty() {
         return bad("owned is empty".to_string());
     }
-    for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly")] {
+    for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly"), (&o.rebuilt, "rebuilt")] {
         if let Some(e) = list.iter().find(|e| !is_canonical(e)) {
             return bad(format!(
                 "{name}: {:?} is not a canonical absolute path",
@@ -216,6 +216,15 @@ fn check_ownership(o: &Ownership) -> Result<(), WriteError> {
     }
     if let Some(e) = o.readonly.iter().find(|e| o.owned.contains(e)) {
         return bad(format!("{:?} is both owned and readonly", String::from_utf8_lossy(e)));
+    }
+    if o.rebuilt.iter().any(|e| e.as_slice() == b"/") {
+        return bad("a rebuilt entry is /".to_string());
+    }
+    if let Some(e) = o.rebuilt.iter().find(|e| o.owned.contains(e)) {
+        return bad(format!("{:?} is both owned and rebuilt", String::from_utf8_lossy(e)));
+    }
+    if let Some(e) = o.rebuilt.iter().find(|e| o.readonly.contains(e)) {
+        return bad(format!("{:?} is both rebuilt and readonly", String::from_utf8_lossy(e)));
     }
     Ok(())
 }
@@ -256,7 +265,7 @@ impl<'t> Spelling<'t> {
         Spelling { tree, walk: slip_spelling::Spelling::new(TreeLookup(tree)) }
     }
 
-    /// Every entry of `o`, owned and read-only, exists and is its own
+    /// Every entry of `o`, owned, read-only and rebuilt, exists and is its own
     /// real path spelled on disk (`spec/edits.md` §2.1; the predicate of
     /// `slip_spelling::real_path`, asked of the tree: no link on it, and
     /// its spelling): an entry through a link, or in another case
@@ -266,7 +275,9 @@ impl<'t> Spelling<'t> {
     /// `Io` when a directory that must be listed cannot be, or a lookup
     /// fails. Before anything is checked against the ownership.
     fn entries(&mut self, o: &Ownership, journal_left: bool) -> Result<(), WriteError> {
-        for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly")] {
+        for (list, name) in
+            [(&o.owned, "owned"), (&o.readonly, "readonly"), (&o.rebuilt, "rebuilt")]
+        {
             for e in list {
                 let bad = |what: String| {
                     Err(WriteError::Invalid(format!(

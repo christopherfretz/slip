@@ -229,6 +229,7 @@ fn vendor_ownership(t: &Tree) -> Ownership {
     Ownership {
         owned: vec![format!("{root}/src").into_bytes()],
         readonly: vec![format!("{root}/src/vendor").into_bytes()],
+        rebuilt: Vec::new(),
     }
 }
 

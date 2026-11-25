@@ -1,2 +1,2 @@
-# spec/verify.md §2.1, WP-110 re-check Q3. A read-only main file (a unity-build main file, unity_0_cxx.cxx, whose #includes are owned files): user() is a dependency entity, and the owned src.h it includes is read-only by the include chain, so the correct migration differs (the cost of spec/verify.md §2.1; WP-118).
+# spec/verify.md §2.1, WP-110 re-check Q3. A read-only main file (a unity-build main file, unity_0_cxx.cxx, whose #includes are owned files): user() is a dependency entity, and the owned src.h it includes is read-only by the include chain, so the correct migration differs (the cost of spec/verify.md §2.1), undeclared (expect-undeclared.txt). Declared rebuilt (WP-118), the main file and src.h are owned-like and the migration verifies.
 relocate legacy => :: acme

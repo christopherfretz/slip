@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R3.1 (second review SF3, X8): main.cpp includes rebuilt outer.h, which includes rebuilt inner.h, which includes owned mid.h (whose Mine is mapped). The inclusion of mid.h has both entries on its chain, so the set is the union of the two (`Sets::with` adds to the set it is given): both relied on.

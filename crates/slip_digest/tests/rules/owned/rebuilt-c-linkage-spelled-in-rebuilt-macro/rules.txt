@@ -1,0 +1,2 @@
+rule function | c_linkage | id gen_init | disc-of pre gen_start() | c_linkage | id gen_start
+# WP-118 R2.2 by the name token's spelling file (review S1): a macro of rebuilt gen.h spells extern "C" gen_start, expanded in owned a.cpp. The declaration lies in the rebuilt file by its spelling location, so the C-linkage entity is a dependency entity and the rule matches nothing: a difference. Owned, it is renamable (expect-as-owned.txt).

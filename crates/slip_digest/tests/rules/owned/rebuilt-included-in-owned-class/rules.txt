@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 row 30: rebuilt members.inc included inside the body of owned class Mine: its members follow the class in any case; owned-like.

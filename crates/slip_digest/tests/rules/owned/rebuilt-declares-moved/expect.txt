@@ -1,0 +1,3 @@
+# gen.h rebuilt: equal. The row counts G and the namespace acme that gen.h opens (R6.4: an entity whose own trace is via the rule, a namespace included).
+declares gen.h rule 1 mapped 2 left 0
+relied gen.h

@@ -982,10 +982,13 @@ consteval bool is_editable(range);
    `wrong_kind` for an entity and `unsupported` for a declaration.
 5. `source_text_of(r)`: the bytes of `r`. Throws `invalid_handle` for a
    null range.
-6. `is_editable(r)`: true exactly when `r` is not null and its file is one
-   the Slip run may edit: an **owned** file of the request's ownership
-   (`spec/edits.md` §2.1, path prefixes given to the command). It says
-   nothing about whether an edit there would be accepted by reduce.
+6. `is_editable(r)`: true exactly when `r` is not null and its file is
+   one the Slip run may edit: an **owned** file of the request's
+   ownership (`spec/edits.md` §2.1, path prefixes given to the
+   command). It is false in a read-only file and in a **rebuilt** one
+   (the build writes that file; `replace` there throws
+   `not_editable`). It says nothing about whether an edit in an
+   owned file would be accepted by reduce.
 
 ### 6.7 Calls
 

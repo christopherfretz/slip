@@ -1,0 +1,2 @@
+# Equal: own.h is entered directly first.
+use 1 via 1 direct 0

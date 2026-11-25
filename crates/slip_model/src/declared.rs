@@ -2,7 +2,8 @@
 //! the three exemption lists, `kept` and the run's read-only files. Work
 //! packages WP-022 and WP-110.
 //!
-//! Plain data. Its container, kind `DECL`, version 2 (version 1 is read),
+//! Plain data. Its container, kind `DECL`, version 2, or 3 when the run's
+//! files have a `rebuilt` entry (WP-118; version 1 is read),
 //! one required section `declared` (id 1), and its JSON rendering are
 //! implemented in `formats`.
 
@@ -17,6 +18,11 @@ use crate::wire::Encoder;
 /// The tag of `rules_id` when the run's files are given
 /// (`spec/verify.md` §2): `H("slip.rules.v2", rules, files)`.
 pub const RULES_V2_TAG: &str = "slip.rules.v2";
+
+/// The tag of `rules_id` when the run's files have a `rebuilt` entry
+/// (`spec/verify.md` §2, WP-118 R5.5): `H("slip.rules.v3", rules, owned,
+/// readonly, rebuilt)`.
+pub const RULES_V3_TAG: &str = "slip.rules.v3";
 
 /// Declared changes (`spec/verify.md` §2). Every list is strictly
 /// ascending: rules by the bytes of their `(parent, kind, name, disc)`,
@@ -134,8 +140,10 @@ impl Declared {
 
     /// The run's `rules_id` (`spec/verify.md` §2): `H("slip.rules.v1",
     /// rules)` without `files`, `H("slip.rules.v2", rules, files)` with
-    /// them, `files` encoded as in the container (`owned`, then
-    /// `readonly`, each a `list<bytes>`).
+    /// them and an empty `rebuilt`, `files` encoded as in the container
+    /// (`owned`, then `readonly`, each a `list<bytes>`), and
+    /// `H("slip.rules.v3", rules, owned, readonly, rebuilt)` when
+    /// `rebuilt` is not empty (WP-118 R5.5).
     pub fn rules_id(&self) -> Digest {
         let Some(files) = &self.files else {
             return self.rules.id();
@@ -145,13 +153,19 @@ impl Declared {
         for rule in self.rules.rules() {
             rule.encode(&mut e);
         }
-        for list in [&files.owned, &files.readonly] {
+        let v3 = !files.rebuilt.is_empty();
+        let lists: &[&Vec<Vec<u8>>] = if v3 {
+            &[&files.owned, &files.readonly, &files.rebuilt]
+        } else {
+            &[&files.owned, &files.readonly]
+        };
+        for list in lists {
             e.count(list.len());
-            for path in list {
+            for path in *list {
                 e.bytes(path);
             }
         }
-        tagged_digest(RULES_V2_TAG, e.as_bytes())
+        tagged_digest(if v3 { RULES_V3_TAG } else { RULES_V2_TAG }, e.as_bytes())
     }
 
     /// Owned entities that are, on purpose, members of a namespace a rule
@@ -161,8 +175,9 @@ impl Declared {
         &self.kept
     }
 
-    /// Which files of the run are read-only (`spec/edits.md` §2.1);
-    /// present exactly when the rules are not empty, in a valid value.
+    /// Which files of the run are owned, read-only or rebuilt
+    /// (`spec/edits.md` §2.1); present exactly when the rules are not
+    /// empty, in a valid value.
     pub fn files(&self) -> Option<&Ownership> {
         self.files.as_ref()
     }

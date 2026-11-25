@@ -362,7 +362,7 @@ fn measure(demo_dir: &Path, case: &str, corpus: &Path, work: &Path) -> Counts {
         declared
     } else {
         let owned = d.roots.iter().map(|r| bytes(&src.join(r))).collect();
-        declared.with_files(Some(Ownership { owned, readonly: Vec::new() }))
+        declared.with_files(Some(Ownership { owned, readonly: Vec::new(), rebuilt: Vec::new() }))
     };
     let declared_id = match declared.validate() {
         Ok(()) => content_id(&declared.to_bytes()).unwrap(),

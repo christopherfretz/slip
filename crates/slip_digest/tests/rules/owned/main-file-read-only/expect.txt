@@ -1,13 +1,3 @@
-# main.cpp is read-only: user() is a dependency entity, and src.h, which it
-# includes, is read-only by the include chain. A false difference, as
-# generated-includer-of-owned.
-added acme
-added acme::Mine
-added acme::Mine::v
-added acme::f(acme::Mine *)
-added user(acme::Mine *)
-removed legacy
-removed legacy::Mine
-removed legacy::Mine::v
-removed legacy::f(legacy::Mine *)
-removed user(legacy::Mine *)
+# main.cpp rebuilt (WP-118, a unity-build main file): user() is owned and
+# src.h is owned through it; equal, and the entry is relied on.
+relied main.cpp

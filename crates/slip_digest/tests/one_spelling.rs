@@ -35,6 +35,7 @@ fn header_read_only(include: &str) -> Option<Vec<(String, bool)>> {
     let own = Ownership {
         owned: vec![format!("{root}/src").into_bytes()],
         readonly: vec![format!("{root}/src/vendor").into_bytes()],
+        rebuilt: Vec::new(),
     };
     let obs = t.observer("src/main.cpp", "c++17", &[]);
     let (_, got) = t
