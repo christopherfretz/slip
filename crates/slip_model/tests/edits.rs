@@ -582,6 +582,7 @@ fn map_shard(edits: Edits) -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -642,6 +643,7 @@ fn small() -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -1009,7 +1011,8 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 12), // reason
+        (187, 0, 12), // reason (12 unlisted; 13 is `rebuilt`, WP-118)
+        (187, 0, 14), // reason, the first after `rebuilt`
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -1074,7 +1077,8 @@ fn edits_unlisted_values() {
 // the last, 12, is Malformed (`edits_unlisted_values`). `directive` (10)
 // was added by WP-068, `instantiated` (11) by WP-139. (WP-139's fix round
 // added `no_holder` as 12 and its second review dropped it before any
-// release: 12 is unlisted again.)
+// release: 12 is unlisted again.) `rebuilt` (13) was added by WP-118,
+// 12 left unlisted.
 #[test]
 fn edits_reason_values() {
     let all = [
@@ -1089,6 +1093,7 @@ fn edits_reason_values() {
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
+        (Reason::Rebuilt, 13, "rebuilt"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");
@@ -1933,6 +1938,7 @@ fn ownership(owned: &[&[u8]], readonly: &[&[u8]]) -> Ownership {
     Ownership {
         owned: owned.iter().map(|p| p.to_vec()).collect(),
         readonly: readonly.iter().map(|p| p.to_vec()).collect(),
+        rebuilt: Vec::new(),
     }
 }
 

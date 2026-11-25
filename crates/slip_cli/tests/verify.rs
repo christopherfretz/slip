@@ -992,6 +992,7 @@ fn s2_1_refused_rule_is_an_input_error() {
     .with_files(Some(Ownership {
         owned: vec![f.root.to_str().unwrap().as_bytes().to_vec()],
         readonly: vec![],
+        rebuilt: Vec::new(),
     }));
     assert_eq!(declared.rules().refused(), Some((1, RULE_ON_SPECIALISATION)));
     std::fs::write(f.path("r.decl"), declared.to_bytes()).unwrap();
@@ -1071,7 +1072,10 @@ fn s8_8_declare_output() {
             d.rules_id()
         )
     );
-    assert_eq!(d.files(), Some(&Ownership { owned: vec![real_path(&f, "s")], readonly: vec![] }));
+    assert_eq!(
+        d.files(),
+        Some(&Ownership { owned: vec![real_path(&f, "s")], readonly: vec![], rebuilt: Vec::new() })
+    );
 }
 
 /// The one line of an error of §2.3: `slip: <text file>:<line>: <error>:
@@ -1395,6 +1399,7 @@ fn s8_8_declare_files() {
     let files = Ownership {
         owned: vec![real_path(&f, "s")],
         readonly: vec![real_path(&f, "s/a.h"), real_path(&f, "s/u1.cpp")],
+        rebuilt: Vec::new(),
     };
     assert_eq!(read(&f).files(), Some(&files));
 
@@ -2278,7 +2283,7 @@ fn s2_1_declared_files_spelled_on_disk() {
     let path = |rel: &str| f.path("s").join(rel).as_os_str().as_encoded_bytes().to_vec();
     let decl = |readonly: Vec<u8>| {
         let owned = vec![f.path("s").as_os_str().as_encoded_bytes().to_vec()];
-        let files = Ownership { owned, readonly: vec![readonly] };
+        let files = Ownership { owned, readonly: vec![readonly], rebuilt: Vec::new() };
         // A declaration with files has a rule (`DECL`'s invariant): one of
         // a namespace no unit has.
         let id = |s: &str| Name::Identifier(s.as_bytes().to_vec());

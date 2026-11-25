@@ -145,7 +145,11 @@ pub fn rename_request(
     let mut request = Transform {
         kind: TransformKind::Rename,
         // A placeholder, for checking the names alone.
-        ownership: Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new() },
+        ownership: Ownership {
+            owned: vec![b"/".to_vec()],
+            readonly: Vec::new(),
+            rebuilt: Vec::new(),
+        },
         indivisible: true,
         rename: Some(Rename {
             target,

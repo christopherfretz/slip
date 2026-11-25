@@ -162,7 +162,7 @@ impl Tree {
     }
 
     fn ownership(&self) -> Ownership {
-        Ownership { owned: vec![bytes(&self.subject)], readonly: vec![] }
+        Ownership { owned: vec![bytes(&self.subject)], readonly: vec![], rebuilt: Vec::new() }
     }
 
     /// The rename of `f` to `g` over the subject, published.

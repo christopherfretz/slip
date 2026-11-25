@@ -370,6 +370,7 @@ fn map_shard() -> Shard {
         names: Some(Names::default()),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -475,6 +476,7 @@ fn verify_shard() -> Shard {
         names: Some(Names::default()),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -707,6 +709,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         names: Some(Names::default()),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 

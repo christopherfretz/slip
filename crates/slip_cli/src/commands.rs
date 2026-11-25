@@ -438,7 +438,7 @@ pub(crate) fn ownership(
             String::from_utf8_lossy(both)
         )));
     }
-    Ok(Some(slip_model::transform::Ownership { owned, readonly }))
+    Ok(Some(slip_model::transform::Ownership { owned, readonly, rebuilt: Vec::new() }))
 }
 
 /// The check of a record's ownership entries where they are read for a

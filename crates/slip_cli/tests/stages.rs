@@ -276,6 +276,7 @@ impl Fx {
         Ownership {
             owned: vec![self.root.join("src").as_os_str().as_bytes().to_vec()],
             readonly: vec![],
+            rebuilt: Vec::new(),
         }
     }
 
@@ -485,6 +486,7 @@ impl Fx {
             names: None,
             negatives: None,
             found: None,
+            rebuilt_use: None,
         }
     }
 

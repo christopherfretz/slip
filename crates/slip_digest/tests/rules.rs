@@ -162,7 +162,7 @@ fn listed_files(input: &Input<'_>, listed: &[String]) -> ReadOnlyFiles {
     let mut readonly: Vec<Vec<u8>> =
         listed.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
     readonly.sort();
-    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly };
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly, rebuilt: Vec::new() };
     let subject = |f| {
         let p = (input.subject_path)(f);
         if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }
@@ -381,7 +381,11 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
             vec![],
         )
         .map_err(|e| format!("the container refuses the table: {e}"))?
-        .with_files(Some(Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly: vec![] }));
+        .with_files(Some(Ownership {
+            owned: vec![ROOT.as_bytes().to_vec()],
+            readonly: vec![],
+            rebuilt: Vec::new(),
+        }));
         let read = slip_model::declared::Declared::from_bytes(&declared.to_bytes())
             .map_err(|e| format!("the container cannot be read: {e}"))?;
         if read.rules().refused().is_none() {

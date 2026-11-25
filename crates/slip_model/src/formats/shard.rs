@@ -14,7 +14,7 @@ use super::common::{
 };
 use super::{
     At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
-    negatives, open, read_container, render_container, seal, spellings, verdict,
+    negatives, open, read_container, rebuilt_use, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
@@ -30,6 +30,7 @@ const SPELLINGS: u64 = spellings::ID;
 const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
 const FOUND: u64 = found::ID;
+const REBUILT_USE: u64 = rebuilt_use::ID;
 
 use super::MESSAGE_MAX;
 
@@ -53,6 +54,7 @@ enum Loc {
     NoNames,
     Negatives(negatives::Loc),
     Found(found::Loc),
+    RebuiltUse(rebuilt_use::Loc),
 }
 
 impl Loc {
@@ -72,6 +74,7 @@ impl Loc {
             Loc::NoNames => "sections.names".to_owned(),
             Loc::Negatives(l) => l.path(),
             Loc::Found(l) => l.path(),
+            Loc::RebuiltUse(l) => l.path(),
         }
     }
 }
@@ -160,6 +163,13 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
         && let Some((l, what)) = agreement::rule_use_violation(r, phase, status)
     {
         return Some((Loc::Agreement(l), what));
+    }
+    // WP-118: after `rule_use`'s (`spec/model.md` §8, the order of
+    // invariants).
+    if let Some(r) = &s.rebuilt_use
+        && let Some((l, what)) = rebuilt_use::violation(r, phase, status)
+    {
+        return Some((Loc::RebuiltUse(l), what));
     }
     if let Some(n) = &s.negatives
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
@@ -286,6 +296,15 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     if let Some(edits) = &edits {
         sections.push((EDITS, edits));
     }
+    // Id 33 (WP-118), after `edits`.
+    let rebuilt = s.rebuilt_use.as_ref().map(|x| {
+        let mut e = Encoder::new();
+        rebuilt_use::encode(&mut e, x);
+        e.into_bytes()
+    });
+    if let Some(rebuilt) = &rebuilt {
+        sections.push((REBUILT_USE, rebuilt));
+    }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
 
@@ -306,8 +325,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
-            NEGATIVES, RULE_USE, FOUND, EDITS,
+            HEADER,
+            OUTCOME,
+            INPUTS,
+            COUNTERS,
+            DIGESTS,
+            VERDICT,
+            BINDING,
+            SPELLINGS,
+            NAMES,
+            NEGATIVES,
+            RULE_USE,
+            FOUND,
+            EDITS,
+            REBUILT_USE,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -328,6 +359,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         found,
         edits,
+        rebuilt_use,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -435,6 +467,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (rebuilt_use, rebuilt_use_at) = match rebuilt_use {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = rebuilt_use::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -452,6 +492,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         names,
         negatives,
         found,
+        rebuilt_use,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -490,6 +531,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             Loc::Found(l) => found_at
                 .as_ref()
                 .map_or_else(|| unreachable!("a found violation without found"), |o| o.of(l)),
+            Loc::RebuiltUse(l) => rebuilt_use_at.as_ref().map_or_else(
+                || unreachable!("a rebuilt_use violation without rebuilt_use"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }
@@ -499,7 +544,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 13] = [
+const SECTION_NAMES: [SectionName; 14] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -513,6 +558,7 @@ const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: FOUND, name: "found", required: false },
     SectionName { id: EDITS, name: "edits", required: false },
+    SectionName { id: REBUILT_USE, name: "rebuilt_use", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -571,6 +617,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.edits {
         sections.push(("edits", edits::render(x)));
     }
+    if let Some(x) = &s.rebuilt_use {
+        sections.push(("rebuilt_use", rebuilt_use::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -594,6 +643,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         found,
         edits,
+        rebuilt_use,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -640,6 +690,8 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let negatives =
         negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
     let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
+    let rebuilt_use =
+        rebuilt_use.map(|v| rebuilt_use::read(v, &sections.key("rebuilt_use"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -657,6 +709,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         names,
         negatives,
         found,
+        rebuilt_use,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

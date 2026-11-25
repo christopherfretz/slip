@@ -32,7 +32,7 @@ pub mod transform_run;
 pub mod verdict;
 pub mod wire;
 
-pub use agreement::{Binding, RuleUse};
+pub use agreement::{Binding, RebuiltUse, RuleUse};
 pub use digest::Digest;
 pub use edits::{Claim, Edits, Piece, Place};
 pub use editset::EditSet;

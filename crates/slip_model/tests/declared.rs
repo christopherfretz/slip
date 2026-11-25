@@ -82,7 +82,11 @@ fn golden_rules() -> Vec<Rule> {
 
 /// Files for a value with rules: an owned tree with a read-only subtree.
 fn files() -> Ownership {
-    Ownership { owned: vec![b"/src".to_vec()], readonly: vec![b"/src/dep".to_vec()] }
+    Ownership {
+        owned: vec![b"/src".to_vec()],
+        readonly: vec![b"/src/dep".to_vec()],
+        rebuilt: Vec::new(),
+    }
 }
 
 /// A value with rules is written with its files (verify §2).
@@ -466,7 +470,7 @@ fn rejects_each_bad_ownership() {
         (vec![p("/a"), p("/b")], vec![p("/b")], "a readonly entry is also in owned", 2, 0),
     ];
     for (owned, readonly, what, which, i) in cases {
-        let o = Ownership { owned, readonly };
+        let o = Ownership { owned, readonly, rebuilt: Vec::new() };
         let (payload, at) = raw_payload_v2(&rules, [&[], &[], &[]], &[], Some(&o));
         let mut json = golden_declared().to_json();
         for list in ["changed", "created", "removed", "kept"] {
@@ -508,11 +512,13 @@ fn rules_id_covers_files() {
     let other = x.clone().with_files(Some(Ownership {
         owned: vec![b"/src".to_vec()],
         readonly: vec![b"/src/dep2".to_vec()],
+        rebuilt: Vec::new(),
     }));
     assert_ne!(other.rules_id(), x.rules_id());
     let moved = x.clone().with_files(Some(Ownership {
         owned: vec![b"/src".to_vec(), b"/src/dep".to_vec()],
         readonly: vec![],
+        rebuilt: Vec::new(),
     }));
     assert_ne!(moved.rules_id(), x.rules_id());
     // Only the rules and the files: the exemption lists and `kept` are not

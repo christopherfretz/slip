@@ -463,6 +463,7 @@ mod tests {
         let files = Ownership {
             owned: vec![p("/subject")],
             readonly: vec![p("/subject/dep"), p("/subject/src/gen")],
+            rebuilt: Vec::new(),
         };
         let names = [
             "/post/src/a.h",
@@ -508,7 +509,11 @@ mod tests {
     /// (`/post/src/vendor` -> `/post/dep`); the job resolves real ones.
     #[test]
     fn read_only_files_needs_the_real_path() {
-        let files = Ownership { owned: vec![p("/subject")], readonly: vec![p("/subject/dep")] };
+        let files = Ownership {
+            owned: vec![p("/subject")],
+            readonly: vec![p("/subject/dep")],
+            rebuilt: Vec::new(),
+        };
         let (sm, ids) = buffers(&["/post/dep/d.h", "/post/src/vendor/d.h", "/post/src/a.h"]);
         let spelled =
             |f: FileId| -> Vec<u8> { p(&sm.file_name(f).replacen("/post/", "/subject/", 1)) };

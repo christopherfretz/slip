@@ -177,6 +177,7 @@ fn with_tree<R: Send>(
     let ownership = Ownership {
         owned: vec![root.clone().into_bytes()],
         readonly: vec![format!("{root}/dep").into_bytes()],
+        rebuilt: Vec::new(),
     };
     let obs = tree.observer("main.cpp", "c++20", args);
     let (shard, r) = tree
@@ -706,7 +707,8 @@ fn in_snippet(
 ) -> Vec<Got> {
     let files = [("t.cpp", src)];
     let snippet = Snippet { files: &files, main: "t.cpp", include: &[""], std: "c++20" };
-    let ownership = Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new() };
+    let ownership =
+        Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new(), rebuilt: Vec::new() };
     snippet::parse_with_tables(&snippet, &Extra::default(), |p| {
         let u = p.unit();
         let sites = Sites::new(u, &ownership);
@@ -871,6 +873,7 @@ fn file_ref_is_the_shard_input() {
     let ownership = Ownership {
         owned: vec![root.clone().into_bytes()],
         readonly: vec![format!("{root}/dep").into_bytes()],
+        rebuilt: Vec::new(),
     };
     let obs = tree.observer("main.cpp", "c++20", &[]);
     let (shard, got) = tree

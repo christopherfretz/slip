@@ -388,6 +388,7 @@ mod tests {
             names: None,
             negatives: None,
             found: None,
+            rebuilt_use: None,
         }
         .to_bytes()
     }
