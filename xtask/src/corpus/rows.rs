@@ -10,6 +10,7 @@
 //! integers, arrays of strings), and anything else is rejected.
 
 use crate::lint::manifest::{self, Entry};
+use slip_model::Status;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -18,9 +19,29 @@ pub const CORPORA: &str = "bench/corpora.toml";
 /// Kiln's list of open-source projects, relative to the repository root.
 pub const KILN_PROJECTS: &str = "kiln/scripts/oss/projects.toml";
 
-/// The keys a corpus row may have; all are required.
-const KEYS: &[&str] =
-    &["kiln", "cxx_std", "build_type", "c_compiler", "cxx_compiler", "configure", "generate"];
+/// The keys a corpus row may have; all except `expected_unparsed` are required.
+const KEYS: &[&str] = &[
+    "kiln",
+    "cxx_std",
+    "build_type",
+    "c_compiler",
+    "cxx_compiler",
+    "configure",
+    "generate",
+    "expected_unparsed",
+];
+
+/// One observer of a corpus that `corpus rename`'s `coverage` check expects
+/// to end with a non-`ok` map outcome (`spec/harness.md` §6.5, §8.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedUnparsed {
+    /// Path relative to the corpus's `src/`.
+    pub path: String,
+    /// Expected map shard status (`diagnosed`, `rejected`, or `failed`).
+    pub status: Status,
+    /// One-line reason.
+    pub reason: String,
+}
 
 /// The cmake variables Slip sets itself, which `configure` must not set.
 const RESERVED: &[&str] = &[
@@ -54,6 +75,9 @@ pub struct Corpus {
     pub configure: Vec<String>,
     /// The build targets that produce generated sources, in order.
     pub generate: Vec<String>,
+    /// Observers expected to end with a non-`ok` map outcome
+    /// (`spec/harness.md` §6.5, §8.1).
+    pub expected_unparsed: Vec<ExpectedUnparsed>,
 }
 
 /// Reads `bench/corpora.toml` and `kiln/scripts/oss/projects.toml` under
@@ -124,6 +148,10 @@ pub fn parse(corpora: &str, kiln: &str) -> Result<Vec<Corpus>, String> {
         if let Some(t) = generate.iter().find(|t| !seen.insert(t.as_str())) {
             return Err(format!("{}: `generate` lists `{t}` twice", at(get("generate")?.line)));
         }
+        let expected_unparsed = match entries.get("expected_unparsed") {
+            None => Vec::new(),
+            Some(entry) => parse_expected_unparsed(entry, CORPORA)?,
+        };
         let Some((_, krow)) = kiln_rows.get(&kiln_name) else {
             return Err(format!(
                 "{}: [{name}] names `{kiln_name}`, which is not a table of {KILN_PROJECTS}",
@@ -143,6 +171,7 @@ pub fn parse(corpora: &str, kiln: &str) -> Result<Vec<Corpus>, String> {
             cxx_compiler,
             configure,
             generate,
+            expected_unparsed,
         });
     }
     Ok(out)
@@ -316,4 +345,55 @@ fn reserved(arg: &str) -> bool {
     let Some(var) = arg.strip_prefix("-D") else { return false };
     let var = var.split(['=', ':']).next().unwrap_or_default();
     RESERVED.contains(&var)
+}
+
+/// Parses `expected_unparsed` entries of the form `<outcome>:<path>:<reason>`.
+fn parse_expected_unparsed(e: &Entry, file: &str) -> Result<Vec<ExpectedUnparsed>, String> {
+    let raw = array(e, file)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let mut parts = item.splitn(3, ':');
+        let (Some(outcome), Some(path), Some(reason)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(format!(
+                "{file}:{}: `expected_unparsed` entry `{item}` must be `<outcome>:<path>:<reason>`",
+                e.line
+            ));
+        };
+        let status = match outcome {
+            "diagnosed" => Status::Diagnosed,
+            "rejected" => Status::Rejected,
+            "failed" => Status::Failed,
+            _ => {
+                return Err(format!(
+                    "{file}:{}: `expected_unparsed` outcome `{outcome}` must be `diagnosed`, \
+                     `rejected` or `failed`",
+                    e.line
+                ));
+            }
+        };
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.contains(char::is_whitespace)
+            || path.split('/').any(|c| c.is_empty() || c == "." || c == "..")
+        {
+            return Err(format!(
+                "{file}:{}: `expected_unparsed` path `{path}` is not a relative path under `src/`",
+                e.line
+            ));
+        }
+        let reason = reason.trim();
+        if reason.is_empty() || reason.contains(['\n', '\r']) {
+            return Err(format!(
+                "{file}:{}: `expected_unparsed` entry `{item}` needs a one-line reason",
+                e.line
+            ));
+        }
+        if !seen.insert(path.to_owned()) {
+            return Err(format!("{file}:{}: `expected_unparsed` lists `{path}` twice", e.line));
+        }
+        out.push(ExpectedUnparsed { path: path.to_owned(), status, reason: reason.to_owned() });
+    }
+    Ok(out)
 }

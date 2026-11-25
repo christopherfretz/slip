@@ -604,19 +604,23 @@ corpus's build directory, `--allow-unparsed`, `--allow-residue`, and
 as fetched). `--owned` defaults to the corpus's source directory. It then
 checks, in order:
 
-1. the state is `--expect` (default `verified_with_residue` or
+1. **coverage**: every observer of the plan has map outcome `ok`, except the
+   corpus's **expected unparsed observers** (§8.1, §8.7), which must have
+   their listed non-`ok` outcomes (read from the store's map phase run
+   record and its shards);
+2. **state**: the state is `--expect` (default `verified_with_residue` or
    `verified`);
-2. **determinism**: `slip reduce` run again over the same shards gives the
+3. **determinism**: `slip reduce` run again over the same shards gives the
    same edit set id;
-3. with `--accept`: every command of the plan, run by clang with
+4. with `--accept`: every command of the plan, run by clang with
    `-fsyntax-only` and a clang VFS overlay file that maps each overlay
    path to its blob, exits as it does on the pre-image (the two units
    clang rejects in `llvm`, §8.7, must be rejected the same way);
-4. with `--build`: the patch is applied to a copy of the source
+5. with `--build`: the patch is applied to a copy of the source
    directory under the corpus's build directory; the copy is configured
    and generated as the corpus is (§8.3) and built with clang (`all`);
    the build succeeds;
-5. with `--build`, **back**: the inverse rename over the copy's database,
+6. with `--build`, **back**: the inverse rename over the copy's database,
    with `--write`, leaves every file of the copy byte-identical to the
    corpus's source.
 
@@ -643,7 +647,7 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   xtask.
 - **Paths.** "The corpus's build directory" is the corpus directory
   `<root>/<name>/` (§8.2): the store is `slip-store/`, the patch
-  `rename/<target>.patch`, the overlay file of check 3
+  `rename/<target>.patch`, the overlay file of check 4
   `rename/<target>.vfs.json` (both kept), the copy `rename-copy/` and its
   build tree `rename-build/` (with the inverse run's store,
   `rename-build/slip-store/`, and the logs `patch.log`, `configure.log`,
@@ -652,6 +656,14 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `--relative-to`, so uses in projects the corpus does not configure are
   residue. A given `--owned` must be under `src/` (real paths), or the
   command stops before `slip` runs.
+- **Before `slip` runs.** For every run (not only `--build`), the
+  compilation database is read and every entry's `directory` must exist
+  and be a directory and its `file` (resolved against `directory` when
+  relative) must exist as a regular file. Otherwise the command stops
+  before `slip` runs and before writing any store, with exit status 2,
+  naming the count and the first 10 (`xtask corpus rename: <n> database
+  entries cannot run: <dir>: <reason>`, with entries 2 to 10 on indented
+  lines).
 - **The run.** `slip rename` is given `--kind` and `-j` when the command
   is; its lines are printed as they come. Status 2 or 3, or a run that
   prints no `result` line or a state other than its result's, is an
@@ -660,16 +672,28 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   the phase records it names (by content id) are read from the store.
 - **Checks.** They run in order and the first failure stops them; each
   prints `check <name>: ok|FAIL|skipped|not run (<detail>)`, with
-  `<name>` one of `state`, `determinism`, `accept`, `build`, `back`. Every
+  `<name>` one of `coverage`, `state`, `determinism`, `accept`, `build`,
+  `back`. Every
   step prints `step <step>: started (…)` and `step <step>: done in <s>`.
-  A result with no overlay (`refused`) has no post-image: checks 3 to 5
+  A result with no overlay (`refused`) has no post-image: checks 4 to 6
   are `skipped` even when asked for.
-- **1** also fails a `verified` or `verified_with_residue` run that wrote
-  no patch (its `--patch` refused at apply, `spec/edits.md` §7.2).
-- **2.** `slip reduce --plan <plan> --round <round> --store <store>` (and
+- **1 (`coverage`).** Reads the map phase run record named by the
+  transform run record (`perf::load`) and verifies each plan observer's
+  map shard against the run record (`invariants::side`). `ok` when the
+  set of plan observers whose map outcome is not `ok` is exactly the
+  corpus's `expected_unparsed` list (§8.1, paths relative to `src/`) with
+  those exact outcomes; `FAIL` otherwise, with detail `<k> observers not
+  ok beyond the expected <e>` (or `expected unparsed observer <path> is
+  <outcome>` when a listed observer parsed, changed outcome, or is absent
+  from the plan), printing up to 10 such observers with their outcome and
+  first error line.
+- **2 (`state`)** also fails a `verified` or `verified_with_residue` run
+  that wrote no patch (its `--patch` refused at apply, `spec/edits.md`
+  §7.2).
+- **3 (`determinism`).** `slip reduce --plan <plan> --round <round> --store <store>` (and
   `-j`); status 0 or 1 with the run's edit set id passes, its lines
   printed after `reduce| `.
-- **3.** The commands are the plan's observers: the corpus's C compiler
+- **4 (`accept`).** The commands are the plan's observers: the corpus's C compiler
   (§8.1 `c_compiler`) for C and Objective-C, its C++ compiler otherwise,
   found on `PATH`, with the observer's arguments after `argv[0]`,
   `-fsyntax-only`, its directory and environment; once as they are and
@@ -680,7 +704,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   pair that does not end within an hour counts as a difference. Exit
   statuses alone are compared; up to 20 differences are printed with the
   first error line.
-- **4.** Before `slip` runs: the tools are found, the file system of the
+- **5 (`build`).** Before `slip` runs (in addition to the always-on
+  database check above): the tools are found, the file system of the
   corpus directory must have at least twice the bytes of `src/`'s
   regular files free (`df -Pk`), and a `rename-copy/` or `rename-build/`
   left by an earlier run is removed. The copy is of `src/` without its
@@ -691,7 +716,7 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   cmake runs with §8.3's arguments over the copy, then `make` of the
   `generate` entries (§8.3, without its promised-file check) and
   `make all`, with no `-j` (the jobserver in `MAKEFLAGS` bounds them).
-- **5.** The inverse is §6.4's (`--from <prefix>::<to> --to <last>`),
+- **6 (`back`).** The inverse is §6.4's (`--from <prefix>::<to> --to <last>`),
   over `rename-build/compile_commands.json`, `--owned` mapped into the
   copy, `--allow-unparsed --allow-residue --write`; status 0 or 1 goes
   on to the comparison. Every entry of `src/` (without `.git`) and of the
@@ -704,7 +729,9 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `options` (`owned` relative to `src/`, `expect`, `accept`, `build`,
   `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
   `transform`, `edits`, `declared`, `overlay` and `result`, `checks`
-  (`check`, `outcome`, `detail`), then the exact members `state`,
+  (`check`, `outcome`, `detail`, for all six checks in order: `coverage`,
+  `state`, `determinism`, `accept`, `build`, `back`), then the exact
+  members `state`,
   `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
   `unused_rules`), `spellings` (`obligations`, `passed`, `failed`) and
   `residue` (a count per category) and `not_plain_at_macro` (the edit
@@ -713,7 +740,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   spelling that is not plain inside a macro argument), then
   `measured`: the transform run's
   `wall_ns`, per step `wall_ns`, `cpu_ns` and `peak_rss`, per phase
-  record §7.1's measurements, and each check's `wall_ns`. No absolute
+  record §7.1's measurements, and each of the six checks' `wall_ns`
+  (`measured.checks`, in the same order). No absolute
   path is in it. The ids are not compared: every `slip rename` takes the
   store's next round, and the round is in every id after the plan's.
   The exact members are compared with the file there;
@@ -722,7 +750,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   there was none); otherwise the run's file is `<file>.new` and the file
   stays. The last lines are `counters: …`, `result <file>` and
   `corpus rename: ok` or `corpus rename: FAILED (<checks>[, counters])`;
-  the status is 0 when ok, 1 otherwise, 2 for a usage error.
+  the status is 0 when ok, 1 when a check fails or counters differ, 2 for
+  a usage or command error.
 
 ## 7. Performance records
 
@@ -1001,8 +1030,8 @@ cargo xtask corpus path <name> [--db]
 ### 8.1 `bench/corpora.toml`
 
 One table per corpus; the table name is the corpus name (lower-case ASCII
-letters, digits, `-`, `_`). All keys are required; any other key is an
-error.
+letters, digits, `-`, `_`). All keys except `expected_unparsed` are
+required; any other key is an error.
 
 | Key | Value |
 |---|---|
@@ -1012,6 +1041,7 @@ error.
 | `c_compiler`, `cxx_compiler` | strings, compiler names looked up on `PATH`: non-empty, no whitespace, no `/` |
 | `configure` | array of strings, further CMake arguments, in order |
 | `generate` | non-empty array of distinct entries: a build-target name (`[A-Za-z0-9_.+-]`, not starting with `-`), or `<target>:<file>`, one generated file made by a rule of that target's `build.make` (a relative path without `.`, `..` or empty components, without whitespace or `:`, with an extension of §8.6) |
+| `expected_unparsed` | optional array of strings (default empty), each `<outcome>:<path>:<reason>`: `<outcome>` is `diagnosed`, `rejected` or `failed`; `<path>` is a unique relative path under `src/` (no `.`, `..`, empty components, whitespace or `:`); `<reason>` is a non-empty one-line reason. Used by `corpus rename`'s `coverage` check (§6.5) |
 
 The pin comes from the Kiln row, so Slip and Kiln measure the same code:
 its `url` (a required string: non-empty, not starting with `-`, no
@@ -1207,8 +1237,11 @@ counts):
   with one command, and each pair is one observer (`spec/cdb.md` §7).
 - Two units are `diagnosed`, and clang 19 rejects them with the same
   error at the same place: `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
-  `ClangObjectiveCFuzzer.cpp` name `uint8_t` without including a header
-  that declares it (no target of the configuration builds them).
+  `clang/tools/clang-fuzzer/ClangObjectiveCFuzzer.cpp` name `uint8_t`
+  without including a header that declares it (no target of the
+  configuration builds them). These two units are `llvm`'s
+  `expected_unparsed` list in `bench/corpora.toml` for `corpus rename`'s
+  `coverage` check (§6.5).
 - With Kiln at `62d190007`, nineteen units were `failed`: the front end
   panicked in three defects of Kiln's constant evaluator. Six were the two
   of `docs/requests/KD1-oven-panics-llvm.md`; thirteen (eleven of
