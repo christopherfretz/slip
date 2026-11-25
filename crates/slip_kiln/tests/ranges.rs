@@ -1325,10 +1325,7 @@ fn check_entry(
                     } else {
                         let mut text = before[k].clone();
                         let mut cur = k;
-                        while cur + 1 <= x1
-                            && !in_r(&toks[cur + 1])
-                            && pp_ids[cur] == pp_ids[cur + 1]
-                        {
+                        while cur < x1 && !in_r(&toks[cur + 1]) && pp_ids[cur] == pp_ids[cur + 1] {
                             cur += 1;
                             text.push_str(&before[cur]);
                         }

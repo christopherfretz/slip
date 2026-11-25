@@ -1041,9 +1041,8 @@ mod tests {
 
     fn test_dir(name: &str) -> PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::var_os("SLIP_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+        let root =
+            std::env::var_os("SLIP_TEST_ROOT").map_or_else(std::env::temp_dir, PathBuf::from);
         let dir = root.join(format!(
             "slip-kiln-parse-unit-{name}-{}-{}",
             std::process::id(),
@@ -1184,15 +1183,14 @@ mod tests {
             .unwrap();
             let ovl_header: Arc<[u8]> = Arc::from(&b"int x = 42;\n"[..]);
             let ovl_data: Arc<[u8]> = Arc::from(&b"OVL!"[..]);
-            let mut entries = vec![
+            let mut entries = [
                 (path_bytes(&header), Arc::clone(&ovl_header)),
                 (path_bytes(&data), Arc::clone(&ovl_data)),
             ];
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             let slice: Vec<(&[u8], Arc<[u8]>)> =
                 entries.iter().map(|(p, b)| (p.as_slice(), Arc::clone(b))).collect();
-            let mut opts = ParseOptions::default();
-            opts.overlay = &slice;
+            let opts = ParseOptions { overlay: &slice, ..ParseOptions::default() };
 
             let obs = test_observer(&dir, &["c++", "-std=c++26", "main.cpp"]);
             let h_hook = header.clone();
