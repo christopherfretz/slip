@@ -145,7 +145,7 @@ to be filled by the run
 
 | Quantity | Value |
 |---|---|
-| Wall time per step (plan, map, reduce, conclude) | to be filled by the run |
+| Wall time per step (the steps its transform run record has) | to be filled by the run |
 | Coordinator's peak resident size per step | to be filled by the run |
 | Map: `peak_rss_max`, `peak_rss_sum`, workers at once, cores | to be filled by the run |
 | `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.files`, `reduce.runs` | to be filled by the run |
