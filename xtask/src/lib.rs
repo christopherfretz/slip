@@ -5,7 +5,8 @@
 //! - [`lint`]: `cargo xtask lint` (§3),
 //! - [`wp`]: `cargo xtask wp [--ready]` (§4),
 //! - [`ci`]: `cargo xtask ci [--quick] [--step <name>]… [--keep-going]` (§2),
-//! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8),
+//! - [`corpus`]: `cargo xtask corpus list|fetch|configure|status|path` (§8)
+//!   and `cargo xtask corpus rename` (§6.5, [`corpus::rename`]),
 //! - [`jobserver`]: `cargo xtask jobserver status|refill` (§5),
 //! - [`perf`]: `cargo xtask perf summarize|record|check` (§7),
 //! - [`transform`]: `cargo xtask transform` (§6.2 to §6.4),
