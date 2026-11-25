@@ -758,9 +758,16 @@ fn lambdas_in_signatures_collide() {
         ),
     ] {
         let all = digest_all(src);
-        let units: Vec<_> = all.iter().filter(|(_, n, _)| names(n, name)).collect();
+        // The operand unit (WP-156 fix round 2: the dependent `decltype`
+        // is walked for holders, and a lambda in it fails closed) is
+        // indeterminate beside its parent.
+        let (operands, units): (Vec<_>, Vec<_>) = all
+            .iter()
+            .filter(|(_, n, _)| names(n, name))
+            .partition(|(_, n, _)| n.ends_with("::<operands>"));
         assert_eq!(units.len(), 1, "{all:?}");
         assert_eq!(units[0].2, [crate::Cause::UndeclaredLocal], "{name}");
+        assert!(operands.iter().all(|(_, _, c)| !c.is_empty()), "{all:?}");
     }
 }
 
