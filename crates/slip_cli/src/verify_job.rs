@@ -827,6 +827,11 @@ fn guard_rb(image: &Image, declares: &[slip_digest::Declares]) -> Option<String>
         return None;
     }
     let overlay = image.overlay_of().is_some();
+    // An overlay image has no root maps (`Image::overlay` is its only
+    // constructor), so the tree half below alone would freeze every file
+    // of an overlay too: `overlay ||` states the overlay rule, and the
+    // two halves agree only while this holds (WP-118 reviews, G2).
+    debug_assert!(!overlay || image.maps().is_empty(), "an overlay image with root maps");
     let frozen = |file: &[u8]| overlay || !image.maps().iter().any(|m| covers(&m.subject, file));
     let d = declares.iter().find(|d| d.left > 0 && frozen(&d.file))?;
     let (file, rule) = (show_path(&d.file), d.rule);

@@ -76,6 +76,9 @@ enum Form<'a> {
     /// those the test wrote under `ps/`, `pb/` (or, for a file of
     /// another directory, the subject's bytes).
     Overlay(&'a [&'a str]),
+    /// The identity: the post-image is the subject as it is on disk (a
+    /// test rewrites it in place after the map phase, [`run_with`]).
+    Identity,
 }
 
 impl Tree {
@@ -174,6 +177,7 @@ impl Tree {
         match form {
             Form::TwoRoots => Image::new(vec![map("s", "ps"), map("b", "pb")]).unwrap(),
             Form::SubjectRoot => Image::new(vec![map("s", "ps")]).unwrap(),
+            Form::Identity => Image::identity(),
             Form::Overlay(files) => {
                 let mut entries: Vec<OverlayFile> = files
                     .iter()
@@ -317,6 +321,19 @@ fn run(
     form: &Form<'_>,
     observers: &[(&str, &[&str], &str)],
 ) -> Ran {
+    run_with(t, declared, files, form, observers, |_| {})
+}
+
+/// [`run`], with `between` called after the map phase and before the
+/// verify phase (a file rewritten in place).
+fn run_with(
+    t: &Tree,
+    declared: Declared,
+    files: Ownership,
+    form: &Form<'_>,
+    observers: &[(&str, &[&str], &str)],
+    between: impl Fn(&Tree),
+) -> Ran {
     let params = t.params(declared.with_files(Some(files)), form);
     let header = Header {
         plan: PLAN,
@@ -341,6 +358,7 @@ fn run(
     for o in &os {
         t.map(o);
     }
+    between(t);
     for (i, o) in os.iter().enumerate() {
         let v = t.verify(o, &params);
         let verdict = v.verdict.as_ref().expect("a verdict");
@@ -488,6 +506,92 @@ fn t_cli_3b_overlay_rebuilt_file_inside_the_subject() {
         "{}",
         ran.text
     );
+}
+
+/// T-cli-3 (b), RB past the first row (second review SF1, probe P1): two
+/// `declares` rows, the first a moved fragment `b/AGen.inc` (`mapped 1
+/// left 0`, it sorts first) that does not fire, the second the frozen
+/// `b/gen.h` (`left 1`) that does: RB looks at every row, so the observer
+/// is `unverifiable` with RB's reason, not `verified`.
+#[test]
+fn t_cli_3b_overlay_rb_fires_on_a_later_row() {
+    let x_pre = "#pragma once\nnamespace old {\n#include \"AGen.inc\"\n}\n";
+    let x_post = "#pragma once\nnamespace fresh {\n#include \"AGen.inc\"\n}\n";
+    let main_pre = "#include \"x.h\"\n#include \"gen.h\"\nint main() { old::A a; (void)a; old::G g; (void)g; return 0; }\n";
+    let main_post = "#include \"x.h\"\n#include \"gen.h\"\nint main() { fresh::A a; (void)a; old::G g; (void)g; return 0; }\n";
+    let pre = [
+        ("s/x.h", x_pre),
+        ("s/main.cpp", main_pre),
+        ("b/AGen.inc", "struct A {};\n"),
+        ("b/gen.h", GEN_PRE),
+    ];
+    let post = [("s/x.h", x_post), ("s/main.cpp", main_post)];
+    let observers: &[(&str, &[&str], &str)] = &[("s/main.cpp", INCLUDE_B, "s")];
+    let t = Tree::new("t3b-second-row", &pre, &post);
+    let form = Form::Overlay(&["s/main.cpp", "s/x.h"]);
+    let ran = run(&t, old_to_fresh(), t.files(&[], &["b/AGen.inc", "b/gen.h"]), &form, observers);
+    assert!(ran.json.contains("\"mapped\":1,\"left\":0"), "{}", ran.json);
+    let genp = t.path("b/gen.h").display().to_string();
+    assert_eq!(ran.kinds[0].0, VerdictKind::Unverifiable, "{:?}\n{}", ran.kinds, ran.text);
+    assert!(
+        ran.kinds[0].1.starts_with(&format!("post-image: {genp} is rebuilt")),
+        "{:?}",
+        ran.kinds
+    );
+}
+
+/// T-cli-3 (c), O2 (i) for a rebuilt file (second review SF5, X13; R6.3):
+/// the tree form with the build directory under no root, and the rebuilt
+/// `b/gen.h` regenerated in place after the map phase. The drift guard
+/// trips first, and its reason says what to do about a rebuilt file.
+#[test]
+fn t_cli_3c_rebuilt_file_under_no_root_regenerated_in_place() {
+    let pre = [("s/lib.h", LIB_PRE), ("s/main.cpp", MAIN_PRE), ("b/gen.h", GEN_PRE)];
+    let post = [("s/lib.h", LIB_POST), ("s/main.cpp", MAIN_POST)];
+    let observers: &[(&str, &[&str], &str)] = &[("s/main.cpp", INCLUDE_B, "s")];
+    let t = Tree::new("t3c-drift", &pre, &post);
+    let ran = run_with(
+        &t,
+        old_to_fresh(),
+        t.files(&[], &["b/gen.h"]),
+        &Form::SubjectRoot,
+        observers,
+        |t| write(&t.path("b/gen.h"), GEN_POST),
+    );
+    let genp = t.path("b/gen.h").display().to_string();
+    assert_eq!(
+        ran.kinds[0],
+        (
+            VerdictKind::Unverifiable,
+            format!(
+                "pre-image: {genp} changed since the map phase (a rebuilt file under no root: \
+                 give its directory as a root)"
+            )
+        ),
+        "{}",
+        ran.text
+    );
+}
+
+/// RB is not checked in the identity form (second review SF5, X18; R6.3):
+/// there every file is its own post-image, so none is frozen. The subject
+/// is rewritten in place after the map phase and the rebuilt `b/gen.h`
+/// is not regenerated: the observer is not `unverifiable` by RB; the
+/// rule's stale reading of `gen.h` makes the run not verified.
+#[test]
+fn t_cli_3_identity_form_has_no_rb() {
+    let pre = [("s/lib.h", LIB_PRE), ("s/main.cpp", MAIN_PRE), ("b/gen.h", GEN_PRE)];
+    let post = [("s/lib.h", LIB_POST), ("s/main.cpp", MAIN_POST_G_LEFT)];
+    let observers: &[(&str, &[&str], &str)] = &[("s/main.cpp", INCLUDE_B, "s")];
+    let t = Tree::new("t3-identity", &pre, &post);
+    let ran =
+        run_with(&t, old_to_fresh(), t.files(&[], &["b/gen.h"]), &Form::Identity, observers, |t| {
+            write(&t.path("s/lib.h"), LIB_POST);
+            write(&t.path("s/main.cpp"), MAIN_POST_G_LEFT);
+        });
+    assert_ne!(ran.kinds[0].0, VerdictKind::Unverifiable, "{:?}\n{}", ran.kinds, ran.text);
+    assert_eq!(lines_with(&ran.text, "stale rule 0").len(), 1, "{}", ran.text);
+    assert_ne!(ran.verdict, RunVerdict::Verified, "{}", ran.text);
 }
 
 /// T-cli-3 (c): the tree form with the build directory under no root: the
@@ -1025,6 +1129,45 @@ fn t_cli_3a_rename_with_a_rebuilt_inc() {
             .any(|l| l.starts_with(&format!("hint: {} is read-only", t.path("b/X.inc").display()))),
         "{out:?}"
     );
+}
+
+/// T-cli-4 (b), R7.2's lines name rebuilt files only (second review SF2,
+/// probe P2): T-cli-4 plus an unlisted (read-only) `d/dep.h` that calls
+/// `f`. Both refuse the set, but only the rebuilt `use.h` has a `rebuilt
+/// …` line.
+#[test]
+fn t_cli_4b_rebuilt_lines_name_only_rebuilt_files() {
+    let t = Cli::new("t4b");
+    t.write("src/h.h", H);
+    t.write(
+        "src/a.cpp",
+        "#include \"h.h\"\n#include \"../b/gen/use.h\"\n#include \"../d/dep.h\"\nint g() { return f(2) + u() + d(); }\n",
+    );
+    t.write("b/gen/use.h", "#pragma once\ninline int u() { return f(1); }\n");
+    t.write("d/dep.h", "#pragma once\ninline int d() { return f(3); }\n");
+    t.db(&["src/a.cpp"]);
+    let plan = t.plan();
+    let out = t.slip(&[
+        "rename",
+        "--plan",
+        &plan,
+        "--from",
+        "f",
+        "--to",
+        "renamed",
+        "--owned",
+        "src",
+        "--rebuilt",
+        "b/gen/use.h",
+        "--store",
+        "store",
+        "-j",
+        "2",
+    ]);
+    let use_h = t.path("b/gen/use.h").display().to_string();
+    let rebuilt: Vec<&str> = out.stdout.lines().filter(|l| l.starts_with("rebuilt ")).collect();
+    assert_eq!(rebuilt.len(), 1, "{out:?}");
+    assert!(rebuilt[0].starts_with(&format!("rebuilt {use_h}: 1 name(s)")), "{out:?}");
 }
 
 /// T-cli-4: `slip rename` of an entity a rebuilt file names: the set is

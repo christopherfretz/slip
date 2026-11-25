@@ -2131,6 +2131,32 @@ fn s2_1_a_request_entry_not_spelled_on_disk() {
         fx.root.join("src").display()
     );
     assert!(out.stderr.contains(&line), "{out:#?}");
+
+    // WP-118 second review SF4: a rebuilt entry is checked as the other
+    // two are, in another case and missing, before anything is published.
+    for (name, rel, on_disk) in
+        [("t1-rebuilt", "DEP", Some("dep")), ("t1-rebuilt-gone", "nope", None)]
+    {
+        let fx = Fx::new_in(&common::folding_root(), name);
+        with_dependencies(&fx);
+        let mut request = fx.rename();
+        let entry = src_entry(&fx, rel);
+        request.ownership.rebuilt = vec![entry.clone()];
+        let plan = fx.plan();
+        fx.round(&plan, ROUND, &request, &agreeing());
+        let out = fx.reduce(plan.1, ROUND, &[]);
+        out.expect(3);
+        let why = match on_disk {
+            Some(d) => {
+                format!("is not spelled as on disk ({})", fx.root.join("src").join(d).display())
+            }
+            None => "does not exist".to_string(),
+        };
+        let line =
+            format!("ownership: the rebuilt entry {} {why}", String::from_utf8_lossy(&entry));
+        assert!(out.stderr.contains(&line), "{out:#?}");
+        assert_eq!(out.value("edits"), None, "no edit set: {out:#?}");
+    }
 }
 
 // ----- WP-151 fix round: forged requests at apply (the review's probes) ------
