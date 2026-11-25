@@ -277,18 +277,24 @@ fn one(dir: &Path, tables: &[(&str, RuleTable)]) -> Result<(), String> {
             Ok(lines) => {
                 problems.extend(lines.into_iter().map(|l| format!("side {side:?}: {l}")));
             }
-            // A side the snippet front end does not parse (an `errors`
-            // side of a pending directory) has no walk to compare; a panic
-            // inside the callback or front end still fails the test.
-            Err(e) if common::is_pending(dir) => {
-                if let Err(panicked) = common::skip_unparsed::<()>(Err(e)) {
-                    problems.push(format!("side {side:?}: {panicked}"));
-                }
-            }
-            Err(e) => problems.push(format!("side {side:?}: {e}")),
+            Err(e) => record_side_err(dir, side, e, &mut problems),
         }
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// Records an `Err` from `common::with_side`: a side the snippet front end
+/// does not parse (an `errors` side of a pending directory) has no walk to
+/// compare, while a panic inside the callback or front end still fails the
+/// test.
+fn record_side_err(dir: &Path, side: Side, e: String, problems: &mut Vec<String>) {
+    if common::is_pending(dir) {
+        if let Err(panicked) = common::skip_unparsed::<()>(Err(e)) {
+            problems.push(format!("side {side:?}: {panicked}"));
+        }
+    } else {
+        problems.push(format!("side {side:?}: {e}"));
+    }
 }
 
 #[test]
@@ -299,7 +305,19 @@ fn wp168_pending_dir_propagates_callback_panic() {
         assert_eq!(1, 2, "wp168 inert sentinel");
     }))
     .expect_err("a callback panic must fail even for a pending dir");
-    assert!(err.contains("the callback panicked: wp168 inert sentinel"), "{err}");
+    assert!(
+        err.contains("the callback panicked:") && err.contains("wp168 inert sentinel"),
+        "{err}"
+    );
+    let pending = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differ/Owner/unit");
+    assert!(common::is_pending(&pending));
+    let mut problems = Vec::new();
+    record_side_err(&pending, Side::A, err, &mut problems);
+    assert_eq!(problems.len(), 1, "pending dir must still record a callback panic");
+    assert!(problems[0].contains("wp168 inert sentinel"), "{}", problems[0]);
+    problems.clear();
+    record_side_err(&pending, Side::A, "side A: has 1 error(s)".into(), &mut problems);
+    assert!(problems.is_empty(), "pending dir parse error is skipped: {problems:?}");
 }
 
 /// Every directory of [`ROOTS`], pending ones included.

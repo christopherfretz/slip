@@ -159,6 +159,21 @@ fn the_set_is_written_sorted_and_without_duplicates() {
     });
 }
 
+/// Whether `name` is the display name of a content-keyed unit
+/// (`spec/digest.md` §3.3; `names::content_word`).
+fn is_content_keyed_name(name: &str) -> bool {
+    const TAGS: &[&str] = &[
+        "<static_assert>",
+        "<friend ",
+        "<asm>",
+        "<using_directive ",
+        "<using_enum ",
+        "<consteval_block>",
+        "<template_param_object>",
+    ];
+    TAGS.iter().any(|tag| name.contains(tag))
+}
+
 /// Every pair-test side that parses.
 fn each_pair_input(mut f: impl FnMut(&Path, &Input<'_>)) {
     let mut dirs = Vec::new();
@@ -202,7 +217,7 @@ fn a_list_changes_only_the_units_that_write_one() {
             .collect();
         assert_eq!(with.len(), without.len(), "{}", dir.display());
         assert!(
-            moved.iter().all(|m| m.contains("<static_assert>")),
+            moved.iter().all(|m| is_content_keyed_name(m)),
             "{}: a key moved: {moved:?}",
             dir.display()
         );

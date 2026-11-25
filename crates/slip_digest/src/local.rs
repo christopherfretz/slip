@@ -1704,19 +1704,21 @@ mod tests {
                         };
                         Some(crate::walk::run_with(&input, &options, |w, u, o| f(w, u, &o)))
                     })
-                    .unwrap_or_else(|e| {
-                        assert!(!e.contains("panicked:"), "{e}");
-                        None
-                    })
                 })
                 .expect("a thread")
                 .join()
                 .expect("the walk")
+                .unwrap_or_else(|e| {
+                    assert!(!e.contains("panicked:"), "{e}");
+                    None
+                })
         })
     }
 
     #[test]
-    #[should_panic(expected = "the callback panicked: wp168 local sentinel")]
+    #[should_panic(
+        expected = "the callback panicked: assertion `left == right` failed: wp168 local sentinel"
+    )]
     fn run_files_propagates_callback_panic() {
         let _ = run_files(&[("main.cpp", "int x = 1;\n")], "c++20", |_, _, _| {
             assert_eq!(1, 2, "wp168 local sentinel");

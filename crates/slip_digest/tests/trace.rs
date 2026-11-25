@@ -172,7 +172,10 @@ fn wp168_skip_unparsed_propagates_callback_panic() {
         assert_eq!(1, 2, "wp168 trace sentinel");
     }))
     .expect_err("a callback panic must not be skipped");
-    assert!(err.contains("the callback panicked: wp168 trace sentinel"), "{err}");
+    assert!(
+        err.contains("the callback panicked:") && err.contains("wp168 trace sentinel"),
+        "{err}"
+    );
     assert_eq!(common::skip_unparsed::<()>(Err("side A: has 1 error(s)".into())), Ok(None));
 }
 

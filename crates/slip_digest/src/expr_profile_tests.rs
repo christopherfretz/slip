@@ -729,7 +729,7 @@ fn the_f1_pairs_are_determinate() {
         let mut sides = 0;
         each_input(&tests.join(dir), |input| {
             sides += 1;
-            let h = causes_of(input, "h(type-parameter-0-0)");
+            let h = causes_of(input, "template <class> decltype(g(t)) h(type-parameter-0-0)");
             assert_eq!(h.len(), 1, "{dir}");
             assert!(h[0].is_empty(), "{dir} side {sides}: {:?}", h[0]);
         });
@@ -1127,7 +1127,9 @@ fn the_bytes_are_pinned() {
 }
 
 #[test]
-#[should_panic(expected = "the callback panicked: wp168 sentinel")]
+#[should_panic(
+    expected = "the callback panicked: assertion `left == right` failed: wp168 sentinel"
+)]
 fn each_input_propagates_callback_panic() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/differ/_/dependent-decltype-own-lookup-set");
@@ -1137,7 +1139,9 @@ fn each_input_propagates_callback_panic() {
 }
 
 #[test]
-#[should_panic(expected = "the callback panicked: wp168 side sentinel")]
+#[should_panic(
+    expected = "the callback panicked: assertion `left == right` failed: wp168 side sentinel"
+)]
 fn each_side_propagates_callback_panic() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/differ/_/dependent-decltype-own-lookup-set");
