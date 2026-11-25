@@ -325,6 +325,8 @@ fn two_entries_of_one_file_are_err() {
     t.write("main.cpp", "#include \"h.h\"\n");
     t.write("h.h", "int h;\n");
     t.symlink("link.h", "h.h");
+    // Two names of one file (identity); the overlay is in memory and
+    // replaces neither (spec/harness.md §11.4).
     std::fs::hard_link(t.a().join("h.h"), t.a().join("hard.h")).unwrap();
     for other in ["link.h", "hard.h"] {
         let mut entries = vec![t.entry("h.h", "int a;\n"), t.entry(other, "int b;\n")];

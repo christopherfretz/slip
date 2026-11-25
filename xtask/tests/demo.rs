@@ -3,7 +3,7 @@
 //! The pure parts (`read_config`, `read_edit`, `read_expect`, `check`,
 //! `indeterminate_units`) are given texts and the report goldens of
 //! `xtask/tests/demo/reports/`, one per row of the result table of §10.3.
-//! `apply_edit` and `link_tree` work on trees the test makes. The command
+//! `plan_edit` and `build_tree` work on trees the test makes. The command
 //! runs against a fake `slip`: a shell script that copies a store the test
 //! made with `slip_exec::store` into `--store`, writes the golden report
 //! named for each round to `--report`, and prints fixed lines; the corpus
@@ -218,68 +218,163 @@ fn pristine(f: &Fixture) -> PathBuf {
     f.path("src")
 }
 
-// §10.3: `link_tree` makes hard links (and links as links); `apply_edit`
-// writes each edited file as a new file, and the pristine file is
-// unchanged after an edit of its link.
+/// The edit of the tree tests: two replaced files and a created one.
+const EDIT: &[u8] = b"file lib/a.h\nreplace\nint x;\nwith\nlong x;\nend\nreplace all\n  f();\nwith\n  g();\nend\nfile lib/b.cpp\nreplace\n#include \"a.h\"\nwith\n#import \"a.h\"\nend\ncreate lib/new/d.h\nnew\nend\n";
+
+fn roots() -> Vec<String> {
+    vec!["lib".to_owned()]
+}
+
+// §10.3, §11.3: `plan_edit` computes the edit without writing; `build_tree`
+// links what the edit leaves (and links as links) and writes what it
+// writes as new files; the pristine files are unchanged.
 #[test]
-fn s10_3_link_tree_and_apply_edit() {
+fn s11_3_build_tree() {
     let f = Fixture::empty("demo-tree");
     let src = pristine(&f);
     let tree = f.path("trees/01");
-    assert_eq!(demo::link_tree(&src.join("lib"), &tree.join("lib")), Ok(5));
+    let written = demo::plan_edit(&src, &read_edit(EDIT).unwrap()).unwrap();
+    let paths: Vec<&Path> = written.iter().map(|w| w.path.as_path()).collect();
+    assert_eq!(paths, [Path::new("lib/a.h"), Path::new("lib/b.cpp"), Path::new("lib/new/d.h")]);
+    assert_eq!(written[1].mode.map(|m| m & 0o777), Some(0o640));
+    assert_eq!(written[2].mode, None);
+    assert!(!tree.exists(), "planning writes nothing");
+    let n = demo::build_tree(&mut demo::Disk, &src, &tree, &roots(), &written, demo::Make::Link);
+    // c.h, the two symbolic links: what the edit leaves.
+    assert_eq!(n, Ok(3));
     let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
-    assert_eq!(ino(&tree.join("lib/a.h")), ino(&src.join("lib/a.h")));
     assert_eq!(ino(&tree.join("lib/sub/c.h")), ino(&src.join("lib/sub/c.h")));
     assert_eq!(std::fs::read_link(tree.join("lib/link")).unwrap(), Path::new("sub"));
     assert_eq!(
         std::fs::read_link(tree.join("lib/away")).unwrap().as_os_str().as_bytes(),
         b"../out/\xff/./x//"
     );
-    assert!(demo::link_tree(&src.join("lib"), &tree.join("lib")).unwrap_err().ends_with("exists"));
-
-    let edit = read_edit(
-        b"file lib/a.h\nreplace\nint x;\nwith\nlong x;\nend\nreplace all\n  f();\nwith\n  g();\nend\nfile lib/b.cpp\nreplace\n#include \"a.h\"\nwith\n#import \"a.h\"\nend\ncreate lib/new/d.h\nnew\nend\n",
-    )
-    .unwrap();
-    let written = demo::apply_edit(&tree, &edit).unwrap();
-    assert_eq!(written, [tree.join("lib/a.h"), tree.join("lib/b.cpp"), tree.join("lib/new/d.h")]);
     let read = |p: PathBuf| std::fs::read_to_string(p).unwrap();
     assert_eq!(read(tree.join("lib/a.h")), "long x;\n  g();\nint z;\n  g();\n");
     assert_eq!(read(tree.join("lib/b.cpp")), "#import \"a.h\"\n");
     assert_eq!(read(tree.join("lib/new/d.h")), "new\n");
-    // The pristine files are as they were; the edited ones are new files
-    // with the old permission bits.
+    // The pristine files are as they were and were never linked; the
+    // written ones are files of their own, with the old permission bits.
     assert_eq!(read(src.join("lib/a.h")), "int x;\n  f();\nint z;\n  f();\n");
     assert_eq!(read(src.join("lib/b.cpp")), "#include \"a.h\"\n");
     assert!(!src.join("lib/new").exists());
-    assert_ne!(ino(&tree.join("lib/a.h")), ino(&src.join("lib/a.h")));
-    assert_eq!(std::fs::metadata(src.join("lib/a.h")).unwrap().nlink(), 1);
+    let nlink = |p: PathBuf| std::fs::metadata(p).unwrap().nlink();
+    assert_eq!(nlink(src.join("lib/a.h")), 1);
+    assert_eq!(nlink(tree.join("lib/a.h")), 1);
+    assert_eq!(nlink(tree.join("lib/new/d.h")), 1);
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(tree.join("lib/b.cpp")), 0o640);
-    // An unedited file is still a link.
-    assert_eq!(ino(&tree.join("lib/sub/c.h")), ino(&src.join("lib/sub/c.h")));
+    let again = demo::build_tree(&mut demo::Disk, &src, &tree, &roots(), &[], demo::Make::Link);
+    assert!(again.unwrap_err().ends_with("exists"));
 
     // A tree from another tree (a `base`): the base's edit is kept, and
-    // editing the new tree leaves the base's file alone.
+    // the new tree's edit leaves the base's file alone.
     let next = f.path("trees/02");
-    demo::link_tree(&tree.join("lib"), &next.join("lib")).unwrap();
-    demo::apply_edit(
-        &next,
-        &read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap(),
-    )
-    .unwrap();
+    let second = read_edit(b"file lib/a.h\nreplace\nint z;\nwith\nint w;\nend\n").unwrap();
+    let w2 = demo::plan_edit(&tree, &second).unwrap();
+    demo::build_tree(&mut demo::Disk, &tree, &next, &roots(), &w2, demo::Make::Link).unwrap();
     assert_eq!(read(next.join("lib/a.h")), "long x;\n  g();\nint w;\n  g();\n");
     assert_eq!(read(tree.join("lib/a.h")), "long x;\n  g();\nint z;\n  g();\n");
+    assert_eq!(ino(&next.join("lib/b.cpp")), ino(&tree.join("lib/b.cpp")));
+
+    // `Copy`: no file of the tree is a link to the pristine tree.
+    let copied = f.path("trees/03");
+    demo::build_tree(&mut demo::Disk, &src, &copied, &roots(), &written, demo::Make::Copy).unwrap();
+    assert_eq!(nlink(copied.join("lib/sub/c.h")), 1);
+    assert_eq!(nlink(src.join("lib/sub/c.h")), 3, "linked by trees/01 and trees/02 only");
+    assert_eq!(read(copied.join("lib/a.h")), "long x;\n  g();\nint z;\n  g();\n");
 }
 
-// §10.1: the errors of applying an edit name the line, and nothing is
-// written when one entry fails.
+/// A [`demo::TreeOps`] that records every call on the file system and
+/// makes it, optionally planting other bytes in one written file.
+#[derive(Default)]
+struct Recorder {
+    calls: Vec<(String, PathBuf)>,
+    plant: Option<PathBuf>,
+}
+
+impl demo::TreeOps for Recorder {
+    fn create_dir(&mut self, path: &Path) -> std::io::Result<()> {
+        self.calls.push(("dir".into(), path.to_owned()));
+        demo::Disk.create_dir(path)
+    }
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.calls.push(("link".into(), to.to_owned()));
+        demo::Disk.hard_link(from, to)
+    }
+    fn copy(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.calls.push(("copy".into(), to.to_owned()));
+        demo::Disk.copy(from, to)
+    }
+    fn symlink(&mut self, target: &Path, at: &Path) -> std::io::Result<()> {
+        self.calls.push(("symlink".into(), at.to_owned()));
+        demo::Disk.symlink(target, at)
+    }
+    fn write_new(&mut self, path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
+        // Before the write, the name does not exist: it cannot be a link.
+        assert!(std::fs::symlink_metadata(path).is_err(), "{} exists", path.display());
+        self.calls.push(("write".into(), path.to_owned()));
+        if self.plant.as_deref() == Some(path) {
+            return demo::Disk.write_new(path, b"planted\n", mode);
+        }
+        demo::Disk.write_new(path, bytes, mode)
+    }
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.calls.push(("read".into(), path.to_owned()));
+        demo::Disk.read(path)
+    }
+}
+
+// §11.3: an edited and a created file are never a hard link at any
+// moment: every name the edit writes is made by one `write_new` (of a
+// name that does not exist) and never by a link, a copy or a symbolic
+// link; every written file is read back, after every write.
 #[test]
-fn s10_1_apply_edit_errors() {
-    let f = Fixture::empty("demo-apply");
+fn s11_3_written_names_never_linked() {
+    let f = Fixture::empty("demo-record");
     let src = pristine(&f);
     let tree = f.path("t");
-    demo::link_tree(&src.join("lib"), &tree.join("lib")).unwrap();
+    let written = demo::plan_edit(&src, &read_edit(EDIT).unwrap()).unwrap();
+    let mut rec = Recorder::default();
+    demo::build_tree(&mut rec, &src, &tree, &roots(), &written, demo::Make::Link).unwrap();
+    for w in &written {
+        let path = tree.join(&w.path);
+        let made: Vec<&str> =
+            rec.calls.iter().filter(|(_, p)| *p == path).map(|(c, _)| c.as_str()).collect();
+        assert_eq!(made, ["write", "read"], "{}", path.display());
+    }
+    let last_write = rec.calls.iter().rposition(|(c, _)| c == "write").unwrap();
+    let first_read = rec.calls.iter().position(|(c, _)| c == "read").unwrap();
+    assert!(first_read > last_write, "read back after every write");
+    let links = rec.calls.iter().filter(|(c, _)| c == "link").count();
+    assert_eq!(links, 1, "only lib/sub/c.h is linked");
+}
+
+// §11.3: the read-back check fails on a planted difference, naming the
+// file.
+#[test]
+fn s11_3_read_back_finds_a_difference() {
+    let f = Fixture::empty("demo-plant");
+    let src = pristine(&f);
+    let tree = f.path("t");
+    let written = demo::plan_edit(&src, &read_edit(EDIT).unwrap()).unwrap();
+    let mut rec = Recorder { plant: Some(tree.join("lib/b.cpp")), ..Recorder::default() };
+    let e =
+        demo::build_tree(&mut rec, &src, &tree, &roots(), &written, demo::Make::Link).unwrap_err();
+    assert!(e.contains("lib/b.cpp: read back 8 bytes that are not the 14 written"), "{e}");
+    // `read_back` alone, on a tree changed after it was made.
+    std::fs::write(tree.join("lib/b.cpp"), "#import \"a.h\"\n").unwrap();
+    assert_eq!(demo::read_back(&mut demo::Disk, &tree, &written), Ok(()));
+    std::fs::write(tree.join("lib/new/d.h"), "old\n").unwrap();
+    let e = demo::read_back(&mut demo::Disk, &tree, &written).unwrap_err();
+    assert!(e.ends_with("lib/new/d.h: read back 4 bytes that are not the 4 written"), "{e}");
+}
+
+// §10.1: the errors of an edit name the line, and nothing is written.
+#[test]
+fn s10_1_plan_edit_errors() {
+    let f = Fixture::empty("demo-apply");
+    let src = pristine(&f);
     for (bad, msg) in [
         (&b"file lib/none.h\nreplace\nx\nwith\nend\n"[..], "line 2: `lib/none.h` does not exist"),
         (b"file lib/sub\nreplace\nx\nwith\nend\n", "line 2: `lib/sub` is not a regular file"),
@@ -299,14 +394,17 @@ fn s10_1_apply_edit_errors() {
             "line 1: `lib/a.h/x` goes through `a.h`, which is not a directory",
         ),
     ] {
-        let e = demo::apply_edit(&tree, &read_edit(bad).unwrap()).unwrap_err();
+        let e = demo::plan_edit(&src, &read_edit(bad).unwrap()).unwrap_err();
         assert!(e.starts_with(msg), "{:?}: {e}", String::from_utf8_lossy(bad));
     }
-    // The first entry of the last-but-two would have written `a.h`: it did not.
     assert_eq!(
-        std::fs::metadata(tree.join("lib/a.h")).unwrap().ino(),
-        std::fs::metadata(src.join("lib/a.h")).unwrap().ino()
+        std::fs::read_to_string(src.join("lib/a.h")).unwrap(),
+        "int x;\n  f();\nint z;\n  f();\n"
     );
+    // A written path outside the roots.
+    let w = demo::Written { path: "other/x.h".into(), content: vec![], mode: None };
+    let e = demo::build_tree(&mut demo::Disk, &src, &f.path("t"), &roots(), &[w], demo::Make::Link);
+    assert_eq!(e, Err("`other/x.h` is not under a root".into()));
 }
 
 // ---------------------------------------------------------------- §10.1 expect.txt

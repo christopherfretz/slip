@@ -555,8 +555,9 @@ fn s8_7_report_replaced_whole() {
     assert_eq!(names, ["r.json"]);
     // Replaced, not rewritten: the path names a new file afterwards, and a
     // second name of the old file still names the old one. (Compared by
-    // inode: the contents read back through the host's shared mount can
-    // be stale for a moment after a rename.)
+    // inode: on a mount that confuses the names of a hard-linked file the
+    // old name reads the new file's contents after the rename,
+    // spec/harness.md §11.4; nothing reads either name's contents.)
     let ino = |name: &str| std::fs::metadata(f.path(name)).unwrap().ino();
     std::fs::hard_link(f.path("out/r.json"), f.path("out/old.json")).unwrap();
     let before = ino("out/r.json");

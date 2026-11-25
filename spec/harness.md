@@ -15,6 +15,8 @@ one rule of whether a result permits writing, §6.3), and through
 
 M0 defines the gate (§2), the lints (§3), the work-package table (§4), the
 jobserver commands (§5), performance records (§7) and corpora (§8).
+§11 is the probe of a file system that confuses the names of a
+hard-linked file, and what the harness relies on of one.
 Transform tests (§6) are outlined here and specified with M2. M1 adds the
 corpus invariants (§9) and the first demonstration (§10); the pitfall
 tests are specified in `spec/pitfalls.md` §1.
@@ -1421,11 +1423,13 @@ end and the reports stay):
    observer with an indeterminate unit cannot be `verified`
    (`spec/verify.md` §4.1), and the demo shows that rather than hide it.
 3. For each case, in order, with round `k` = its position:
-   - the tree `demo1/trees/<case>/<root>` is made for every root: a copy
-     of the root in which each file is a hard link to the pristine file
-     (a copy where linking fails), or of the `base` case's tree; then
-     `edit.txt` is applied, each edited file **written as a new file**
-     (the link removed first), never opened for writing in place;
+   - the tree `demo1/trees/<case>/<root>` is made for every root, from
+     the pristine root or from the `base` case's tree, as §11.3 says:
+     what `edit.txt` writes is computed first; every file it writes is
+     **created as a new file** (never a link, never opened for writing
+     in place), every other file is a hard link to the file it comes
+     from (a copy where linking fails), and every written file is read
+     back and compared;
    - if `declared.txt` has a line: `slip declare --plan <id> --from
      declared.txt --out demo1/<case>.decl --owned <src>/<root> --root
      <src>/<root> --post <tree>` (one `--owned` for every root of the
@@ -1538,8 +1542,15 @@ pub struct Config { pub corpus: String, pub roots: Vec<String>, pub only: Vec<St
 pub fn read_config(text: &str) -> Result<Config, String>;
 pub enum Entry { Replace { file: String, all: bool, old: Vec<u8>, new: Vec<u8> }, Create { file: String, content: Vec<u8> } }
 pub fn read_edit(text: &[u8]) -> Result<Vec<Entry>, String>;                 // errors name the line
-pub fn apply_edit(root: &Path, entries: &[Entry]) -> Result<Vec<PathBuf>, String>;   // the files written
-pub fn link_tree(from: &Path, to: &Path) -> Result<u64, String>;             // files linked or copied
+pub struct Written { pub path: PathBuf, pub content: Vec<u8>, pub mode: Option<u32> }
+pub fn plan_edit(from: &Path, entries: &[Entry]) -> Result<Vec<Written>, String>;   // writes nothing
+pub enum Make { Link, Copy }
+pub const TREES: Make;                                                       // §11.3
+pub trait TreeOps { /* create_dir, hard_link, copy, symlink, write_new, read */ }
+pub struct Disk;                                                             // TreeOps on the file system
+pub fn build_tree(ops: &mut dyn TreeOps, from: &Path, to: &Path, roots: &[String],
+                  written: &[Written], make: Make) -> Result<u64, String>;   // files linked, copied or symlinked
+pub fn read_back(ops: &mut dyn TreeOps, to: &Path, written: &[Written]) -> Result<(), String>;
 pub enum Expect { Verified, Mismatch(Vec<Wanted>) }
 pub struct Wanted { pub kind: String, pub name: String, pub at: Option<(String, u64)> }
 pub fn read_expect(text: &str) -> Result<Expect, String>;
@@ -1552,6 +1563,94 @@ pub fn check(expect: &Expect, report: &json::Value, src: &Path,
              pre: &BTreeSet<String>, post: &BTreeSet<String>) -> (CaseResult, Vec<Line>);
 pub fn main(repo: &Path, args: &[String]) -> ExitCode;
 ```
+
+## 11. A file system that confuses the names of a hard-linked file
+
+### 11.1 The hazard
+
+On some file systems a file with two names does not keep them apart. On
+the workspace's mount (a container bind mount over a host share), with a
+file `A` and a hard link `B` to it: unlink `B`, create a new file `B`, and
+a read of `A` now and then returns the new `B`'s bytes; rename a new file
+over `B`, and a read of `A` returns them almost every time. With `B` a
+copy, never a link, no read is wrong. The count is in
+`spec/landed/harness/WP-159.md`. The pattern is general: **a name made
+again (by create, link or rename) while another name of its old file is
+alive** can make that other name read as the new file.
+
+Slip reads what the system gives it and does not work around this in the
+product (`spec/edits.md` §10.4 says what a write promises about names).
+The harness and the store must not walk into it: Slip's validation must
+not depend on a mount behaving.
+
+### 11.2 The probe
+
+```
+cargo xtask fscheck <dir> [--rounds <n>] [--row <name>]…
+```
+
+Each row repeats a sequence `<n>` times (default 20,000) in a new
+directory `<dir>/fscheck.<pid>.<row>`, removed at the end, reusing its
+names every seven rounds as a tree made again reuses them, and reads the
+names it left with known contents. A **wrong read** is a read that
+returns other bytes or fails, or a step of the sequence that fails (a
+`create_new` of a name just unlinked that finds it still there); the row
+goes on.
+
+| Row | Sequence | Relied on by |
+|---|---|---|
+| `link-unlink-create` | `B` a link to `A`; `B` unlinked and created again | nothing (the harness's trees before WP-159) |
+| `link-rename-over` | `B` a link to `A`; a temporary renamed over `B` | nothing (`--write` refuses a linked file, §11.4) |
+| `copy-unlink-create` | `B` a copy of `A`; `B` unlinked and created again | a copied tree |
+| `copy-rename-over` | `B` a copy of `A`; a temporary renamed over `B` | the store's publish over an entry, `--write`, `--patch`, `--report` |
+| `fresh-beside-links` | a tree of links with one file created fresh in it | the harness's trees (§11.3) |
+| `link-read-both` | `B` a link to `A`, read through both | the trees' unedited files, the tests of identity |
+| `tmp-again-after-link` | `T` linked to `L` and unlinked; `T` created again | nothing (the store's lock and journal before WP-159) |
+| `tmp-again-after-rename` | `T` renamed to `D`; `T` created again | the patch's and a report's temporary, staged names |
+| `unique-tmp-link` | `T` linked to `L` and unlinked; `T`'s name never used again | the store's lock and journal |
+
+Output: `fscheck: <dir>: <n> rounds per row`, then per row
+`<row> rounds <n> wrong <w> <seconds>s  relied on|not relied on: <sequence>`
+and, if `w` is not 0, `  first: <name> read <bytes>, not <bytes>` (or
+`a step failed: <error>`); last `fscheck: ok`, or
+`fscheck: FAILED (<rows>)` naming the relied-on rows with a wrong read
+or an error. Exit status 0 for `ok`, 1 for `FAILED` or a `<dir>` that is
+not a directory, 2 for a usage error (`--rounds` not a positive integer,
+an unknown row or option, a second directory). `--row` runs only the
+rows named, in the order of the table.
+
+The rows not relied on are there to show the hazard; their counts vary
+with the load. The second row shows within a few thousand rounds; the
+first needs a loaded host and tens of thousands.
+
+### 11.3 What the harness relies on
+
+**A harness never replaces a name that is a hard link.** A tree built from
+another (Demo 1's case trees, `crates/slip_cli/tests/names_relocation.rs`)
+knows the files its edits write before it is made: every file an edit
+writes, or creates, is created as a new file (`create_new`) and is
+never a link at any moment; every other file is a hard link to the file
+it comes from (`fresh-beside-links`, `link-read-both`), or a copy where
+linking fails. After building, every written file is read back and
+compared, a check and not the guarantee. Were `fresh-beside-links` not
+clean on the mount, the trees would be copied (`demo::Make::Copy`).
+
+### 11.4 Hard links in tests and in the store
+
+A test that needs two names of one file (identity) keeps its hard link
+if nothing replaces either name while it reads the other, or the name
+replaced gets the same bytes, and says so beside the link. A test that
+links only to save a copy copies. The store makes no name again while
+another name of its old file is alive (`spec/exec.md` §2.1 "`tmp/`
+names"); which of its reads are checked against a digest is
+`spec/exec.md` §2.1 "Which reads are checked".
+
+On the workspace mount `unique-tmp-link` is not clean (WP-159): after a
+link and the unlink of its source, the new name can read as absent for a
+while, never as other bytes. The harness's trees do not depend on it;
+what it means for the store's lock and journal is
+`spec/landed/harness/WP-159.md` "A finding: a linked name read as
+absent", an open question.
 
 ## Tests
 
@@ -1611,14 +1710,21 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
   each state; a `slip` that exits 3; a corpus that is not configured;
   `remove_tree` refusing a path outside the corpus directory.
 - `xtask/tests/demo.rs` — §10 without a corpus: `demo.toml`; every form
-  and every error of `edit.txt`; `apply_edit` and `link_tree` on a tree
-  the test makes, with the pristine file unchanged after an edit of its
-  link; `expect.txt`; `check` against report goldens: every row of the
+  and every error of `edit.txt`; `plan_edit` and `build_tree` on a tree
+  the test makes (§11.3), with the pristine file unchanged and never
+  linked by an edited name, the calls recorded to show that a written
+  name is only ever created new, and a planted difference found by the
+  read-back; `expect.txt`; `check` against report goldens: every row of the
   result table, each kind of line (found, no place, a place that is one
   line off, blocked, missing, `removed` taking the pre site, `added`
   blocked by the post-image), a `clean` run never printed as `verified`,
   an observer `not_parsed`; the table and the three last lines with a
   fake `slip`, and the three exit statuses.
+- `xtask/tests/fscheck.rs` — §11.2 over a temporary directory: the
+  command line, every row run with its line and nothing left behind,
+  status 0 where every relied-on row is clean, a wrong read planted
+  through the reader failing a relied-on row and not one that is not
+  relied on, a directory that does not exist.
 - The corpus runs themselves (`invariants a llvm`, `invariants b llvm`,
   `demo 1`) are not in the gate: they need the corpus, and are run and
   recorded by the packages that land them and by the merge tier (§2).

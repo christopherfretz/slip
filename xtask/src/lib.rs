@@ -12,6 +12,8 @@
 //! - [`invariants`]: `cargo xtask invariants a|b <corpus>` (§9), running
 //!   `slip` through [`slip_run`],
 //! - [`demo`]: `cargo xtask demo 1` (§10), Demo 1 on the `llvm` corpus,
+//! - [`fscheck`]: `cargo xtask fscheck <dir>` (§11), the probe of a file
+//!   system that confuses the names of a hard-linked file,
 //! - [`api_table`]: `cargo xtask api-table [§N[.M]…]`, the table of rules
 //!   to script test directories (`docs/wp/WP-091.md`).
 //!
@@ -25,6 +27,7 @@ pub mod api_table;
 pub mod ci;
 pub mod corpus;
 pub mod demo;
+pub mod fscheck;
 pub mod invariants;
 pub mod jobserver;
 pub mod lint;

@@ -2532,6 +2532,26 @@ A blob is published like every file (`exec.md` §2). A reader checks a
 blob's digest when it reads it; a blob that does not hash to its name is
 an `Input` error.
 
+`write.journal` is published from a temporary in the process's scratch
+directory, `journal.<t>.<n>.tmp` with the token of `exec.md` §2.1, hard-linked
+to the journal's name and unlinked: the temporary's name is never made
+again while the journal is alive (`harness.md` §11).
+
+**What a write promises about names** (`harness.md` §11). `--write`
+(§7.3), `--patch <file>` (§7.2) and `--report <file>` (§10.2) each
+replace **the file at the path given** by renaming a new file over it;
+that is all Slip promises. `--write` refuses a file with a second hard
+link (`hard_linked`, §7.3 step 1), so it never renames over a name
+whose file has another; a link made after the check is outside the
+promise. A `--patch` or `--report` path that is one name of a file with
+others is replaced at that path only: by the standard the other names
+keep the old file, and on a file system that fails `cargo xtask fscheck`'s
+`link-rename-over` row they read as the new one. That is the file
+system's, and Slip does not work around it. `slip_apply`'s tests with a
+hard-linked target (`crates/slip_apply/tests/write.rs`,
+`s7_3_disk_refusals`) remove the second name before any write and read
+no other name after one.
+
 ### 10.5 Output and exit status
 
 On standard output, after the plan lines of `parse` (`exec.md` §8.2) when

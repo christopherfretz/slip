@@ -860,6 +860,8 @@ fn s10_4_a_tree_image_has_no_spellings() {
 #[test]
 fn s5_1_loading_an_overlay_file_by_identity() {
     let tree = Tree::new("identity");
+    // Two names of one file (identity); neither is replaced: the post-image
+    // is the overlay's (spec/harness.md §11.4).
     std::fs::hard_link(tree.subject.join("v.h"), tree.subject.join("v2.h")).unwrap();
     let (o, _, declared) = tree.map_c();
     let c_post = "#include \"w.h\"\n#include \"v2.h\"\nint c = V;\n";
@@ -977,6 +979,8 @@ fn s5_1_two_entries_of_one_file_fail_the_job() {
     let m1: &[u8] = b"#define M 1\n";
     let m2: &[u8] = b"#define M 2\n";
     std::fs::write(dir.join("m.h"), m1).unwrap();
+    // Two names of one file (identity); neither is replaced: the post-image
+    // is the overlay's (spec/harness.md §11.4).
     std::fs::hard_link(dir.join("m.h"), dir.join("m2.h")).unwrap();
     std::fs::write(dir.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
     let (q_cpp, declared) = tree.map_publish("q.cpp", 8);
@@ -1038,6 +1042,8 @@ fn s5_3_another_name_of_an_overlay_file() {
     let m1: &[u8] = b"#define M 1\n";
     let m2: &[u8] = b"#define M 2\n";
     std::fs::write(s.join("m.h"), m1).unwrap();
+    // Two names of one file (identity); neither is replaced: the post-image
+    // is the overlay's (spec/harness.md §11.4).
     std::fs::hard_link(s.join("m.h"), s.join("m2.h")).unwrap();
     std::fs::write(s.join("q.cpp"), "#include \"m2.h\"\nint q = M;\n").unwrap();
     let (o, declared) = tree.map_publish("q.cpp", 8);
