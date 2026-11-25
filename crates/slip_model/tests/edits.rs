@@ -2468,6 +2468,14 @@ fn class_of_three_lists() {
     assert_eq!(o.class(b"/s/b/mine/x.h"), Owned);
     assert_eq!(o.class(b"/s/b/x.h"), Rebuilt);
     assert_eq!(o.class(b"/s/x.h"), Owned);
+    // WP-118 review N1: a tie, only from a value that is not valid (one
+    // entry in two lists), fails closed: read-only, then rebuilt, then
+    // owned.
+    let o = three(&[b"/s/g"], &[b"/s/g"], &[b"/s/g"]);
+    assert_eq!(o.class_of(b"/s/g/x.h"), (ReadOnly, Some(0)));
+    let o = three(&[b"/s/g"], &[], &[b"/s/g"]);
+    assert_eq!(o.class_of(b"/s/g/x.h"), (Rebuilt, Some(0)));
+    assert!(!o.is_owned(b"/s/g/x.h"));
 }
 
 fn rename_request_v3() -> Transform {

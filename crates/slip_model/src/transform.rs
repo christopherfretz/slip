@@ -75,8 +75,9 @@ impl Ownership {
     /// when an entry covers it, the index of the longest covering entry
     /// in its own list. The three lists share no entry, and two entries
     /// that cover one path and have one length are equal, so the longest
-    /// is unique (for a value that is not valid, the first list in the
-    /// order owned, rebuilt, readonly wins a tie).
+    /// is unique. For a value that is not valid, a tie fails closed: the
+    /// first list in the order readonly, rebuilt, owned wins it (WP-118
+    /// review N1), so a path is never owned by an invalid value's tie.
     pub fn class_of(&self, real_path: &[u8]) -> (FileClass, Option<usize>) {
         let longest = |list: &[Vec<u8>]| {
             let mut best: Option<(usize, usize)> = None;
@@ -89,9 +90,9 @@ impl Ownership {
         };
         let mut best: Option<(usize, FileClass, usize)> = None;
         for (list, class) in [
-            (&self.owned, FileClass::Owned),
-            (&self.rebuilt, FileClass::Rebuilt),
             (&self.readonly, FileClass::ReadOnly),
+            (&self.rebuilt, FileClass::Rebuilt),
+            (&self.owned, FileClass::Owned),
         ] {
             if let Some((len, i)) = longest(list)
                 && best.is_none_or(|(l, ..)| len > l)
