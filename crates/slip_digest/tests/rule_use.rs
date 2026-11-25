@@ -148,6 +148,7 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
         kept: Vec::new(),
         made: Vec::new(),
         fixed: Vec::new(),
+        rebuilt: slip_digest::RebuiltOutput::default(),
         ..on.clone()
     };
     if cleared != *off {
@@ -166,6 +167,7 @@ fn decoded(table: &RuleTable) -> Result<RuleTable, String> {
         .with_files(Some(slip_model::transform::Ownership {
             owned: vec![b"/".to_vec()],
             readonly: vec![],
+            rebuilt: Vec::new(),
         }));
     let read = Declared::from_bytes(&declared.to_bytes())
         .map_err(|e| format!("the declared change read back: {e}"))?;

@@ -109,6 +109,7 @@ fn ok_shard_all(obs: u8, verdict: Verdict, by_kind: Option<[u64; 8]>) -> Shard {
         names: Some(Names::default()),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     };
     s.validate().expect("a valid shard");
     s
@@ -137,6 +138,7 @@ fn unparsed_shard(obs: u8, status: Status, message: &str) -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     };
     s.validate().expect("a valid shard");
     s

@@ -118,6 +118,7 @@ pub fn edit_set_summary(
             let _ = writeln!(out, "refused {} {n}", cause.name());
         }
     }
+    rebuilt_counts(set, out);
     if let Some((id, d)) = declared {
         let _ = writeln!(
             out,
@@ -127,6 +128,37 @@ pub fn edit_set_summary(
         );
     }
     debug_assert!(set.state == SetState::Accepted || set.edits.is_empty());
+}
+
+/// At most this many `rebuilt <path>:` lines (WP-118 R7.2).
+const REBUILT_MAX: usize = 200;
+
+/// WP-118 R7.2 (`spec/edits.md` §10.5): after the `refused <cause> <n>`
+/// lines, one line per rebuilt file with a `site_refused` refusal of
+/// reason `rebuilt`, in path order, at most [`REBUILT_MAX`]. The path is
+/// written whole, as the set names it (the summary has no
+/// `--relative-to`).
+fn rebuilt_counts(set: &EditSet, out: &mut dyn Write) {
+    let mut by_file: std::collections::BTreeMap<&[u8], u64> = std::collections::BTreeMap::new();
+    for r in &set.refusals {
+        if r.cause != Cause::SiteRefused || r.reason != Reason::Rebuilt {
+            continue;
+        }
+        let path = r
+            .file
+            .and_then(|f| usize::try_from(f).ok())
+            .and_then(|i| set.files.get(i))
+            .map_or(&b"<no file>"[..], |f| &f.path[..]);
+        *by_file.entry(path).or_default() += 1;
+    }
+    for (path, n) in by_file.into_iter().take(REBUILT_MAX) {
+        let _ = write!(out, "rebuilt ");
+        let _ = out.write_all(path);
+        let _ = writeln!(
+            out,
+            ": {n} name(s) the build would have to change; slip rename cannot make this change (verify a post tree, spec/verify.md §5.1)"
+        );
+    }
 }
 
 /// Lines and columns of the set's files, read from the pre-image on disk

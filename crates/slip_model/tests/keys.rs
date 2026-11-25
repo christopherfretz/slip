@@ -806,6 +806,7 @@ fn declared_and_read_tables_index_as_new() {
         let files = (!rules.is_empty()).then(|| slip_model::transform::Ownership {
             owned: vec![b"/".to_vec()],
             readonly: vec![],
+            rebuilt: Vec::new(),
         });
         let declared =
             Declared::new(new.rules().to_vec(), vec![], vec![], vec![]).unwrap().with_files(files);

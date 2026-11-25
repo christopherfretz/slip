@@ -310,7 +310,7 @@ mod tests {
         )
         .unwrap();
         let root = tree.root().to_str().unwrap().as_bytes().to_vec();
-        let ownership = Ownership { owned: vec![root], readonly: Vec::new() };
+        let ownership = Ownership { owned: vec![root], readonly: Vec::new(), rebuilt: Vec::new() };
         let obs = tree.observer("main.cpp", "c++20", &[]);
         let mut o = ParseOptions::default();
         o.written = true;

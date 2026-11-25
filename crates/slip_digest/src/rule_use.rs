@@ -86,10 +86,23 @@
 //! **Kept keys seen.** Every entity, owned or not, whose mapped key is in
 //! `Declared.kept` gives that key's index to `Output`'s list of kept keys
 //! seen, so the run can report a `kept` key no observer has (§9.2).
+//!
+//! **Rebuilt files** (WP-118 R6.4, `spec/verify.md` §9.1). For each owned
+//! entity `e` with a `rebuilt` entry on a declaration's chain or a
+//! declaration in a rebuilt file, `owned.rs` gives `R(e)` and `D(e)`
+//! ([`through`]); `ns_refs.rs` gives each reference to a namespace written
+//! in a rebuilt file with the entries of its chain ([`ns_reference`]).
+//! [`rebuilt`] reads them with the traces: per entity the rules that gave
+//! it its key (`mapped`) and the rules that produce the key it kept
+//! (`left`, or `left_kept` when that key is in `Declared.kept`); `relied`
+//! is the entries of `R(e)` of every `e` with a `mapped` rule, and of
+//! every reference whose namespace (or a level of its chain) a rule
+//! mapped; `declares` one row per rebuilt file of `D(e)` and rule.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use slip_kiln::kiln::ast::ids::DeclId;
+use slip_kiln::kiln::source::FileId;
 use slip_model::Digest;
 use slip_model::agreement::Use;
 use slip_model::keys::{Key, KeyKind};
@@ -144,6 +157,13 @@ pub(crate) struct Counting {
     view_units: BTreeSet<DeclId>,
     /// `Declared.kept`, ascending.
     kept: Vec<Digest>,
+    /// WP-118: per owned entity, `R(e)` (indices into `Ownership.rebuilt`,
+    /// ascending) and `D(e)` (rebuilt files, ascending); only for an
+    /// entity with one of them not empty.
+    through: HashMap<DeclId, (Vec<u32>, Vec<FileId>)>,
+    /// WP-118: each reference to a namespace (its entity) written in a
+    /// rebuilt file, with the entries of the file and its chain.
+    ns_refs: HashSet<(DeclId, Vec<u32>)>,
 }
 
 impl Counting {
@@ -326,6 +346,175 @@ pub(crate) fn made_by(c: &Counting, e: DeclId) -> Option<usize> {
         return None;
     }
     chain(c, e).and_then(|(_, via)| via.first().copied())
+}
+
+/// Owned entity `e` has `rebuilt` entries `set` on its declarations'
+/// chains and files, and declarations lying in the rebuilt files `lies`
+/// (WP-118 R6.4: `R(e)`, `D(e)`).
+pub(crate) fn through(w: &mut Walk<'_>, e: DeclId, set: Vec<u32>, lies: Vec<FileId>) {
+    if let Some(c) = w.rule_use.as_mut() {
+        c.through.insert(e, (set, lies));
+    }
+}
+
+/// A reference to namespace `ns` (its entity) is written in a rebuilt
+/// file whose entry and chain hold the entries `set` (WP-118 R6.4).
+pub(crate) fn ns_reference(w: &mut Walk<'_>, ns: DeclId, set: &[u32]) {
+    if let Some(c) = w.rule_use.as_mut()
+        && !set.is_empty()
+    {
+        c.ns_refs.insert((ns, set.to_vec()));
+    }
+}
+
+/// The rules each way of one entity (WP-118 R6.4).
+#[derive(Default)]
+struct Ways {
+    /// The rules that gave it its key.
+    mapped: BTreeSet<usize>,
+    /// The rules that produce the key it kept, its key not in
+    /// `Declared.kept`.
+    left: BTreeSet<usize>,
+    /// The same, its key in `Declared.kept` or of kind `namespace`.
+    left_kept: BTreeSet<usize>,
+}
+
+/// The rules each way of entity `e` (R6.4): `mapped`, its own trace
+/// `Via(r)`, a member whose chain's levels `r` matched, a namespace whose
+/// owned-view unit counts `via(r)`; produced, its own trace `Direct(r)` (a
+/// namespace's included), a member whose chain has a level `r` produces.
+fn ways(c: &Counting, e: DeclId, entry: &Entry) -> Ways {
+    let mut w = Ways::default();
+    let mut produced = BTreeSet::new();
+    match &entry.trace {
+        Some(Trace::Via(r)) => {
+            w.mapped.insert(*r);
+        }
+        Some(Trace::Direct(r)) => {
+            produced.insert(*r);
+        }
+        None => {}
+    }
+    if entry.member
+        && let Some((d, v)) = chain(c, e)
+    {
+        w.mapped.extend(v);
+        produced.extend(d);
+    }
+    if c.view_units.contains(&e)
+        && let Some(Some(Trace::Via(r))) = c.views.get(&e)
+    {
+        w.mapped.insert(*r);
+    }
+    // A namespace is never `left` (ruling on R6.4, merge review): its own
+    // `Direct` rows are accounting, in `left_kept`; its members count by
+    // their own rows.
+    if entry.kept.is_some() || entry.namespace {
+        w.left_kept = produced;
+    } else {
+        w.left = produced;
+    }
+    w
+}
+
+/// A rule matched namespace `ns`'s own key in the owned view, or a level
+/// of its chain of namespaces.
+fn ns_mapped(c: &Counting, ns: DeclId) -> bool {
+    let mut ns = ns;
+    for _ in 0..CHAIN_LIMIT {
+        if let Some(Trace::Via(_)) = c.level(ns) {
+            return true;
+        }
+        match c.parents.get(&ns) {
+            Some(&p) => ns = p,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// One `declares` row of the walk (WP-118 R6.4): a rebuilt file (its
+/// subject path), a rule, and how many entities declared in the file the
+/// rule gave their key (`mapped`) or left on the key it produces (`left`,
+/// `left_kept`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Declares {
+    pub file: Vec<u8>,
+    pub rule: usize,
+    pub mapped: u64,
+    pub left: u64,
+    pub left_kept: u64,
+}
+
+/// What the walk says of the rebuilt files (WP-118, `Output::rebuilt`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RebuiltOutput {
+    /// The entries of `Ownership.rebuilt` relied on, ascending.
+    pub relied: Vec<u32>,
+    /// Strictly ascending by `(file, rule)`; no row counts nothing.
+    pub declares: Vec<Declares>,
+    /// The subject paths of the read-only files that cut an include chain
+    /// (R1.3 rule 3), strictly ascending; for the hints.
+    pub cutters: Vec<Vec<u8>>,
+}
+
+/// `Output::rebuilt` (R6.4), from the traces and what `owned.rs` and
+/// `ns_refs.rs` recorded; with `cutters`, the walk's. Empty without the
+/// accounting.
+/// Files are given by their subject paths (`path`); two buffers of one
+/// path (which a unit should not have) have their rows summed, which can
+/// only count more.
+pub(crate) fn rebuilt(
+    c: Option<&Counting>,
+    cutters: &BTreeSet<FileId>,
+    path: &dyn Fn(FileId) -> Vec<u8>,
+) -> RebuiltOutput {
+    let Some(c) = c else { return RebuiltOutput::default() };
+    let mut relied: BTreeSet<u32> = BTreeSet::new();
+    let mut rows: BTreeMap<(Vec<u8>, usize), Declares> = BTreeMap::new();
+    let mut paths: HashMap<FileId, Vec<u8>> = HashMap::new();
+    for (e, (set, lies)) in &c.through {
+        let Some(entry) = c.entries.get(e) else { continue };
+        let w = ways(c, *e, entry);
+        if !w.mapped.is_empty() {
+            relied.extend(set.iter().copied());
+        }
+        for &id in lies {
+            let file = paths.entry(id).or_insert_with(|| path(id)).clone();
+            for (rules, way) in [(&w.mapped, 0), (&w.left, 1), (&w.left_kept, 2)] {
+                for &r in rules {
+                    let row = rows.entry((file.clone(), r)).or_insert(Declares {
+                        file: file.clone(),
+                        rule: r,
+                        mapped: 0,
+                        left: 0,
+                        left_kept: 0,
+                    });
+                    match way {
+                        0 => row.mapped += 1,
+                        1 => row.left += 1,
+                        _ => row.left_kept += 1,
+                    }
+                }
+            }
+        }
+    }
+    for (ns, set) in &c.ns_refs {
+        if ns_mapped(c, *ns) {
+            relied.extend(set.iter().copied());
+        }
+    }
+    RebuiltOutput {
+        relied: relied.into_iter().collect(),
+        declares: rows.into_values().collect(),
+        cutters: cutters
+            .iter()
+            .map(|&f| path(f))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect(),
+    }
 }
 
 /// `Output::rule_use`: one `Use` per rule with a count that is not 0,

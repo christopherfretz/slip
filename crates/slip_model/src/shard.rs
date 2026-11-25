@@ -3,7 +3,7 @@
 //! Plain data. The binary and JSON forms are implemented in `formats`
 //! (work package WP-006).
 
-use crate::agreement::{Binding, RuleUse};
+use crate::agreement::{Binding, RebuiltUse, RuleUse};
 use crate::digests::Digests;
 use crate::edits::Edits;
 use crate::names::Names;
@@ -91,6 +91,11 @@ pub struct Shard {
     /// WP-135); only for phase `Map` and with `inputs`. Absent: the parse
     /// that wrote the shard did not record them.
     pub found: Option<Found>,
+    /// Section 33: what the walk said of the run's `rebuilt` entries and
+    /// the files that cut an include chain (`spec/verify.md` §9.1, work
+    /// package WP-118); only for phase `Verify` and status `Ok`, and
+    /// absent when it would be empty.
+    pub rebuilt_use: Option<RebuiltUse>,
 }
 
 /// The `found` section (`spec/model.md` §8.8): each place where the map

@@ -493,6 +493,16 @@ fn relocated_name(
     k: &Key,
     facts: &Facts,
 ) -> Result<Name, LineError> {
+    if k.kind != KeyKind::Namespace && facts.c_linkage_rebuilt.contains(&id) {
+        return Err(error(
+            n,
+            ErrorKind::DependencyEntity,
+            format!(
+                "`{}` is a dependency entity: it has C language linkage and is declared in a rebuilt file (a C-linkage declaration in a rebuilt file lies in a read-only file): no rule renames it",
+                entity.text
+            ),
+        ));
+    }
     if k.kind != KeyKind::Namespace && facts.dependency.contains(&id) {
         return Err(error(
             n,
@@ -957,6 +967,14 @@ fn warn_uncovered(files: &Ownership, read: &BTreeSet<Vec<u8>>, err: &mut dyn Wri
             let _ = writeln!(err, " covers no file the selected observers' pre-images read");
         }
     }
+    // WP-118 R7.3: the same for a `--rebuilt` entry.
+    for entry in &files.rebuilt {
+        if !read.iter().any(|p| slip_model::transform::covers(entry, p)) {
+            let _ = write!(err, "slip: warning: declare: --rebuilt ");
+            let _ = err.write_all(entry);
+            let _ = writeln!(err, " covers no file of the selected observers");
+        }
+    }
 }
 
 fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> commands::Result<u8> {
@@ -984,7 +1002,7 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     if a.owned.is_empty() && lines.iter().any(|(_, l)| matches!(l, Line::Relocate { .. })) {
         return Err(Failure::Usage("a relocate line needs the run's files: --owned".to_owned()));
     }
-    let files = commands::ownership(&a.owned, &a.readonly)?;
+    let files = commands::ownership(&a.owned, &a.readonly, &a.rebuilt)?;
     let run = InProcess::open("declare", &a.plan, &a.image, &a.store, &a.only, a.limit)?;
     let need = needs(&lines);
 

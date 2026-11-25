@@ -55,11 +55,13 @@ more precisely than verification would report it.
 
 ### 2.1 Ownership
 
-A transform request carries the **owned set**: the files Slip may edit.
+A transform request carries the run's **files**: which files Slip may
+edit, and which of the others the build compiles from source.
 
 ```
 Ownership := owned:    list<path>     canonical real paths of directories or files; sorted, no two equal
              readonly: list<path>     the same; sorted, no two equal; none also in `owned`
+             rebuilt:  list<path>     the same; sorted, no two equal; none also in `owned` or `readonly`; none is `/` (WP-118)
 ```
 
 Every entry is a **canonical absolute path**: it starts with `/`, has no
@@ -70,13 +72,36 @@ file: where a path names a file (an edit set's `files`, an overlay's
 `files`, a residue's `file`), a reader refuses `/` too. The entry `/` **covers**
 every absolute path; any other entry `e` covers a real path `p` iff `p`
 equals `e` or `p` starts with `e` followed by `/` (so `/a/b` covers
-`/a/b/x` and not `/a/bc/x`). A file is **owned** if some entry covers it
-and the longest entry covering it is in `owned`. Every other file is
-**read-only**: system headers, dependencies, generated files in a build
-tree, and whatever `readonly` carves out of an owned directory.
+`/a/b/x` and not `/a/bc/x`). The **class** of a file is the list that
+holds the longest entry covering its real path: **owned**, **read-only**
+or **rebuilt**. A file no entry covers is read-only: system headers,
+dependencies, and generated files in a build tree the user said nothing
+about.
 
-`owned` must not be empty. Entries are made real paths when the request is
-built (§10.1); an entry that does not exist is an `Input` error.
+- An **owned** file may be edited, and a rule may rename the entities
+  declared in it (`verify.md` §2.1).
+- A **read-only** file is not edited, and its entities keep their
+  names: a binary the run cannot see may hold them.
+- A **rebuilt** file is *not edited by Slip, and compiled from source
+  in every binary that holds its names*: a file the build writes (a
+  precompiled-header file, a unity-build main file, a generator's
+  output). Slip writes nothing there; the build writes it again. For
+  every writer it is read-only: `is_owned` is false, apply refuses it
+  (`not_owned`), the native rename's claim in it is a refusal with
+  the reason `rebuilt` (§4.2), and a script's `replace` there throws
+  `not_editable`. For the rules it counts as an owned file, with one
+  exception (`verify.md` §2.1). It is the user's statement about a
+  path, as the other two lists are: **nothing is detected and nothing
+  is rebuilt by default**, the compilation database's directories
+  included (they may hold fetched or installed dependencies). A run
+  that relied on an entry says so (`verify.md` §9.4).
+
+`owned` must not be empty. Entries are made real paths when the
+request is built (§10.1); an entry that does not exist is an `Input`
+error (so a file the migration will make the generator create can be
+covered only by an entry for its directory). Two entries of one length
+that cover one path are equal, and an entry is in one list only, so the
+longest covering entry is unique.
 
 **One spelling.** Ownership compares bytes, and so does every path a
 record names; but some volumes find a name in any case (or any Unicode
@@ -89,7 +114,8 @@ outside `crates/slip_spelling` by `cargo xtask lint`'s `real-path` rule,
 `spec/harness.md` §3): the compile
 database's main files and the database itself (`cdb.md` §5, §7), every
 input of a parse (`model.md` §8.4) and every file a transform unit read
-(`api.md` §2.2), and `--owned`, `--readonly`, `--relative-to`. The
+(`api.md` §2.2), and `--owned`, `--readonly`, `--rebuilt`,
+`--relative-to`. The
 real path (`canonicalize`) is walked:
 
 - a directory need not be listed where it is seen not to fold: a
@@ -157,7 +183,7 @@ file of `src/` that a `readonly` entry `src/vendor` carves out, and one
 file could be named twice in one overlay.
 
 Where a request's ownership or a declaration's `files` are read for a
-run, every entry, owned and read-only, must exist and be its own real
+run, every entry of the three lists must exist and be its own real
 path as spelled on disk (`slip_spelling::real_path`: `canonicalize`,
 then the walk above, equal byte for byte to the entry). Otherwise it is
 an `Input` error, status 3, naming the entry and either its spelling on
@@ -190,7 +216,8 @@ FUSE file systems) is not supported: the front end then has two files
 where there is one, as clang does.
 
 This is the ownership `api.md` §6.6 rule 6 cites: `is_editable(r)` is
-true exactly when `r` is not null and its file is owned.
+true exactly when `r` is not null and its file is owned. It is false
+in a rebuilt file.
 
 ### 2.2 Tiers
 
@@ -280,13 +307,15 @@ Kiln changed nothing on loading (`file_recoded` below). Where it gives
 none, or the range may not be edited, `slip_kiln::sites` gives the
 reason, and the native rename claims a refusal with it (§4.2); a
 programmable transform sees a null range or `is_editable` false
-(`api.md` §5.4, §6.6) and requests nothing.
+(`api.md` §5.4, §6.6) and requests nothing; that stays true of a
+rebuilt file.
 
 | Reason | Condition |
 |---|---|
 | `macro_body`, `pasted`, `crossing`, `not_a_file` | the tier (§2.2); `crossing` also when the token is written at tier 0 or 1 and Kiln gives no range for it, and when the span is not one token (its range is not the range of the one token at its start: `n::m` with `#define m m` has a range, `n::m`, though `m` is written in a replacement list). `not_a_file` also for a token written directly in a buffer that is not a file (a snippet's in-memory file, the predefines): its row is the tier's, after `crossing` and before `directive` |
 | `directive` | the range holds a preprocessing directive or any part of a group that was skipped: replacing it would delete another configuration's text, or leave a conditional unbalanced, and no observer's verification sees either. `slip_kiln::ranges` gives no range for such a span, at any tier (`api.md` §5.4) |
 | `not_owned` | the file is read-only (§2.1) |
+| `rebuilt` | the file is rebuilt (§2.1) |
 | `file_recoded` | the front end's text of the file is not the file's bytes: Kiln replaced invalid UTF-8 when it loaded the file (its load report is not clean), so offsets in the text are not offsets in the file |
 | `not_plain` | the bytes of the range are not the token's spelling: the name is written with a universal-character-name, a line splice or a trigraph, or the range is a macro invocation that expands to the name (§2.2) |
 
@@ -296,8 +325,8 @@ offset.
 
 ## 3. The transform request
 
-Kind `TRFM`, version 2, deterministic. One required section `transform`
-(id 1):
+Kind `TRFM`, version 2 or 3, deterministic. One required section
+`transform` (id 1):
 
 ```
 Transform := kind:        TransformKind
@@ -339,10 +368,22 @@ Script := id:      digest           the `TransformId` of api.md §2.2
           depth:   uv
 ```
 
-Every entry of `ownership` is a canonical absolute path (§2.1); an entry
-that is not is `Malformed` at that entry, path
-`sections.transform.ownership.owned[i]` or `….readonly[i]`, checked
-before the list's order (`spec/landed/edits/WP-060.md` §3).
+Version 3 (WP-118) is version 2 with `rebuilt: list<bytes>` after
+`ownership.readonly`. A writer writes version 3 exactly when `rebuilt`
+is not empty; a reader reads version 2 as `rebuilt` empty and refuses
+a version 3 request with no rebuilt entry (`a version 3 container has
+no rebuilt entry`), so a request has one encoding and a run that
+declares nothing rebuilt has the request id it had.
+
+Every entry of `ownership` is a canonical absolute path (§2.1); an
+entry that is not is `Malformed` at that entry, path
+`sections.transform.ownership.owned[i]`, `….readonly[i]` or
+`….rebuilt[i]`, checked before the list's order
+(`spec/landed/edits/WP-060.md` §3). The rows for `rebuilt` follow
+those for `readonly`, in this order: `not a canonical absolute path`
+(the message of every list's row), `rebuilt is not strictly ascending`, `a rebuilt entry
+is /`, `a rebuilt entry is also in owned`, `a rebuilt entry is also in
+readonly`.
 
 For a rename: every component of `target` and `new_name` matches
 `[A-Za-z_][A-Za-z0-9_]*`, is not a keyword of any C++ standard Kiln
@@ -468,7 +509,7 @@ Piece := literal = 0: bytes                         not empty
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
-        | directive = 10 | instantiated = 11
+        | directive = 10 | instantiated = 11 | rebuilt = 13
 
 MacroSite := name_start: uv          offset, in the claim's file, of the name token of the outermost
                                       macro invocation the bytes are an argument of or were produced by
@@ -484,7 +525,10 @@ refuse`, §3), where WP-127 said `mixed_instances` of one instance and
 one subject. `instantiated` was added without a change of format
 version, as a new enumeration value is (`model.md` §2). (WP-139's fix
 round added `no_holder` = 12; its second review removed it before any
-release, with the exemption it guarded: 12 is unlisted.)
+release, with the exemption it guarded: 12 is unlisted, and stays so.)
+`rebuilt` = 13 (WP-118): the bytes are in a rebuilt file (§2.1). Slip
+does not write them; the build does. It was added without a change of
+format version, as `instantiated` was.
 
 **Pieces** are those of `api.md` §7.1, and mean what it says:
 
@@ -523,8 +567,8 @@ piece taken as its path: this is the edit of `api.md` §7.6.
 - `keep` and `unresolved` claims have tiers 0 and 1 only, and their range
   is a token's file range (§2.3).
 - A `refuse` claim's range is where a person must look: for `macro_body`
-  the token's bytes in the macro definition; for `not_owned` and
-  `not_plain` the range Kiln gave for the name (§2.2), in whatever file
+  the token's bytes in the macro definition; for `not_owned`,
+  `rebuilt` and `not_plain` the range Kiln gave for the name (§2.2), in whatever file
   it is; for every other reason the name token of the outermost
   invocation, or `[0, 0)` of the main file if there is none. It is also
   `[0, 0)` of the main file when that place is in a buffer that is not
@@ -2467,6 +2511,18 @@ and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3),
 and at a name what it names cannot be told or the edit cannot verify:
 `mixed_set` (§9.2), `mixed_instances` and `instantiated` (§9.4).
 
+**A name in a rebuilt file** (WP-118). A declaration of a subject, or
+a reference to one, whose name is in a rebuilt file is a `refuse`
+claim with the reason `rebuilt`, at the name, with the subject; a
+declaration there does not set `read_only`. The run is refused
+(`site_refused`, the rename being indivisible): an accepted set is
+verified through its own overlay, and an overlay holds no regenerated
+file (`verify.md` §5.1). The report says, per file, how many names the
+build would have to change (§10.5); there is no second run that
+succeeds until an overlay can hold regenerated files
+(`docs/wp/WP-165.md`). A subject with a declaration in a read-only
+file too is also `subject_read_only`.
+
 **What the rename does not see.** An overrider in a class template
 whose base is dependent (`template <class T> struct G : T { void f()
 override; }`) that no observer instantiates with a base in the family
@@ -2570,7 +2626,10 @@ exactly one file of its kind in the store, as for `--plan` (`exec.md`
      request's `dependent` (§3, §9.4). `map` and `rename` accept it; with
      `--transform` it is a usage error, and `reduce`, `check` and `apply`
      refuse it as an option not theirs.
-   - `--owned` and `--readonly` are made real paths.
+   - `--owned`, `--readonly` and `--rebuilt` are made real paths. A path
+     given in two of them, once resolved, is an `Input` error (`<path>:
+     given as --owned and as --rebuilt`); `--rebuilt` without `--owned`
+     is a usage error; `--rebuilt /` is an `Input` error.
 3. Takes a new round (§8) and runs the phase of `exec.md` §5 with jobs
    that carry the request's id (`Job.transform`).
 4. Publishes the transform run record (§10.6) and prints the first lines
@@ -2697,10 +2756,12 @@ groups <n>, rejected <n>                  omitted for an indivisible request
 kept <n>; unresolved <n>
 reports: note <n>, review <n>, error <n>  omitted when all are 0
 refused <cause> <n>                       one line per Cause with a non-zero count, in its order
+rebuilt <path>: <n> name(s) the build would have to change; slip rename cannot make this change (verify a post tree, spec/verify.md §5.1)     one per rebuilt file with a refusal of reason `rebuilt`, in path order; at most 200
 declared <id>: rules <n>, exempt <n>
 overlay <id>: files <n>, spellings <n>
 verify: verified <n>, unchanged <n>, mismatch <n>, not_parsed <n>, unverifiable <n>, never_parsed <n>, failed <n>
 agreement: stale <n>, unused rules <n>
+                                          then the `rebuilt`, `unused rebuilt`, `rebuilt file` and `hint:` lines of verify.md §9.4
 spellings: passed <n>, failed <n>
 residue: dependent <n>, not_compiled <n>, not_planned <n>; mentions <n>
 result <id>

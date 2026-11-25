@@ -1,13 +1,15 @@
 //! The declarations' names (§9.3, first row): every declaration the AST
 //! names like the old name, from `written::decl_names`. A declaration of
-//! a subject is a `replace` with a literal piece; one in a file that is
-//! not owned sets `read_only` and is not claimed (§9.5); one of any other
+//! a subject is a `replace` with a literal piece; one in a read-only file
+//! sets `read_only` and is not claimed (§9.5); one in a rebuilt file is a
+//! `refuse` claim with reason `rebuilt` (WP-118 R7.1); one of any other
 //! entity is a `keep` (§4.2).
 
 use slip_kiln::kiln::ast::names::{DeclNameKind, DeclNameView};
 use slip_kiln::kiln::ast::{Ast, DeclId, QualType};
 use slip_kiln::sites::{Located, Reason};
 use slip_model::edits::subject_flags;
+use slip_model::transform::FileClass;
 
 use super::{Ctx, Written};
 
@@ -61,11 +63,16 @@ pub(crate) fn claim(ctx: &mut Ctx<'_, '_, '_>) {
                 continue;
             }
             // Refused for another reason first (a macro's body), at a
-            // place in a file that is not owned: the flag, and the
-            // refusal too.
-            Located::Refused { at: Some((f, ..)), .. } if !ctx.sites.is_owned(f) => {
+            // place in a read-only file: the flag, and the refusal too.
+            // In a rebuilt file (WP-118 R7.1) no flag: the refusal alone,
+            // with its place.
+            Located::Refused { at: Some((f, ..)), .. }
+                if ctx.sites.class(f) == FileClass::ReadOnly =>
+            {
                 ctx.subjects.flag(id, subject_flags::READ_ONLY);
             }
+            // In a rebuilt file (WP-118 R7.1): no flag; the `refuse` claim
+            // below, reason `rebuilt`, at the name, with the subject.
             _ => {}
         }
         ctx.claims.replace(&ctx.sites, d.name, &[id], Written::Literal);
