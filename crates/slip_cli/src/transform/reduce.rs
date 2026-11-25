@@ -78,7 +78,7 @@ pub fn reduce_round(
         let why = match e {
             slip_apply::ApplyError::Io(p, why) => format!("{}: {why}", String::from_utf8_lossy(&p)),
             slip_apply::ApplyError::Invalid(why) => why,
-            e => unreachable!("one_name_per_file fails with Invalid or Io only: {e:?}"),
+            e => format!("{e:?}"),
         };
         CommandError::Input(format!("plan {plan_id} round {round}: the edit set: {why}"))
     })?;
