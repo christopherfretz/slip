@@ -253,7 +253,7 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`4a83f6e3c` (WP-066) it
+`60fb5ab9d` (WP-163; `4a83f6e3c` from WP-066) it
 still holds: what Kiln added since (the definition-context operator sets,
 the names of an overloaded member access, the shadows of a
 using-declaration, the owner of a closure, the checked mark of an

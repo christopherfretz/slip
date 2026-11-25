@@ -93,6 +93,12 @@ fn rename_role(role: written::Role) -> bool {
         | R::SpecTarget
         | R::Designator
         | R::Redecl => false,
+        // Kiln WP-2820 F1 (`20794f7ed`, in the pin since WP-163): an
+        // operator's or a user-defined literal suffix's reference, which
+        // Kiln did not record before; left out, as at `4a83f6e3c`.
+        // Reading them is a later package's (`docs/wp/WP-096.md` "For
+        // Kiln" 4).
+        R::Operator | R::UdSuffix => false,
     }
 }
 

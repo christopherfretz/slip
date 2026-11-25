@@ -7,8 +7,8 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`4a83f6e3c`, Kiln's `main`, since WP-066,
-`spec/landed/digest-kinds/WP-066.md`; first written against `4bfd999da`); the facts were first collected in
+submodule pins (`60fb5ab9d`, Kiln's `main`, since WP-163,
+`spec/landed/digest-kinds/WP-163.md`; before it `4a83f6e3c`, WP-066; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -635,23 +635,30 @@ keeps a spelling or leaves a fact outside the type. Each is a rule here:
    After 4096 steps the walk stops, and the type is indeterminate:
    `Unsupported("TypeView/Typedef-aligned-bound")`.
 
-   A listed typedef whose declarations do not all carry the same
-   alignment makes the type indeterminate:
+   A listed typedef whose declarations do not all carry the alignment
+   of its first declaration makes the type indeterminate:
    `Unsupported("typedef/alignment-by-declaration")`. The typedef's own
-   unit is indeterminate for the same cause. The declarations disagree
-   when one carries an alignment and another none, or their requests
-   (each `ALIGNED` attribute's value, the target's biggest alignment
-   for one with no argument, the canonical type of `alignas(type-id)`,
-   and the `cold.alignment` value) differ as sets, or a request's value
-   is not a constant the AST holds (read as Kiln's layout reads it). A
-   single declaration agrees. Kiln's `alignof`
-   (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:58`,
-   asked by the Oven and by codegen) reads only the declaration the
-   sugar node names, and its layout reads every declaration present
-   when a class is first laid out, then caches the layout. So the answer
-   depends on which declaration a use names and where a layout is first
-   asked for, facts no unit holds. The digest does not try to say which.
-   The cause goes when Kiln reads the declarations as clang does.
+   unit is indeterminate for the same cause. Each declaration's requests
+   are read: each `ALIGNED` attribute's value, the target's biggest
+   alignment for one with no argument, the canonical type of
+   `alignas(type-id)`, and the `cold.alignment` value. The declarations
+   agree when every declaration's requests are among the first
+   declaration's (`Ast::first`), and no request's value fails to be a
+   constant the AST holds (read as Kiln's layout reads it). A single
+   declaration agrees. Since Kiln WP-2830 (`8e23911be`) a declaration's
+   alignment is its own requests and those of the declarations before
+   it (`Ast::self_and_prev`, `kiln_ast/src/ast.rs:1132`), for `alignof`
+   (`Ast::layout_attributed_typedef`, `kiln_ast/src/layout_sugar.rs:72`)
+   and for layout (`max_align_attr`, `kiln_abi/src/layout/props.rs:89`),
+   as clang's `mergeAlignedAttrs`: no longer by when a class is first
+   laid out. When the declarations agree, every declaration has the
+   first one's alignment, wherever a use names it. When a later
+   declaration adds a request, a use before it and a use after it have
+   different alignments (clang too), which depends on the declaration a
+   use names, a fact no unit holds; the digest does not try to say
+   which. A later request that is not among the first's but no
+   stricter (`aligned(16)` then `aligned(8)`) is still taken to
+   disagree: comparing it would need the layout of a type request.
 
    What is written depends on the sugar a typedef `I` carrying an
    alignment is reached through.
