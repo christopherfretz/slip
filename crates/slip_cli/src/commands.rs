@@ -401,18 +401,20 @@ pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// The run's files from `--owned` and `--readonly` (`spec/edits.md` §2.1,
+/// The run's files from `--owned`, `--readonly` and `--rebuilt` (`spec/edits.md` §2.1,
 /// §10.1 step 2: "made real paths"; `spec/verify.md` §2.1: ownership is
 /// of real paths, which are the subject paths). Each entry is made a real
 /// path (`slip_spelling::real_path`: a symbolic link is resolved, the
 /// result is canonical and spelled as its directories list it, §2.1 "One
-/// spelling"); an entry that does not exist, or one that is
-/// both owned and read-only once resolved, is an input error. Sorted, no
-/// two equal. `None` when neither option is given; the caller has
-/// refused `--readonly` without `--owned` (a usage error).
+/// spelling"); an entry that does not exist, one that is in two lists
+/// once resolved, or a rebuilt entry that is `/` (WP-118 R5.3), is an
+/// input error. Sorted, no two equal. `None` when no option is given; the
+/// caller has refused `--readonly` or `--rebuilt` without `--owned` (a
+/// usage error).
 pub(crate) fn ownership(
     owned: &[PathBuf],
     readonly: &[PathBuf],
+    rebuilt: &[PathBuf],
 ) -> Result<Option<slip_model::transform::Ownership>> {
     use std::os::unix::ffi::OsStrExt;
     if owned.is_empty() {
@@ -431,20 +433,31 @@ pub(crate) fn ownership(
         v.dedup();
         Ok(v)
     };
-    let (owned, readonly) = (real(owned)?, real(readonly)?);
-    if let Some(both) = readonly.iter().find(|r| owned.binary_search(r).is_ok()) {
-        return Err(Failure::Input(format!(
-            "{}: given as --owned and as --readonly",
-            String::from_utf8_lossy(both)
-        )));
+    let (owned, readonly, rebuilt) = (real(owned)?, real(readonly)?, real(rebuilt)?);
+    let both = |list: &[Vec<u8>], other: &[Vec<u8>], a: &str, b: &str| -> Result<()> {
+        match list.iter().find(|r| other.binary_search(r).is_ok()) {
+            Some(e) => Err(Failure::Input(format!(
+                "{}: given as --{a} and as --{b}",
+                String::from_utf8_lossy(e)
+            ))),
+            None => Ok(()),
+        }
+    };
+    both(&readonly, &owned, "owned", "readonly")?;
+    both(&rebuilt, &owned, "owned", "rebuilt")?;
+    both(&rebuilt, &readonly, "readonly", "rebuilt")?;
+    if rebuilt.iter().any(|e| e.as_slice() == b"/") {
+        // R5.3: `/` would make every file no other entry covers rebuilt,
+        // system headers included.
+        return Err(Failure::Input("--rebuilt /: a rebuilt entry is /".to_owned()));
     }
-    Ok(Some(slip_model::transform::Ownership { owned, readonly, rebuilt: Vec::new() }))
+    Ok(Some(slip_model::transform::Ownership { owned, readonly, rebuilt }))
 }
 
 /// The check of a record's ownership entries where they are read for a
 /// run (`spec/edits.md` §2.1 "One spelling": a `TRFM`'s `ownership`, a
 /// `DECL`'s `files`; `docs/wp/WP-151.md` item 1): every entry, owned and
-/// read-only, must exist and be its own real path, the spelling
+/// read-only and rebuilt, must exist and be its own real path, the spelling
 /// [`ownership`] gives a command line's (`slip_spelling::real_path`: a
 /// symbolic link resolved, each component spelled as its directory lists
 /// it). An entry spelled otherwise covers none of the paths it means,
@@ -456,7 +469,7 @@ pub(crate) fn ownership(
 /// the answer that would let it carve nothing.
 pub fn entries_on_disk(o: &slip_model::transform::Ownership) -> std::result::Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
-    for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly")] {
+    for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly"), (&o.rebuilt, "rebuilt")] {
         for e in list {
             let entry = String::from_utf8_lossy(e);
             match slip_spelling::real_path(Path::new(std::ffi::OsStr::from_bytes(e))) {

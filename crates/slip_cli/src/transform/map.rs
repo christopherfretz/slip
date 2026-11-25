@@ -167,7 +167,7 @@ pub fn rename_request(
             String::from_utf8_lossy(value)
         )));
     }
-    request.ownership = commands::ownership(&options.owned, &options.readonly)
+    request.ownership = commands::ownership(&options.owned, &options.readonly, &options.rebuilt)
         .map_err(command_error)?
         .ok_or_else(|| CommandError::Usage("a transform needs `--owned`".to_owned()))?;
     request.validate().map_err(|e| CommandError::Input(format!("the request: {e}")))?;

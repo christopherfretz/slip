@@ -1816,3 +1816,58 @@ fn s7_6_canonical_is_total() {
     good.groups.push(vec![0]);
     assert_eq!(bad.canonical(), good.canonical());
 }
+
+// ---------------------------------------------------------------------------
+// WP-118: a rebuilt file, over a real subject.
+
+/// WP-118 R7 (§6.6 rule 6, `is_editable` is the file's ownership): over
+/// the ownership's `is_owned`, a file of the `rebuilt` list is not
+/// editable: `is_editable` is 0 there, and `replace` there throws
+/// `not_editable` and makes no edit. The control: with the list empty,
+/// the same file is editable. (The longer entry `gen/x.h` decides over
+/// the owned `gen`.)
+#[test]
+fn wp118_rebuilt_file_is_not_editable() {
+    use slip_kiln::snippet::{Extra, Snippet, parse_with_tables};
+    use slip_model::transform::Ownership;
+    use slip_script::kiln_subject::KilnSubject;
+    let files = [
+        ("main.cpp", "#include \"gen/x.h\"\nstruct M;\n"),
+        ("gen/x.h", "struct G;\n"),
+    ];
+    for (rebuilt, editable) in [(vec![b"gen/x.h".to_vec()], 0), (Vec::new(), 1)] {
+        let ownership = Ownership {
+            owned: vec![b"gen".to_vec(), b"main.cpp".to_vec()],
+            readonly: Vec::new(),
+            rebuilt,
+        };
+        let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: "c++23" };
+        let out = parse_with_tables(&snippet, &Extra::default(), |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let owned = |path: &[u8]| ownership.is_owned(path);
+            let s = KilnSubject::from_snippet(p, &owned).expect("a unit with tables");
+            let mut h = Host::new(&s, Digest([1; 32]), Limits::default());
+            let range_of = |h: &mut Host<'_>, name: &str| {
+                let e = one(h, name);
+                let d = ints(h, wire::OP_DECLARATIONS_OF, &[e], &[])[0];
+                ints(h, wire::OP_NAME_RANGE_OF, &[d], &[])
+            };
+            let in_gen = range_of(&mut h, "G");
+            let in_main = range_of(&mut h, "M");
+            assert_eq!(v(&mut h, wire::OP_IS_EDITABLE, &in_main), 1, "the owned main file");
+            assert_eq!(v(&mut h, wire::OP_IS_EDITABLE, &in_gen), editable);
+            let (word, _) = call(&mut h, wire::OP_CODE_TEXT, &[], b"H");
+            assert_eq!(wire::status(word), 0);
+            let x = wire::payload(word);
+            let replaced = status(&mut h, wire::OP_REPLACE, &[in_gen[0], in_gen[1], x, 0], b"");
+            if editable == 0 {
+                assert_eq!(replaced, errc(Errc::NotEditable));
+            } else {
+                assert_eq!(replaced, 0);
+            }
+            h.finish()
+        })
+        .expect("the snippet parses");
+        assert_eq!(out.edits.len(), editable as usize, "{:?}", out.edits);
+    }
+}

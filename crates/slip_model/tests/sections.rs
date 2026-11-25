@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::Path;
 
-use slip_model::agreement::{Binding, RuleUse, Use};
+use slip_model::agreement::{Binding, Declares, RebuiltUse, RuleUse, Use};
 use slip_model::container::{TRAILER_LEN, Writer};
 use slip_model::digests::{
     Digests, GROUP_TAG, Group, GroupClass, SCHEME, TU_TAG, Unit, group_digest, tu_digest,
@@ -233,6 +233,9 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     if let Some(r) = &s.rule_use {
         out.push((29, raw_rule_use(r).0));
     }
+    if let Some(r) = &s.rebuilt_use {
+        out.push((33, raw_rebuilt_use(r).0));
+    }
     if let Some(x) = &s.edits {
         // Only an empty section: `tests/edits.rs` encodes the rest. Section
         // 32 since WP-139 (17 before `instances`).
@@ -287,6 +290,42 @@ fn raw_rule_use(r: &RuleUse) -> (Vec<u8>, Vec<usize>, Vec<usize>) {
         e.uv(k);
     }
     (e.into_bytes(), at, kept)
+}
+
+/// The payload of a `rebuilt_use` section (WP-118 §4.4), and the offsets
+/// in it of each `relied` index, each `declares` row, each hint, the
+/// `hints` list and `hints_more`.
+fn raw_rebuilt_use(r: &RebuiltUse) -> (Vec<u8>, RebuiltAt) {
+    let mut e = Encoder::new();
+    let mut at = RebuiltAt::default();
+    e.count(r.relied.len());
+    for &i in &r.relied {
+        at.relied.push(e.as_bytes().len());
+        e.uv(i);
+    }
+    e.count(r.declares.len());
+    for x in &r.declares {
+        at.declares.push(e.as_bytes().len());
+        e.bytes(&x.file).uv(x.rule).uv(x.mapped).uv(x.left).uv(x.left_kept);
+    }
+    at.hints = e.as_bytes().len();
+    e.count(r.hints.len());
+    for h in &r.hints {
+        at.hint.push(e.as_bytes().len());
+        e.bytes(h);
+    }
+    at.hints_more = e.as_bytes().len();
+    e.uv(r.hints_more);
+    (e.into_bytes(), at)
+}
+
+#[derive(Default)]
+struct RebuiltAt {
+    relied: Vec<usize>,
+    declares: Vec<usize>,
+    hints: usize,
+    hint: Vec<usize>,
+    hints_more: usize,
 }
 
 /// The payload of a spellings section, and the offsets in it of each
@@ -2084,4 +2123,192 @@ fn names_rules_in_order() {
     let s = Shard { names: Some(names_of(&[0x02, 0x01], &[0x05])), ..map_shard() };
     let (_, u, _, _) = names_offsets(&s);
     assert_eq!(rejected(&s, "sections.names.units[1]"), u[1]);
+}
+
+// ---------------------------------------------------------------------------
+// WP-118: the `rebuilt_use` section (33), `spec/landed/verify/WP-118.md`
+// §4.4: one test per reader row, binary offset and JSON path.
+
+fn rebuilt_use() -> RebuiltUse {
+    RebuiltUse {
+        relied: vec![0, 2, 1 << 40],
+        declares: vec![
+            Declares { file: b"/b/gen.h".to_vec(), rule: 0, mapped: 2, left: 0, left_kept: 0 },
+            Declares { file: b"/b/gen.h".to_vec(), rule: 3, mapped: 0, left: 1, left_kept: 1 },
+            Declares { file: b"/b/x.inc".to_vec(), rule: 0, mapped: 0, left: 0, left_kept: 1 },
+        ],
+        hints: vec![b"/d/a.h".to_vec(), b"/d/b.h".to_vec()],
+        hints_more: 0,
+    }
+}
+
+fn rebuilt_shard(r: RebuiltUse) -> Shard {
+    Shard { rebuilt_use: Some(r), ..m2_shard() }
+}
+
+fn rebuilt_rejected(r: RebuiltUse, path: &str, rel: impl Fn(&RebuiltAt) -> usize) -> String {
+    let s = rebuilt_shard(r);
+    let at = raw_rebuilt_use(s.rebuilt_use.as_ref().unwrap()).1;
+    rejected_at(&s, path, 33, rel(&at))
+}
+
+// The section round-trips (with values above 2^53 and a full `hints`),
+// alone or with the others; JSON members in field order.
+#[test]
+fn rebuilt_use_round_trip() {
+    round_trip(&rebuilt_shard(rebuilt_use()));
+    round_trip(&Shard { rebuilt_use: Some(rebuilt_use()), ..sample_verify_shard(verified()) });
+    let full = RebuiltUse {
+        relied: Vec::new(),
+        declares: Vec::new(),
+        hints: (0..16).map(|i| format!("/d/{i:02}.h").into_bytes()).collect(),
+        hints_more: 1 << 60,
+    };
+    round_trip(&rebuilt_shard(full));
+    round_trip(&rebuilt_shard(RebuiltUse {
+        hints: Vec::new(),
+        declares: Vec::new(),
+        ..rebuilt_use()
+    }));
+    let v = rebuilt_shard(rebuilt_use()).to_json();
+    let names = |v: &Value| -> Vec<String> {
+        v.as_object().unwrap().iter().map(|(k, _)| k.clone()).collect()
+    };
+    let r = v.get("sections").unwrap().get("rebuilt_use").unwrap();
+    assert_eq!(names(r), ["relied", "declares", "hints", "hints_more"]);
+    assert_eq!(
+        names(&r.get("declares").unwrap().as_array().unwrap()[0]),
+        ["file", "rule", "mapped", "left", "left_kept"]
+    );
+    // A bad JSON member is named by its path.
+    let mut v = rebuilt_shard(rebuilt_use()).to_json();
+    set(&mut v, &["sections", "rebuilt_use", "declares", "1", "left"], parse("-1"));
+    assert_eq!(Shard::from_json(&v).unwrap_err().path, "sections.rebuilt_use.declares[1].left");
+    // Known: not an unknown required section.
+    payload_at(&rebuilt_shard(rebuilt_use()).to_bytes(), 33);
+}
+
+// Each reader row, in order.
+#[test]
+fn rebuilt_use_invariants() {
+    let row = |file: &str, rule, mapped, left, left_kept| Declares {
+        file: file.as_bytes().to_vec(),
+        rule,
+        mapped,
+        left,
+        left_kept,
+    };
+    // relied strictly ascending.
+    for relied in [vec![1, 0], vec![2, 2]] {
+        let got = rebuilt_rejected(
+            RebuiltUse { relied, ..rebuilt_use() },
+            "sections.rebuilt_use.relied[1]",
+            |a| a.relied[1],
+        );
+        assert!(got.contains("relied is not strictly ascending"), "{got}");
+    }
+    // declares strictly ascending by (file, rule).
+    for declares in [
+        vec![row("/b/x.h", 0, 1, 0, 0), row("/b/a.h", 1, 1, 0, 0)],
+        vec![row("/b/a.h", 1, 1, 0, 0), row("/b/a.h", 0, 1, 0, 0)],
+        vec![row("/b/a.h", 1, 1, 0, 0), row("/b/a.h", 1, 0, 1, 0)],
+    ] {
+        let got = rebuilt_rejected(
+            RebuiltUse { declares, ..rebuilt_use() },
+            "sections.rebuilt_use.declares[1]",
+            |a| a.declares[1],
+        );
+        assert!(got.contains("declares is not strictly ascending"), "{got}");
+    }
+    // A row that counts nothing.
+    let got = rebuilt_rejected(
+        RebuiltUse {
+            declares: vec![row("/b/a.h", 0, 1, 0, 0), row("/b/a.h", 1, 0, 0, 0)],
+            ..rebuilt_use()
+        },
+        "sections.rebuilt_use.declares[1]",
+        |a| a.declares[1],
+    );
+    assert!(got.contains("a declares row counts nothing"), "{got}");
+    // hints strictly ascending.
+    let got = rebuilt_rejected(
+        RebuiltUse { hints: vec![b"/d/b.h".to_vec(), b"/d/a.h".to_vec()], ..rebuilt_use() },
+        "sections.rebuilt_use.hints[1]",
+        |a| a.hint[1],
+    );
+    assert!(got.contains("hints is not strictly ascending"), "{got}");
+    // At most 16.
+    let got = rebuilt_rejected(
+        RebuiltUse {
+            hints: (0..17).map(|i| format!("/d/{i:02}.h").into_bytes()).collect(),
+            ..rebuilt_use()
+        },
+        "sections.rebuilt_use.hints",
+        |a| a.hints,
+    );
+    assert!(got.contains("more than 16 hints"), "{got}");
+    // hints_more only with 16.
+    let got = rebuilt_rejected(
+        RebuiltUse { hints_more: 1, ..rebuilt_use() },
+        "sections.rebuilt_use.hints_more",
+        |a| a.hints_more,
+    );
+    assert!(got.contains("hints_more without 16 hints"), "{got}");
+    // Paths: a file path, canonical.
+    for bad in ["b/gen.h", "/", "/b/../gen.h"] {
+        let got = rebuilt_rejected(
+            RebuiltUse { declares: vec![row(bad, 0, 1, 0, 0)], ..rebuilt_use() },
+            "sections.rebuilt_use.declares[0]",
+            |a| a.declares[0],
+        );
+        assert!(got.contains("not a canonical absolute path"), "{got}");
+        let got = rebuilt_rejected(
+            RebuiltUse { hints: vec![bad.as_bytes().to_vec()], ..rebuilt_use() },
+            "sections.rebuilt_use.hints[0]",
+            |a| a.hint[0],
+        );
+        assert!(got.contains("not a canonical absolute path"), "{got}");
+    }
+    // Empty: not written.
+    let got = rebuilt_rejected(
+        RebuiltUse { relied: Vec::new(), declares: Vec::new(), hints: Vec::new(), hints_more: 0 },
+        "sections.rebuilt_use",
+        |_| 0,
+    );
+    assert!(got.contains("an empty rebuilt_use"), "{got}");
+    // The order: relied's row before declares'.
+    rebuilt_rejected(
+        RebuiltUse {
+            relied: vec![1, 1],
+            declares: vec![row("/b/x.h", 0, 0, 0, 0)],
+            ..rebuilt_use()
+        },
+        "sections.rebuilt_use.relied[1]",
+        |a| a.relied[1],
+    );
+}
+
+// Only in a verify shard whose status is ok, as `rule_use`.
+#[test]
+fn rebuilt_use_phase_and_status() {
+    let s = Shard { rebuilt_use: Some(rebuilt_use()), ..sample_verify_shard(verified()) };
+    let m = Shard { phase: Phase::Map, verdict: None, ..s.clone() };
+    assert!(rejected_at(&m, "sections.rebuilt_use", 33, 0).contains("phase is not verify"));
+    let mut m = Shard {
+        outcome: Outcome {
+            status: Status::Failed,
+            errors: 1,
+            warnings: 0,
+            message: "x".to_owned(),
+        },
+        digests: None,
+        names: None,
+        verdict: None,
+        inputs: None,
+        counters: Vec::new(),
+        ..s.clone()
+    };
+    assert!(rejected_at(&m, "sections.rebuilt_use", 33, 0).contains("status is not ok"));
+    m.outcome.status = Status::Diagnosed;
+    assert!(rejected_at(&m, "sections.rebuilt_use", 33, 0).contains("status is not ok"));
 }

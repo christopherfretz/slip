@@ -22,7 +22,7 @@ use slip_kiln::tree::Tree;
 use slip_kiln::written::{decl_names, written_refs};
 use slip_kiln::{ParseOptions, Unit};
 use slip_model::edits::tiers::{T0, T1, T2, T3, X};
-use slip_model::transform::Ownership;
+use slip_model::transform::{FileClass, Ownership};
 use slip_model::{FileRef, Status};
 
 // ---------------------------------------------------------------------
@@ -163,7 +163,8 @@ fn written() -> ParseOptions<'static> {
     o
 }
 
-/// Parses `main` of a tree of `files` (owned, but for `dep/`) with
+/// Parses `main` of a tree of `files` (owned, but for `dep/`, read-only,
+/// and `gen/`, rebuilt) with
 /// `args`, expects no error, and calls `f` with the unit, its sites and
 /// the root.
 fn with_tree<R: Send>(
@@ -177,7 +178,12 @@ fn with_tree<R: Send>(
     let ownership = Ownership {
         owned: vec![root.clone().into_bytes()],
         readonly: vec![format!("{root}/dep").into_bytes()],
-        rebuilt: Vec::new(),
+        // WP-118: `gen/` is rebuilt in a tree that has it.
+        rebuilt: if files.iter().any(|(p, _)| p.starts_with("gen/")) {
+            vec![format!("{root}/gen").into_bytes()]
+        } else {
+            Vec::new()
+        },
     };
     let obs = tree.observer("main.cpp", "c++20", args);
     let (shard, r) = tree
@@ -602,6 +608,49 @@ fn s2_3_not_owned() {
     assert_eq!(one(got), refused(Reason::NotOwned, T0, Some(("dep/h.h", 4, "foo")), None));
 }
 
+// WP-118 R7: a name in a rebuilt file is refused `rebuilt`, not
+// `not_owned`; a read-only file beside it stays `not_owned` (M21), and
+// `Sites::class` gives each file's class.
+#[test]
+fn s2_3_rebuilt() {
+    let h = "int foo = 0;\n";
+    let src = "#include \"gen/h.h\"\n#include \"dep/r.h\"\nint g() { return foo + bar; }\n";
+    let r = "int bar = 0;\n";
+    let got = with_tree(
+        "rebuilt",
+        &[("main.cpp", src.as_bytes()), ("gen/h.h", h.as_bytes()), ("dep/r.h", r.as_bytes())],
+        &[],
+        |u, s, root| {
+            let class = |name: &str| {
+                let f = u
+                    .sm()
+                    .file_ids()
+                    .find(|&f| path_of(u, root, f) == name)
+                    .unwrap_or_else(|| panic!("no {name}"));
+                (s.is_owned(f), s.class(f))
+            };
+            let classes = [class("main.cpp"), class("gen/h.h"), class("dep/r.h")];
+            let mut got = Vec::new();
+            for (file, text, word) in [("gen/h.h", h, "foo"), ("dep/r.h", r, "bar")] {
+                let spans = spelled_at(u, root, file, off(text, word, word));
+                got.extend(spans.into_iter().map(|sp| describe(u, s, root, sp, word)));
+            }
+            (classes, got)
+        },
+    );
+    assert_eq!(
+        got.0,
+        [(true, FileClass::Owned), (false, FileClass::Rebuilt), (false, FileClass::ReadOnly)]
+    );
+    assert_eq!(
+        got.1,
+        vec![
+            refused(Reason::Rebuilt, T0, Some(("gen/h.h", 4, "foo")), None),
+            refused(Reason::NotOwned, T0, Some(("dep/r.h", 4, "bar")), None),
+        ]
+    );
+}
+
 // A file with an invalid byte before the token: Kiln's offsets are its
 // text's, so no `at` is given in that file.
 #[test]
@@ -806,6 +855,7 @@ fn s2_3_reason_wire_values() {
         (Reason::NotAFile, W::NotAFile),
         (Reason::Directive, W::Directive),
         (Reason::NotOwned, W::NotOwned),
+        (Reason::Rebuilt, W::Rebuilt),
         (Reason::FileRecoded, W::FileRecoded),
         (Reason::NotPlain, W::NotPlain),
     ];

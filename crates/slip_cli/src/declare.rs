@@ -984,7 +984,7 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     if a.owned.is_empty() && lines.iter().any(|(_, l)| matches!(l, Line::Relocate { .. })) {
         return Err(Failure::Usage("a relocate line needs the run's files: --owned".to_owned()));
     }
-    let files = commands::ownership(&a.owned, &a.readonly)?;
+    let files = commands::ownership(&a.owned, &a.readonly, &a.rebuilt)?;
     let run = InProcess::open("declare", &a.plan, &a.image, &a.store, &a.only, a.limit)?;
     let need = needs(&lines);
 

@@ -255,7 +255,6 @@ fn rebuilt_names(own: &Own) -> &[String] {
 /// files by their names in the case, the rules by their lines in
 /// `rules.txt`.
 fn rebuilt_lines(
-    input: &Input<'_>,
     t: &Table,
     own: &Own,
     r: &RebuiltOutput,
@@ -270,14 +269,14 @@ fn rebuilt_lines(
         }
         out.insert(format!("relied {}", words.join(" ")));
     }
-    if !r.declares.windows(2).all(|w| (w[0].file, w[0].rule) < (w[1].file, w[1].rule)) {
+    if !r.declares.windows(2).all(|w| (&w[0].file, w[0].rule) < (&w[1].file, w[1].rule)) {
         return Err(format!("declares is not strictly ascending: {:?}", r.declares));
     }
     for d in &r.declares {
         if d.mapped == 0 && d.left == 0 && d.left_kept == 0 {
             return Err(format!("a declares row counts nothing: {d:?}"));
         }
-        let file = String::from_utf8_lossy(&(input.subject_path)(d.file)).into_owned();
+        let file = String::from_utf8_lossy(&d.file).into_owned();
         let rule =
             t.table.rules().get(d.rule).ok_or_else(|| format!("declares: no rule {}", d.rule))?;
         let line = t
@@ -632,7 +631,7 @@ fn post_side(
                 slip_digest::records::key_agreement(input, &t.table, ReadOnly::EVERY_FILE)
                     .map_err(|e| format!("key agreement (every file read-only): {e}"))?;
             }
-            let rebuilt = rebuilt_lines(input, &t, own, &first.rebuilt)?;
+            let rebuilt = rebuilt_lines(&t, own, &first.rebuilt)?;
             Ok(Post { table: t, digested: common::digested(first), uses: got, unruled, rebuilt })
         })
     })?

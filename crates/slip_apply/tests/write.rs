@@ -657,7 +657,26 @@ fn s7_3_refusals_touch_nothing() {
     };
     assert_eq!(
         write(&c.overlay, c.id, &own, &w, &w, &w),
+        Err(WriteError::Refused(Refused::NotOwned(b.clone())))
+    );
+    // WP-118 A10: a rebuilt entry is not owned either: an edit in a
+    // rebuilt file is refused `not_owned`, and nothing is touched.
+    let c = case();
+    let w = c.world.healthy();
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![],
+        rebuilt: vec![b"/w/b.h".to_vec()],
+    };
+    assert_eq!(
+        write(&c.overlay, c.id, &own, &w, &w, &w),
         Err(WriteError::Refused(Refused::NotOwned(b)))
+    );
+    untouched(&c, &w);
+    let log = w.0.borrow().log.clone();
+    assert!(
+        log.iter().all(|(op, _)| matches!(*op, "read" | "stat" | "get" | "journal")),
+        "{log:?}"
     );
 }
 
@@ -1292,6 +1311,15 @@ fn s7_3_ownership_is_validated() {
             owned: vec![b"/w".to_vec()],
             readonly: vec![b"/w".to_vec()],
             rebuilt: Vec::new(),
+        },
+        // WP-118: the third list is checked as the other two are.
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"w/b".to_vec()] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"/".to_vec()] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"/w".to_vec()] },
+        Ownership {
+            owned: vec![b"/w".to_vec()],
+            readonly: vec![b"/w/b".to_vec()],
+            rebuilt: vec![b"/w/b".to_vec()],
         },
     ];
     for own in bad {

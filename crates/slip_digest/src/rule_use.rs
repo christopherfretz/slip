@@ -430,12 +430,13 @@ fn ns_mapped(c: &Counting, ns: DeclId) -> bool {
     false
 }
 
-/// One `declares` row of the walk (WP-118 R6.4): a rebuilt file, a rule,
-/// and how many entities declared in the file the rule gave their key
-/// (`mapped`) or left on the key it produces (`left`, `left_kept`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// One `declares` row of the walk (WP-118 R6.4): a rebuilt file (its
+/// subject path), a rule, and how many entities declared in the file the
+/// rule gave their key (`mapped`) or left on the key it produces (`left`,
+/// `left_kept`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Declares {
-    pub file: FileId,
+    pub file: Vec<u8>,
     pub rule: usize,
     pub mapped: u64,
     pub left: u64,
@@ -447,31 +448,40 @@ pub struct Declares {
 pub struct RebuiltOutput {
     /// The entries of `Ownership.rebuilt` relied on, ascending.
     pub relied: Vec<u32>,
-    /// Sorted by `(file, rule)`; no row counts nothing.
+    /// Strictly ascending by `(file, rule)`; no row counts nothing.
     pub declares: Vec<Declares>,
-    /// The read-only files that cut an include chain (R1.3 rule 3),
-    /// ascending; for the hints.
-    pub cutters: Vec<FileId>,
+    /// The subject paths of the read-only files that cut an include chain
+    /// (R1.3 rule 3), strictly ascending; for the hints.
+    pub cutters: Vec<Vec<u8>>,
 }
 
 /// `Output::rebuilt` (R6.4), from the traces and what `owned.rs` and
 /// `ns_refs.rs` recorded; with `cutters`, the walk's. Empty without the
 /// accounting.
-pub(crate) fn rebuilt(c: Option<&Counting>, cutters: &BTreeSet<FileId>) -> RebuiltOutput {
+/// Files are given by their subject paths (`path`); two buffers of one
+/// path (which a unit should not have) have their rows summed, which can
+/// only count more.
+pub(crate) fn rebuilt(
+    c: Option<&Counting>,
+    cutters: &BTreeSet<FileId>,
+    path: &dyn Fn(FileId) -> Vec<u8>,
+) -> RebuiltOutput {
     let Some(c) = c else { return RebuiltOutput::default() };
     let mut relied: BTreeSet<u32> = BTreeSet::new();
-    let mut rows: BTreeMap<(FileId, usize), Declares> = BTreeMap::new();
+    let mut rows: BTreeMap<(Vec<u8>, usize), Declares> = BTreeMap::new();
+    let mut paths: HashMap<FileId, Vec<u8>> = HashMap::new();
     for (e, (set, lies)) in &c.through {
         let Some(entry) = c.entries.get(e) else { continue };
         let w = ways(c, *e, entry);
         if !w.mapped.is_empty() {
             relied.extend(set.iter().copied());
         }
-        for &file in lies {
+        for &id in lies {
+            let file = paths.entry(id).or_insert_with(|| path(id)).clone();
             for (rules, way) in [(&w.mapped, 0), (&w.left, 1), (&w.left_kept, 2)] {
                 for &r in rules {
-                    let row = rows.entry((file, r)).or_insert(Declares {
-                        file,
+                    let row = rows.entry((file.clone(), r)).or_insert(Declares {
+                        file: file.clone(),
                         rule: r,
                         mapped: 0,
                         left: 0,
@@ -494,7 +504,13 @@ pub(crate) fn rebuilt(c: Option<&Counting>, cutters: &BTreeSet<FileId>) -> Rebui
     RebuiltOutput {
         relied: relied.into_iter().collect(),
         declares: rows.into_values().collect(),
-        cutters: cutters.iter().copied().collect(),
+        cutters: cutters
+            .iter()
+            .map(|&f| path(f))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect(),
     }
 }
 
