@@ -110,9 +110,17 @@ header (`:42`, `:62`, `:114`, `:174`, `:196`: `INITIALIZE_PASS`,
 tier 2 (`spec/edits.md` §2.2). M2 edits no macro body, and renaming the
 declarations alone would break every pass registration in LLVM.
 
-Expected: each of the five body tokens is a `refuse` claim with reason
+Of those five, only the bodies of `INITIALIZE_PASS` (`:42`) and
+`INITIALIZE_PASS_END` (`:62`) are expanded in LLVM 19.1.7:
+`INITIALIZE_AG_PASS` and `INITIALIZE_AG_PASS_END` (`:174`, `:196`) are
+invoked nowhere, and `:114` is not a macro body but the constructor of
+the class template `RegisterPass`, whose reference names the overload
+set through a dependent argument (an `unresolved` site). (Corrected after
+run 3; the first text expected five refusals.)
+
+Expected: each expanded body token is a `refuse` claim with reason
 `macro_body`, from every observer that expands the macro; reduce turns
-them into five `site_refused` refusals, each one line of the report with
+them into two `site_refused` refusals, each one line of the report with
 its macro and its count of observers; the edit set is `refused`; there is
 no overlay and no verify phase; the state is `refused`, exit status 1,
 and nothing is written.
