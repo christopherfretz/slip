@@ -22,6 +22,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use slip_cli::image::Image;
+use slip_exec::store::{Access, Store};
+use slip_exec::worker::PostImage;
 use slip_model::declared::Declared;
 use slip_model::formats::content_id;
 use slip_model::json::{self, Value};
@@ -75,9 +78,15 @@ impl Out {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
+        Fixture::new_in(&common::work_root(), name)
+    }
+
+    /// A fixture under `base`: the work root, or the folding root for a
+    /// test about spelling on a volume that folds (`common::folding_root`).
+    fn new_in(base: &Path, name: &str) -> Fixture {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = common::work_root().join(format!("wp053-{name}-{}-{n}", std::process::id()));
+        let root = base.join(format!("wp053-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("s")).unwrap();
         std::fs::create_dir_all(root.join("post")).unwrap();
@@ -312,7 +321,12 @@ const U1: &str = "#include \"a.h\"\nint f1() { return h(2) + old::e2; }\n";
 
 /// Two observers over a shared header, the same in both trees.
 fn two_units(name: &str) -> Fixture {
-    let f = Fixture::new(name);
+    two_units_in(&common::work_root(), name)
+}
+
+/// [`two_units`] under `base`.
+fn two_units_in(base: &Path, name: &str) -> Fixture {
+    let f = Fixture::new_in(base, name);
     f.both("a.h", HEADER);
     f.both("u0.cpp", U0);
     f.both("u1.cpp", U1);
@@ -1016,7 +1030,7 @@ fn publish_transform_run(store: &Path, plan: &str, round: u64) {
         wall_ns: 1,
         steps: vec![],
     };
-    let store = slip_exec::store::Store::open(store, slip_exec::store::Access::Shared).unwrap();
+    let store = Store::open(store, Access::Shared).unwrap();
     store.publish_transform_run(&plan, round, 7, &record.to_bytes()).unwrap();
 }
 
@@ -2158,7 +2172,7 @@ fn golden(name: &str, actual: &str) {
 /// (status 0): a read-only file's entity mapped by rule.
 #[test]
 fn s2_1_readonly_in_another_case_is_read_only() {
-    let f = Fixture::new("declare-readonly-case");
+    let f = Fixture::new_in(&common::folding_root(), "declare-readonly-case");
     f.both("a.h", "#pragma once\nstruct S { int v; };\n");
     f.both("u0.cpp", "#include \"a.h\"\nint f0() { return S{1}.v; }\n");
     f.db(&["u0.cpp"]);
@@ -2182,7 +2196,7 @@ fn s2_1_readonly_in_another_case_is_read_only() {
 /// found no defect here; item 2's normalisation must keep it passing.
 #[test]
 fn s5_1_roots_in_another_case() {
-    let f = two_units("roots-case");
+    let f = two_units_in(&common::folding_root(), "roots-case");
     if std::fs::metadata(f.path("S")).is_err() {
         eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
         return;
@@ -2197,4 +2211,111 @@ fn s5_1_roots_in_another_case() {
 #[test]
 fn s11_5_work_root() {
     common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
+}
+
+// ----- WP-151: the image's roots (L3) and the declared files (T1) ------------------
+
+/// `spec/verify.md` §5.1, `spec/edits.md` §2.1 (WP-151 item 2, row L3):
+/// `--root` and `--post` given in another case than on disk verify, and
+/// the report names the roots as the disk spells them (`image.rs`
+/// `real_dir` through `slip_spelling::real_path`). On the folding root.
+#[test]
+fn s5_1_report_names_the_roots_as_on_disk() {
+    let f = two_units_in(&common::folding_root(), "roots-case-report");
+    if std::fs::metadata(f.path("S")).is_err() {
+        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+        return;
+    }
+    let plan = f.parse();
+    let (s, post) = (Fixture::text(&f.path("S")), Fixture::text(&f.path("POST")));
+    let (out, report) = f.verify_report(&plan, &["--root", &s, "--post", &post]);
+    assert_verdict(&out, &report, "verified");
+    let image = get(&report, "image").as_array().expect("`image` is an array");
+    assert_eq!(image.len(), 1, "{out:?}");
+    assert_eq!(str_at(&image[0], "subject"), Fixture::text(&f.path("s")), "{out:?}");
+    assert_eq!(str_at(&image[0], "post"), Fixture::text(&f.path("post")), "{out:?}");
+}
+
+/// `spec/exec.md` §8.4, `spec/verify.md` §5.1 (WP-151 item 2): a job's
+/// tree roots must each be the real path of a directory, spelled on disk;
+/// roots in another case are refused as a root that is not a real path
+/// is (`Image::from_post`). The control: the roots as on disk pass. On the
+/// folding root.
+#[test]
+fn s5_1_a_job_whose_roots_are_in_another_case_is_refused() {
+    let f = two_units_in(&common::folding_root(), "job-roots-case");
+    if std::fs::metadata(f.path("S")).is_err() {
+        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+        return;
+    }
+    let store = Store::open(&f.path("store"), Access::Shared).unwrap();
+    let bytes = |p: PathBuf| p.as_os_str().as_encoded_bytes().to_vec();
+    let tree = |s: &str, p: &str| PostImage::Tree(vec![(bytes(f.path(s)), bytes(f.path(p)))]);
+    assert!(Image::from_post(&store, &tree("s", "post")).is_ok());
+    for (s, p, bad) in [("S", "post", "S"), ("s", "POST", "POST")] {
+        let e = Image::from_post(&store, &tree(s, p)).unwrap_err();
+        assert_eq!(
+            e,
+            format!("image: {} is not the real path of a directory", Fixture::text(&f.path(bad)))
+        );
+    }
+}
+
+/// `spec/edits.md` §2.1, `spec/verify.md` §2.1 (WP-151 item 1, row T1):
+/// a `DECL`'s `files` given to `slip verify --declared` must each exist
+/// and be spelled on disk; otherwise status 3 naming the entry (and its
+/// spelling on disk), before the file is published or any job runs. An
+/// entry that does not exist is refused, never passed. The control: the
+/// entries as on disk verify. The other spellings need a volume that
+/// folds (the folding root); the missing entry is refused on any volume.
+#[test]
+fn s2_1_declared_files_spelled_on_disk() {
+    let f = two_units_in(&common::folding_root(), "declared-files-spelling");
+    f.both("dep/x.h", "int x;\n");
+    f.both("caf\u{e9}/y.h", "int y;\n");
+    let plan = f.parse();
+    let path = |rel: &str| f.path("s").join(rel).as_os_str().as_encoded_bytes().to_vec();
+    let decl = |readonly: Vec<u8>| {
+        let owned = vec![f.path("s").as_os_str().as_encoded_bytes().to_vec()];
+        let files = Ownership { owned, readonly: vec![readonly] };
+        let d = Declared::new(vec![], vec![], vec![], vec![]).unwrap().with_files(Some(files));
+        std::fs::write(f.path("d.decl"), d.to_bytes()).unwrap();
+    };
+    let published = || std::fs::read_dir(f.path("store/declared")).map_or(0, Iterator::count);
+    let mut s = Vec::new();
+    let mut args = image(&f, &mut s);
+    args.extend(["--declared", "d.decl"]);
+    let lossy = |b: Vec<u8>| String::from_utf8(b).unwrap();
+
+    decl(path("dep"));
+    let (out, report) = f.verify_report(&plan, &args);
+    assert_verdict(&out, &report, "verified");
+
+    let before = published();
+    decl(path("nope"));
+    let out = f.verify(&plan, &args);
+    assert_eq!(out.code(), Some(3), "{out:?}");
+    let line = format!(
+        "slip: d.decl: ownership: the readonly entry {} does not exist",
+        lossy(path("nope"))
+    );
+    assert_eq!(out.stderr_lines(), [line.as_str()], "{out:?}");
+    assert_eq!(published(), before, "nothing published");
+
+    if std::fs::metadata(f.path("s/DEP")).is_err() {
+        eprintln!("skipped (the other spellings): the fixture's volume is case-sensitive");
+        return;
+    }
+    for (asked, disk) in [("DEP", "dep"), ("cafe\u{301}", "caf\u{e9}")] {
+        decl(path(asked));
+        let out = f.verify(&plan, &args);
+        assert_eq!(out.code(), Some(3), "{out:?}");
+        let line = format!(
+            "slip: d.decl: ownership: the readonly entry {} is not spelled as on disk ({})",
+            lossy(path(asked)),
+            lossy(path(disk))
+        );
+        assert_eq!(out.stderr_lines(), [line.as_str()], "{out:?}");
+        assert_eq!(published(), before, "nothing published");
+    }
 }

@@ -9,11 +9,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use slip_exec::store::{Object, Store, StoreError};
+use slip_exec::store::{Store, StoreError};
 use slip_model::transform::Transform;
 use slip_model::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
-use super::{CommandError, read_checked, store_error};
+use super::{CommandError, read_request, store_error};
 
 /// The map shards of one round, over the observers its map phase selected
 /// (`selected_of_round`), in plan order: position `i` is the `i`-th
@@ -152,6 +152,21 @@ impl slip_apply::Files for DiskFiles {
         use std::os::unix::ffi::OsStrExt;
         fs::read(std::ffi::OsStr::from_bytes(path))
     }
+
+    /// `stat`'s device and inode; `None` when nothing is there.
+    fn identity(&self, path: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        match fs::metadata(std::ffi::OsStr::from_bytes(path)) {
+            Ok(m) => Ok(Some((m.dev(), m.ino()))),
+            Err(e)
+                if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -169,8 +184,10 @@ fn to_io(e: StoreError) -> io::Error {
 /// from the store and checked against its id: the `transform` of the
 /// first `ok` shard, in the order of `shards`, that has `edits`. `Input`
 /// error if the round is not a transform's (`Store::is_transform_round`),
-/// if a shard read cannot be decoded, if no shard has `edits`, or if the
-/// request is missing or is not the file its id names. Whether every
+/// if a shard read cannot be decoded, if no shard has `edits`, if the
+/// request is missing or is not the file its id names, or if an entry of
+/// its ownership does not exist or is not spelled on disk
+/// ([`read_request`]). Whether every
 /// shard names this request is reduce's to check (§5.7).
 pub fn request_of_round(
     store: &Store,
@@ -200,8 +217,7 @@ pub fn request_of_round(
             "plan {plan_id} round {round}: no map shard of the round has an `edits` section"
         )));
     };
-    let transform =
-        read_checked(store, Object::Transform, &id, "the request", Transform::from_bytes)?;
+    let transform = read_request(store, &id)?;
     Ok((id, transform))
 }
 

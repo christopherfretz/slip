@@ -26,6 +26,7 @@ use std::fmt;
 use slip_exec::store::{Object, Store, StoreError};
 use slip_model::Digest;
 use slip_model::formats;
+use slip_model::transform::Transform;
 use slip_model::wire::Error as FormatError;
 
 use crate::commands::Failure;
@@ -101,4 +102,18 @@ pub(crate) fn read_checked<T>(
             path.display()
         ))),
     }
+}
+
+/// The request `id` read for a run (`spec/edits.md` §2.1, §10.2): as
+/// [`read_checked`], then every entry of its ownership checked to exist
+/// and be spelled on disk ([`crate::commands::entries_on_disk`]); an
+/// `Input` error naming the file and the entry otherwise. What `reduce`,
+/// `check` and `apply` (`--recover` too) read a request through, before
+/// anything is decided by its ownership.
+pub(crate) fn read_request(store: &Store, id: &Digest) -> Result<Transform, CommandError> {
+    let t = read_checked(store, Object::Transform, id, "the request", Transform::from_bytes)?;
+    crate::commands::entries_on_disk(&t.ownership).map_err(|e| {
+        CommandError::Input(format!("{}: {e}", store.object_path(Object::Transform, id).display()))
+    })?;
+    Ok(t)
 }

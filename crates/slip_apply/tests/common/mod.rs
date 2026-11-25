@@ -13,6 +13,14 @@ pub fn work_root() -> std::path::PathBuf {
     work_root::work_root_or(env!("CARGO_TARGET_TMPDIR"))
 }
 
+/// The directory under which a test about spelling on a volume that folds
+/// makes its trees: under `CARGO_TARGET_TMPDIR` (on this project's host,
+/// the workspace's mount, which folds), never under `$SLIP_TEST_ROOT`
+/// ([`work_root::folding_root_or`]; no hard link there).
+pub fn folding_root() -> std::path::PathBuf {
+    work_root::folding_root_or(env!("CARGO_TARGET_TMPDIR"))
+}
+
 use std::collections::BTreeMap;
 use std::io;
 
@@ -31,6 +39,10 @@ pub struct Mem(pub BTreeMap<Vec<u8>, Vec<u8>>);
 impl Files for Mem {
     fn read(&self, path: &[u8]) -> io::Result<Vec<u8>> {
         self.0.get(path).cloned().ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    fn identity(&self, _: &[u8]) -> io::Result<Option<(u64, u64)>> {
+        Ok(None)
     }
 }
 

@@ -18,7 +18,7 @@ use slip_model::Digest;
 use slip_model::editset::EditSet;
 use slip_model::overlay::Overlay;
 use slip_model::result::{State, TransformResult};
-use slip_model::transform::{Ownership, Transform};
+use slip_model::transform::Ownership;
 use slip_verify::conclude::{Allow, permits};
 
 use super::store::{DiskFiles, StoreBlobs, StoreJournal, lossy};
@@ -103,10 +103,11 @@ fn load_overlay(store: &Store, id: Digest, edits: Digest) -> Result<Overlay, Com
     Ok(overlay)
 }
 
-/// The ownership of request `id` (§2.1).
+/// The ownership of request `id` (§2.1), its entries checked to exist
+/// and be spelled on disk ([`super::read_request`]) before anything is
+/// checked against it or written.
 fn ownership_of(store: &Store, id: Digest) -> Result<Ownership, CommandError> {
-    let t = read_checked(store, Object::Transform, &id, "the request", Transform::from_bytes)?;
-    Ok(t.ownership)
+    Ok(super::read_request(store, &id)?.ownership)
 }
 
 /// §7.2 or §7.3 for the published result `result_id`, once

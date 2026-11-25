@@ -78,6 +78,10 @@ impl slip_apply::Files for Disk {
     fn read(&self, path: &[u8]) -> std::io::Result<Vec<u8>> {
         std::fs::read(std::ffi::OsStr::from_bytes(path))
     }
+
+    fn identity(&self, path: &[u8]) -> std::io::Result<Option<(u64, u64)>> {
+        slip_apply::Files::identity(&slip_cli::transform::store::DiskFiles, path)
+    }
 }
 
 /// A tree `s/` and a store in a directory of their own, removed on drop;
@@ -108,10 +112,16 @@ const MAINS: [&str; 4] = ["a.cpp", "b.cpp", "e.cpp", "c.cpp"];
 
 impl Tree {
     fn new(name: &str) -> Tree {
+        Tree::new_in(&common::work_root(), name)
+    }
+
+    /// A tree under `root`: the work root, or the folding root for a test
+    /// about spelling on a volume that folds (`common::folding_root`).
+    fn new_in(root: &Path, name: &str) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = common::work_root().join(format!("wp074-{name}-{}-{n}", std::process::id()));
+        let base = root.join(format!("wp074-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
@@ -1289,4 +1299,166 @@ fn s10_4_obligations_of_the_files_read() {
     let spellings = shard.spellings.as_ref().expect("the overlay has obligations");
     assert_eq!(spellings.seen, 0, "{spellings:?}");
     assert_eq!(counter(&shard, "verify.spelling.obligations"), Some(0));
+}
+
+// ----- WP-151: the request's and the declared files' entries; one file once ---
+
+/// `s/dep/x.h` and `s/café/y.h` (NFC): directories a request may carve
+/// out read-only, which the rename of `f` does not touch.
+fn with_dependencies(tree: &Tree) {
+    for (dir, file) in [("dep", "x.h"), ("caf\u{e9}", "y.h")] {
+        std::fs::create_dir_all(tree.subject.join(dir)).unwrap();
+        std::fs::write(tree.subject.join(dir).join(file), "int x;\n").unwrap();
+    }
+}
+
+/// The rename of `f` to `g` with `readonly` carved out, published as a
+/// hand-written request (the product's writer, then altered).
+fn request_with_readonly(tree: &Tree, readonly: &str) -> (Transform, Digest) {
+    let (mut t, _) = tree.rename();
+    t.ownership.readonly = vec![bytes(&tree.subject.join(readonly))];
+    let id = tree.store.publish_object(Object::Transform, &t.to_bytes()).unwrap();
+    (t, id)
+}
+
+/// The line that names a read-only entry `asked` and why it is refused.
+fn entry_line(tree: &Tree, asked: &str, why: &str) -> String {
+    format!("ownership: the readonly entry {} {why}", tree.subject.join(asked).display())
+}
+
+/// `spec/edits.md` §2.1, §8.1 (WP-151 item 1, row T1): the map job reads
+/// the request and checks that every ownership entry exists and is
+/// spelled on disk before anything is parsed; an entry that does not
+/// exist fails the job (a failure of the run, never a shard), naming it.
+/// The control: the entry as on disk maps. Any volume.
+#[test]
+fn s8_1_the_map_job_refuses_an_entry_that_does_not_exist() {
+    let tree = Tree::new("t1-map-missing");
+    with_dependencies(&tree);
+    let o = tree.observer("a.cpp");
+    let (_, id) = request_with_readonly(&tree, "nope");
+    let e = tree.map(&o, Some(id)).unwrap_err();
+    assert!(e.contains(&entry_line(&tree, "nope", "does not exist")), "{e}");
+    let (_, id) = request_with_readonly(&tree, "dep");
+    let shard = tree.map(&o, Some(id)).unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+}
+
+/// The same for an entry in another case (`s/DEP` for `s/dep`) or another
+/// Unicode normalisation (`s/café` in NFD for the NFC name on disk): the
+/// job fails naming the entry and its spelling on disk. On the folding
+/// root; skipped on a volume that does not fold.
+#[test]
+fn s8_1_the_map_job_refuses_an_entry_not_spelled_on_disk() {
+    let tree = Tree::new_in(&common::folding_root(), "t1-map-case");
+    with_dependencies(&tree);
+    if std::fs::metadata(tree.subject.join("DEP")).is_err() {
+        eprintln!("skipped: the folding root's volume is case-sensitive: `DEP` names nothing");
+        return;
+    }
+    let o = tree.observer("a.cpp");
+    for (asked, disk) in [("DEP", "dep"), ("cafe\u{301}", "caf\u{e9}")] {
+        let (_, id) = request_with_readonly(&tree, asked);
+        let e = tree.map(&o, Some(id)).unwrap_err();
+        let why = format!("is not spelled as on disk ({})", tree.subject.join(disk).display());
+        assert!(e.contains(&entry_line(&tree, asked, &why)), "{e}");
+    }
+}
+
+/// `spec/exec.md` §8.6, `spec/verify.md` §2.1 (WP-151 item 1): the verify
+/// job reads the declared changes and checks their `files` as a request's
+/// ownership: an entry that does not exist, or (on a volume that folds)
+/// is in another case, fails the job naming it. The control: the entries
+/// as on disk verify.
+#[test]
+fn s5_1_the_verify_job_checks_the_declared_files() {
+    for root in [common::work_root(), common::folding_root()] {
+        let tree = Tree::new_in(&root, "t1-verify");
+        with_dependencies(&tree);
+        let r = tree.map_and_reduce();
+        let (overlay, _) = tree.publish_overlay(&r.set, r.set_id);
+        let o = tree.observer("a.cpp");
+        let with = |readonly: &str| {
+            let mut files = tree.ownership();
+            files.readonly = vec![bytes(&tree.subject.join(readonly))];
+            let d = r.declared.clone().with_files(Some(files));
+            tree.store.publish_declared(&d.to_bytes()).unwrap()
+        };
+        let shard = tree.verify_task(&o, overlay, with("dep")).unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+        let e = tree.verify_task(&o, overlay, with("nope")).unwrap_err();
+        assert!(e.contains(&entry_line(&tree, "nope", "does not exist")), "{e}");
+        if std::fs::metadata(tree.subject.join("DEP")).is_ok() {
+            let e = tree.verify_task(&o, overlay, with("DEP")).unwrap_err();
+            let why = format!("is not spelled as on disk ({})", tree.subject.join("dep").display());
+            assert!(e.contains(&entry_line(&tree, "DEP", &why)), "{e}");
+        } else {
+            eprintln!("{}: case-sensitive: the case of `DEP` not tried here", root.display());
+        }
+    }
+}
+
+/// `spec/edits.md` §7.1 (WP-151 item 3; WP-074's second review, F1): two
+/// hard links to one file, each edited by an observer that includes it
+/// under its own name (`a.cpp` reads `h.h`, `b.cpp` reads `d.h`, now a link
+/// of `h.h`), are refused where the overlay is made: reduce's edit set
+/// names both, and `reduce_round` refuses it, naming both paths, before it
+/// publishes anything. Under the work root (`$SLIP_TEST_ROOT`, the
+/// container's disk), where hard links are honest; never on the mount.
+#[test]
+fn s7_1_two_hard_links_edited_under_their_names_refused_by_reduce() {
+    let tree = Tree::new("hard-links-reduce");
+    let (h, d) = (tree.subject.join("h.h"), tree.subject.join("d.h"));
+    std::fs::remove_file(&d).unwrap();
+    std::fs::hard_link(&h, &d).unwrap();
+    let (t, id) = tree.rename();
+    for o in &tree.plan.observers {
+        let shard = tree.map(o, Some(id)).unwrap();
+        assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+        tree.store
+            .publish_shard(&tree.plan_id, Phase::Map, ROUND, &o.id, &shard.to_bytes())
+            .unwrap();
+    }
+    let selected: Vec<usize> = (0..tree.plan.observers.len()).collect();
+    let sets = tree.store.object_path(Object::EditSet, &Digest([0; 32]));
+    let sets = sets.parent().unwrap();
+    let before = std::fs::read_dir(sets).map_or(0, Iterator::count);
+    let e = reduce_round(&tree.store, tree.plan_id, &tree.plan, ROUND, &selected, (id, &t), 1)
+        .unwrap_err()
+        .to_string();
+    let both = format!("{} and {} are one file", d.display(), h.display());
+    assert!(e.contains(&both), "{e}");
+    let after = std::fs::read_dir(sets).map_or(0, Iterator::count);
+    assert_eq!(after, before, "nothing published");
+}
+
+/// The same refusal by the overlay's builder (`slip_apply::build_into`),
+/// for an edit set made while the two were two files: `d.h` made a link of
+/// `h.h` after reduce. Refused naming both paths before the sink (which
+/// publishes the post-images as blobs) is called once; the files' bytes
+/// are not read first (it is not `stale_file`). Under the work root, as
+/// above.
+#[test]
+fn s7_1_two_hard_links_refused_by_the_overlay_builder() {
+    let tree = Tree::new("hard-links-build");
+    let r = tree.map_and_reduce();
+    let (h, d) = (tree.subject.join("h.h"), tree.subject.join("d.h"));
+    let paths: Vec<Vec<u8>> = r.set.files.iter().map(|f| f.path.clone()).collect();
+    assert!(paths.contains(&bytes(&h)) && paths.contains(&bytes(&d)), "{paths:?}");
+    std::fs::remove_file(&d).unwrap();
+    std::fs::hard_link(&h, &d).unwrap();
+    let mut sunk = 0;
+    let e = slip_apply::build_into(
+        &r.set,
+        r.set_id,
+        &slip_cli::transform::store::DiskFiles,
+        &mut |_, _| {
+            sunk += 1;
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    let both = format!("{} and {} are one file", d.display(), h.display());
+    assert!(matches!(&e, slip_apply::ApplyError::Invalid(m) if m.contains(&both)), "{e:?}");
+    assert_eq!(sunk, 0, "nothing handed to the sink");
 }

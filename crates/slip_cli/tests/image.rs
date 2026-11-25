@@ -37,10 +37,15 @@ struct Dir(PathBuf);
 
 impl Dir {
     fn new(name: &str) -> Dir {
+        Dir::new_in(&common::work_root(), name)
+    }
+
+    /// A directory under `root`: the work root, or the folding root for a
+    /// test about spelling on a volume that folds (`common::folding_root`).
+    fn new_in(root: &Path, name: &str) -> Dir {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base =
-            common::work_root().join(format!("wp052-image-{name}-{}-{n}", std::process::id()));
+        let base = root.join(format!("wp052-image-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         Dir(std::fs::canonicalize(&base).unwrap())
@@ -634,7 +639,7 @@ fn g5_command_prefix_maps() {
 // is not under the subject; another spelling of the subject root is.
 #[test]
 fn s5_1_under_subject_by_identity() {
-    let dir = Dir::new("identity");
+    let dir = Dir::new_in(&common::folding_root(), "identity");
     let s = dir.mkdir("s");
     let p = dir.mkdir("s/post");
     dir.mkdir("s/inc");

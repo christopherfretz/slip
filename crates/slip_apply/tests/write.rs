@@ -1690,7 +1690,13 @@ mod disk {
     }
 
     pub fn root(name: &str) -> PathBuf {
-        let d = common::work_root().join(format!("wp063-write-{name}-{}", std::process::id()));
+        root_in(&common::work_root(), name)
+    }
+
+    /// `root` under `base`: the folding root for a test about spelling on
+    /// a volume that folds (`common::folding_root`).
+    pub fn root_in(base: &Path, name: &str) -> PathBuf {
+        let d = base.join(format!("wp063-write-{name}-{}", std::process::id()));
         if d.exists() {
             common::remove_tree(&d);
         }
@@ -2240,7 +2246,7 @@ fn s2_1_a_missing_path_is_left_to_the_checks_after() {
 /// write is `StaleFile`. Either way nothing is written.
 #[test]
 fn s2_1_disk_another_case() {
-    let r = disk::root("case");
+    let r = disk::root_in(&common::folding_root(), "case");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let insensitive = r.join("tree/VENDOR/x.h").exists();
@@ -2285,7 +2291,7 @@ fn s2_1_disk_another_case() {
 /// exist". Never `Ok`, and nothing written.
 #[test]
 fn s2_1_disk_readonly_entry_in_another_case() {
-    let r = disk::root("entry");
+    let r = disk::root_in(&common::folding_root(), "entry");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let folds = r.join("tree/VENDOR/x.h").exists();
@@ -2325,7 +2331,7 @@ fn s2_1_disk_readonly_entry_in_another_case() {
 /// On a volume that does not fold, the path finds nothing: `StaleFile`.
 #[test]
 fn s2_1_disk_another_normalisation() {
-    let r = disk::root("nfd");
+    let r = disk::root_in(&common::folding_root(), "nfd");
     let (nfc, nfd) = ("tree/caf\u{e9}.h", "tree/cafe\u{301}.h");
     std::fs::write(r.join(nfc), "int v;\n").unwrap();
     let folds = std::fs::symlink_metadata(r.join(nfd)).is_ok();
@@ -2676,4 +2682,13 @@ fn s7_3_recover_reports_a_path_the_walk_finds_missing() {
         Ok(Some(Recovered { reported: vec![asked.as_bytes().to_vec()], ..Recovered::default() }))
     );
     assert!(w.0.borrow().journal.is_some(), "the journal is kept");
+}
+
+/// The folding tests' guard (WP-151, `spec/harness.md` §11.5): fails when
+/// the source tree's volume folds and the folding root's does not, so
+/// that every test about a volume that folds skipping cannot pass unseen;
+/// says which kind each root is.
+#[test]
+fn s11_5_folding_root() {
+    common::work_root::folding_guard(env!("CARGO_TARGET_TMPDIR"));
 }

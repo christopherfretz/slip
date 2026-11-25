@@ -37,7 +37,10 @@ pub type Reduced = (Digest, EditSet, Option<(Digest, Declared)>);
 /// edit set depends on neither `threads` nor the scratch directory (§5.3).
 ///
 /// A shard reduce refuses, a shard of another request included (§5.7), is
-/// an `Input` error naming the observer, its main file and its shard.
+/// an `Input` error naming the observer, its main file and its shard; two
+/// files of the edit set that are one file now
+/// (`slip_apply::one_name_per_file`) are an `Input` error naming both,
+/// before the set is published.
 pub fn reduce_round(
     store: &Store,
     plan_id: Digest,
@@ -68,6 +71,17 @@ pub fn reduce_round(
                 CommandError::Input(e.to_string())
             }
         })?;
+    // An overlay names a file once (`spec/edits.md` §7.1; WP-151 item 3):
+    // two files of the set that are one file (two hard links) are refused
+    // before anything of the set is published.
+    slip_apply::one_name_per_file(&reduced.edits, &DiskFiles).map_err(|e| {
+        let why = match e {
+            slip_apply::ApplyError::Io(p, why) => format!("{}: {why}", String::from_utf8_lossy(&p)),
+            slip_apply::ApplyError::Invalid(why) => why,
+            e => unreachable!("one_name_per_file fails with Invalid or Io only: {e:?}"),
+        };
+        CommandError::Input(format!("plan {plan_id} round {round}: the edit set: {why}"))
+    })?;
     let set_id = store
         .publish_object(Object::EditSet, &reduced.edits.to_bytes())
         .map_err(|e| store_error(store, &e))?;
