@@ -316,6 +316,11 @@ pub(crate) struct Walk<'a> {
     /// they enclose is in that unit, which is unequal to everything
     /// (`Walk::hold_type`, `demand::unheld`).
     pub held_types: HashSet<DeclId>,
+    /// What the unit being written would hold (`Walk::hold_begin`): put
+    /// into the held sets only if the unit is kept (`Walk::hold_end`), so
+    /// a stream written and dropped (a second walk, a mark, a trace)
+    /// holds nothing.
+    pub(crate) hold_pending: Option<Vec<Hold>>,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -421,6 +426,7 @@ impl<'a> Walk<'a> {
             held_bodies: HashSet::new(),
             held_exprs: HashSet::new(),
             held_types: HashSet::new(),
+            hold_pending: None,
             name_values: None,
             by_value: 0,
             in_constant: 0,
@@ -540,20 +546,58 @@ impl<'a> Walk<'a> {
         std::mem::take(&mut self.unit.expr)
     }
 
+    /// Starts recording what the units written next hold
+    /// ([`Walk::hold_body`]).
+    pub(crate) fn hold_begin(&mut self) {
+        self.hold_pending = Some(Vec::new());
+    }
+
+    /// Stops recording; what was recorded is held if `kept` (the units
+    /// written are in the output), else dropped.
+    pub(crate) fn hold_end(&mut self, kept: bool) {
+        let Some(p) = self.hold_pending.take() else { return };
+        if !kept {
+            return;
+        }
+        for h in p {
+            match h {
+                Hold::Body(b) => {
+                    self.held_bodies.insert(b);
+                }
+                Hold::Expr(x) => {
+                    self.held_exprs.insert(x);
+                }
+                Hold::Type(t) => {
+                    self.held_types.insert(t);
+                }
+            }
+        }
+    }
+
     /// Records that a unit's stream holds function body `b`
-    /// (`demand::unheld`, WP-158): not while an owner is numbered, nor
-    /// inside a key or a type digest.
+    /// (`demand::unheld`, WP-158): only between [`Walk::hold_begin`] and
+    /// [`Walk::hold_end`] (the run's loop, around a unit that is kept and
+    /// its resolved units), not while an owner is numbered, nor inside a
+    /// key or a type digest.
     pub(crate) fn hold_body(&mut self, b: slip_kiln::kiln::ast::StmtId) {
-        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
-            self.held_bodies.insert(b);
+        if !crate::local::numbering_mode(self)
+            && self.in_key == 0
+            && self.type_nesting == 0
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Body(b));
         }
     }
 
     /// Records that a unit's stream holds default argument or default
     /// member initialiser `x` ([`Walk::hold_body`]'s conditions).
     pub(crate) fn hold_expr(&mut self, x: slip_kiln::kiln::ast::ExprId) {
-        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
-            self.held_exprs.insert(x);
+        if !crate::local::numbering_mode(self)
+            && self.in_key == 0
+            && self.type_nesting == 0
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Expr(x));
         }
     }
 
@@ -561,8 +605,12 @@ impl<'a> Walk<'a> {
     /// indeterminate, its members unwritten ([`Walk::hold_body`]'s
     /// conditions).
     pub(crate) fn hold_type(&mut self, t: DeclId) {
-        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
-            self.held_types.insert(t);
+        if !crate::local::numbering_mode(self)
+            && self.in_key == 0
+            && self.type_nesting == 0
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Type(t));
         }
     }
 
@@ -701,6 +749,13 @@ pub(crate) fn run_with<R>(
     run_kept(input, options, &[], f)
 }
 
+/// One thing a unit's stream holds (`Walk::hold_pending`).
+pub(crate) enum Hold {
+    Body(slip_kiln::kiln::ast::StmtId),
+    Expr(slip_kiln::kiln::ast::ExprId),
+    Type(DeclId),
+}
+
 /// [`run_with`], counting rule use with `Declared.kept` (`kept`,
 /// ascending; `spec/verify.md` §9.2).
 pub(crate) fn run_kept<R>(
@@ -733,16 +788,20 @@ pub(crate) fn run_kept<R>(
                 break;
             }
             local_defaults = true;
+            w.hold_begin();
             crate::demand::local_default_arguments(&mut w, &mut written);
+            w.hold_end(true);
             continue;
         }
         let (e, class) = w.queue[i];
         i += 1;
         let saved = w.names_start();
+        w.hold_begin();
         if let Some(mut u) = crate::units::write(&mut w, e, class) {
             // Its resolved units (`demand.rs`), after it.
             let mut resolved = Vec::new();
             crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
+            w.hold_end(true);
             // The mark "emitted unreferenced" (`emitted.rs`, WP-155).
             crate::emitted::mark(&mut w, e, &mut u, &mut resolved);
             if let Some(d) = w.names_end(saved) {
@@ -751,6 +810,7 @@ pub(crate) fn run_kept<R>(
             written.push(u);
             written.append(&mut resolved);
         } else {
+            w.hold_end(false);
             w.names_end(saved);
         }
     }
