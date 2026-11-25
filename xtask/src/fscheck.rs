@@ -575,25 +575,35 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             unlink(&t)?;
             p.check(&l, &pre);
         }
-        "create-new-read" => {
-            // The store's lock (`spec/exec.md` §2.1 "The lock"): a stale
-            // lock removed and the name created again in place, written,
-            // synced and read by name; a claim of a name never used
-            // before created, seen by a listing, removed, and no longer
-            // seen. The journal is the lock's first half.
-            let l = tree.join(format!("lock{k}"));
-            let claim = format!("{i}.claim");
-            let c = tmp.join(&claim);
-            start(&[&l])?;
-            create_synced(&l, &pre)?;
-            p.check(&l, &pre);
-            create(&c, b"")?;
-            p.listed(&tmp, &claim, true);
-            fs::remove_file(&c).map_err(|e| at(&c, &e))?;
-            p.listed(&tmp, &claim, false);
-            p.check(&l, &pre);
-        }
+        "create-new-read" => create_new_read(&tree, &tmp, k, i, &pre, p)?,
         other => unreachable!("no row `{other}`"),
     }
+    Ok(())
+}
+
+/// One round of `create-new-read`: the store's lock (`spec/exec.md` §2.1
+/// "The lock"): a stale lock removed and the name created again in
+/// place, written, synced and read by name; a claim of a name never used
+/// before created, seen by a listing, removed, and no longer seen. The
+/// journal is the lock's first half.
+fn create_new_read(
+    tree: &Path,
+    tmp: &Path,
+    slot: u64,
+    round: u64,
+    pre: &[u8],
+    probe: &mut Probe<'_>,
+) -> Result<(), String> {
+    let lock = tree.join(format!("lock{slot}"));
+    let claim = format!("{round}.claim");
+    let made = tmp.join(&claim);
+    unlink(&lock)?;
+    create_synced(&lock, pre)?;
+    probe.check(&lock, pre);
+    create(&made, b"")?;
+    probe.listed(tmp, &claim, true);
+    fs::remove_file(&made).map_err(|e| at(&made, &e))?;
+    probe.listed(tmp, &claim, false);
+    probe.check(&lock, pre);
     Ok(())
 }

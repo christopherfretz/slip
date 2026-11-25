@@ -169,7 +169,8 @@ took (§8.7).
   1. **Claim**: create `tmp/<P>.<t>.<n>.claim` (`create_new`, empty).
   2. **Look for others**: list `tmp/`; a claim of another pid that is
      alive is a *contender*: `P` removes its claim, waits (a few
-     milliseconds, growing with the round and varied by the pid), and
+     milliseconds drawn at random, the bound growing with the round;
+     not after the last round), and
      starts the next round. The claims of this process's own pid are not
      contenders (an earlier process with this pid is dead; this
      process's own takes are one at a time, under a process-wide mutex).
@@ -193,7 +194,9 @@ took (§8.7).
   5. **Leave**: remove the claim. `P` holds the lock.
 
   Every path out of a round removes `P`'s claim (step 2, a `Busy`, an
-  error, step 5). After 8 rounds `P` is `Busy` naming a contender (or the
+  error, step 5). A removal that fails leaves the claim, a contender to
+  the others until `P` ends; if it is step 5's, `P` removes the lock it
+  just made and returns the error (`Io`) rather than hold the lock so. After 8 rounds `P` is `Busy` naming a contender (or the
   lock's live owner, if it reads one).
 
   **Why two openers never both hold the lock**, assuming that the store

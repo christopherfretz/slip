@@ -391,11 +391,24 @@ impl LockFs for RealFs {
         alive(pid)
     }
 
-    /// 1 to 5 ms, varied by the pid and the round, doubled each round up to
-    /// the sixth: at most about 0.6 s over the 8 rounds.
+    /// 1 ms and a random part below 4 ms, the part's bound doubled each
+    /// round up to the sixth: at most about 0.5 s over the 8 rounds. Random,
+    /// not a function of the pid and the round: two openers whose waits are
+    /// alike meet again every round (a soak of four openers, two of them
+    /// with equal pids modulo 5, slowed to a crawl so).
     fn pause(&self, round: u32) {
-        let base = 1 + (u64::from(std::process::id()) * 7 + u64::from(round) * 13) % 5;
-        std::thread::sleep(std::time::Duration::from_millis(base << round.min(5)));
+        use std::hash::{BuildHasher as _, Hasher as _};
+        // `RandomState` draws its keys at random per process and changes
+        // them with every `new`.
+        let mut h = std::hash::RandomState::new().build_hasher();
+        h.write_u32(round);
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        let span_us = 4_000u64 << round.min(5);
+        std::thread::sleep(std::time::Duration::from_micros(1_000 + h.finish() % span_us));
     }
 }
 
@@ -468,7 +481,9 @@ fn take(
             Inside::Done(Err(e)) => return Err(e),
             Inside::Again(c) => {
                 contender = c.or(contender);
-                fs.pause(round);
+                if round + 1 < ROUNDS {
+                    fs.pause(round);
+                }
             }
         }
     }
@@ -1670,10 +1685,10 @@ mod tests {
 
             /// Writes to the file `ino`, if it still has the name `path`.
             fn write(&self, path: &Path, ino: u64, bytes: &[u8]) {
-                if let Some(f) = self.w.files.borrow_mut().get_mut(path) {
-                    if f.0 == ino {
-                        f.1 = bytes.to_vec();
-                    }
+                if let Some(f) = self.w.files.borrow_mut().get_mut(path)
+                    && f.0 == ino
+                {
+                    f.1 = bytes.to_vec();
                 }
             }
         }
@@ -1698,11 +1713,11 @@ mod tests {
 
             fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
                 self.op()?;
-                if let Some(n) = self.w.lies.borrow_mut().get_mut(path) {
-                    if *n > 0 {
-                        *n -= 1;
-                        return Ok(None);
-                    }
+                if let Some(n) = self.w.lies.borrow_mut().get_mut(path)
+                    && *n > 0
+                {
+                    *n -= 1;
+                    return Ok(None);
                 }
                 Ok(self.w.files.borrow().get(path).map(|f| f.1.clone()))
             }

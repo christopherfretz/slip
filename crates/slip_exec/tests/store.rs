@@ -835,7 +835,11 @@ fn race(dir: &Path, n: usize) -> Vec<String> {
     let _ = fs::remove_file(dir.join("go"));
     let mut racers: Vec<Holder> = (0..n)
         .map(|_| {
-            let exe = std::env::current_exe().unwrap();
+            // Its name as started: `/proc/self/exe` can read `… (deleted)`
+            // on the workspace mount (`spec/harness.md` §11.5).
+            let exe: PathBuf = std::env::args_os()
+                .next()
+                .map_or_else(|| std::env::current_exe().unwrap(), PathBuf::from);
             let spawn = || {
                 Command::new(&exe)
                     .args(["--exact", "lock_racer", "--nocapture", "--test-threads=1"])

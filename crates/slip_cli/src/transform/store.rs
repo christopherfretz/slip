@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use slip_exec::store::{Object, Store, StoreError};
