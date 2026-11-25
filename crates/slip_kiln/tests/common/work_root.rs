@@ -84,27 +84,24 @@ pub fn folding_root_or(target_tmp: &str) -> PathBuf {
     static MINE: OnceLock<(PathBuf, Option<File>)> = OnceLock::new();
     MINE.get_or_init(|| {
         let root = Path::new(target_tmp).join(FOLDING);
-        match std::env::var_os(VAR).filter(|v| !v.is_empty()) {
-            Some(_) => {
-                let twin = work_root_or(target_tmp);
-                let name = twin.file_name().expect("a work directory's name");
-                let dir = root.join(env!("CARGO_PKG_NAME")).join(name);
-                fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-                let parent = twin.parent().expect("the package's directory").to_owned();
-                sweep_folding(
-                    dir.parent().expect("the folding package directory"),
-                    &dir,
-                    &parent,
-                    STALE,
-                );
-                (dir, None)
-            }
-            None => {
-                let (dir, lock) = make(&root).unwrap_or_else(|e| panic!("{}: {e}", root.display()));
-                let parent = dir.parent().expect("the package's directory").to_owned();
-                sweep(&parent, &dir, STALE);
-                (dir, Some(lock))
-            }
+        if std::env::var_os(VAR).is_some_and(|v| !v.is_empty()) {
+            let twin = work_root_or(target_tmp);
+            let name = twin.file_name().expect("a work directory's name");
+            let dir = root.join(env!("CARGO_PKG_NAME")).join(name);
+            fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            let parent = twin.parent().expect("the package's directory").to_owned();
+            sweep_folding(
+                dir.parent().expect("the folding package directory"),
+                &dir,
+                &parent,
+                STALE,
+            );
+            (dir, None)
+        } else {
+            let (dir, lock) = make(&root).unwrap_or_else(|e| panic!("{}: {e}", root.display()));
+            let parent = dir.parent().expect("the package's directory").to_owned();
+            sweep(&parent, &dir, STALE);
+            (dir, Some(lock))
         }
     })
     .0
