@@ -1,7 +1,7 @@
 //! Tests of `own_spelling.rs` (WP-041): what a unit's own spellings hold
 //! beyond their profiles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use slip_kiln::kiln::ast::decl::DeclKind;
@@ -10,7 +10,7 @@ use slip_kiln::kiln::ast::{DeclId, ExprId};
 use slip_model::Digest;
 use slip_model::keys::RuleTable;
 
-use super::{DIRECT, Fact, LISTS, NO_LIST};
+use super::{CONTENT_LIST_NAMES, DIRECT, Fact, LISTS, NO_LIST};
 use crate::expr_profile::RAISED;
 use crate::expr_profile::tests::{each_input, test_dirs};
 use crate::stream::Stream;
@@ -201,8 +201,10 @@ fn a_list_changes_only_the_units_that_write_one() {
         let without = units_of(input);
         NO_LIST.with(|c| c.set(false));
         LISTS.with(|c| c.set(0));
+        CONTENT_LIST_NAMES.with(|s| s.borrow_mut().clear());
         let with = units_of(input);
         let written = LISTS.with(std::cell::Cell::get);
+        let content_listed = CONTENT_LIST_NAMES.with(|s| std::mem::take(&mut *s.borrow_mut()));
         let n = with
             .iter()
             .filter(|(name, u)| without.get(*name).is_some_and(|v| v.digest != u.digest))
@@ -210,12 +212,18 @@ fn a_list_changes_only_the_units_that_write_one() {
         // A content-keyed unit's key is its digest (`spec/digest.md`
         // §3.3): its list moves it, and the units that hold the key
         // change with it. No other key moves.
-        let moved: Vec<&String> = with
+        let moved: BTreeSet<String> = with
             .iter()
             .filter(|(name, u)| without.get(*name).is_none_or(|v| v.key != u.key))
-            .map(|(name, _)| name)
+            .map(|(name, _)| name.clone())
             .collect();
         assert_eq!(with.len(), without.len(), "{}", dir.display());
+        assert_eq!(
+            moved,
+            content_listed,
+            "{}: moved keys must be exactly the content units that wrote a list",
+            dir.display()
+        );
         assert!(
             moved.iter().all(|m| is_content_keyed_name(m)),
             "{}: a key moved: {moved:?}",

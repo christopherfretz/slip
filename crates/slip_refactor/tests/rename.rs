@@ -1822,7 +1822,11 @@ fn wp119_friend_over_two_observers_end_to_end() {
             edit_back(post, "b.cpp", "return g(s);", "return f(s);");
         })
     }));
-    assert!(failed.is_err(), "the post-image with the call left as `f` compiles");
+    let Err(e) = failed else {
+        panic!("the post-image with the call left as `f` compiles: {:?}", failed.unwrap());
+    };
+    let m = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(m.contains("b.cpp has errors"), "{m}");
 }
 
 /// `docs/wp/WP-119.md` item 6 under WP-120's N4: an instantiated
@@ -2084,7 +2088,11 @@ fn wp139_an_instantiation_left_behind_is_not_verified() {
             edit_back(post, "main.cpp", "int g() { return 1; }", "int f() { return 1; }");
         })
     }));
-    assert!(failed.is_err(), "the post-image with `S::f` left compiles");
+    let Err(e) = failed else {
+        panic!("the post-image with `S::f` left compiles: {:?}", failed.unwrap());
+    };
+    let m = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(m.contains("main.cpp has errors"), "{m}");
 }
 
 /// `docs/wp/WP-127.md` item 1 (was WP-119's known mismatch F2): the
