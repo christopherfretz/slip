@@ -1,0 +1,5 @@
+# WP-156 fix round 1 (S4).
+exact derived
+changed gp
+derived-changed FT::<operands>
+derived-changed fp::<operands>
