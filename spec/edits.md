@@ -155,22 +155,34 @@ file of `src/` that a `readonly` entry `src/vendor` carves out, and one
 file could be named twice in one overlay.
 
 Where a request's ownership or a declaration's `files` are read for a
-run, every entry must exist and be its own spelling (`Input`, status 3,
-naming the entry and its spelling on disk): the command line gives them
-that spelling, so one that is not was written by hand or the volume
-changed, and an entry in another case than the paths covers none of
-them (a `readonly` one would protect nothing). Apply checks it, with its
-own walk, before any path is checked against the ownership: `--write`,
-`--patch` and `--recover`, every entry, owned and read-only, of the
-ownership apply decides by (the request's; for `--recover`, the request
-of the edit set of the overlay the journal names). The worker, the
-verify job's read of a declaration and the map phase's read of a
-request do not check it yet (`spec/landed/edits/WP-147.md`, the
-follow-up); apply is the last check before a write, and holds.
+run, every entry, owned and read-only, must exist and be its own real
+path as spelled on disk (`slip_spelling::real_path`: `canonicalize`,
+then the walk above, equal byte for byte to the entry). Otherwise it is
+an `Input` error, status 3, naming the entry and either its spelling on
+disk or that it does not exist; a missing entry is refused, never
+passed. The command line gives entries that spelling, so one that is
+not was written by hand or the volume changed, and an entry in another
+case than the paths covers none of them (a `readonly` one would protect
+nothing). One check (`spec/landed/edits/WP-151.md`), made:
+
+- once per command, before its first job: `map` and `rename` (the
+  request they build, before the store is opened), `reduce` and `check`
+  (the request of the round), `check`'s and `verify --declared`'s
+  declaration (before it is published), and apply's `--write`, `--patch`
+  and `--recover` (the request of the edit set; for `--recover`, of the
+  overlay the journal names);
+- in the worker, each time it reads a request for a map job, or a
+  declaration for a verify job (the job fails, `exec.md` §8.4).
+
+Apply checks again, alone, with its own walk and the same predicate
+(the entry is its own real path, spelled: `slip_apply`'s `Tree::real_path`
+then the walk), before any path is checked against the ownership; it is
+the last check before a write, and holds without the command line's.
 
 Two hard links are two names by design: ownership is by path, and a hard
 link of a read-only file under an owned directory is owned, as a copy
-would be. A symbolic link is resolved by `canonicalize`. A volume that
+would be. An overlay still names a file once (§7.1), and apply writes no
+file with more than one link (§7.3). A symbolic link is resolved by `canonicalize`. A volume that
 numbers one file twice under two spellings (CIFS with `noserverino`, some
 FUSE file systems) is not supported: the front end then has two files
 where there is one, as clang does.
@@ -1356,6 +1368,18 @@ none (later versions). A file whose edits leave its bytes as they were is
 an entry all the same, with `post` equal to `pre`: an obligation may name
 it. The patch and the write skip such a file.
 
+**One name per file.** Two entries of an overlay that are one file (the
+same device and inode, `stat`) are refused where the overlay is made:
+by reduce, over every file of its edit set, before the edit set is
+published, and by the builder (`slip_apply::build_into`), before its
+sink is called. It is an `Input` error, status 3, naming both paths;
+nothing is written to the store. The front end matches an entry to a
+file by identity, so two entries of one file would give it two
+post-images. A path that finds nothing is not looked at here (apply
+refuses it, `stale_file`). The write's refusal of a file with more than
+one hard link (§7.3 step 1) stays: it also covers a link whose other
+name is outside the overlay, and one made after the overlay.
+
 **Parsing through an overlay.** The front end is given the overlay's
 files and blobs ([KF2](../docs/requests/KF2-overlay-and-file-identity.md)).
 Every read of a file the overlay names yields the post-image bytes, by
@@ -1560,7 +1584,14 @@ write of the overlay it names publishes (the same files, `pre` and
 anything is touched, and kept: a journal naming a file its overlay does
 not change would have recovery write a blob over a file no write
 replaced. It is given the ownership the write was given (that of the
-request of the overlay's edit set); a journal naming a path not spelled
+request of the overlay's edit set). An entry of that ownership that no
+longer exists or is no longer spelled as on disk (§2.1; a read-only
+directory removed or renamed since the write) is refused (`Input`,
+status 3) before anything is touched, and the journal is kept: the line
+names the entry and says that the write ends when the entry exists again,
+spelled as the request records it, and `--recover` is run again (every
+other command that opens the store exclusively is refused meanwhile). A
+journal naming a path not spelled
 as on disk (§2.1) is refused (`not_canonical`), and one naming a path
 that ownership does not own (outside it, or under a `readonly` entry)
 is refused (`journal_not_owned`), before anything is touched, and kept.

@@ -22,7 +22,7 @@ mod write;
 use slip_model::Digest;
 use slip_model::overlay::Overlay;
 
-pub use build::{POST_MAX, build, build_into, plan};
+pub use build::{POST_MAX, build, build_into, one_name_per_file, plan};
 pub use patch::{CONTEXT, MYERS_CELLS, MYERS_WORK, patch};
 pub use splice::splice;
 pub use write::{
@@ -34,6 +34,10 @@ pub use write::{
 pub trait Files {
     /// The bytes of the file at a real path.
     fn read(&self, path: &[u8]) -> std::io::Result<Vec<u8>>;
+    /// Which file is at a real path: its device and inode (`stat`), or
+    /// `None` when nothing is there. A pre-image in memory, where no two
+    /// paths are one file, answers `None`.
+    fn identity(&self, path: &[u8]) -> std::io::Result<Option<(u64, u64)>>;
 }
 
 /// What `build` returns: the overlay and the post-image bytes, in overlay

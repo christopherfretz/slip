@@ -187,9 +187,11 @@ fn bytes_path(b: &[u8]) -> PathBuf {
     PathBuf::from(std::ffi::OsStr::from_bytes(b))
 }
 
-/// The real path of `given`, which must be a directory.
+/// The real path of `given`, which must be a directory: links resolved
+/// and each component spelled as its directory lists it
+/// (`slip_spelling::real_path`, `spec/edits.md` §2.1 "One spelling").
 fn real_dir(given: &Path) -> Result<Vec<u8>, String> {
-    let real = std::fs::canonicalize(given).map_err(|e| e.to_string())?;
+    let real = slip_spelling::real_path(given).map_err(|e| e.detail())?;
     let meta = std::fs::metadata(&real).map_err(|e| e.to_string())?;
     if !meta.is_dir() {
         return Err("not a directory".to_owned());
@@ -276,8 +278,9 @@ impl Image {
     }
 
     /// The image of `--root`/`--post` (`spec/exec.md` §8.7): each
-    /// directory made a real path (`std::fs::canonicalize`; it must be a
-    /// directory), then [`Image::new`]. `Err` is `image: <path as given>:
+    /// directory made a real path (`slip_spelling::real_path`: links
+    /// resolved, spelled on disk; it must be a directory), then
+    /// [`Image::new`]. `Err` is `image: <path as given>:
     /// <error>` or `image: <ImageError>`.
     pub fn from_args(args: &ImageArgs) -> Result<Image, String> {
         if args.roots.len() != args.posts.len() {
@@ -296,9 +299,10 @@ impl Image {
     }
 
     /// The image of a job (`spec/exec.md` §8.4). A tree's roots must each
-    /// be the real path of a directory (the coordinator made them so;
-    /// one that is not, now, is refused: guard G1 compares real paths
-    /// with them), then [`Image::new`]. An overlay is read from the store
+    /// be the real path of a directory, spelled on disk (the coordinator
+    /// made them so; one that is not, now, is refused, a root in another
+    /// case than the disk's as one through a link is: guard G1 compares
+    /// real paths with them), then [`Image::new`]. An overlay is read from the store
     /// (`overlays/<id>.ovly`), decoded with every rule of `OVLY` and
     /// checked to have the content id `id` (`docs/wp/WP-074.md`): one that
     /// is not there or does not validate is a failure of the run, never a
@@ -1062,13 +1066,21 @@ impl Resolver<'_> {
         r
     }
 
-    /// The real path of `path` (`std::fs::canonicalize`, cached); `None`
-    /// when it does not exist.
+    /// The real path of `path` (`slip_spelling::real_path`: spelled on
+    /// disk; cached); `None` when it does not exist. A path that exists
+    /// and has no spelling on disk (a directory that must be listed and
+    /// cannot be) keeps `canonicalize`'s answer: the regions are decided
+    /// by identity, and taking it for missing would end a walk of guard
+    /// G5 early.
     fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
         if let Some(r) = self.canon.get(path) {
             return r.clone();
         }
-        let r = std::fs::canonicalize(path).ok();
+        let r = match slip_spelling::real_path(path) {
+            Ok(r) => Some(r),
+            Err(e) if e.is_not_found() => None,
+            Err(_) => std::fs::canonicalize(path).ok(),
+        };
         self.canon.insert(path.to_path_buf(), r.clone());
         r
     }

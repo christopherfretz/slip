@@ -441,6 +441,47 @@ pub(crate) fn ownership(
     Ok(Some(slip_model::transform::Ownership { owned, readonly }))
 }
 
+/// The check of a record's ownership entries where they are read for a
+/// run (`spec/edits.md` §2.1 "One spelling": a `TRFM`'s `ownership`, a
+/// `DECL`'s `files`; `docs/wp/WP-151.md` item 1): every entry, owned and
+/// read-only, must exist and be its own real path, the spelling
+/// [`ownership`] gives a command line's (`slip_spelling::real_path`: a
+/// symbolic link resolved, each component spelled as its directory lists
+/// it). An entry spelled otherwise covers none of the paths it means,
+/// which are real paths, so a read-only one would protect nothing. The
+/// one function every reader calls; `Err` is the line of an input error
+/// (status 3) or of a failed job, naming the entry and, when it has one,
+/// its spelling on disk. An entry that finds nothing is refused, never
+/// passed: on a volume that answers lookups inconsistently, "missing" is
+/// the answer that would let it carve nothing.
+pub fn entries_on_disk(o: &slip_model::transform::Ownership) -> std::result::Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly")] {
+        for e in list {
+            let entry = String::from_utf8_lossy(e);
+            match slip_spelling::real_path(Path::new(std::ffi::OsStr::from_bytes(e))) {
+                Ok(real) if real.as_os_str().as_bytes() == e.as_slice() => {}
+                Ok(real) => {
+                    return Err(format!(
+                        "ownership: the {name} entry {entry} is not spelled as on disk ({})",
+                        real.display()
+                    ));
+                }
+                Err(err) if err.is_not_found() => {
+                    return Err(format!("ownership: the {name} entry {entry} does not exist"));
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "ownership: the {name} entry {entry} has no spelling on disk: {}",
+                        err.detail()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The worker command (§8.2): this executable, `__worker` with the same
 /// `--worker-jobs` the pool is given and `--worker-stack`, without the
 /// coordinator's `KILN_*` variables. `verify` appends its own two options

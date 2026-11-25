@@ -63,13 +63,17 @@ pub fn run_transform(
 }
 
 /// The request `id` from the store (`Object::Transform`): decoded with
-/// every rule of `TRFM` and checked to have the content id `id`.
+/// every rule of `TRFM`, checked to have the content id `id`, and its
+/// ownership's entries checked to exist and be spelled on disk
+/// ([`crate::commands::entries_on_disk`], `spec/edits.md` §2.1), before
+/// anything is parsed.
 ///
 /// # Errors
 ///
 /// A failure of the run, never a shard (`docs/wp/WP-074.md` "Interface"):
 /// the store cannot be read, the request is not there, it is not a valid
-/// `TRFM`, or its content id is not `id`.
+/// `TRFM`, its content id is not `id`, or an ownership entry does not
+/// exist or is not spelled on disk.
 pub fn read_transform(store: &Store, id: &Digest) -> Result<Transform, String> {
     let path = store.object_path(Object::Transform, id);
     let bytes = store
@@ -79,7 +83,11 @@ pub fn read_transform(store: &Store, id: &Digest) -> Result<Transform, String> {
     let transform = Transform::from_bytes(&bytes)
         .map_err(|e| format!("{} is not a valid TRFM file: {e}", path.display()))?;
     match content_id(&bytes) {
-        Ok(actual) if actual == *id => Ok(transform),
+        Ok(actual) if actual == *id => {
+            crate::commands::entries_on_disk(&transform.ownership)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(transform)
+        }
         Ok(actual) => Err(format!("{} has the content id {actual}, not {id}", path.display())),
         Err(e) => Err(format!("{} is not a valid TRFM file: {e}", path.display())),
     }

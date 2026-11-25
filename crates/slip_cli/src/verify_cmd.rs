@@ -152,8 +152,10 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
 }
 
 /// The declared changes of `--declared` (or none): read, validated (a
-/// `DECL` container whose rule table holds no rule §2.1 refuses) and
-/// published to the store; their content id and their decoding.
+/// `DECL` container whose rule table holds no rule §2.1 refuses, and
+/// whose `files` exist and are spelled on disk,
+/// [`crate::commands::entries_on_disk`]) and published to the store;
+/// their content id and their decoding.
 fn publish_declared(store: &Store, path: Option<&Path>) -> Result<(Digest, Declared)> {
     let bytes = match path {
         Some(path) => {
@@ -167,6 +169,12 @@ fn publish_declared(store: &Store, path: Option<&Path>) -> Result<(Digest, Decla
             // and why, in the form of the container's own rule errors.
             if let Some((index, what)) = declared.rules().refused() {
                 return Err(Failure::Input(format!("{}: rule {index}: {what}", path.display())));
+            }
+            // `spec/edits.md` §2.1 (WP-151): the run's files exist and are
+            // spelled on disk, before the file is published or a job runs.
+            if let Some(files) = declared.files() {
+                commands::entries_on_disk(files)
+                    .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
             }
             bytes
         }

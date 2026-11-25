@@ -220,13 +220,25 @@ pub(crate) fn selection(plan: &Plan, run: &RunArgs, err: &mut dyn Write) -> Vec<
     commands::select_for_phase(plan, run, err).iter().map(|o| index[&o.id]).collect()
 }
 
-/// The request of `map` or `rename`, checked before the store is opened.
+/// The request of `map` or `rename`, checked before the store is opened:
+/// its ownership's entries too, by the one function a request read from
+/// the store is checked with (`spec/edits.md` §2.1, WP-151; made real
+/// paths by [`commands::ownership`], they pass it unless the tree changed
+/// since).
 pub(crate) fn request_of(
     target: &args::RenameTarget,
     options: &TransformOptions,
 ) -> commands::Result<Transform> {
-    rename_request(&args::os_bytes(&target.from), &args::os_bytes(&target.to), target.kind, options)
-        .map_err(failure)
+    let request = rename_request(
+        &args::os_bytes(&target.from),
+        &args::os_bytes(&target.to),
+        target.kind,
+        options,
+    )
+    .map_err(failure)?;
+    commands::entries_on_disk(&request.ownership)
+        .map_err(|e| Failure::Input(format!("the request: {e}")))?;
+    Ok(request)
 }
 
 /// The plan, the request published and a new round: what `map` and

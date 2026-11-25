@@ -1832,6 +1832,29 @@ file system (its `scripts/env.sh`).
   directories from the corpus or the command line and do not read the
   variable.
 
+**The folding root** (`spec/landed/edits/WP-151.md`). A test ABOUT
+spelling on a volume that folds case and Unicode normalisation (another
+case or normalisation of a path names the same file) needs such a
+volume, and `$SLIP_TEST_ROOT` is not one. Its work directory is under
+`folding_root()` (beside `work_root()` in `tests/common`, the same
+file): `<CARGO_TARGET_TMPDIR>/folding/<package>/<name>/`, `<name>` the
+work directory's own when `$SLIP_TEST_ROOT` is set (one per test binary
+and process) and swept with it by that directory's lock on the local
+file system (a lock on the mount does not exclude); without the
+variable, a lock and a sweep of its own as `work_root()`'s. On this
+project's host that is the workspace's mount, which folds, and the
+hazards above apply there: a fresh file can change inode number, and a
+hard link can read another name's content (WP-159). So only these
+tests live there, never a hard link, and a test that parses through the
+front end only with the evidence that it holds (twenty runs in a row
+with no failure of the hazard's shape, `spec/landed/edits/WP-151.md`).
+Every such test asks `folding_volume(test)` (or `folding_checked(test)`
+for one with a half that runs on either kind): it **fails** when the
+source tree's volume folds (the gate's host) and the folding root does
+not, and only where no volume folds does it skip, printing one line
+with the reason. The guard `s11_5_folding_root` of each crate with
+such tests prints which kind each root is, and fails in the same case.
+
 ## Tests
 
 - `xtask/tests/lint.rs` — §3: for each lint, a fixture tree that passes and

@@ -270,8 +270,10 @@ impl VerifyTask {
 ///
 /// # Errors
 ///
-/// The `Declared` is not in the store, is not a valid `DECL`, or has
-/// another content id than `post.declared`; the image is refused
+/// The `Declared` is not in the store, is not a valid `DECL`, has
+/// another content id than `post.declared`, or an entry of its `files`
+/// does not exist or is not spelled on disk
+/// ([`crate::commands::entries_on_disk`]); the image is refused
 /// (`Image::from_post`).
 fn make_params(
     store: &Store,
@@ -301,6 +303,11 @@ fn make_params(
         .map_err(|e| format!("{} is not a valid DECL file: {e}", path.display()))?;
     if actual != id {
         return Err(format!("{} has the content id {actual}, not {id}", path.display()));
+    }
+    // spec/edits.md §2.1 (WP-151): the run's files, as a request's
+    // ownership, exist and are spelled on disk; else the job fails.
+    if let Some(files) = declared.files() {
+        crate::commands::entries_on_disk(files).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     let image = Image::from_post(store, &post.image)?;
     let params = Params { pre: post.pre, declared, declared_id: id, image, limit, locate };
