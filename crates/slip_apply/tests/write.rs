@@ -2423,6 +2423,21 @@ fn s2_1_disk_entry_through_a_link() {
     let real = own("tree/vendor");
     let got = slip_apply::check_owned(&o, &real, &tree);
     assert!(matches!(&got, Err(WriteError::Refused(_))), "the control is not_owned: {got:?}");
+    // WP-118 review S4: a rebuilt entry through the link is refused the
+    // same way, before anything is checked against the ownership.
+    let rebuilt = Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![],
+        rebuilt: vec![disk::bytes(&r.join("tree/vlink"))],
+    };
+    let want = want.replace("the readonly entry", "the rebuilt entry");
+    for got in [
+        slip_apply::check_owned(&o, &rebuilt, &tree),
+        write(&o, id, &rebuilt, &tree, &store, &store).map(|_| ()),
+    ] {
+        assert_eq!(got, Err(WriteError::Invalid(want.clone())));
+    }
+    assert_eq!(std::fs::read(&x).unwrap(), b"int v;\n");
     common::remove_tree(&r);
 }
 
@@ -2797,6 +2812,31 @@ fn s2_1_an_ownership_entry_not_spelled_on_disk() {
             "ownership: the readonly entry \"/w/gone\" does not exist".to_string()
         ))
     );
+    // WP-118 review S4: the rebuilt list is checked as the other two are,
+    // in another case and missing; `write` and `recover` refuse it too.
+    let rebuilt = |e: &[u8]| Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![],
+        rebuilt: vec![e.to_vec()],
+    };
+    for (e, want) in [
+        (
+            &b"/w/Vendor/x.h"[..],
+            "ownership: the rebuilt entry \"/w/Vendor/x.h\" is not spelled as on disk \
+             (\"/w/vendor/x.h\")",
+        ),
+        (&b"/w/gone.h"[..], "ownership: the rebuilt entry \"/w/gone.h\" does not exist"),
+    ] {
+        let own = rebuilt(e);
+        let want = Err(WriteError::Invalid(want.to_string()));
+        w.0.borrow_mut().journal = None;
+        assert_eq!(slip_apply::check_owned(&o, &own, &tree), want);
+        assert_eq!(write(&o, id, &own, &tree, &w, &w).map(|_| ()), want);
+        assert_eq!(w.0.borrow().journal, None, "nothing journaled");
+        w.0.borrow_mut().journal = Some(Journal::of_write(&o, id).to_bytes());
+        assert_eq!(recover(&own, &tree, &w, &w).map(|_| ()), want);
+        assert!(w.0.borrow().journal.is_some(), "the journal is kept");
+    }
 }
 
 /// Review S1: `--recover` on a volume that answers a lookup
