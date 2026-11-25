@@ -495,15 +495,26 @@ operand unit. Its cause is its parent's (§10), and its own.
 
 **Where the operands are read: the holders of a written type.** A
 declaration's written type (the return type, each parameter's type
-before adjustment, a variable's, a field's, a typedef's and an alias's
-type, a base specifier, a friend's type); a default type template
-argument; the argument list as written of an explicit or partial
-specialisation and of an explicit instantiation; in an expression, the
-template arguments and the qualifier of a reference to a declaration,
-of a member expression and of a concept-id, and the written type of a
-cast, `sizeof`, `alignof`, `typeid`, a type trait, `new`, a compound
-literal; a nested-name-specifier that names a type. Inside a written
-type the **operands** are, by site:
+before adjustment, a variable's and a variable template
+specialisation's, a field's, a typedef's and an alias's type, an
+enumeration's fixed underlying type, a base specifier, a friend's
+type); a using-declaration's qualifier; a template head's non-type
+parameter types and default type arguments (a template template
+parameter's head included); the argument list as written of an
+explicit or partial specialisation and of a class's explicit
+instantiation; in an expression, the template arguments and the
+qualifier of a reference to a declaration, of a member expression, of
+a concept-id and of an unresolved or dependent name, and the written
+type of a cast, `sizeof`, `alignof`, `typeid`, a type trait, `new`, a
+compound literal, `__builtin_offsetof`, `__builtin_va_arg`,
+`__builtin_convertvector`, a generic selection, a pseudo-destructor's
+destroyed type, a requires-expression's parameters and type
+requirements; inside a written type, a nested-name-specifier's types,
+and a dependent name's qualifier and arguments. The three matches that
+decide this (`operands.rs` `signature`, `scan`, `expr_node`) list every
+declaration, type and expression kind by name, so a kind Kiln adds
+fails to compile until it is placed. Inside a written type the
+**operands** are, by site:
 
 | Site | Operand |
 |---|---|
@@ -520,8 +531,15 @@ The walk of a written type reads only what is written: it stops at what
 a name denotes (a typedef's or alias's underlying type, a class), at a
 substituted parameter's replacement (type or non-type), and never reads
 the type of an expression or a type a placeholder deduced (a variable
-declared with `auto` or `decltype(auto)` has no written type: its
-initialiser is in its own stream). A holder met inside an operand gives
+declared with `auto` or `decltype(auto)`, and a function with a deduced
+return type, have no written type but the placeholder's
+type-constraint, `Same<decltype(make(x))> auto`: its initialiser or
+body is in its own stream; the type-constraint is read where Kiln keeps
+it, a template parameter's or an undeduced placeholder's, and fails
+closed where it does not, below). An instantiation-dependent alias
+specialisation's list is not written, but an operand in it that is not
+instantiation-dependent is, as is one in a dependent name's qualifier
+or arguments: no pattern's spelling holds it. A holder met inside an operand gives
 its operands as entries of their own, right after the entry that holds
 them (`decltype(sizeof(decltype(make(x))))` is two entries). Where a
 function has parameter declarations, its parameters' operands are read
@@ -559,6 +577,33 @@ the parent's. A parameter of a function type that no function
 declaration holds (`void (*fp)(int a) noexcept(noexcept(f(a)))`) is
 written by its depth and index (`Ref::param`). The names digest (§9) of
 the entity is fed by the written entries only.
+
+**What Kiln does not keep** (at the pin; the request is
+`docs/requests/KT1-written-placeholder-and-qualifier.md`). Where a holder
+is written but Kiln keeps none of it, the operand unit gets an entry
+`uv 0` that is indeterminate for a named cause (fails closed), whether
+or not the holder had an operand:
+
+- `kiln/placeholder-constraint`: a declaration whose type a placeholder
+  deduced (a variable's, a function's return type) and every `new`,
+  when the translation unit's type arena holds a constrained
+  placeholder whose written arguments hold an operand that is no
+  literal and not instantiation-dependent. Kiln replaces the declared
+  type by the deduced one and keeps the type-constraint only in its
+  arena, unlinked; in a translation unit with no such constraint
+  nothing fails.
+- `kiln/explicit-instantiation-written`: an explicit instantiation of a
+  function, a variable or a member that its own directive names (not
+  its class's): Kiln keeps neither its arguments nor its declarator as
+  written.
+- `kiln/declarator-qualifier`: a declaration written outside its class
+  (not an instantiation's), or a `using enum`, when a class around it
+  is named somewhere in the translation unit by a template-id whose
+  written arguments hold an operand that is no literal, or by a
+  `decltype` or `typeof` of an expression (`template <> int
+  Q<sizeof(make(x))>::s = 5;`, also through an alias template): Kiln
+  keeps no declarator's qualifier as written.
+- `operands/splice`: a splice in a written type or qualifier.
 
 **`noexcept` of a specialisation** (a function whose exception
 specification can be deferred, `digest-kinds.md` §11.2): its operand
@@ -1785,6 +1830,15 @@ inherits from a later declaration (Kiln WP-3407), and a class's hidden
 using-shadow is made in either member order (Kiln WP-3145). No baseline
 of scheme 3 is recorded since WP-158, so it shares the number 3. The
 supervisor confirms that at the merge.
+WP-156 (§2.4, operand units) adds units (an operand unit, a key of a
+new kind under its parent) and changes existing streams in one place:
+an instantiated class's lists name its member templates that are
+derived units (`digest-kinds.md` §5.5 `members-other`), so the
+definition streams of such classes change (B3). It closes wrong
+equals: a name in an operand that only a type or a value holds bound
+otherwise and every unit compared equal (pitfalls N47, N48). No
+baseline of scheme 3 is recorded since WP-163, so it shares the
+number 3. The supervisor confirms that at the merge.
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.
@@ -1973,6 +2027,7 @@ comparison of unit sets (`verify.md`).
 | `digest.operands.unreferenced` | operands of sites 1, 2, 4 and 6 not written because their walk wrote no reference (§2.4 "What is written") |
 | `digest.operands.dependent` | instantiation-dependent operands, not written |
 | `digest.operands.deduced` | variables declared with a placeholder, whose type is not read (§2.4) |
+| `digest.operands.unkept` | entries of a holder Kiln does not keep, indeterminate (§2.4 "What Kiln does not keep") |
 | `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
 
 These three count keys, each once, under the first cause the walk met

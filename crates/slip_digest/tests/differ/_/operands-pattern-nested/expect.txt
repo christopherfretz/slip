@@ -1,0 +1,3 @@
+# WP-156 fix round 1.
+exact derived
+removed lib::make(lib::X)

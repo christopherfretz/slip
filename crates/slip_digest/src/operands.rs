@@ -55,9 +55,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget, VarPlaceholder};
-use slip_kiln::kiln::ast::expr::{ExprDeps, ExprFlags, ExprKind as K, TypeidOperand};
+use slip_kiln::kiln::ast::expr::{
+    ExprDeps, ExprFlags, ExprKind as K, GenericControl, TypeidOperand,
+};
+use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TemplateArg, TypeOfOperand, TypeView};
-use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, NnsId, QualType};
+use slip_kiln::kiln::ast::{Ast, ArgListId, DeclId, ExprId, NnsId, QualType, TypeId};
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent};
@@ -74,6 +77,9 @@ pub(crate) const TYPEOF: u8 = 2;
 pub(crate) const EXPR_ARG: u8 = 4;
 pub(crate) const NOEXCEPT: u8 = 6;
 pub(crate) const ALIAS_ARGS: u8 = 8;
+/// The entry of a holder Kiln does not keep ([`Op::Unkept`]): no site,
+/// indeterminate.
+pub(crate) const UNKEPT: u8 = 0;
 
 /// How deep a written type is followed (a written type is never this
 /// deep; the bound keeps a malformed one finite).
@@ -88,6 +94,31 @@ const MAX_ENTRIES: usize = 1 << 20;
 /// [`MAX_DEPTH`].
 const TOO_MANY: Cause = Cause::Unaccounted("operands/limit");
 
+/// A declaration whose type a constrained placeholder deduced
+/// (`Same<decltype(make(x))> auto v = 1;`, `C<…> auto f() {…}`): Kiln at
+/// the pin replaces the declared type by the deduced one and keeps the
+/// type-constraint nowhere in the AST (`kiln_sema` `declared_returns`
+/// holds a function's, for itself), so its operands cannot be read
+/// (`docs/requests/KT1-written-placeholder-and-qualifier.md`).
+pub(crate) const PLACEHOLDER: Cause = Cause::Unsupported("kiln/placeholder-constraint");
+
+/// An explicit instantiation of a function, a variable or a member
+/// (`template int f<sizeof(make(x))>();`): Kiln keeps neither its
+/// template arguments nor its declarator as written.
+pub(crate) const EXPLICIT_INSTANTIATION: Cause =
+    Cause::Unsupported("kiln/explicit-instantiation-written");
+
+/// A declaration whose declarator's qualifier (or a `using enum`'s) may
+/// name a class through a template-id with an operand
+/// (`template <> int Q<sizeof(make(x))>::s = 5;`): Kiln keeps no
+/// qualifier as written for a declarator.
+pub(crate) const QUALIFIER: Cause = Cause::Unsupported("kiln/declarator-qualifier");
+
+/// A splice (`[: e :]`, P2996) in a written type or nested-name-specifier:
+/// its operand is not read (the expression walk makes a splice
+/// unsupported too).
+pub(crate) const SPLICE: Cause = Cause::Unsupported("operands/splice");
+
 /// One operand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Op {
@@ -95,6 +126,9 @@ pub(crate) enum Op {
     Expr(u8, ExprId),
     /// Site 8: the argument list as written of an alias specialisation.
     Alias(ArgListId),
+    /// A holder whose operands Kiln does not keep (fails closed): the
+    /// entry is indeterminate for the cause.
+    Unkept(Cause),
 }
 
 /// The operand state of the unit being written (`UnitState::operands`).
@@ -131,6 +165,24 @@ pub(crate) struct Counts {
     pub dependent: u64,
     /// Declarations whose type a placeholder deduced: not read (S3).
     pub deduced: u64,
+    /// Entries of a holder Kiln does not keep ([`Op::Unkept`]).
+    pub unkept: u64,
+}
+
+/// What the operand units read of the whole translation unit, once
+/// ([`tu`]): Kiln keeps neither a constrained placeholder's
+/// type-constraint once it deduced the type nor a declarator's qualifier
+/// as written, but the types they wrote are in the type arena.
+#[derive(Debug, Default)]
+pub(crate) struct Tu {
+    /// The arena holds a constrained placeholder whose written
+    /// arguments hold an operand ([`holds`]), not instantiation-dependent.
+    placeholder: bool,
+    /// The classes (first declarations) that a type in the arena names by
+    /// a template-id whose written arguments hold an operand, or by a
+    /// `decltype` or `typeof` of an expression, not instantiation-dependent:
+    /// what a declarator's qualifier with an operand can name.
+    named: HashSet<DeclId>,
 }
 
 /// Whether the walk collects operands now: the unit has an operand unit
@@ -221,13 +273,21 @@ pub(crate) fn number(w: &mut Walk<'_>) {
 /// written type (for a function the return type and `noexcept(e)`, the
 /// latter unless the resolved unit `exception_spec` holds it, S4), with
 /// `params` each parameter's type before adjustment and, for a template,
-/// its pattern's; a template head's default type arguments; a class
+/// its pattern's; an enumeration's fixed underlying type; a
+/// using-declaration's qualifier; a template head ([`head`]); a class
 /// definition's base specifiers; a friend's type; the argument list as
-/// written of a specialisation or explicit instantiation. A variable whose
-/// type a placeholder deduced has no written type (S3).
+/// written of a specialisation. A variable whose type a placeholder
+/// deduced has no written type (S3). Where Kiln does not keep what is
+/// written, an [`Op::Unkept`] entry: a constrained placeholder
+/// ([`PLACEHOLDER`]), an explicit instantiation of a function, variable
+/// or member ([`EXPLICIT_INSTANTIATION`]), a declarator's qualifier
+/// ([`QUALIFIER`]).
 fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
     let ast = w.ast;
     let n = ast.decls.get(d);
+    if qualifier_unkept(w, d) {
+        out.push(Op::Unkept(QUALIFIER));
+    }
     match n.kind() {
         DeclKind::Function
         | DeclKind::CXXMethod
@@ -235,6 +295,13 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         | DeclKind::CXXDestructor
         | DeclKind::CXXConversion
         | DeclKind::CXXDeductionGuide => {
+            if own_explicit_instantiation(w, d) {
+                out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
+            }
+            if ast.decls.function(d).is_some_and(|f| f.spec.return_deduced()) && tu(w).placeholder
+            {
+                out.push(Op::Unkept(PLACEHOLDER));
+            }
             if let Some(q) = n.ty() {
                 function_type(w, d, q, out, 0);
             }
@@ -246,10 +313,16 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
             }
         }
         DeclKind::ParmVar => param(w, d, out),
-        DeclKind::Var => {
+        DeclKind::Var | DeclKind::VarTemplateSpecialization | DeclKind::VarTemplatePartialSpecialization => {
+            if own_explicit_instantiation(w, d) {
+                out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
+            }
             if ast.decls.var(d).is_some_and(|v| v.spec.placeholder() != VarPlaceholder::None) {
                 if counting(w) {
                     w.op_counts.deduced += 1;
+                }
+                if tu(w).placeholder {
+                    out.push(Op::Unkept(PLACEHOLDER));
                 }
             } else if let Some(q) = n.ty() {
                 scan(w, q, out, 0);
@@ -272,35 +345,363 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
                 scan(w, ty, out, 0);
             }
         }
+        // The fixed underlying type of an enumeration whose definition is
+        // its resolved unit `definition` is that unit's ([`underlying`]).
+        DeclKind::Enum => {
+            if !crate::demand::definition_class(w, d) {
+                underlying_of(w, d, out);
+            }
+        }
         // The bases of a class whose definition is its resolved unit
         // `definition` (digest-kinds §11.9) are that unit's ([`bases`]).
         DeclKind::CXXRecord
         | DeclKind::ClassTemplateSpecialization
-        | DeclKind::ClassTemplatePartialSpecialization
-            if !crate::demand::definition_class(w, d) =>
-        {
-            bases_of(w, d, out);
-        }
-        _ => {}
-    }
-    if let Some(i) = ast.template_info(d).copied() {
-        let list = ast.templates.param_list(i.params);
-        let ps: Vec<DeclId> = ast.lists.iter::<DeclId>(list.params).collect();
-        for p in ps {
-            // A default non-type argument is walked by the unit's own
-            // stream (`templ::head`); a default type argument is a type.
-            if let Some(a) = ast.templates.defaults.get(p).copied()
-                && let ArgView::Type(t) = a.view()
-            {
-                scan(w, t, out, 0);
+        | DeclKind::ClassTemplatePartialSpecialization => {
+            if own_explicit_instantiation(w, d) && ast.templates.args_as_written(d).is_none() {
+                // A member class's (`template struct Q<…>::In;`).
+                out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
+            }
+            if !crate::demand::definition_class(w, d) {
+                bases_of(w, d, out);
             }
         }
+        DeclKind::Using | DeclKind::UnresolvedUsingValue | DeclKind::UnresolvedUsingTypename => {
+            if let Some(q) = ast.using_qualifier(d) {
+                scan_nns(w, q, out, 0);
+            }
+        }
+        // `using enum Q<sizeof(make(x))>::E;`: Kiln keeps the enumeration
+        // only.
+        DeclKind::UsingEnum => {
+            if let Some(e) = ast.using_target(d)
+                && in_named_class(w, ast.decls.get(e).ctx(), None)
+            {
+                out.push(Op::Unkept(QUALIFIER));
+            }
+        }
+        // A template's head and pattern are read below; a parameter's by
+        // its template's head ([`head`]).
+        DeclKind::ClassTemplate
+        | DeclKind::FunctionTemplate
+        | DeclKind::VarTemplate
+        | DeclKind::TypeAliasTemplate
+        | DeclKind::Concept
+        | DeclKind::TemplateTypeParm
+        | DeclKind::NonTypeTemplateParm
+        | DeclKind::TemplateTemplateParm => {}
+        // No written type: a namespace's or a scope's, a name of a
+        // namespace (whose qualifier names namespaces only), what a
+        // declaration introduces implicitly, a structured binding's
+        // (its variable's placeholder), an enumerator, an indirect field,
+        // a label, a static assertion's or a consteval block's (their
+        // expressions are the stream's).
+        DeclKind::TranslationUnit
+        | DeclKind::Namespace
+        | DeclKind::NamespaceAlias
+        | DeclKind::LinkageSpec
+        | DeclKind::Export
+        | DeclKind::Empty
+        | DeclKind::FileScopeAsm
+        | DeclKind::UsingDirective
+        | DeclKind::UsingShadow
+        | DeclKind::ConstructorUsingShadow
+        | DeclKind::UsingPack
+        | DeclKind::UnresolvedUsingIfExists
+        | DeclKind::EnumConstant
+        | DeclKind::IndirectField
+        | DeclKind::AccessSpec
+        | DeclKind::FriendTemplate
+        | DeclKind::ImplicitParam
+        | DeclKind::Binding
+        | DeclKind::BuiltinTemplate
+        | DeclKind::ImplicitConceptSpecialization
+        | DeclKind::RequiresExprBody
+        | DeclKind::LifetimeExtendedTemporary
+        | DeclKind::TemplateParamObject
+        | DeclKind::StaticAssert
+        | DeclKind::Label
+        | DeclKind::ContractResultName
+        | DeclKind::ConstevalBlock => {}
+    }
+    if let Some(i) = ast.template_info(d).copied() {
+        head(w, d, out);
         if params && let Some(p) = i.pattern {
             signature(w, p, true, out);
         }
     }
     if let Some(l) = ast.templates.args_as_written(d) {
         args(w, l, out, 0);
+    }
+}
+
+/// The operands of template `d`'s head: each non-type parameter's type,
+/// each default type argument, and a template template parameter's own
+/// head. A default non-type argument is walked by the unit's own stream
+/// (`templ::head`).
+fn head(w: &mut Walk<'_>, d: DeclId, out: &mut Vec<Op>) {
+    let ast = w.ast;
+    let Some(i) = ast.template_info(d).copied() else { return };
+    let list = ast.templates.param_list(i.params);
+    let ps: Vec<DeclId> = ast.lists.iter::<DeclId>(list.params).collect();
+    for p in ps {
+        match ast.decls.get(p).kind() {
+            DeclKind::NonTypeTemplateParm => {
+                if let Some(q) = ast.decls.get(p).ty() {
+                    scan(w, q, out, 0);
+                }
+            }
+            DeclKind::TemplateTemplateParm => {
+                if p != d {
+                    head(w, p, out);
+                }
+            }
+            _ => {}
+        }
+        if let Some(a) = ast.templates.defaults.get(p).copied()
+            && let ArgView::Type(t) = a.view()
+        {
+            scan(w, t, out, 0);
+        }
+    }
+}
+
+/// Whether `d` is a function, variable or member that an explicit
+/// instantiation of its own names (not one its class's covers).
+fn own_explicit_instantiation(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    matches!(
+        ast.governing_explicit_inst(d),
+        Some((x, SpecKind::ExplicitInstantiationDeclaration | SpecKind::ExplicitInstantiationDefinition))
+            if x == ast.first(d)
+    )
+}
+
+/// Whether declaration `d` is written outside its class, inside a class
+/// that a template-id or `decltype` with an operand names somewhere in
+/// the translation unit ([`Tu::named`]): its declarator's qualifier may
+/// hold that operand, which Kiln does not keep. An instantiation's
+/// declaration is not written.
+fn qualifier_unkept(w: &mut Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    let n = ast.decls.get(d);
+    let Some(lexical) = ast.decls.lexical_ctx(d) else { return false };
+    if n.ctx() == Some(lexical) || w.is_local(d) {
+        return false;
+    }
+    if matches!(
+        crate::demand::effective_kind(w, d),
+        Some(
+            SpecKind::ImplicitInstantiation
+                | SpecKind::ExplicitInstantiationDeclaration
+                | SpecKind::ExplicitInstantiationDefinition
+        )
+    ) {
+        return false;
+    }
+    in_named_class(w, n.ctx(), Some(lexical))
+}
+
+/// Whether context `c`, or a class around it up to `stop`, is a class of
+/// [`Tu::named`].
+fn in_named_class(w: &mut Walk<'_>, mut c: Option<DeclId>, stop: Option<DeclId>) -> bool {
+    let ast = w.ast;
+    let mut classes = Vec::new();
+    for _ in 0..MAX_DEPTH {
+        let Some(x) = c else { break };
+        if Some(x) == stop || ast.decls.record(x).is_none() {
+            break;
+        }
+        classes.push(ast.first(x));
+        c = ast.decls.get(x).ctx();
+    }
+    if classes.is_empty() {
+        return false;
+    }
+    let named = &tu(w).named;
+    classes.iter().any(|x| named.contains(x))
+}
+
+/// The translation unit's facts ([`Tu`]), computed on first use.
+fn tu<'w>(w: &'w mut Walk<'_>) -> &'w Tu {
+    let ast = w.ast;
+    w.op_tu.get_or_insert_with(|| tu_of(ast))
+}
+
+/// [`Tu`] of `ast`: one pass over the type arena.
+fn tu_of(ast: &Ast) -> Tu {
+    let types = &ast.types;
+    let mut memo = HashMap::new();
+    let mut out = Tu::default();
+    for i in 1..types.len() {
+        let Ok(i) = u32::try_from(i) else { break };
+        let t = TypeId::new(i);
+        if types.flags(t).is_instantiation_dependent() {
+            continue;
+        }
+        match types.view(t) {
+            TypeView::Auto { args: Some(l), .. } => {
+                if !out.placeholder && args_hold(ast, l, &mut memo, 0) {
+                    out.placeholder = true;
+                }
+            }
+            TypeView::TemplateSpecialization { args: l, .. } => {
+                if args_hold(ast, l, &mut memo, 0) {
+                    named(ast, t, &mut out);
+                }
+            }
+            TypeView::Decltype { .. } | TypeView::TypeOf { operand: TypeOfOperand::Expr(_), .. } => {
+                named(ast, t, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Adds to [`Tu::named`] the class type `t` names, if it names one.
+fn named(ast: &Ast, t: TypeId, out: &mut Tu) {
+    if let TypeView::Record(c) = ast.types.canonical_view(QualType::unqual(t)) {
+        out.named.insert(ast.first(c));
+    }
+}
+
+/// Whether the written argument list `l` holds an operand [`scan`] would
+/// collect, or a constant expression that is no literal (a superset:
+/// what it decides fails closed).
+fn args_hold(ast: &Ast, l: ArgListId, memo: &mut HashMap<TypeId, bool>, depth: u32) -> bool {
+    if depth > MAX_DEPTH {
+        return true;
+    }
+    ast.types.args(l).iter().any(|a| match a.view() {
+        ArgView::Type(t) => holds(ast, t, memo, depth + 1),
+        ArgView::Expr { expr, .. } => {
+            !ast.exprs.get(expr).deps().contains(ExprDeps::INSTANTIATION) && !literal(ast, expr)
+        }
+        ArgView::Pack(p) => args_hold(ast, p, memo, depth + 1),
+        ArgView::Null
+        | ArgView::Value { .. }
+        | ArgView::Template(_)
+        | ArgView::TemplateExpansion { .. }
+        | ArgView::Profile(_) => false,
+    })
+}
+
+/// Whether `e` is a literal (through parentheses, implicit conversions, a
+/// constant expression's wrapper, a unary operator, a substituted
+/// parameter): it writes no reference.
+fn literal(ast: &Ast, mut e: ExprId) -> bool {
+    for _ in 0..MAX_DEPTH {
+        match ast.exprs.get(e).kind() {
+            K::IntegerLiteral
+            | K::FloatingLiteral
+            | K::CharacterLiteral
+            | K::StringLiteral
+            | K::CXXBoolLiteralExpr
+            | K::CXXNullPtrLiteralExpr
+            | K::GNUNullExpr
+            | K::SubstNonTypeTemplateParmExpr => return true,
+            K::ImplicitCastExpr | K::ParenExpr | K::ConstantExpr | K::UnaryOperator => {
+                e = ast.exprs.operand(e);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether the written type `q` holds an operand [`scan`] would collect
+/// (a superset, memoised by type).
+fn holds(ast: &Ast, q: QualType, memo: &mut HashMap<TypeId, bool>, depth: u32) -> bool {
+    if depth > MAX_DEPTH {
+        return true;
+    }
+    let t = q.ty();
+    if let Some(&h) = memo.get(&t) {
+        return h;
+    }
+    let d = depth + 1;
+    let types = &ast.types;
+    let not_dep = |e: ExprId| !ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION);
+    let h = match types.view(t) {
+        TypeView::Decltype { expr, .. } | TypeView::TypeOf { operand: TypeOfOperand::Expr(expr), .. } => {
+            not_dep(expr)
+        }
+        TypeView::TemplateSpecialization { args: l, alias, .. } => {
+            (alias && !types.flags(t).is_instantiation_dependent()) || args_hold(ast, l, memo, d)
+        }
+        TypeView::Auto { args: Some(l), .. } => args_hold(ast, l, memo, d),
+        TypeView::DependentTemplateSpecialization { args: l, .. } => args_hold(ast, l, memo, d),
+        TypeView::Function(p) => {
+            holds(ast, p.ret(), memo, d)
+                || types.params(&p).iter().any(|&x| holds(ast, x, memo, d))
+                || matches!(types.exc_spec(&p), ExcSpec::NoexceptExpr { expr, .. } if not_dep(expr))
+        }
+        TypeView::Pointer(x)
+        | TypeView::LValueRef(x)
+        | TypeView::RValueRef(x)
+        | TypeView::IncompleteArray(x)
+        | TypeView::Paren(x)
+        | TypeView::Complex(x)
+        | TypeView::Atomic(x)
+        | TypeView::Vector { elem: x, .. }
+        | TypeView::DependentVector { elem: x, .. }
+        | TypeView::DependentSizedArray { elem: x, .. }
+        | TypeView::VariableArray { elem: x, .. }
+        | TypeView::DependentAddrSpace { pointee: x, .. }
+        | TypeView::ExtQual { base: x, .. }
+        | TypeView::Attributed { modified: x, .. }
+        | TypeView::Decayed { original: x, .. }
+        | TypeView::PackExpansion { pattern: x, .. }
+        | TypeView::PackIndexing { pattern: x, .. }
+        | TypeView::UnaryTransform { base: x, .. }
+        | TypeView::TypeOf { operand: TypeOfOperand::Type(x), .. } => holds(ast, x, memo, d),
+        TypeView::ConstantArray(a) => holds(ast, a.elem, memo, d),
+        TypeView::QualifiedArray { base, .. } => holds(ast, QualType::unqual(base), memo, d),
+        TypeView::MemberPointer { pointee, class } => {
+            holds(ast, pointee, memo, d) || holds(ast, QualType::unqual(class), memo, d)
+        }
+        TypeView::Elaborated { nns, named, .. } => {
+            nns.is_some_and(|n| nns_holds(ast, n, memo, d)) || holds(ast, named, memo, d)
+        }
+        TypeView::DependentName { nns, .. } => nns_holds(ast, nns, memo, d),
+        TypeView::Splice { .. } => true,
+        TypeView::Invalid
+        | TypeView::Builtin(_)
+        | TypeView::BitInt { .. }
+        | TypeView::DependentBitInt { .. }
+        | TypeView::Record(_)
+        | TypeView::Enum(_)
+        | TypeView::UnresolvedUsing(_)
+        | TypeView::Typedef { .. }
+        | TypeView::Using { .. }
+        | TypeView::TemplateTypeParm(_)
+        | TypeView::CanonTemplateTypeParm { .. }
+        | TypeView::SubstTemplateTypeParm { .. }
+        | TypeView::SubstTemplateTypeParmPack { .. }
+        | TypeView::InjectedClassName { .. }
+        | TypeView::Auto { args: None, .. }
+        | TypeView::DependentDecltype(_)
+        | TypeView::TypeOf { operand: TypeOfOperand::Profile(_), .. }
+        | TypeView::DeducedTemplateSpecialization { .. } => false,
+    };
+    memo.insert(t, h);
+    h
+}
+
+/// [`holds`] for nested-name-specifier `n`.
+fn nns_holds(ast: &Ast, n: NnsId, memo: &mut HashMap<TypeId, bool>, depth: u32) -> bool {
+    if depth > MAX_DEPTH {
+        return true;
+    }
+    match ast.types.nns_view(n) {
+        Nns::Type { prefix, ty, .. } => {
+            prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1)) || holds(ast, ty, memo, depth + 1)
+        }
+        Nns::Namespace { prefix, .. }
+        | Nns::NamespaceAlias { prefix, .. }
+        | Nns::Identifier { prefix, .. } => prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1)),
+        Nns::Splice(_) => true,
+        Nns::Global => false,
     }
 }
 
@@ -322,6 +723,30 @@ pub(crate) fn bases(w: &mut Walk<'_>, def: DeclId) {
     }
     let mut out = Vec::new();
     bases_of(w, def, &mut out);
+    if !out.is_empty() {
+        target(w).extend(out);
+    }
+}
+
+/// An enumeration declaration's fixed underlying type ([dcl.enum]/5).
+fn underlying_of(w: &mut Walk<'_>, d: DeclId, out: &mut Vec<Op>) {
+    if let Some(e) = w.ast.decls.enumeration(d)
+        && e.is_fixed()
+        && let Some(q) = e.int_type
+    {
+        scan(w, q, out, 0);
+    }
+}
+
+/// The operands of the fixed underlying type of `def`, the definition of
+/// an enumeration whose resolved unit `definition` holds it
+/// (`decl_class::enum_definition`).
+pub(crate) fn underlying(w: &mut Walk<'_>, def: DeclId) {
+    if !collecting(w) {
+        return;
+    }
+    let mut out = Vec::new();
+    underlying_of(w, def, &mut out);
     if !out.is_empty() {
         target(w).extend(out);
     }
@@ -380,7 +805,7 @@ fn push(w: &mut Walk<'_>, op: Op, out: &mut Vec<Op>) {
     let ast = w.ast;
     let dependent = match op {
         Op::Expr(_, e) => ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION),
-        Op::Alias(_) => false,
+        Op::Alias(_) | Op::Unkept(_) => false,
     };
     if dependent {
         if counting(w) {
@@ -415,15 +840,21 @@ pub(crate) fn scan(w: &mut Walk<'_>, q: QualType, out: &mut Vec<Op>, depth: u32)
         | TypeView::Decayed { original: x, .. }
         | TypeView::PackExpansion { pattern: x, .. }
         | TypeView::UnaryTransform { base: x, .. } => scan(w, x, out, d),
+        // The bound or size (site 3) is not read: Kiln keeps it as a value
+        // only at the pin this was built for (B1; stage e), and a
+        // dependent one is a pattern's. The element type is.
+        TypeView::ConstantArray(a) => scan(w, a.elem, out, d),
+        TypeView::VariableArray { elem: x, .. }
+        | TypeView::DependentSizedArray { elem: x, .. }
+        | TypeView::DependentVector { elem: x, .. }
+        | TypeView::DependentAddrSpace { pointee: x, .. } => scan(w, x, out, d),
+        // The pack index (site 5) is not read (B7); the pattern is.
+        TypeView::PackIndexing { pattern, .. } => scan(w, pattern, out, d),
         TypeView::QualifiedArray { base, .. } => scan(w, QualType::unqual(base), out, d),
         TypeView::MemberPointer { pointee, class } => {
             scan(w, pointee, out, d);
             scan(w, QualType::unqual(class), out, d);
         }
-        // The bound (site 3) is not read: Kiln keeps it as a value only
-        // at the pin this was built for (B1; stage e).
-        TypeView::ConstantArray(a) => scan(w, a.elem, out, d),
-        TypeView::VariableArray { elem, .. } => scan(w, elem, out, d),
         TypeView::Function(p) => {
             // A function type that no function declaration holds (a
             // pointer to function): its parameters are read here (S7).
@@ -444,32 +875,64 @@ pub(crate) fn scan(w: &mut Walk<'_>, q: QualType, out: &mut Vec<Op>, depth: u32)
             }
             scan(w, named, out, d);
         }
+        // A dependent name's qualifier and arguments: an operand in them
+        // that is not instantiation-dependent is no pattern's spelling
+        // (`typename Q<sizeof(make(x))>::template In<T>::t`).
+        TypeView::DependentName { nns, .. } => scan_nns(w, nns, out, d),
+        TypeView::DependentTemplateSpecialization { nns, args: l, .. } => {
+            scan_nns(w, nns, out, d);
+            args(w, l, out, d);
+        }
         TypeView::TemplateSpecialization { args: l, alias, .. } => {
             if alias {
                 // B5: an alias specialisation's written arguments, then
                 // the operands inside them. Instantiation-dependent: the
-                // pattern's own spellings hold it.
+                // list is the pattern's own spelling, but an operand in it
+                // that is not is read ([`push`] drops the others).
                 if types.flags(q.ty()).is_instantiation_dependent() {
                     if counting(w) {
                         w.op_counts.dependent += 1;
                     }
-                    return;
+                } else {
+                    out.push(Op::Alias(l));
                 }
-                out.push(Op::Alias(l));
             }
             args(w, l, out, d);
         }
-        TypeView::Auto { args: Some(l), deduced: _, .. } => args(w, l, out, d),
+        // A placeholder's type-constraint as written (a template
+        // parameter's or an undeduced one's; a deduced declaration's is
+        // not kept, `PLACEHOLDER`).
+        TypeView::Auto { args: Some(l), .. } => args(w, l, out, d),
         TypeView::Decltype { expr, .. } => push(w, Op::Expr(DECLTYPE, expr), out),
         TypeView::TypeOf { operand: TypeOfOperand::Expr(e), .. } => {
             push(w, Op::Expr(TYPEOF, e), out);
         }
         TypeView::TypeOf { operand: TypeOfOperand::Type(t), .. } => scan(w, t, out, d),
-        // A typedef's, alias's or using-declaration's type, a substituted
-        // parameter's replacement, a deduced type, a class, a builtin, a
-        // dependent type (its operands are a pattern's), a pack index
-        // (site 5, B7), a splice: nothing is read.
-        _ => {}
+        TypeView::Splice { .. } => out.push(Op::Unkept(SPLICE)),
+        // What a name denotes (a typedef's, alias's or using-declaration's
+        // type, a class, an enumeration, an injected class name), a
+        // substituted parameter's replacement, a parameter, a placeholder
+        // with no written argument or what one deduced, a dependent
+        // `decltype`, `typeof` or bit width (a pattern's canonical form), a
+        // builtin: nothing is read.
+        TypeView::Invalid
+        | TypeView::Builtin(_)
+        | TypeView::BitInt { .. }
+        | TypeView::DependentBitInt { .. }
+        | TypeView::Record(_)
+        | TypeView::Enum(_)
+        | TypeView::UnresolvedUsing(_)
+        | TypeView::Typedef { .. }
+        | TypeView::Using { .. }
+        | TypeView::TemplateTypeParm(_)
+        | TypeView::CanonTemplateTypeParm { .. }
+        | TypeView::SubstTemplateTypeParm { .. }
+        | TypeView::SubstTemplateTypeParmPack { .. }
+        | TypeView::InjectedClassName { .. }
+        | TypeView::Auto { args: None, .. }
+        | TypeView::DependentDecltype(_)
+        | TypeView::TypeOf { operand: TypeOfOperand::Profile(_), .. }
+        | TypeView::DeducedTemplateSpecialization { .. } => {}
     }
 }
 
@@ -484,8 +947,17 @@ fn args(w: &mut Walk<'_>, l: ArgListId, out: &mut Vec<Op>, depth: u32) {
         match v {
             ArgView::Type(t) => scan(w, t, out, depth + 1),
             ArgView::Expr { expr, .. } => push(w, Op::Expr(EXPR_ARG, expr), out),
+            // R21: a written list holds no pack (Kiln groups a pack's
+            // arguments in a converted list only); kept for a list that
+            // would.
             ArgView::Pack(p) => args(w, p, out, depth + 1),
-            _ => {}
+            // A converted value, a template's name, a dependent
+            // expression's canonical form: nothing written.
+            ArgView::Null
+            | ArgView::Value { .. }
+            | ArgView::Template(_)
+            | ArgView::TemplateExpansion { .. }
+            | ArgView::Profile(_) => {}
         }
     }
 }
@@ -502,10 +974,15 @@ fn scan_nns(w: &mut Walk<'_>, n: NnsId, out: &mut Vec<Op>, depth: u32) {
             }
             scan(w, ty, out, depth + 1);
         }
-        Nns::Namespace { prefix: Some(p), .. }
-        | Nns::NamespaceAlias { prefix: Some(p), .. }
-        | Nns::Identifier { prefix: Some(p), .. } => scan_nns(w, p, out, depth + 1),
-        _ => {}
+        Nns::Namespace { prefix, .. }
+        | Nns::NamespaceAlias { prefix, .. }
+        | Nns::Identifier { prefix, .. } => {
+            if let Some(p) = prefix {
+                scan_nns(w, p, out, depth + 1);
+            }
+        }
+        Nns::Splice(_) => out.push(Op::Unkept(SPLICE)),
+        Nns::Global => {}
     }
 }
 
@@ -529,28 +1006,41 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
     let x = &ast.exprs;
     let n = *x.get(e);
     let mut out = Vec::new();
+    // The written qualifier and arguments Kiln keeps beside any
+    // expression (`TemplateTables` `expr_nns`, `expr_targs`: an unresolved
+    // or dependent name's, a concept-id's), each once.
+    let mut lists: Vec<ArgListId> = Vec::new();
+    let mut quals: Vec<NnsId> = Vec::new();
+    if let Some(q) = ast.templates.expr_nns.get(e).copied() {
+        quals.push(q);
+    }
+    if let Some(l) = ast.templates.expr_targs.get(e).copied() {
+        lists.push(l);
+    }
     match n.kind() {
         K::DeclRefExpr | K::MemberExpr => {
-            if let Some(r) = x.decl_ref_extra(e).copied() {
-                if let Some(q) = r.qualifier {
-                    scan_nns(w, q, &mut out, 0);
+            let written = [
+                x.decl_ref_extra(e).map(|r| (r.qualifier, r.template_args)),
+                x.cold.member_overload.get(e).map(|m| (m.qualifier, m.template_args)),
+            ];
+            for (q, l) in written.into_iter().flatten() {
+                if let Some(q) = q
+                    && !quals.contains(&q)
+                {
+                    quals.push(q);
                 }
-                if let Some(l) = r.template_args {
-                    args(w, l, &mut out, 0);
-                }
-            }
-            if let Some(m) = x.cold.member_overload.get(e).copied() {
-                if let Some(q) = m.qualifier {
-                    scan_nns(w, q, &mut out, 0);
-                }
-                if let Some(l) = m.template_args {
-                    args(w, l, &mut out, 0);
+                if let Some(l) = l
+                    && !lists.contains(&l)
+                {
+                    lists.push(l);
                 }
             }
         }
         K::ConceptSpecializationExpr => {
-            if let Some(l) = ArgListId::try_new(n.b()) {
-                args(w, l, &mut out, 0);
+            if let Some(l) = ArgListId::try_new(n.b())
+                && !lists.contains(&l)
+            {
+                lists.push(l);
             }
         }
         K::CStyleCastExpr
@@ -566,8 +1056,12 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
             scan(w, written, &mut out, 0);
         }
         // `T(...)`, `T{...}` and `T()`: an explicit type conversion in
-        // functional notation, whose node type is the type as written.
-        K::CXXTemporaryObjectExpr | K::CXXScalarValueInitExpr => scan(w, n.ty(), &mut out, 0),
+        // functional notation, whose node type is the type as written;
+        // `__builtin_convertvector(v, T)`, whose node type is `T`.
+        K::CXXTemporaryObjectExpr | K::CXXScalarValueInitExpr | K::ConvertVectorExpr => {
+            scan(w, n.ty(), &mut out, 0);
+        }
+        K::CXXUnresolvedConstructExpr => scan(w, x.unresolved_construct_type(e), &mut out, 0),
         K::UnaryExprOrTypeTraitExpr => {
             if n.has(ExprFlags::ARG_IS_TYPE)
                 && let Some(t) = x.trait_type_arg(e)
@@ -587,12 +1081,153 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
             }
         }
         K::ArrayTypeTraitExpr => scan(w, x.array_trait_type(e), &mut out, 0),
-        K::CXXNewExpr => scan(w, x.new_extra(e).allocated_ty, &mut out, 0),
+        K::CXXNewExpr => {
+            // A `new` of a constrained placeholder (`new C<…> auto(1)`)
+            // has the deduced type: Kiln keeps no mark of it.
+            if tu(w).placeholder {
+                out.push(Op::Unkept(PLACEHOLDER));
+            }
+            scan(w, x.new_extra(e).allocated_ty, &mut out, 0);
+        }
         K::CompoundLiteralExpr => scan(w, x.compound_literal_written_type(e), &mut out, 0),
-        _ => {}
+        K::CXXPseudoDestructorExpr => {
+            let (_, _, destroyed) = x.pseudo_destructor(e);
+            scan(w, destroyed, &mut out, 0);
+        }
+        K::OffsetOfExpr => {
+            let written = x
+                .offsetof_designator(e)
+                .map(|(t, _)| t)
+                .or_else(|| x.offsetof_pattern(e).map(|(t, _)| t));
+            if let Some(t) = written {
+                scan(w, t, &mut out, 0);
+            }
+        }
+        K::VAArgExpr => {
+            let (_, t, _) = x.va_arg(e);
+            scan(w, t, &mut out, 0);
+        }
+        K::GenericSelectionExpr => {
+            if let GenericControl::Type(t, _) = x.generic_control(e, &ast.lists) {
+                scan(w, t, &mut out, 0);
+            }
+            for a in x.generic_assocs(e, &ast.lists) {
+                if let Some(t) = a.ty {
+                    scan(w, t, &mut out, 0);
+                }
+            }
+        }
+        // A requires-expression's parameters (before adjustment) and type
+        // requirements; its other requirements are expressions of the
+        // stream.
+        K::RequiresExpr => {
+            if let Some(&data) = ast.requires_of(e) {
+                let ps: Vec<DeclId> = ast.lists.iter::<DeclId>(data.params).collect();
+                for p in ps {
+                    param(w, p, &mut out);
+                }
+                let reqs: Vec<Requirement> = ast.templates.requirements(&data).to_vec();
+                for r in reqs {
+                    if let Requirement::Type(t, _) = r {
+                        scan(w, t, &mut out, 0);
+                    }
+                }
+            }
+        }
+        // No written type: a literal, a name that holds no qualifier or
+        // arguments but in the side tables above, an operator, a call, an
+        // implicit or initialising node, a statement expression (its
+        // declarations are `decl`'s), a lambda (its parameters and return
+        // type are its call operator's, `decl`), a pack, a fold, a
+        // substituted parameter, a coroutine operator, a vector or atomic
+        // builtin, a reflection or splice (unsupported: the walk is
+        // indeterminate), an error.
+        K::IntegerLiteral
+        | K::FloatingLiteral
+        | K::CharacterLiteral
+        | K::StringLiteral
+        | K::CXXBoolLiteralExpr
+        | K::CXXNullPtrLiteralExpr
+        | K::UserDefinedLiteral
+        | K::ImaginaryLiteral
+        | K::EmbedExpr
+        | K::GNUNullExpr
+        | K::CXXThisExpr
+        | K::PredefinedExpr
+        | K::SourceLocExpr
+        | K::UnresolvedLookupExpr
+        | K::UnresolvedMemberExpr
+        | K::DependentScopeDeclRefExpr
+        | K::CXXDependentScopeMemberExpr
+        | K::SubstNonTypeTemplateParmExpr
+        | K::SubstNonTypeTemplateParmPackExpr
+        | K::FunctionParmPackExpr
+        | K::UnaryOperator
+        | K::BinaryOperator
+        | K::CompoundAssignOperator
+        | K::ConditionalOperator
+        | K::BinaryConditionalOperator
+        | K::ArraySubscriptExpr
+        | K::ParenExpr
+        | K::CallExpr
+        | K::CXXMemberCallExpr
+        | K::CXXOperatorCallExpr
+        | K::CXXRewrittenBinaryOperator
+        | K::ParenListExpr
+        | K::ImplicitCastExpr
+        | K::InitListExpr
+        | K::ImplicitValueInitExpr
+        | K::DesignatedInitExpr
+        | K::CXXConstructExpr
+        | K::CXXInheritedCtorInitExpr
+        | K::CXXDefaultArgExpr
+        | K::CXXDefaultInitExpr
+        | K::CXXParenListInitExpr
+        | K::ArrayInitLoopExpr
+        | K::ArrayInitIndexExpr
+        | K::CXXStdInitializerListExpr
+        | K::NoInitExpr
+        | K::DesignatedInitUpdateExpr
+        | K::MaterializeTemporaryExpr
+        | K::CXXBindTemporaryExpr
+        | K::ExprWithCleanups
+        | K::OpaqueValueExpr
+        | K::CXXDeleteExpr
+        | K::CXXThrowExpr
+        | K::CXXNoexceptExpr
+        | K::ExpressionTraitExpr
+        | K::SizeOfPackExpr
+        | K::LambdaExpr
+        | K::PackExpansionExpr
+        | K::CXXFoldExpr
+        | K::PackIndexingExpr
+        | K::CoawaitExpr
+        | K::DependentCoawaitExpr
+        | K::CoyieldExpr
+        | K::ConstantExpr
+        | K::StmtExpr
+        | K::AddrLabelExpr
+        | K::ChooseExpr
+        | K::AtomicExpr
+        | K::ShuffleVectorExpr
+        | K::ExtVectorElementExpr
+        | K::CXXReflectExpr
+        | K::CXXSpliceExpr
+        | K::RecoveryExpr
+        | K::CXXExpansionSelectExpr
+        | K::PseudoObjectExpr
+        | K::IntegerPackExpr => {}
     }
-    if !out.is_empty() {
-        target(w).extend(out);
+    let mut named = Vec::new();
+    for q in quals {
+        scan_nns(w, q, &mut named, 0);
+    }
+    for l in lists {
+        args(w, l, &mut named, 0);
+    }
+    named.append(&mut out);
+    if !named.is_empty() {
+        target(w).extend(named);
     }
 }
 
@@ -745,10 +1380,16 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
             w.write_args(&mut es, l);
             ALIAS_ARGS
         }
+        Op::Unkept(cause) => {
+            es.uv(u64::from(UNKEPT));
+            es.indeterminate(cause);
+            UNKEPT
+        }
     };
     w.unit.operands.writing -= 1;
     let nested = std::mem::replace(&mut w.unit.operands.nested, saved).unwrap_or_default();
-    let written = site == ALIAS_ARGS || w.op_refs != refs || es.cause().is_some();
+    let written =
+        site == ALIAS_ARGS || site == UNKEPT || w.op_refs != refs || es.cause().is_some();
     let mine = std::mem::replace(&mut w.names, outer_names);
     if written && let (Some(outer), Some(mine)) = (w.names.as_mut(), mine) {
         for &b in mine.as_bytes() {
@@ -756,7 +1397,9 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
         }
     }
     if counting(w) {
-        if written {
+        if site == UNKEPT {
+            w.op_counts.unkept += 1;
+        } else if written {
             w.op_counts.sites[usize::from(site)] += 1;
         } else {
             w.op_counts.unreferenced += 1;
@@ -855,4 +1498,5 @@ pub(crate) fn counters(w: &Walk<'_>, out: &mut Vec<slip_model::Counter>) {
     push("unreferenced", c.unreferenced);
     push("dependent", c.dependent);
     push("deduced", c.deduced);
+    push("unkept", c.unkept);
 }
