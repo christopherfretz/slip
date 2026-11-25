@@ -981,8 +981,8 @@ fn s5_1_a_blob_of_another_size_fails_the_job() {
 // both, whatever the observer reads. Hard links `m.h` and `m2.h`; `q.cpp`
 // reads `m2.h`. With `m.h` alone the observer is not verified (another name
 // of the overlay's file, F3); with both entries the job fails. Then the
-// same with two spellings of `w.h` on a volume that ignores case (skipped
-// on one that does not).
+// same with two spellings of `w.h`: the next test, on the folding root
+// (no hard link there; this one stays on the work root).
 #[test]
 fn s5_1_two_entries_of_one_file_fail_the_job() {
     let tree = Tree::new("two-entries");
@@ -1023,15 +1023,25 @@ fn s5_1_two_entries_of_one_file_fail_the_job() {
     // the observer read.
     let err = tree.verify_limit(&tree.observer("e.cpp"), both, declared, None).unwrap_err();
     assert!(err.contains("names one file twice"), "{err}");
+}
 
+// The case half of the test above (WP-151 fix round, F1): an overlay
+// naming `w.h` and `W.h`, two spellings of one file on a volume that
+// folds, fails the job. On the folding root (`common::folding_volume`).
+#[test]
+fn s5_1_two_entries_of_one_file_in_two_cases_fail_the_job() {
+    let Some(base) =
+        common::folding_volume("s5_1_two_entries_of_one_file_in_two_cases_fail_the_job")
+    else {
+        return;
+    };
+    let tree = Tree::new_in(&base, "two-entries-case");
+    let dir = tree.subject.clone();
     let upper = dir.join("W.h");
     let lower = std::fs::metadata(dir.join("w.h")).unwrap();
     let same = std::fs::metadata(&upper)
         .is_ok_and(|meta| (meta.dev(), meta.ino()) == (lower.dev(), lower.ino()));
-    if !same {
-        eprintln!("the volume tells W.h from w.h: the case half is skipped");
-        return;
-    }
+    assert!(same, "{} does not fold", dir.display());
     std::fs::write(dir.join("k.cpp"), "#include \"W.h\"\nint k = W;\n").unwrap();
     let (k_cpp, declared) = tree.map_publish("k.cpp", 9);
     let w_h = std::fs::read(dir.join("w.h")).unwrap();
@@ -1350,12 +1360,14 @@ fn s8_1_the_map_job_refuses_an_entry_that_does_not_exist() {
 /// root; skipped on a volume that does not fold.
 #[test]
 fn s8_1_the_map_job_refuses_an_entry_not_spelled_on_disk() {
-    let tree = Tree::new_in(&common::folding_root(), "t1-map-case");
-    with_dependencies(&tree);
-    if std::fs::metadata(tree.subject.join("DEP")).is_err() {
-        eprintln!("skipped: the folding root's volume is case-sensitive: `DEP` names nothing");
+    let Some(base) =
+        common::folding_volume("s8_1_the_map_job_refuses_an_entry_not_spelled_on_disk")
+    else {
         return;
-    }
+    };
+    let tree = Tree::new_in(&base, "t1-map-case");
+    with_dependencies(&tree);
+    assert!(std::fs::metadata(tree.subject.join("DEP")).is_ok(), "the folding root does not fold");
     let o = tree.observer("a.cpp");
     for (asked, disk) in [("DEP", "dep"), ("cafe\u{301}", "caf\u{e9}")] {
         let (_, id) = request_with_readonly(&tree, asked);
@@ -1372,7 +1384,8 @@ fn s8_1_the_map_job_refuses_an_entry_not_spelled_on_disk() {
 /// as on disk verify.
 #[test]
 fn s5_1_the_verify_job_checks_the_declared_files() {
-    for root in [common::work_root(), common::folding_root()] {
+    let (folding, folds) = common::folding_checked("s5_1_the_verify_job_checks_the_declared_files");
+    for (root, folds) in [(common::work_root(), false), (folding, folds)] {
         let tree = Tree::new_in(&root, "t1-verify");
         with_dependencies(&tree);
         let r = tree.map_and_reduce();
@@ -1388,12 +1401,10 @@ fn s5_1_the_verify_job_checks_the_declared_files() {
         assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
         let e = tree.verify_task(&o, overlay, with("nope")).unwrap_err();
         assert!(e.contains(&entry_line(&tree, "nope", "does not exist")), "{e}");
-        if std::fs::metadata(tree.subject.join("DEP")).is_ok() {
+        if folds {
             let e = tree.verify_task(&o, overlay, with("DEP")).unwrap_err();
             let why = format!("is not spelled as on disk ({})", tree.subject.join("dep").display());
             assert!(e.contains(&entry_line(&tree, "DEP", &why)), "{e}");
-        } else {
-            eprintln!("{}: case-sensitive: the case of `DEP` not tried here", root.display());
         }
     }
 }

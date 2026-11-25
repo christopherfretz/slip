@@ -1262,9 +1262,10 @@ fn unchanged_by_identity(name: &str, spelled: &str, link: bool) -> Option<Transf
 
 #[test]
 fn s8_2_unchanged_by_identity_case_spelling() {
-    if unchanged_by_identity("identity-case", "H.h", false).is_none() {
-        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
+    if common::folding_volume("s8_2_unchanged_by_identity_case_spelling").is_none() {
+        return;
     }
+    assert!(unchanged_by_identity("identity-case", "H.h", false).is_some());
 }
 
 #[test]
@@ -1854,13 +1855,13 @@ fn s8_4_the_scan_refuses_a_file_changed_since_the_map_phase() {
 // ----- one file under two spellings (WP-076 fix round, B3) ------------------
 
 /// Whether the tree's volume makes `src/H.h` the file `src/h.h` (case-
-/// insensitive); the tests below need it, and say when they skip.
-fn case_insensitive(t: &Tree) -> bool {
-    let yes = t.path("src/H.h").exists();
-    if !yes {
-        eprintln!("skipped: the volume is case-sensitive (`H.h` is not `h.h`)");
-    }
-    yes
+/// insensitive), through `common::folding_volume` (which panics on the
+/// gate's host when the folding root does not fold, and says when a test
+/// skips); the tree must be under the folding root.
+fn case_insensitive(t: &Tree, test: &str) -> bool {
+    let folds = common::folding_volume(test).is_some();
+    assert!(!folds || t.path("src/H.h").exists(), "{test}: the tree does not fold");
+    folds
 }
 
 // §8.2, B3: the reviewer's probe. `b.cpp` reaches the overlay's `h.h` as
@@ -1872,7 +1873,7 @@ fn s8_2_case_spelling_is_not_unchanged() {
     let t = Tree::new_in(&common::folding_root(), "case-spelling");
     let h = "#pragma once\nint f(int);\n#ifdef B_SIDE\ninline int k() { return 1; }\n#endif\n";
     t.write("src/h.h", h);
-    if !case_insensitive(&t) {
+    if !case_insensitive(&t, "s8_2_case_spelling_is_not_unchanged") {
         return;
     }
     t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");
@@ -1930,7 +1931,7 @@ fn s8_2_case_spelling_is_not_unchanged() {
 fn s8_1_one_file_under_two_spellings_in_the_set() {
     let t = Tree::new_in(&common::folding_root(), "case-two-spellings");
     t.write("src/h.h", "#pragma once\nint f(int);\n");
-    if !case_insensitive(&t) {
+    if !case_insensitive(&t, "s8_1_one_file_under_two_spellings_in_the_set") {
         return;
     }
     t.write("src/a.cpp", "#include \"h.h\"\nint f(int x) { return x + 1; }\n");

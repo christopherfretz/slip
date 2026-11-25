@@ -75,10 +75,18 @@ pub fn reduce_round(
     // two files of the set that are one file (two hard links) are refused
     // before anything of the set is published.
     slip_apply::one_name_per_file(&reduced.edits, &DiskFiles).map_err(|e| {
+        let path = |p: &[u8]| String::from_utf8_lossy(p).into_owned();
         let why = match e {
-            slip_apply::ApplyError::Io(p, why) => format!("{}: {why}", String::from_utf8_lossy(&p)),
+            slip_apply::ApplyError::Io(p, why) => format!("{}: {why}", path(&p)),
             slip_apply::ApplyError::Invalid(why) => why,
-            e => format!("{e:?}"),
+            // Not returned by `one_name_per_file`; worded as `check` words them.
+            slip_apply::ApplyError::StaleFile(p) => {
+                format!("{}: stale file: not the file the edit set names", path(&p))
+            }
+            slip_apply::ApplyError::TooLarge(p) => {
+                format!("{}: the post-image is too large", path(&p))
+            }
+            slip_apply::ApplyError::NotAccepted => "the edit set is refused".to_owned(),
         };
         CommandError::Input(format!("plan {plan_id} round {round}: the edit set: {why}"))
     })?;

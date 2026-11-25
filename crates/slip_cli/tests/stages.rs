@@ -1497,16 +1497,12 @@ fn s2_1_the_volume_of_the_tests() {
 
 /// The skip of a test that needs a volume that finds a name in another
 /// case: `true` (and a line saying so) when the fixture's volume does not.
+/// Through `common::folding_volume`, which panics on the gate's host when
+/// the folding root does not fold; `fx` must be under it.
 fn skip_unless_case_insensitive(fx: &Fx, test: &str) -> bool {
-    if fx.case_insensitive() {
-        return false;
-    }
-    eprintln!(
-        "{test}: skipped: {} is on a case-sensitive volume, where another case is another \
-         name (no file is found under it)",
-        fx.root.display()
-    );
-    true
+    let folds = common::folding_volume(test).is_some();
+    assert!(!folds || fx.case_insensitive(), "{test}: {} does not fold", fx.root.display());
+    !folds
 }
 
 /// §2.1 "one spelling", §7.3 step 1, §7.2: on a volume that finds names
@@ -2086,4 +2082,101 @@ fn s2_1_a_request_entry_not_spelled_on_disk() {
         fx.root.join("src").display()
     );
     assert!(out.stderr.contains(&line), "{out:#?}");
+}
+
+// ----- WP-151 fix round: forged requests at apply (the review's probes) ------
+
+/// A forged request owning `src/`, whose read-only `entry` was meant to
+/// carve out `src/vendor`, made into a round and an edit set without the
+/// command line (`reduce_round` with the request in memory), and an
+/// overlay writing `src/vendor/x.h`, spelled on disk. The stored ownership
+/// makes that file owned, so only the entry check stands between it and a
+/// write: `apply --write`, `--patch` and `--recover` each refuse with
+/// status 3, naming the entry, and `x.h` is never written; `--recover`
+/// keeps the journal and says what ends it. Returns the `--recover` output.
+fn forged_entry_refused_by_apply(fx: &Fx, entry: &[u8]) -> Out {
+    fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
+    let x = fx.root.join("src/vendor/x.h");
+    fs::write(&x, "int v;\n").unwrap();
+    let mut request = fx.rename();
+    request.ownership.readonly = vec![entry.to_vec()];
+    assert!(request.ownership.is_owned(&bytes_of(&x)), "the forged entry protects nothing");
+    let plan = fx.plan();
+    let id = fx.round(&plan, ROUND, &request, &agreeing());
+    let store = fx.store();
+    let selected: Vec<usize> = (0..plan.0.observers.len()).collect();
+    let (set_id, _, _) =
+        reduce_round(&store, plan.1, &plan.0, ROUND, &selected, (id, &request), 1).unwrap();
+    let (r, oid) = hand(fx, set_id, &[(bytes_of(&x), b"int v;\n", b"int w;\n")]);
+    let entry_text = String::from_utf8_lossy(entry).into_owned();
+    let out = apply_write(fx, &r, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert_eq!(fs::read_to_string(&x).unwrap(), "int v;\n");
+    assert!(!store.journal_path().exists());
+    let patch = fx.root.join("p.patch");
+    let out = apply_patch(fx, &r, &patch, &[]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert!(!patch.exists());
+    fx.put_journal(&Journal::of_write(&fx.overlay_of(oid), oid).to_bytes());
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains(&entry_text), "{out:#?}");
+    assert!(
+        out.stderr.contains("nothing was changed, the journal is kept")
+            && out.stderr.contains("then run `slip apply --recover` again"),
+        "{out:#?}"
+    );
+    assert!(!out.stderr.contains("cannot be found"), "{out:#?}");
+    assert_eq!(fs::read_to_string(&x).unwrap(), "int v;\n");
+    assert!(store.journal_path().exists());
+    out
+}
+
+/// §2.1 (WP-151 review, attack 1): the forged entry is `SRC/Vendor` for
+/// `src/vendor`, on a volume that folds. On the folding root.
+#[test]
+fn s2_1_a_forged_entry_in_another_case_is_refused_by_apply() {
+    let Some(base) =
+        common::folding_volume("s2_1_a_forged_entry_in_another_case_is_refused_by_apply")
+    else {
+        return;
+    };
+    let fx = Fx::new_in(&base, "forged-case");
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&fx.root.join("SRC/Vendor")));
+    let disk = format!("is not spelled as on disk ({})", fx.root.join("src/vendor").display());
+    assert!(out.stderr.contains(&disk), "{out:#?}");
+}
+
+/// §2.1 (WP-151 review, attack 2): the forged entry reaches `src/vendor`
+/// through a symbolic link (`vlink`): not its own real path. Under the
+/// work root.
+#[test]
+fn s2_1_a_forged_entry_through_a_link_is_refused_by_apply() {
+    let fx = Fx::new("forged-link");
+    fs::create_dir_all(fx.root.join("src/vendor")).unwrap();
+    std::os::unix::fs::symlink(fx.root.join("src/vendor"), fx.root.join("vlink")).unwrap();
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&fx.root.join("vlink")));
+    let disk = format!("is not spelled as on disk ({})", fx.root.join("src/vendor").display());
+    assert!(out.stderr.contains(&disk), "{out:#?}");
+}
+
+/// §2.1, §7.3 (WP-151 review, attack 3, and F3): the forged entry
+/// `src/nope` does not exist. `--recover` refuses, keeps the journal and
+/// says that the entry must exist again; once the directory is made, as
+/// the request records it, `--recover` ends the unfinished write (status
+/// 0, the journal gone, `x.h` its pre-image). Under the work root.
+#[test]
+fn s7_3_recover_refused_until_the_entry_exists_again() {
+    let fx = Fx::new("forged-missing");
+    let nope = fx.root.join("src/nope");
+    let out = forged_entry_refused_by_apply(&fx, &bytes_of(&nope));
+    let line = format!("ownership: the readonly entry {} does not exist", nope.display());
+    assert!(out.stderr.contains(&line), "{out:#?}");
+    fs::create_dir_all(&nope).unwrap();
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(0);
+    assert!(!fx.store().journal_path().exists(), "{out:#?}");
+    assert_eq!(fs::read_to_string(fx.root.join("src/vendor/x.h")).unwrap(), "int v;\n");
 }

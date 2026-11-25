@@ -2999,19 +2999,11 @@ fn wp139_row_with_no_entity_is_no_evidence() {
 // `s2_1_another_case_of_a_readonly_directory_refused` (it refuses,
 // `not_canonical`).
 
-/// Whether the volume of the trees finds a name in another case; says so
-/// when it does not.
+/// Whether the tests below run: through `common::folding_volume`, which
+/// panics on the gate's host when the folding root does not fold and says
+/// when a test skips.
 fn volume_folds(test: &str) -> bool {
-    let p =
-        common::folding_root().join(format!("one-spelling-probe-{}-{test}", std::process::id()));
-    std::fs::write(&p, "x").unwrap();
-    let upper = p.with_file_name(p.file_name().unwrap().to_string_lossy().to_uppercase());
-    let folds = upper.exists();
-    std::fs::remove_file(&p).unwrap();
-    if !folds {
-        eprintln!("{test}: skipped: the volume of the trees is case-sensitive");
-    }
-    folds
+    common::folding_volume(test).is_some()
 }
 
 /// `n::f` renamed to `h` under a request owning the tree with `dep/`
@@ -3061,7 +3053,7 @@ fn read_only_edited(root: &str, r: &slip_reduce::Reduced) -> Vec<String> {
 /// request makes read-only, and no edit of the edit set is in one.
 #[test]
 fn s2_1_rename_of_a_dependency_by_its_spelling() {
-    if !volume_folds("by-spelling") {
+    if !volume_folds("s2_1_rename_of_a_dependency_by_its_spelling") {
         return;
     }
     let (root, r) = rename_of_a_dependency("one-spelling-dep", "dep/x.h");
@@ -3074,7 +3066,7 @@ fn s2_1_rename_of_a_dependency_by_its_spelling() {
 /// dependency's header; only apply refuses it (`not_canonical`).
 #[test]
 fn s2_1_rename_of_a_dependency_through_another_case() {
-    if !volume_folds("another-case") {
+    if !volume_folds("s2_1_rename_of_a_dependency_through_another_case") {
         return;
     }
     let (root, r) = rename_of_a_dependency("one-spelling-dep-case", "Dep/x.h");
@@ -3089,7 +3081,7 @@ fn s2_1_rename_of_a_dependency_through_another_case() {
 /// entries of one file), and apply refuses the second spelling.
 #[test]
 fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
-    if !volume_folds("two-spellings") {
+    if !volume_folds("s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set") {
         return;
     }
     let files: [(&str, &[u8]); 3] = [

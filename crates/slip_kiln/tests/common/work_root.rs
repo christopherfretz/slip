@@ -179,6 +179,44 @@ pub fn source_folds() -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
 }
 
+/// The one way a test that needs a volume that folds gets it: the folding
+/// root ([`folding_root_or`]) and whether it folds (probed once per
+/// process). PANICS when it does not fold and the source tree's volume
+/// does ([`source_folds`]: this project's host, where the gate runs), so
+/// that such a test cannot skip there. Elsewhere, when no volume folds,
+/// prints one line `<test>: skipped: <why>` and the test leaves out what
+/// needs folding (or all of it: [`folding_volume_or`]).
+///
+/// # Panics
+///
+/// As said, and when the folding root cannot be made.
+pub fn folding_checked_or(target_tmp: &str, test: &str) -> (PathBuf, bool) {
+    static FOLDS: OnceLock<bool> = OnceLock::new();
+    let root = folding_root_or(target_tmp);
+    let f = *FOLDS.get_or_init(|| folds(&root));
+    if !f {
+        assert!(
+            !source_folds(),
+            "{test}: the folding root {} does not fold, but the source tree's volume does (the \
+             gate's host): a test about a volume that folds must run here, not skip",
+            root.display()
+        );
+        eprintln!(
+            "{test}: skipped: no volume that folds here (the folding root {} and the source tree \
+             are case-sensitive)",
+            root.display()
+        );
+    }
+    (root, f)
+}
+
+/// [`folding_checked_or`]'s root when it folds; `None` (the line said)
+/// when no volume folds here.
+pub fn folding_volume_or(target_tmp: &str, test: &str) -> Option<PathBuf> {
+    let (root, f) = folding_checked_or(target_tmp, test);
+    f.then_some(root)
+}
+
 /// The guard of the folding tests, run by one `#[test]` of each crate that
 /// has them: says which kind of volume [`work_root_or`] and
 /// [`folding_root_or`] are on, and FAILS when the source tree's volume

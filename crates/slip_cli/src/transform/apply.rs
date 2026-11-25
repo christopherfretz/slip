@@ -18,7 +18,7 @@ use slip_model::Digest;
 use slip_model::editset::EditSet;
 use slip_model::overlay::Overlay;
 use slip_model::result::{State, TransformResult};
-use slip_model::transform::Ownership;
+use slip_model::transform::{Ownership, Transform};
 use slip_verify::conclude::{Allow, permits};
 
 use super::store::{DiskFiles, StoreBlobs, StoreJournal, lossy};
@@ -449,8 +449,9 @@ fn find_result(store: &Store, prefix: &str) -> commands::Result<Digest> {
 /// `post` and staged names): a journal naming a file its overlay does not
 /// change would have `recover` write a blob the write never replaced.
 ///
-/// `Err(Ok(m))`: the journal is not its overlay's; `Err(Err(e))`: a link
-/// cannot be read.
+/// `Err(Ok(m))`: the journal is not its overlay's, or an entry of the
+/// request's ownership does not exist or is not spelled on disk (the line
+/// says what ends it); `Err(Err(e))`: a link cannot be read.
 fn ownership_of_journal(
     store: &Store,
     j: &slip_apply::journal::Journal,
@@ -479,7 +480,21 @@ fn ownership_of_journal(
         EditSet::from_bytes,
     )
     .map_err(Err)?;
-    ownership_of(store, set.transform).map_err(Err)
+    // The request read and its entries checked apart, so that an entry
+    // refused (`spec/edits.md` §2.1) is told from a request not found:
+    // the first ends when the entry is there again (§7.3).
+    let id = set.transform;
+    let t = read_checked(store, Object::Transform, &id, "the request", Transform::from_bytes)
+        .map_err(Err)?;
+    commands::entries_on_disk(&t.ownership).map_err(|e| {
+        Ok(format!(
+            "{}: {e}; nothing was changed, the journal is kept: --recover decides by the \
+             write's request, which refuses this entry. Make the entry exist again, spelled as \
+             the request records it, then run `slip apply --recover` again (spec/edits.md §7.3)",
+            store.object_path(Object::Transform, &id).display()
+        ))
+    })?;
+    Ok(t.ownership)
 }
 
 /// What `--recover` says of a journal cut short (§7.3 step 2).

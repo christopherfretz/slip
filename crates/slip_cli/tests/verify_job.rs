@@ -1399,10 +1399,10 @@ fn f3_case_insensitive_spelling() {
     );
     write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
     let upper = tree.base.join("S").join("inc");
-    if std::fs::metadata(&upper).is_err() {
-        eprintln!("f3_case_insensitive_spelling: SKIPPED, the file system is case-sensitive");
+    if common::folding_volume("f3_case_insensitive_spelling").is_none() {
         return;
     }
+    assert!(std::fs::metadata(&upper).is_ok(), "{} does not fold", upper.display());
     let o = tree.observer_in(&tree.subject, &[arg("-I", &upper)]);
     let m = tree.map(&o);
     let v = tree.verify(&o);

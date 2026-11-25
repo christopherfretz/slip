@@ -2260,10 +2260,12 @@ fn s2_1_a_missing_path_is_left_to_the_checks_after() {
 /// write is `StaleFile`. Either way nothing is written.
 #[test]
 fn s2_1_disk_another_case() {
-    let r = disk::root_in(&common::folding_root(), "case");
+    let (base, folds) = common::folding_checked("s2_1_disk_another_case");
+    let r = disk::root_in(&base, "case");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let insensitive = r.join("tree/VENDOR/x.h").exists();
+    assert_eq!(insensitive, folds, "{} and the probe disagree", r.display());
     let other = disk::bytes(&r.join("tree/Vendor/x.h"));
     let mut o = Overlay {
         edits: Digest([1; 32]),
@@ -2287,10 +2289,6 @@ fn s2_1_disk_another_case() {
             }))
         );
     } else {
-        eprintln!(
-            "s2_1_disk_another_case: {} is case-sensitive: the other case finds nothing",
-            r.display()
-        );
         assert_eq!(got, Err(WriteError::Refused(Refused::StaleFile(other))));
     }
     assert_eq!(std::fs::read(r.join("tree/vendor/x.h")).unwrap(), b"int v;\n");
@@ -2305,10 +2303,12 @@ fn s2_1_disk_another_case() {
 /// exist". Never `Ok`, and nothing written.
 #[test]
 fn s2_1_disk_readonly_entry_in_another_case() {
-    let r = disk::root_in(&common::folding_root(), "entry");
+    let (base, probed) = common::folding_checked("s2_1_disk_readonly_entry_in_another_case");
+    let r = disk::root_in(&base, "entry");
     std::fs::create_dir_all(r.join("tree/vendor")).unwrap();
     std::fs::write(r.join("tree/vendor/x.h"), "int v;\n").unwrap();
     let folds = r.join("tree/VENDOR/x.h").exists();
+    assert_eq!(folds, probed, "{} and the probe disagree", r.display());
     let (o, id) = one_file(r.join("tree/vendor/x.h").to_str().unwrap(), b"int v;\n", b"int w;\n");
     let own = Ownership {
         owned: vec![disk::bytes(&r.join("tree"))],
@@ -2320,7 +2320,6 @@ fn s2_1_disk_readonly_entry_in_another_case() {
     let want = if folds {
         format!("is not spelled as on disk ({:?})", r.join("tree/vendor").to_string_lossy())
     } else {
-        eprintln!("s2_1_disk_readonly_entry_in_another_case: {} does not fold", r.display());
         "does not exist".to_string()
     };
     for got in [got, written.map(|_| ())] {
@@ -2387,10 +2386,18 @@ fn s2_1_disk_entry_through_a_link() {
 /// On a volume that does not fold, the path finds nothing: `StaleFile`.
 #[test]
 fn s2_1_disk_another_normalisation() {
-    let r = disk::root_in(&common::folding_root(), "nfd");
+    let (base, probed) = common::folding_checked("s2_1_disk_another_normalisation");
+    let r = disk::root_in(&base, "nfd");
     let (nfc, nfd) = ("tree/caf\u{e9}.h", "tree/cafe\u{301}.h");
     std::fs::write(r.join(nfc), "int v;\n").unwrap();
     let folds = std::fs::symlink_metadata(r.join(nfd)).is_ok();
+    // The folding root folds case; on this project's host, normalisation
+    // too, so the folding half must run where the case half does.
+    assert!(
+        folds || !probed || !common::work_root::source_folds(),
+        "{} does not fold NFD",
+        r.display()
+    );
     let (o, id) = one_file(r.join(nfd).to_str().unwrap(), b"int v;\n", b"int w;\n");
     let own = Ownership { owned: vec![disk::bytes(&r.join("tree"))], readonly: vec![] };
     let store = disk::Store(r.join("store"));

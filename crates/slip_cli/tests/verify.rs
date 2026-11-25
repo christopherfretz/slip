@@ -2176,10 +2176,10 @@ fn s2_1_readonly_in_another_case_is_read_only() {
     f.both("a.h", "#pragma once\nstruct S { int v; };\n");
     f.both("u0.cpp", "#include \"a.h\"\nint f0() { return S{1}.v; }\n");
     f.db(&["u0.cpp"]);
-    if std::fs::metadata(f.path("s/A.h")).is_err() {
-        eprintln!("skipped: the fixture's volume is case-sensitive: `s/A.h` names no file");
+    if common::folding_volume("s2_1_readonly_in_another_case_is_read_only").is_none() {
         return;
     }
+    assert!(std::fs::metadata(f.path("s/A.h")).is_ok(), "the folding root does not fold");
     let plan = f.parse();
     f.write("t.txt", "relocate S => :: S2\n");
     let out = declare(&f, &plan, "t.txt", &["--owned", "s", "--readonly", "s/A.h"]);
@@ -2197,10 +2197,10 @@ fn s2_1_readonly_in_another_case_is_read_only() {
 #[test]
 fn s5_1_roots_in_another_case() {
     let f = two_units_in(&common::folding_root(), "roots-case");
-    if std::fs::metadata(f.path("S")).is_err() {
-        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+    if common::folding_volume("s5_1_roots_in_another_case").is_none() {
         return;
     }
+    assert!(std::fs::metadata(f.path("S")).is_ok(), "the folding root does not fold");
     let plan = f.parse();
     let (s, post) = (Fixture::text(&f.path("S")), Fixture::text(&f.path("POST")));
     let (out, report) = f.verify_report(&plan, &["--root", &s, "--post", &post]);
@@ -2222,10 +2222,10 @@ fn s11_5_work_root() {
 #[test]
 fn s5_1_report_names_the_roots_as_on_disk() {
     let f = two_units_in(&common::folding_root(), "roots-case-report");
-    if std::fs::metadata(f.path("S")).is_err() {
-        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+    if common::folding_volume("s5_1_report_names_the_roots_as_on_disk").is_none() {
         return;
     }
+    assert!(std::fs::metadata(f.path("S")).is_ok(), "the folding root does not fold");
     let plan = f.parse();
     let (s, post) = (Fixture::text(&f.path("S")), Fixture::text(&f.path("POST")));
     let (out, report) = f.verify_report(&plan, &["--root", &s, "--post", &post]);
@@ -2244,10 +2244,10 @@ fn s5_1_report_names_the_roots_as_on_disk() {
 #[test]
 fn s5_1_a_job_whose_roots_are_in_another_case_is_refused() {
     let f = two_units_in(&common::folding_root(), "job-roots-case");
-    if std::fs::metadata(f.path("S")).is_err() {
-        eprintln!("skipped: the fixture's volume is case-sensitive: `S` names no directory");
+    if common::folding_volume("s5_1_a_job_whose_roots_are_in_another_case_is_refused").is_none() {
         return;
     }
+    assert!(std::fs::metadata(f.path("S")).is_ok(), "the folding root does not fold");
     let store = Store::open(&f.path("store"), Access::Shared).unwrap();
     let bytes = |p: PathBuf| p.as_os_str().as_encoded_bytes().to_vec();
     let tree = |s: &str, p: &str| PostImage::Tree(vec![(bytes(f.path(s)), bytes(f.path(p)))]);
@@ -2314,10 +2314,10 @@ fn s2_1_declared_files_spelled_on_disk() {
     assert_eq!(out.stderr_lines(), [line.as_str()], "{out:?}");
     assert_eq!(published(), before, "nothing published");
 
-    if std::fs::metadata(f.path("s/DEP")).is_err() {
-        eprintln!("skipped (the other spellings): the fixture's volume is case-sensitive");
+    if common::folding_volume("s2_1_declared_files_spelled_on_disk").is_none() {
         return;
     }
+    assert!(std::fs::metadata(f.path("s/DEP")).is_ok(), "the folding root does not fold");
     for (asked, disk) in [("DEP", "dep"), ("cafe\u{301}", "caf\u{e9}")] {
         decl(path(asked));
         let out = f.verify(&plan, &args);

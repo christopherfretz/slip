@@ -649,11 +649,8 @@ fn s5_1_under_subject_by_identity() {
     assert!(!image.under_subject(&bytes(&p.join("h.h"))));
     assert!(!image.under_subject(&bytes(&dir.0.join("h.h"))));
     let upper = dir.0.join("S");
-    if std::fs::metadata(&upper).is_ok() {
+    if common::folding_checked("s5_1_under_subject_by_identity").1 {
+        assert!(std::fs::metadata(&upper).is_ok(), "{} does not fold", dir.0.display());
         assert!(image.under_subject(&bytes(&upper.join("inc/h.h"))));
-    } else {
-        eprintln!(
-            "s5_1_under_subject_by_identity: case: SKIPPED, the file system is case-sensitive"
-        );
     }
 }
