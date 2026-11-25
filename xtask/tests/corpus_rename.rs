@@ -446,6 +446,7 @@ impl World {
                             names: None,
                             negatives: None,
                             found: None,
+                            rebuilt_use: None,
                         };
                         let sh_bytes = sh.to_bytes();
                         let sh_id = id(&sh_bytes);
@@ -1321,6 +1322,7 @@ fn s6_5_coverage_lists_at_most_ten() {
             names: None,
             negatives: None,
             found: None,
+            rebuilt_use: None,
         };
         let bytes = sh.to_bytes();
         let sid = id(&bytes);
