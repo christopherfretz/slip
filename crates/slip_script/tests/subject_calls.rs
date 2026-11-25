@@ -2214,6 +2214,31 @@ fn remove_scratch(dir: &std::path::Path) {
     }
 }
 
+/// Builds the clang command for [`clang_dump`]: isolates `TMPDIR` inside
+/// `tmp` (removed with the side's scratch directory) and passes
+/// `-fno-crash-diagnostics` so a clang ICE never leaks reproducer files into
+/// the system temporary directory (`docs/wp/WP-167.md`).
+fn clang_dump_command(
+    side: &Side,
+    dir: &std::path::Path,
+    tmp: &std::path::Path,
+) -> std::process::Command {
+    let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
+    let mut cmd = std::process::Command::new(CLANG);
+    cmd.current_dir(dir)
+        .env("TMPDIR", tmp)
+        .arg("-fno-crash-diagnostics")
+        .arg(format!("-std={}", side.std))
+        .arg(format!("--target={target}"))
+        .args(&side.args)
+        .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
+        .args(["-Xclang", "-ast-dump=json", "main.cpp"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 /// Clang's dump of a side, read up to [`dump_limit`] bytes.
 fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
     use std::io::Read as _;
@@ -2222,19 +2247,9 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, t).unwrap();
     }
-    let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
-    let mut child = std::process::Command::new(CLANG)
-        .current_dir(dir)
-        .arg(format!("-std={}", side.std))
-        .arg(format!("--target={target}"))
-        .args(&side.args)
-        .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
-        .args(["-Xclang", "-ast-dump=json", "main.cpp"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let tmp = dir.join(".clang-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut child = clang_dump_command(side, dir, &tmp).spawn().unwrap();
     let limit = dump_limit();
     let mut json = Vec::new();
     child.stdout.take().unwrap().take(limit + 1).read_to_end(&mut json).unwrap();
@@ -2245,6 +2260,16 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
+    if !too_large {
+        let leaked: Vec<_> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "clang left files in its isolated TMPDIR (missing -fno-crash-diagnostics?): {leaked:?}"
+        );
+    }
     remove_scratch(dir);
     if too_large {
         Dumped::TooLarge
@@ -2715,6 +2740,86 @@ fn item7_differential_against_clang() {
         d.dump_skipped,
         d.units
     );
+}
+
+/// WP-167 (`spec/harness.md` §11.5): `clang_dump_command` always isolates
+/// `TMPDIR` to the caller's scratch subdirectory and passes
+/// `-fno-crash-diagnostics`.
+#[test]
+fn wp167_clang_dump_command_isolates_tmp_and_disables_crash_diagnostics() {
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), "int f() { return 0; }\n".to_owned())],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let dir = std::path::Path::new("scratch-dir");
+    let tmp = dir.join(".clang-tmp");
+    let cmd = clang_dump_command(&side, dir, &tmp);
+    let args: Vec<_> = cmd.get_args().collect();
+    assert!(
+        args.iter().any(|a| *a == "-fno-crash-diagnostics"),
+        "missing -fno-crash-diagnostics in {args:?}"
+    );
+    let tmpdir = cmd.get_envs().find(|(k, _)| *k == "TMPDIR").and_then(|(_, v)| v);
+    assert_eq!(tmpdir, Some(tmp.as_os_str()), "TMPDIR not isolated to {tmp:?}");
+}
+
+/// Child entry point for [`wp167_clang_dump_crash_leaves_no_tmp_files`]:
+/// runs `clang_dump` on the two real clang-19 ICE shapes found in
+/// `crates/slip_digest/tests/`.
+#[test]
+#[ignore = "spawned by wp167_clang_dump_crash_leaves_no_tmp_files with an isolated TMPDIR"]
+fn wp167_clang_dump_crash_child() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let digest = root.join("../slip_digest/tests");
+    let cases = [
+        digest.join("differ/_/name-value-source-location-key-moved"),
+        digest.join("differ/_/spelling-prefix-pack-indexing"),
+    ];
+    let scratch = common::work_root().join(format!("wp167-child-{}", std::process::id()));
+    for (idx, dir) in cases.iter().enumerate() {
+        let sides = pair_sides(dir, &[]);
+        assert!(!sides.is_empty(), "{}: no sides", dir.display());
+        let dumped = clang_dump(&sides[0], &scratch.join(format!("case-{idx}")));
+        assert!(
+            matches!(dumped, Dumped::Error),
+            "{}: expected Dumped::Error on clang-19 ICE",
+            dir.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// WP-167 (`spec/harness.md` §11.5): running `clang_dump` against real
+/// `clang++-19` on the crashing snippets from `crates/slip_digest/tests/`
+/// must leave zero files in the inherited `TMPDIR`.
+#[test]
+fn wp167_clang_dump_crash_leaves_no_tmp_files() {
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!("SKIP subject_calls.rs wp167_clang_dump_crash_leaves_no_tmp_files: no {CLANG}");
+        return;
+    }
+    let isolated_tmp = common::scratch("wp167-isolated-tmp");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "wp167_clang_dump_crash_child", "--ignored", "--nocapture"])
+        .env("TMPDIR", &isolated_tmp)
+        .output()
+        .unwrap();
+    let leaked: Vec<_> = std::fs::read_dir(&isolated_tmp)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    let _ = std::fs::remove_dir_all(&isolated_tmp);
+    assert!(
+        out.status.success(),
+        "child failed ({}):\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(leaked.is_empty(), "clang_dump leaked files into inherited TMPDIR: {leaked:?}");
 }
 
 /// The peak resident memory of this process in KiB (`VmHWM`), where the
