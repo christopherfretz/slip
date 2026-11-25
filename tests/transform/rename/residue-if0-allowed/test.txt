@@ -1,4 +1,4 @@
-# A use under `#if 0` is residue `not_compiled`; with `allow: residue` the run writes the rest. A use of the new name in the same place gives the inverse rename (the back oracle) residue of its own.
+# A use under `#if 0` is residue `not_compiled`; with `allow: residue` the run writes the rest.
 spec: edits §8.4
 spec: edits §8.5
 run: rename --from a::f --to g

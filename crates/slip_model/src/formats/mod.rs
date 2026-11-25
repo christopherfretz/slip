@@ -374,7 +374,7 @@ format_impl!(Shard, shard, b"SHRD", 2);
 format_impl!(RunRecord, run, b"RUNR", 1);
 format_impl!(Declared, declared, b"DECL", 2);
 format_impl!(Transform, transform, b"TRFM", 2);
-format_impl!(EditSet, editset, b"EDTS", 2);
+format_impl!(EditSet, editset, b"EDTS", 3);
 format_impl!(Overlay, overlay, b"OVLY", 1);
 format_impl!(TransformResult, result, b"RSLT", 2);
 format_impl!(TransformRun, transform_run, b"RUNT", 1);

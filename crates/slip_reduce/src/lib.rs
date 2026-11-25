@@ -707,6 +707,7 @@ fn run(
     put("reduce.subjects.selected", set_subjects.len() as u64);
     put("reduce.rules", union.len() as u64);
     let observer = |i: u64| shards.observer(usize::try_from(i).unwrap_or(usize::MAX));
+    let display = |id: Digest| joined.subjects.get(&id).map(|s| s.display.clone());
     let set = builder.assemble(Parts {
         plan,
         round,
@@ -721,6 +722,7 @@ fn run(
         unparsed,
         counters,
         observer: &observer,
+        display: &display,
     });
     set.validate()
         .map_err(|e| ReduceError::Io(format!("reduce made an edit set its reader refuses: {e}")))?;

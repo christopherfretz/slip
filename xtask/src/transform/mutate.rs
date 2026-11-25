@@ -121,6 +121,7 @@ fn drop_edit(set: &EditSet, i: usize) -> EditSet {
                 hi: 0,
                 reason: Reason::None,
                 subject: None,
+                display: None,
                 macro_site: None,
                 other: None,
                 observers: 0,

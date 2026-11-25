@@ -37,9 +37,10 @@ use xtask::transform::run::{
     Bounded, Lines, check_output, cmdline, first_line_difference, normalise, read_commands,
     run_bounded_with,
 };
+use xtask::transform::tree;
 use xtask::transform::{
-    Allow, Expected, Note, Oracle, Outcome, Report, Test, discover, find_clang, parse_args,
-    parse_test, run_one, run_test,
+    Allow, Capability, Expected, Note, Oracle, Outcome, Report, Symlink, Test, discover,
+    find_clang, parse_args, parse_test, run_one, run_test,
 };
 
 const FAKE: &str = env!("CARGO_BIN_EXE_fake-slip");
@@ -512,6 +513,7 @@ fn refuse(s: &mut EditSet) {
         hi: 0,
         reason: Reason::None,
         subject: None,
+        display: None,
         macro_site: None,
         other: None,
         observers: 0,
@@ -654,6 +656,32 @@ fn s6_2_parse_malformed() {
         ("timeout: +5\n", "test.txt:4: timeout: `+5` is not a number of seconds"),
         ("timeout: 9999999999999999999999\n", "test.txt:4: timeout: `9999999999999999999999`"),
         ("timeout: 5\ntimeout: 5\n", "test.txt:5: `timeout` given twice"),
+        ("require: magic\n", "test.txt:4: require: `magic` is not `case-insensitive`"),
+        (
+            "require: case-insensitive\nrequire: case-insensitive\n",
+            "test.txt:5: require: `case-insensitive` given twice",
+        ),
+        ("symlink: noarrow\n", "test.txt:4: symlink: `noarrow` is not `<link> -> <target>`"),
+        ("symlink: a -> b c\n", "test.txt:4: symlink: `a -> b c` is not `<link> -> <target>`"),
+        ("symlink: /abs -> a.cpp\n", "test.txt:4: `/abs` is not a path relative to the tree"),
+        ("symlink: ../up -> a.cpp\n", "test.txt:4: `../up` is not a path relative to the tree"),
+        ("symlink: a.cpp -> b.cpp\n", "test.txt:4: symlink: `a.cpp` is already in pre/"),
+        ("symlink: l -> a.cpp\nsymlink: l -> a.cpp\n", "test.txt:5: symlink: `l` given twice"),
+        (
+            "symlink: a.cpp/x -> ../a.cpp\n",
+            "test.txt:4: symlink: `a.cpp/x` sits under file `a.cpp` of pre/",
+        ),
+        (
+            "symlink: l -> a.cpp\nsymlink: l/x -> ../a.cpp\n",
+            "test.txt:5: symlink: `l/x` sits under symlink `l`",
+        ),
+        (
+            "symlink: l/x -> ../a.cpp\nsymlink: l -> a.cpp\n",
+            "test.txt:5: symlink: `l` is a prefix of another symlink",
+        ),
+        ("symlink: l -> /abs\n", "test.txt:4: symlink: target `/abs` is not a relative path"),
+        ("symlink: l -> ../out\n", "test.txt:4: symlink: target `../out` escapes the tree"),
+        ("symlink: l -> .\n", "test.txt:4: symlink: target `.` names the tree root"),
     ];
     for (extra, want) in cases {
         let c = Case::new("malformed");
@@ -2293,6 +2321,54 @@ fn s6_4_back() {
         cmdline::inverse(&["rename", "--from", "f", "--to", "g", "--to", "h"].map(String::from)),
         None
     );
+
+    // WP-160 item 3: back accepts verified <-> verified_with_residue modulo
+    // residue on one side, and still rejects not_verified / refused.
+    let (c, _) = standard("back-res-reverse", TEST_TXT, |g| {
+        g.replacen("out state verified\n", "out state verified_with_residue\n", 1)
+    });
+    assert_eq!(c.run(), Outcome::Pass, "forward verified + backward verified_with_residue passes");
+
+    let res_txt = "spec: harness §6.4\nrun: rename --from a::f --to g\n\
+                   state: verified_with_residue\nallow: residue\n\
+                   oracle: no-mutation the case answers no mutated check\n";
+    let c = Case::new("back-res-forward");
+    let set = tree_set(&c);
+    let r = c.records_ov(
+        "run",
+        &set,
+        State::VerifiedWithResidue,
+        |res| {
+            res.residue.push(Residue {
+                category: Category::NotCompiled,
+                file: c.tree().join("a.cpp").to_str().unwrap().as_bytes().to_vec(),
+                lo: 0,
+                hi: 1,
+                line: 1,
+                column: 1,
+            });
+        },
+        &overlay_with(&c, &set, &[("a.cpp", PRE, POST)]),
+    );
+    // Forward is verified_with_residue (exit 1); inverse (`--from a::g`) ends verified (exit 0).
+    let script = good_script(&r)
+        .replacen("out state verified_with_residue\n", "out state verified\n", 1)
+        .replacen("== check 0\n", "exit 1\n== check 0\n", 1);
+    c.write("test.txt", res_txt);
+    c.write("pre/a.cpp", PRE);
+    c.write("pre/fake.txt", &script);
+    c.write("post/a.cpp", POST);
+    c.write("expect.txt", &golden(&main_out(&r)));
+    assert_eq!(c.run(), Outcome::Pass, "forward verified_with_residue + backward verified passes");
+
+    // Still fails if backward is refused.
+    let (c, _) = standard("back-refused", TEST_TXT, |g| {
+        g.replacen("out state verified\n", "out state refused\n", 1)
+    });
+    assert_eq!(
+        fail_message(&c.run()),
+        "back: `rename --from a::g --to f` ends in state refused, the run in verified"
+    );
 }
 
 /// A stand-in clang that logs `<dir> <args>`, rejects a main file that
@@ -3274,4 +3350,77 @@ fn s11_5_work_directories_under_slip_test_root() {
         (Some(1), "transform: SLIP_TEST_ROOT=rel: not an absolute path\n")
     );
     assert!(!root.join("target").exists() && !root.join("rel").exists());
+}
+
+// §6.2 (WP-160): `symlink: <link> -> <target>` creates symbolic links in the
+// work tree (never stored in git), keeps them across `restore_tree` and
+// `--bless`, and fails if `slip` removes or alters one.
+#[test]
+fn s6_2_symlink_directive() {
+    let txt = format!("{TEST_TXT}symlink: sub/link.h -> ../h.h\nsymlink: link.h -> h.h\n");
+    let (c, _) = standard("sym-ok", &txt, |g| g);
+    c.write("pre/h.h", "int h();\n");
+    let t = c.test();
+    assert_eq!(
+        t.symlinks,
+        [
+            Symlink { link: "link.h".into(), target: "h.h".into() },
+            Symlink { link: "sub/link.h".into(), target: "../h.h".into() },
+        ]
+    );
+    assert_eq!(c.run(), Outcome::Pass);
+    // `--bless` succeeds with unchanged runner-made symlinks.
+    assert_eq!(c.run_with(None, true), Outcome::Pass);
+    // If `slip` removes a runner-made symlink, the test fails naming it.
+    let (c, _) =
+        standard("sym-broken", &txt, |g| g.replace("write a.cpp ", "remove link.h\nwrite a.cpp "));
+    c.write("pre/h.h", "int h();\n");
+    assert!(fail_message(&c.run()).contains("link.h"), "removing a runner-made symlink must fail");
+}
+
+// §6.2 & §6.3 (WP-160): `require: case-insensitive` skips on a case-sensitive
+// work directory (exit 0, counted as skipped), and becomes ERROR under
+// `SLIP_REQUIRE_ALL=1` (exit 1).
+#[test]
+fn s6_2_require_case_insensitive() {
+    let t = Fixture::empty("transform-req-ci");
+    let test_root = t.root().canonicalize().unwrap();
+    let folds = tree::folds_case(&test_root).unwrap();
+    let txt = format!("{TEST_TXT}require: case-insensitive\noracle: no-clang none\n");
+    let (c, _) =
+        standard_in(Case::under("req-ci", &test_root), &txt, &[("a.cpp", PRE, POST)], |g| g);
+    assert_eq!(c.test().require, [Capability::CaseInsensitive]);
+    let env = [("SLIP_TEST_ROOT", test_root.to_str().unwrap())];
+    if folds {
+        // On a case-folding volume the test runs and passes.
+        assert_eq!(c.run(), Outcome::Pass);
+        let (code, out, _) = xtask_env(&c.root, &["--slip", FAKE, "--no-clang"], &env);
+        assert_eq!(
+            (code, out.as_str()),
+            (
+                Some(0),
+                "transform: 1 passed, 0 failed\noracles: 2 off, 0 skipped (--verbose names them)\n"
+            )
+        );
+    } else {
+        // On a case-sensitive volume the test is SKIP (gate passes), and
+        // ERROR under SLIP_REQUIRE_ALL=1 (gate fails).
+        assert!(matches!(c.run(), Outcome::Skip(_)));
+        let (code, out, _) = xtask_env(&c.root, &["--slip", FAKE, "--no-clang"], &env);
+        assert_eq!(code, Some(0), "{out}");
+        assert!(out.contains("SKIP rename/req-ci:"), "{out}");
+        assert!(out.contains("transform: 0 passed, 0 failed, 1 skipped\n"), "{out}");
+        assert!(!c.work().exists(), "a skipped test's work dir is removed");
+        let (code, out, _) = xtask_env(
+            &c.root,
+            &["--slip", FAKE, "--no-clang"],
+            &[("SLIP_TEST_ROOT", test_root.to_str().unwrap()), ("SLIP_REQUIRE_ALL", "1")],
+        );
+        assert_eq!(code, Some(1), "{out}");
+        assert!(
+            out.contains("ERROR rename/req-ci:") && out.contains("(SLIP_REQUIRE_ALL=1)"),
+            "{out}"
+        );
+        assert!(out.contains("transform: 0 passed, 0 failed, 1 error\n"), "{out}");
+    }
 }

@@ -1057,7 +1057,7 @@ the store by `slip_cli` and over a vector by tests.
 
 ## 6. The edit set
 
-Kind `EDTS`, version 2, deterministic. One required section `set` (id 1).
+Kind `EDTS`, version 3, deterministic. One required section `set` (id 1).
 The **edit set id** is the container's content id.
 
 ```
@@ -1120,6 +1120,8 @@ Refusal := cause:     Cause
            reason:    Reason          for `site_refused`; else `none`
            subject:   opt<KeyId>      the subject, for a refusal of a subject (absent for `no_subject`); else the least
                                       subject of the site, if any (absent for `no_observer`, `rule_conflict`, `no_edit`)
+           display:   opt<str>        the subject's display name (from joined subjects, §5.2), absent when `subject`
+                                      is absent (version 3, `docs/wp/WP-160.md`)
            macro:     opt<MacroSite>  absent unless of a site
            other:     opt<Place>      for `contested` by another range, `overlap` and `buried`: the least other range
                                       involved; for `with_group`, the least member of the group with a refusal
@@ -1162,9 +1164,13 @@ instances (§4.5) by the whole record, with the observers that have it.
 Reduce keeps those whose place is the range of an accepted edit or of a
 refusal of a site; the others (at a site that made no edit and was not
 refused, or whose claims went another way) say nothing a reader acts
-on. A version-1 edit set is refused (`model.md` §2, `UnsupportedVersion`):
-it has no `instances`, and the report it gives would lack the section of
-§10.5.
+on. `Refusal.display` (since version 3, `docs/wp/WP-160.md`) carries the
+joined display name (§5.2 rule 1) of `Refusal.subject` so that a refusal
+naming a subject not in `EditSet.subjects` (such as `mixed_follower` or
+an unselected subject of `mixed_set`) is printed with its display rather
+than its key id (§10.5). Older versions (1 and 2) are refused
+(`model.md` §2, `UnsupportedVersion`): no reader of earlier versions is
+kept before a release.
 
 ### 6.1 Invariants
 
@@ -1192,7 +1198,7 @@ row's rules and messages).
 | `first` has at most 8 entries and at most `observers`; `notes` at most 8 | the field | its path |
 | `changed`, `kept`, `unresolved`, `refusals`, `reports`, `failures` strictly ascending in their keys | that record | its path |
 | a refusal's `reason` is not `none` iff its cause is `site_refused` | the field | `sections.set.refusals[i].reason` |
-| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
+| a refusal's fields against its cause (§6): `file` present iff of a site; `subject` present for a refusal of a subject but `no_subject`, absent for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `display` absent when `subject` is absent; `macro` absent unless of a site; `other` only for `contested`, `overlap`, `buried`, `with_group`; `observers` 0 for `no_subject`, `no_observer`, `no_edit`, `rule_conflict`; `no_edit` only with no edit and beside no refusal that needs a `replace` claim | the field, or the refusal for `no_edit` | `sections.set.refusals[i].file`, `….subject`, `….display`, `….macro`, `….other`, `….observers`, `sections.set.refusals[i]` |
 | the counter rules of `model.md` §8.1: the name form, strictly ascending by name | that counter's name, that counter | `sections.set.counters[i].name`, `sections.set.counters[i]` |
 | `state` is `refused` if there is a refusal of a subject, `no_observer`, `rule_conflict`, or no edit; a refused set has a refusal | the `state` field | `sections.set.state` |
 | `instances` strictly ascending by `instance`; each place the range of an edit or of a refusal of a site; an instance's `subjects` strictly ascending; `first` as above | that record, its `subjects`, its `first` | `sections.set.instances[i]`, `….instance.subjects`, `….first` |
@@ -1968,8 +1974,9 @@ match only when the request names the namespace, which for an unnamed one
 it cannot ("Open questions").
 
 An entity that has the target's name and scope and another key kind (a
-class, a field, an enumerator, an alias, a namespace, a concept) is a seed
-with the flag `unsupported`. So is an entity with C language linkage
+kind `--kind` excludes, or a class, a field, an enumerator, an alias, a
+namespace, a concept) is a seed with the flag `unsupported`. So is an
+entity with C language linkage
 that is declared with the target's name in the target's scope: its key
 has the parent `c_linkage` whatever namespace declares it (`digest.md`
 §3), so it never matches, and it is recognised by the scopes that
@@ -2416,7 +2423,7 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 | `read_only` | a declaration of the entity is in a read-only file. A function that overrides one of a library is refused this way, through its link |
 | `unsupported` | another kind (§9.1); a constructor, destructor, operator, conversion function, literal operator or deduction guide reached through a link; an entity with C language linkage; `main`; a function of a virtual family linked to one that has no key (§9.2); a subject whose type is an unnamed class whose key cannot be computed (§9.2); a follower whose rule cannot be made (§9.2); a party of a follower that has no key (§9.2). A subject whose key follows a pattern member (a member of an instantiated specialisation of a class template, a follower of §9.2; a function defined as a friend in an instantiated class template; `digest.md` §3.4) keeps its rule (§4.1) and is **not** flagged: the digest accepts a rule on an instantiated member's key that gives exactly the key following gives (`docs/wp/WP-119.md` item 1), which the rename's rule does when the pattern member is renamed with it, and makes any other indeterminate (`key/rule-on-instantiated-member`), which verification reports; every subject in a class pattern (§9.2, `families::in_class_pattern`; a candidate and a using-declaration follower included), when the unit has a member named like the old name in an instantiated specialisation of any class template (not an explicit specialisation of the class) that the front end declares and links to no pattern (a member template explicitly specialised as a template, `template <> template <class U> void S<int>::g() {}`: which member it specialises is not recorded at this pin, so neither is its class). Otherwise a subject in a class pattern, a virtual seed or candidate included (`docs/wp/WP-120.md` item 2), is not flagged: in an observer that does not instantiate the class it has no follower and nothing is refused, provided every place the observer shows naming it is claimed or flags it (§9.2) |
 | `name_taken` | a scope the entity's name enters declares an entity named `new_name`, or a macro named `new_name` is defined in the unit (the rename reads the unit's preprocessing record, and `run` refuses a unit parsed without it, §9.7). The scopes a name enters are its semantic scope and, outwards from it, every transparent one: an unscoped enumeration, an anonymous union or struct, a linkage specification, `export`, an inline namespace (in both directions: a name in an inline namespace enters the enclosing one, and an entity declared there is taken for one in the inline namespace). A block-scope `extern` declaration enters its innermost enclosing namespace. For a namespace, every part of it the observer sees; for a class, the class and its bases at any depth, read from each class's definition; and a class derived from the entity's class that declares `new_name` (it hides the renamed member). A template parameter enters no scope: one named `new_name` takes nothing. `name_taken` is what one observer sees; it is set only where the unit sees both. A declaration of `new_name` of the same kind and signature in a unit that does not see the target is caught by verification, not by the rename: the run's rules apply in every observer (`verify.md` §2.1), so there it takes the target's key and the digest shows it removed and added (`crates/slip_digest/tests/rules/verify/name-taken-in-another-unit`). One of another signature, kind or class there is no clash (an overload, or a name no unit sees with the target) and verifies equal (`name-taken-in-another-unit-overload`) |
-| `unreachable` | the subject is referenced where the front end records no name token: an attribute argument, a designator; a dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged; one that follows the member's explicit specialisation is recorded nowhere at this pin: **not detected** (since WP-119 lifted the follower's `unsupported`, the run is accepted and its post-image does not compile, `template void S<int>::f();` naming no member, so verification fails it: loud, not silent; `spec/landed/edits/WP-073.md`, fix round F3; `spec/landed/digest/WP-119.md`); a friend whose declarator-id names a member of a dependent specialisation (`template <class T> friend void n::S<T>::f();`), which the front end records as a type with no declaration: its name is claimed `unresolved` and every seed in a pattern is flagged (which class it names is not recorded) |
+| `unreachable` | the subject is referenced where the front end records no name token. For attribute arguments at this Kiln pin (`crates/slip_kiln/tests/written.rs` `wp160_attribute_arguments_probe`, `docs/wp/WP-160.md`): expression arguments of known GNU/Clang/standard attributes (`cleanup` / `gnu::cleanup`, `enable_if`, `diagnose_if`, `alignas`, `aligned` / `gnu::aligned`, `annotate`, `assume_aligned`, `[[assume(...)]]`), type arguments of known type-argument attributes (`clang::preferred_name`, `gsl::Owner`, `gsl::Pointer`), GNU-spelled thread-safety capability expressions (`__attribute__((guarded_by(...)))`, `pt_guarded_by`, `requires_capability`, Kiln WP-2170), and the second and later expression arguments of an unknown GNU attribute **are** recorded as written references, edited and verified (`hazard-attribute-argument`); **not** recorded at this pin (so not edited, and not detected as `unreachable` — left to verification or residue if they spell the old name): C++11-spelled thread-safety attributes (`[[clang::guarded_by(...)]]`, skipped unparsed as unknown), unknown C++11 attributes (`[[unknown(...)]]`), a lone identifier as the first argument of an unknown GNU attribute (`__attribute__((unknown(N)))`), identifier-argument attributes (`callback`), and string-literal linker-name attributes (`alias`, `ifunc`, `weakref`: strings, not name tokens). Field designators (`.x`) are recorded as `Role::Designator` in Kiln, though rename targets functions and variables only. A dependent friend specialisation in a class template (`friend void f<>(T);`), whose name the front end records in no table: **not detected at this pin** (a known hole, `spec/landed/edits/WP-071.md`, For Kiln); an explicit instantiation of a member of a class template (`template void S<long>::f();`), whose name the front end records in no table at this pin (no declaration extent; the written reference of role `SpecTarget` is Kiln's stage 3): the follower it instantiates is flagged; one that follows the member's explicit specialisation is recorded nowhere at this pin: **not detected** (since WP-119 lifted the follower's `unsupported`, the run is accepted and its post-image does not compile, `template void S<int>::f();` naming no member, so verification fails it: loud, not silent; `spec/landed/edits/WP-073.md`, fix round F3; `spec/landed/digest/WP-119.md`); a friend whose declarator-id names a member of a dependent specialisation (`template <class T> friend void n::S<T>::f();`), which the front end records as a type with no declaration: its name is claimed `unresolved` and every seed in a pattern is flagged (which class it names is not recorded) |
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3),
 and at a name what it names cannot be told or the edit cannot verify:
@@ -2511,7 +2518,10 @@ exactly one file of its kind in the store, as for `--plan` (`exec.md`
 1. Opens the store exclusively; builds or finds the plan as `parse` does.
 2. Builds the transform request (§3) and publishes it.
    - `--from`, `--to`, `--kind`: a rename. `--from` is split at `::` (a
-     leading `::` is allowed and ignored).
+     leading `::` is allowed and ignored). An entity with the target's
+     name and scope whose kind `--kind` excludes (for example, a variable
+     under `--kind function`) is a seed with `unsupported` (§9.1) and
+     refuses the run `subject_unsupported`, rather than `no_subject`.
    - `--transform <file>` with `--transform-arg <option>` repeated: a
      script. The command compiles the transform unit once, stops with the
      error of `api.md` §12 if it does not compile, and puts its
@@ -2706,6 +2716,9 @@ member a template calls into `verified_with_residue`, a state that then
 says nothing.
 
 `finding` lines are the run report of `verify.md` §7, at most 64 groups.
+On a `refusal` line, `<display of the subject>` is `Refusal.display` when
+present, else the subject's `display` in `EditSet.subjects`, else the
+64-digit key id (§6).
 Of each other kind at most 200 lines are printed; a list that is cut is
 followed by `<kind>: <n> more (slip dump <file of the record>)`. The
 records hold every entry. Lines and columns are computed by the command,

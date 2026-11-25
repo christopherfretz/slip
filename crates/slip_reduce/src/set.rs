@@ -548,6 +548,7 @@ pub(crate) struct Parts<'a> {
     pub unparsed: Vec<Digest>,
     pub counters: BTreeMap<String, u64>,
     pub observer: &'a dyn Fn(u64) -> Digest,
+    pub display: &'a dyn Fn(Digest) -> Option<String>,
 }
 
 fn place_of(s: Span) -> PPlace {
@@ -718,6 +719,7 @@ impl Builder {
             hi: 0,
             reason: Reason::None,
             subject: None,
+            display: None,
             macro_site: None,
             other: None,
             observers: 0,
@@ -735,6 +737,7 @@ impl Builder {
         for r in &parts.subject_refusals {
             refusals.push(Refusal {
                 subject: r.subject,
+                display: r.subject.and_then(parts.display),
                 observers: r.sample.observers,
                 first: first(&r.sample),
                 ..alone(r.cause)
@@ -750,6 +753,7 @@ impl Builder {
                 hi: r.hi,
                 reason: r.reason,
                 subject: r.subject,
+                display: r.subject.and_then(parts.display),
                 macro_site: r.macro_site.clone(),
                 other: r.other.map(|o| pl(place_of(o))),
                 observers: r.sample.observers,

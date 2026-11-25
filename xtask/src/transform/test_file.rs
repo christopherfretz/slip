@@ -107,6 +107,31 @@ impl Oracle {
     }
 }
 
+/// A host or volume capability a test requires (`spec/harness.md` §6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Capability {
+    CaseInsensitive,
+}
+
+impl Capability {
+    pub const ALL: [(&'static str, Capability); 1] =
+        [("case-insensitive", Capability::CaseInsensitive)];
+
+    pub fn name(self) -> &'static str {
+        Capability::ALL.iter().find(|(_, c)| *c == self).map_or("", |(n, _)| n)
+    }
+}
+
+/// A symbolic link the runner creates in the work tree (`spec/harness.md`
+/// §6.2): never stored in git.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Symlink {
+    /// Path relative to the tree (no leading `/`, no `.` or `..`).
+    pub link: String,
+    /// Relative target stored in the link, staying inside the tree.
+    pub target: String,
+}
+
 /// A transform test, `test.txt` parsed with its defaults applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Test {
@@ -137,6 +162,10 @@ pub struct Test {
     pub allow: Vec<Allow>,
     /// The oracles turned off, with their reasons; sorted, no two equal.
     pub oracle_off: Vec<(Oracle, String)>,
+    /// `require`: capabilities the test needs; sorted, no two equal.
+    pub require: Vec<Capability>,
+    /// `symlink`: symbolic links created in the work tree; sorted by `link`.
+    pub symlinks: Vec<Symlink>,
     pub xfail: Option<String>,
     /// `cdb.json` exists.
     pub cdb: bool,
@@ -165,6 +194,10 @@ impl Test {
 
     pub fn allows(&self, allow: Allow) -> bool {
         self.allow.contains(&allow)
+    }
+
+    pub fn requires(&self, cap: Capability) -> bool {
+        self.require.contains(&cap)
     }
 
     /// Whether a result of the expected state can permit `--write` under
@@ -273,6 +306,10 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
     allow.sort();
     let mut oracle_off = d.oracle_off;
     oracle_off.sort();
+    let mut require = d.require;
+    require.sort();
+    let mut symlinks = d.symlinks;
+    symlinks.sort();
     let parsed = Test {
         dir: dir.to_owned(),
         area,
@@ -288,6 +325,8 @@ pub fn parse_test(dir: &Path) -> Result<Test, String> {
         readonly,
         allow,
         oracle_off,
+        require,
+        symlinks,
         xfail: d.xfail,
         cdb: dir.join("cdb.json").is_file(),
         expect: dir.join("expect.txt").is_file(),
@@ -423,6 +462,8 @@ struct Directives {
     readonly: Vec<String>,
     allow: Vec<Allow>,
     oracle_off: Vec<(Oracle, String)>,
+    require: Vec<Capability>,
+    symlinks: Vec<Symlink>,
     xfail: Option<String>,
     post_none: bool,
     timeout: Option<u64>,
@@ -561,6 +602,47 @@ impl Directives {
                 }
                 self.oracle_off.push((oracle, reason.to_owned()));
             }
+            "require" => {
+                let Some((_, c)) = Capability::ALL.iter().find(|(n, _)| *n == value) else {
+                    return Err(format!("require: `{value}` is not `case-insensitive`"));
+                };
+                if self.require.contains(c) {
+                    return Err(format!("require: `{value}` given twice"));
+                }
+                self.require.push(*c);
+            }
+            "symlink" => {
+                let Some((path, target)) = value.split_once(" -> ") else {
+                    return Err(format!("symlink: `{value}` is not `<link> -> <target>`"));
+                };
+                if path.is_empty()
+                    || target.is_empty()
+                    || path.contains(' ')
+                    || target.contains(' ')
+                {
+                    return Err(format!("symlink: `{value}` is not `<link> -> <target>`"));
+                }
+                check_relative(path, false)?;
+                if pre.contains_key(path) {
+                    return Err(format!("symlink: `{path}` is already in pre/"));
+                }
+                if self.symlinks.iter().any(|s| s.link == path) {
+                    return Err(format!("symlink: `{path}` given twice"));
+                }
+                for anc in ancestors(path) {
+                    if matches!(pre.get(anc), Some(Entry::File { .. })) {
+                        return Err(format!("symlink: `{path}` sits under file `{anc}` of pre/"));
+                    }
+                    if self.symlinks.iter().any(|s| s.link == anc) {
+                        return Err(format!("symlink: `{path}` sits under symlink `{anc}`"));
+                    }
+                }
+                if self.symlinks.iter().any(|s| s.link.starts_with(&format!("{path}/"))) {
+                    return Err(format!("symlink: `{path}` is a prefix of another symlink"));
+                }
+                check_symlink_target(path, target)?;
+                self.symlinks.push(Symlink { link: path.to_owned(), target: target.to_owned() });
+            }
             "xfail" => once(&mut self.xfail, "xfail", value.to_owned())?,
             "post" => {
                 if value != "none" {
@@ -606,6 +688,38 @@ fn check_relative(p: &str, dot: bool) -> Result<(), String> {
     }
     if p.starts_with('/') || p.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
         return Err(format!("`{p}` is not a path relative to the tree"));
+    }
+    Ok(())
+}
+
+/// Every strict directory prefix of a relative path `p` (`a/b/c` -> `a`, `a/b`).
+fn ancestors(p: &str) -> impl Iterator<Item = &str> {
+    p.match_indices('/').map(|(i, _)| &p[..i])
+}
+
+/// A `symlink` target: relative, no empty components, and resolves inside the
+/// tree from `link`'s parent directory.
+fn check_symlink_target(link: &str, target: &str) -> Result<(), String> {
+    if target.starts_with('/') || target.split('/').any(str::is_empty) {
+        return Err(format!("symlink: target `{target}` is not a relative path"));
+    }
+    let mut parts: Vec<&str> = match link.rsplit_once('/') {
+        Some((dir, _)) => dir.split('/').collect(),
+        None => Vec::new(),
+    };
+    for c in target.split('/') {
+        match c {
+            "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err(format!("symlink: target `{target}` escapes the tree"));
+                }
+            }
+            _ => parts.push(c),
+        }
+    }
+    if parts.is_empty() {
+        return Err(format!("symlink: target `{target}` names the tree root"));
     }
     Ok(())
 }

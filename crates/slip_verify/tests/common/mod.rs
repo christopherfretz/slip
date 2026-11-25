@@ -419,6 +419,7 @@ pub fn set(f: SetFacts) -> EditSet {
         hi: if file.is_some() { 6 } else { 0 },
         reason: Reason::None,
         subject,
+        display: None,
         macro_site: None,
         other: None,
         observers: 0,

@@ -1,6 +1,6 @@
 {
   "kind": "EDTS",
-  "version": 2,
+  "version": 3,
   "sections": {
     "set": {
       "scheme": 1,
@@ -208,6 +208,7 @@
           "hi": 55,
           "reason": "none",
           "subject": "1212121212121212121212121212121212121212121212121212121212121212",
+          "display": "n::other",
           "macro": null,
           "other": null,
           "observers": 0,
@@ -220,6 +221,7 @@
           "hi": 45,
           "reason": "macro_body",
           "subject": "1010101010101010101010101010101010101010101010101010101010101010",
+          "display": "n::f",
           "macro": {
             "name_start": 40,
             "name": "N"
@@ -237,6 +239,7 @@
           "hi": 12,
           "reason": "none",
           "subject": null,
+          "display": null,
           "macro": null,
           "other": {
             "file": 1,

@@ -4,7 +4,7 @@
 //! with the golden files, `--bless`, and the order of the oracles.
 
 use super::oracles;
-use super::test_file::{Allow, Expected, Oracle, Test};
+use super::test_file::{Allow, Capability, Expected, Oracle, Test};
 use super::tree::{self, Entry, Files};
 use super::{Note, Outcome, Report};
 use slip_model::Digest;
@@ -159,11 +159,14 @@ impl Ctx<'_> {
         if p == "." { self.tree.clone() } else { self.tree.join(p) }
     }
 
-    /// Removes the tree and copies `pre/` to it again.
+    /// Removes the tree and copies `pre/` to it again (recreating any
+    /// `symlink:` directives).
     pub fn restore_tree(&self) -> Result<(), String> {
         tree::remove(&self.tree).map_err(|e| format!("{}: {e}", self.tree.display()))?;
         tree::copy_tree(&self.test.dir.join("pre"), &self.tree)
-            .map_err(|e| format!("copying pre/ to {}: {e}", self.tree.display()))
+            .map_err(|e| format!("copying pre/ to {}: {e}", self.tree.display()))?;
+        tree::apply_symlinks(&self.tree, &self.test.symlinks)
+            .map_err(|e| format!("creating symlinks in {}: {e}", self.tree.display()))
     }
 
     pub fn read_tree(&self) -> Result<Files, String> {
@@ -912,6 +915,18 @@ fn judge(
     let test_snapshot =
         tree::read_tree(&test.dir).map_err(|e| Outcome::Error(format!("the test: {e}")))?;
     let work = tree::fresh_dir(work).map_err(|e| error(format!("{}: {e}", work.display())))?;
+    if test.requires(Capability::CaseInsensitive) {
+        match tree::folds_case(&work) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Outcome::Skip(
+                    "requires a case-insensitive volume (work directory is case-sensitive)".into(),
+                ));
+            }
+            Err(e) => return Err(error(format!("probing case sensitivity: {e}"))),
+        }
+    }
+    let pre = tree::with_symlinks(&pre, &test.symlinks);
     let tree_dir = work.join("tree");
     let mut ctx = Ctx {
         test,
@@ -925,6 +940,8 @@ fn judge(
         test_snapshot,
     };
     tree::copy_tree(&pre_dir, &ctx.tree).map_err(|e| error(format!("copying pre/: {e}")))?;
+    tree::apply_symlinks(&ctx.tree, &test.symlinks)
+        .map_err(|e| error(format!("creating symlinks: {e}")))?;
     ctx.commands = write_database(&ctx)?;
 
     // The clang oracle's pre-image, while the tree is still pre/ (§6.4),
@@ -1096,11 +1113,13 @@ fn bless_goldens(
     if let Some(e) = record_error {
         refuse.push(e.to_owned());
     }
-    // Only changed regular files can be described by post/.
+    // Only changed regular files can be described by post/; runner-made
+    // symlinks stay unchanged.
     let mut shape = Vec::new();
     for (p, e) in got {
         match (ctx.pre.get(p), e) {
             (Some(Entry::File { .. }), Entry::File { .. }) | (Some(Entry::Dir), Entry::Dir) => {}
+            (Some(Entry::Symlink(a)), Entry::Symlink(b)) if a == b => {}
             (None, _) => shape.push(format!("{} {p} added", e.kind())),
             (Some(pe), _) => shape.push(format!("{} {p} is now a {}", pe.kind(), e.kind())),
         }

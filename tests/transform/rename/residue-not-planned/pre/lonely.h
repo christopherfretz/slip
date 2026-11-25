@@ -1,1 +1,1 @@
-namespace a { int f(int); int g(int); }
+namespace a { int f(int); }

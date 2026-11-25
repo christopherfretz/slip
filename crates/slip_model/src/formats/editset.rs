@@ -120,6 +120,7 @@ enum Loc {
     RefusalFile(usize),
     RefusalReason(usize),
     RefusalSubject(usize),
+    RefusalDisplay(usize),
     RefusalMacro(usize),
     RefusalOther(usize),
     RefusalObservers(usize),
@@ -164,6 +165,7 @@ impl Loc {
             Loc::RefusalFile(i) => format!("{S}.refusals[{i}].file"),
             Loc::RefusalReason(i) => format!("{S}.refusals[{i}].reason"),
             Loc::RefusalSubject(i) => format!("{S}.refusals[{i}].subject"),
+            Loc::RefusalDisplay(i) => format!("{S}.refusals[{i}].display"),
             Loc::RefusalMacro(i) => format!("{S}.refusals[{i}].macro"),
             Loc::RefusalOther(i) => format!("{S}.refusals[{i}].other"),
             Loc::RefusalObservers(i) => format!("{S}.refusals[{i}].observers"),
@@ -749,6 +751,8 @@ fn refusal_violation(x: &EditSet) -> Violation {
                 Loc::RefusalSubject(i),
                 "a no_subject, no_observer, no_edit or rule_conflict refusal has a subject",
             ))
+        } else if r.subject.is_none() && r.display.is_some() {
+            Some((Loc::RefusalDisplay(i), "a refusal without a subject has a display"))
         } else if !c.is_of_site() && r.macro_site.is_some() {
             Some((Loc::RefusalMacro(i), "a refusal that is not of a site has a macro"))
         } else if r.other.is_some()
@@ -893,6 +897,9 @@ pub(super) fn encode(x: &EditSet, extras: &[Extra<'_>]) -> Vec<u8> {
         enc_opt(&mut e, r.subject.as_ref(), |e, k| {
             e.digest(k);
         });
+        enc_opt(&mut e, r.display.as_ref(), |e, s| {
+            e.str(s);
+        });
         enc_macro(&mut e, r.macro_site.as_ref());
         enc_opt(&mut e, r.other.as_ref(), enc_place);
         e.uv(r.observers);
@@ -950,6 +957,7 @@ struct RefusalOffsets {
     file: usize,
     reason: usize,
     subject: usize,
+    display: usize,
     macro_site: usize,
     other: usize,
     observers: usize,
@@ -993,6 +1001,7 @@ impl Offsets {
             Loc::RefusalFile(i) => self.refusal[i].file,
             Loc::RefusalReason(i) => self.refusal[i].reason,
             Loc::RefusalSubject(i) => self.refusal[i].subject,
+            Loc::RefusalDisplay(i) => self.refusal[i].display,
             Loc::RefusalMacro(i) => self.refusal[i].macro_site,
             Loc::RefusalOther(i) => self.refusal[i].other,
             Loc::RefusalObservers(i) => self.refusal[i].observers,
@@ -1021,11 +1030,10 @@ fn dec_counts(d: &mut Decoder<'_>, first_at: &mut usize) -> Result<(u64, Vec<Dig
     Ok((observers, dec_digests(d)?))
 }
 
-/// The first version read: version 2 (`docs/wp/WP-139.md`) added
-/// `instances`, and no reader of version 1 is kept before a release
-/// (`spec/edits.md` §6): a version-1 set has no record of the
-/// instantiations its dependent edits were made on.
-const SINCE: u32 = 2;
+/// The first version read: version 3 (`docs/wp/WP-160.md`) added
+/// `Refusal.display`, and no reader of older versions is kept before a
+/// release (`spec/edits.md` §6).
+const SINCE: u32 = 3;
 
 /// The message of a version this reader no longer reads.
 const OLD_VERSION: &str = "container version older than supported";
@@ -1113,6 +1121,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
         let reason = dec_enum(d)?;
         ro.subject = d.offset();
         let subject = dec_opt(d, Decoder::digest)?;
+        ro.display = d.offset();
+        let display = dec_opt(d, |d| Ok(d.str()?.to_owned()))?;
         ro.macro_site = d.offset();
         let macro_site = dec_macro(d)?;
         ro.other = d.offset();
@@ -1120,7 +1130,19 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(EditSet, Vec<Extra<'_>>, Digest)> 
         ro.observers = d.offset();
         let (observers, first) = dec_counts(d, &mut ro.first)?;
         o.refusal.push(ro);
-        Ok(Refusal { cause, file, lo, hi, reason, subject, macro_site, other, observers, first })
+        Ok(Refusal {
+            cause,
+            file,
+            lo,
+            hi,
+            reason,
+            subject,
+            display,
+            macro_site,
+            other,
+            observers,
+            first,
+        })
     })?;
     let reports = dec_list(d, None, |d| {
         let start = d.offset();
@@ -1220,8 +1242,19 @@ const EDIT: [&str; 11] = [
     "first",
 ];
 const EXEMPT: [&str; 6] = ["key", "place", "reason", "in_force", "observers", "first"];
-const REFUSAL: [&str; 10] =
-    ["cause", "file", "lo", "hi", "reason", "subject", "macro", "other", "observers", "first"];
+const REFUSAL: [&str; 11] = [
+    "cause",
+    "file",
+    "lo",
+    "hi",
+    "reason",
+    "subject",
+    "display",
+    "macro",
+    "other",
+    "observers",
+    "first",
+];
 const REPORTED: [&str; 3] = ["report", "observers", "first"];
 const FAILED: [&str; 3] = ["failure", "observers", "first"];
 const COUNTER: [&str; 2] = ["name", "value"];
@@ -1274,6 +1307,7 @@ pub(super) fn render(x: &EditSet, extras: &[Extra<'_>]) -> Value {
                 json_uv(r.hi),
                 json_enum(r.reason),
                 json_opt(r.subject.as_ref(), json_digest),
+                json_opt(r.display.as_ref(), |s| Value::Str(s.clone())),
                 json_macro(r.macro_site.as_ref()),
                 json_opt(r.other.as_ref(), json_place),
                 json_uv(r.observers),
@@ -1403,8 +1437,19 @@ pub(super) fn read(v: &Value) -> JResult<(EditSet, OwnedExtras)> {
         kept: read_list(kept, &at.key("kept"), read_place)?,
         unresolved: read_list(unresolved, &at.key("unresolved"), read_place)?,
         refusals: read_list(refusals, &at.key("refusals"), |v, at| {
-            let [cause, file, lo, hi, reason, subject, macro_site, other, observers, first] =
-                read_record(v, at, REFUSAL)?;
+            let [
+                cause,
+                file,
+                lo,
+                hi,
+                reason,
+                subject,
+                display,
+                macro_site,
+                other,
+                observers,
+                first,
+            ] = read_record(v, at, REFUSAL)?;
             Ok(Refusal {
                 cause: read_enum(cause, &at.key("cause"))?,
                 file: read_opt(file, &at.key("file"), read_uv)?,
@@ -1412,6 +1457,9 @@ pub(super) fn read(v: &Value) -> JResult<(EditSet, OwnedExtras)> {
                 hi: read_uv(hi, &at.key("hi"))?,
                 reason: read_enum(reason, &at.key("reason"))?,
                 subject: read_opt(subject, &at.key("subject"), read_digest)?,
+                display: read_opt(display, &at.key("display"), |v, at| {
+                    read_str(v, at).map(str::to_owned)
+                })?,
                 macro_site: read_macro(macro_site, &at.key("macro"))?,
                 other: read_opt(other, &at.key("other"), read_place)?,
                 observers: read_uv(observers, &at.key("observers"))?,

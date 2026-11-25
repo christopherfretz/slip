@@ -1858,3 +1858,172 @@ void h() { n::f(1); }
         assert_eq!(origin(u, call.referent), friend, "the defined friend is followed");
     });
 }
+
+// WP-160 item 1 (`spec/edits.md` §4.2): what the front end records for a
+// label's declaration (`f:`, GNU `__label__ f;`) and for its uses (`goto f`,
+// GNU `&&f`, and a label in a function that does not mention the subject).
+// Declarations have rows in `decl_extents` (`DeclKind::Label`), so rename
+// claims `keep` for them; uses are recorded in neither `written_refs` nor
+// `decl_extents`, so rename cannot claim `keep` for them without Kiln
+// recording them.
+#[test]
+fn wp160_label_recording() {
+    let src = "\
+namespace a {
+int f(int x) { return x; }
+int u(int n) {
+  int r = 0;
+f:
+  r += f(1);
+  if (r < n)
+    goto f;
+  return r;
+}
+int addr(int n) {
+  void *p = &&f;
+  int r = 0;
+f:
+  r += f(1);
+  if (r < n)
+    goto *p;
+  return r;
+}
+int other(int n) {
+  __label__ f;
+  int r = 0;
+f:
+  if (r < n) {
+    ++r;
+    goto f;
+  }
+  return r;
+}
+}
+";
+    with_unit("wp160-labels", src, |u| {
+        // Declarations: every `f:` and `__label__ f;` is in `decl_extents`
+        // with `DeclKind::Label` and returned by `decl_names`.
+        for ctx in [
+            "\nf:\n  r += f(1);\n  if (r < n)\n    goto f;",
+            "\nf:\n  r += f(1);\n  if (r < n)\n    goto *p;",
+            "__label__ f;",
+            "\nf:\n  if (r < n)",
+        ] {
+            assert_eq!(
+                names_at(u, src, ctx, "f"),
+                [(DeclNameKind::Declaration, DeclKind::Label)],
+                "label declaration `{ctx}`"
+            );
+        }
+        // Uses: `goto f` (in both `u` and `other`) and `&&f` (in `addr`) are
+        // recorded in neither `written_refs` nor `decl_extents`.
+        for ctx in ["goto f;\n  return r;", "&&f;", "goto f;\n  }\n  return r;"] {
+            nothing_at(u, src, ctx, "f");
+            assert!(
+                names_at(u, src, ctx, "f").is_empty(),
+                "label use `{ctx}` has no decl_extents row"
+            );
+            let want = at(src, ctx, "f");
+            assert!(
+                u.ast().written_refs.iter().all(|(_, r)| bytes(u, r.range) != want),
+                "raw ast.written_refs has no entry for `{ctx}`"
+            );
+        }
+    });
+}
+
+// WP-160 item 3 (`spec/edits.md` §9.5): probe of attribute arguments at this
+// Kiln pin — which forms record written references and which do not.
+#[test]
+fn wp160_attribute_arguments_probe() {
+    let src = "\
+namespace a {
+void f(int *p) { *p = 0; }
+constexpr bool pred(int x) { return x > 0; }
+constexpr int N = 16;
+struct T {};
+template <class X> struct Pref;
+using PrefT = Pref<T>;
+template <class X> struct [[clang::preferred_name(PrefT)]] Pref {};
+struct [[gsl::Owner(T)]] Own {};
+struct __attribute__((capability(\"mutex\"))) M {};
+M mu;
+M *pmu = &mu;
+int g_var __attribute__((guarded_by(mu))) = 0;
+int g_var2 [[clang::guarded_by(mu)]] = 0;
+int *g_ptr __attribute__((pt_guarded_by(pmu))) = nullptr;
+void req() __attribute__((requires_capability(mu))) {}
+int en(int x) __attribute__((enable_if(pred(x), \"pos\"))) { return x; }
+int dg(int x) __attribute__((diagnose_if(pred(x), \"pos\", \"warning\"))) { return x; }
+alignas(N) int al1 = 0;
+int al2 __attribute__((aligned(N))) = 0;
+int al3 [[gnu::aligned(N)]] = 0;
+int ann __attribute__((annotate(\"tag\", N))) = 0;
+void *aa() __attribute__((assume_aligned(N)));
+int unk_gnu1 __attribute__((unknown_gnu_attr(N))) = 0;
+int unk_gnu2 __attribute__((unknown_gnu_attr(first_id, N))) = 0;
+int unk_cxx [[unknown_cxx_attr(N)]] = 0;
+void cb(void (*fn)(int *), int *p) __attribute__((callback(fn, p)));
+int use(int x) {
+  [[assume(pred(x))]];
+  int a __attribute__((cleanup(f))) = 1;
+  int b [[gnu::cleanup(f)]] = 1;
+  return a + b;
+}
+}
+extern \"C\" void aliased_target() {}
+extern \"C\" void alias_fn() __attribute__((alias(\"aliased_target\")));
+extern \"C\" void (*ifunc_resolver())() { return aliased_target; }
+extern \"C\" void ifunc_fn() __attribute__((ifunc(\"ifunc_resolver\")));
+static void weakref_fn() __attribute__((weakref(\"aliased_target\")));
+";
+    with_unit("wp160-attrs", src, |u| {
+        // Expression arguments of known GNU/Clang/standard attributes: recorded (Expr).
+        assert_eq!(refs_at(u, src, "((cleanup(f)))", "f"), [(Role::Expr, DeclKind::Function)]);
+        assert_eq!(refs_at(u, src, "[[gnu::cleanup(f)]]", "f"), [(Role::Expr, DeclKind::Function)]);
+        assert_eq!(
+            refs_at(u, src, "enable_if(pred(x)", "pred"),
+            [(Role::Expr, DeclKind::Function)]
+        );
+        assert_eq!(
+            refs_at(u, src, "diagnose_if(pred(x)", "pred"),
+            [(Role::Expr, DeclKind::Function)]
+        );
+        assert_eq!(refs_at(u, src, "alignas(N)", "N"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(refs_at(u, src, "((aligned(N)))", "N"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(refs_at(u, src, "[[gnu::aligned(N)]]", "N"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(refs_at(u, src, "annotate(\"tag\", N)", "N"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(refs_at(u, src, "assume_aligned(N)", "N"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(
+            refs_at(u, src, "[[assume(pred(x))]]", "pred"),
+            [(Role::Expr, DeclKind::Function)]
+        );
+        // Type arguments of known attributes (`preferred_name`, `gsl::Owner`): recorded (Type).
+        assert_eq!(
+            refs_at(u, src, "preferred_name(PrefT)", "PrefT"),
+            [(Role::Type, DeclKind::TypeAlias)]
+        );
+        assert_eq!(refs_at(u, src, "gsl::Owner(T)", "T"), [(Role::Type, DeclKind::CXXRecord)]);
+        // Thread-safety attribute arguments (Kiln WP-2170): GNU spelling recorded (Expr);
+        // C++11 `[[clang::guarded_by(...)]]` is treated as unknown and skipped unparsed.
+        assert_eq!(refs_at(u, src, "((guarded_by(mu)))", "mu"), [(Role::Expr, DeclKind::Var)]);
+        nothing_at(u, src, "[[clang::guarded_by(mu)]]", "mu");
+        assert_eq!(refs_at(u, src, "pt_guarded_by(pmu)", "pmu"), [(Role::Expr, DeclKind::Var)]);
+        assert_eq!(refs_at(u, src, "requires_capability(mu)", "mu"), [(Role::Expr, DeclKind::Var)]);
+        // Unknown GNU attribute: 1st lone identifier is not looked up; 2nd+ expression arg IS recorded.
+        nothing_at(u, src, "unknown_gnu_attr(N)", "N");
+        assert_eq!(
+            refs_at(u, src, "unknown_gnu_attr(first_id, N)", "N"),
+            [(Role::Expr, DeclKind::Var)]
+        );
+        // Unknown C++11 attribute: tokens skipped unparsed, not recorded.
+        nothing_at(u, src, "unknown_cxx_attr(N)", "N");
+        // Identifier-argument attribute (`callback(fn, p)`): parameter names taken as identifiers, not recorded.
+        nothing_at(u, src, "callback(fn, p)", "fn");
+        nothing_at(u, src, "callback(fn, p)", "p");
+        // String-literal linker-name attributes: string literals, not name tokens, not recorded.
+        nothing_at(u, src, "alias(\"aliased_target\")", "aliased_target");
+        nothing_at(u, src, "ifunc(\"ifunc_resolver\")", "ifunc_resolver");
+        nothing_at(u, src, "weakref(\"aliased_target\")", "aliased_target");
+    });
+}

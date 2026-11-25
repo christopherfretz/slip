@@ -1,4 +1,4 @@
-# A use under a macro no command defines, and an argument of a macro that never substitutes it: residue `not_compiled`. A use of the new name in the same place gives the inverse rename (the back oracle) residue of its own.
+# A use under a macro no command defines, and an argument of a macro that never substitutes it: residue `not_compiled`.
 spec: edits §8.4
 run: rename --from a::f --to g
 state: verified_with_residue
