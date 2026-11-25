@@ -378,8 +378,8 @@ entry that is not is `Malformed` at that entry, path
 `sections.transform.ownership.owned[i]`, `….readonly[i]` or
 `….rebuilt[i]`, checked before the list's order
 (`spec/landed/edits/WP-060.md` §3). The rows for `rebuilt` follow
-those for `readonly`, in this order: `rebuilt is not a canonical
-absolute path`, `rebuilt is not strictly ascending`, `a rebuilt entry
+those for `readonly`, in this order: `not a canonical absolute path`
+(the message of every list's row), `rebuilt is not strictly ascending`, `a rebuilt entry
 is /`, `a rebuilt entry is also in owned`, `a rebuilt entry is also in
 readonly`.
 
