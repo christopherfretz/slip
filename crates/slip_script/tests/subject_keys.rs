@@ -706,11 +706,13 @@ fn s7_5_rule2_an_expression_in_shared_decl_specifiers_has_no_holder() {
             assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Err(Why::NoHolder), "{decl}");
         });
     }
-    // One declarator: its own.
+    // One declarator: its own, and its operand unit (`g(1)` is an
+    // expression template argument that names `g`, WP-156), a unit
+    // derived from it that §7.5 rule 1 lists.
     let src = "constexpr int g(int x) { return x; }\ntemplate <int N> struct X {};\nX<g(1)> a;\n";
     with(src, |s, d| {
         let xs = calls(s, "g");
-        assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Ok(strs(&["a"])));
+        assert_eq!(keys_of(s, d, Value::Expression(xs[0])), Ok(strs(&["a", "a::<operands>"])));
     });
 }
 
