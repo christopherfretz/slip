@@ -50,3 +50,55 @@ good-13: none as pre
 bad-13:  mismatch derived_only_pre n::S::s<int>()::<definition>
 good-14: none as pre
 bad-14:  mismatch derived_only_pre n::S::s<int>()::<definition>
+# pre-15 to pre-20 (WP-155 second fix round, rule 1; the third review's
+# zz-rv155-j-hosts and zz-rv155-k-hosts2): the lost instantiation used a
+# class template or variable template whose initialiser holds a lambda
+# declaring a local class with `constructor` (pre-15 to pre-17) or `used`
+# (pre-18 to pre-20): a default member initialiser (pre-15, pre-18), a
+# `static constexpr` data member (pre-16, pre-19), a variable template
+# (pre-17, pre-20). The unit whose stream writes the initialiser is marked.
+good-15: none as pre
+bad-15:  mismatch derived_only_pre A<int>::x::<default_argument 0>
+good-16: none as pre
+bad-16:  mismatch derived_only_pre A<int>::k::<definition>
+good-17: none as pre
+bad-17:  mismatch derived_only_pre vt<int>::<definition>
+good-18: none as pre
+bad-18:  mismatch derived_only_pre A<int>::x::<default_argument 0>
+good-19: none as pre
+bad-19:  mismatch derived_only_pre A<int>::k::<definition>
+good-20: none as pre
+bad-20:  mismatch derived_only_pre vt<int>::<definition>
+# pre-21: pre-15's initialiser used by a user-written constructor. The
+# tree also has an unrelated `indeterminate A::A<T>()`
+# (kiln/pattern-mem-initializers); the finding named is the mark's.
+good-21: none as pre
+bad-21:  mismatch derived_only_pre A<int>::x::<default_argument 0>
+# pre-22 to pre-27: the mirrors of pre-15 to pre-20, h renamed s.
+good-22: none the rename is what adds the instantiation
+bad-22:  mismatch derived_only_post A<int>::x::<default_argument 0>
+good-23: none as pre-22
+bad-23:  mismatch derived_only_post A<int>::k::<definition>
+good-24: none as pre-22
+bad-24:  mismatch derived_only_post vt<int>::<definition>
+good-25: none as pre-22
+bad-25:  mismatch derived_only_post A<int>::x::<default_argument 0>
+good-26: none as pre-22
+bad-26:  mismatch derived_only_post A<int>::k::<definition>
+good-27: none as pre-22
+bad-27:  mismatch derived_only_post vt<int>::<definition>
+# pre-28 to pre-31 (the third review's zz-rv155-j-hosts pre-2 to pre-5,
+# found by the second way of the mark before the second fix round): a
+# lambda in a function template's default argument (pre-28), a generic
+# lambda whose call operator's specialisation has `used` (pre-29), local
+# classes three deep (pre-30), a static data member's out-of-class
+# initialiser (pre-31). pre-28 also gives an unrelated
+# `derived_indeterminate f<int>(int)::<default_argument 0>` (undeclared_local).
+good-28: none as pre
+bad-28:  mismatch derived_only_pre f<int>(int)::<definition>
+good-29: none as pre
+bad-29:  mismatch derived_only_pre n::S::s<int>()::<definition>
+good-30: none as pre
+bad-30:  mismatch derived_only_pre n::S::s<int>()::<definition>
+good-31: none as pre
+bad-31:  mismatch derived_only_pre A<int>::k::<definition>

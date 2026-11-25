@@ -104,11 +104,12 @@ fn emits(w: &mut Walk<'_>, e: DeclId, rep: DeclId, def: DeclId, var: bool) -> bo
     // A function definition with `constructor`, `destructor` or `used`
     // in its body or initialiser, at any depth (a local class's member
     // function, a lambda's call operator): emitted with it.
-    let hosted = {
+    let hit: Vec<DeclId> = {
         let hosts = hosts(w);
-        [e, rep, def].iter().any(|d| hosts.contains(d))
+        [e, rep, def].into_iter().filter(|d| hosts.contains(d)).collect()
     };
-    if hosted {
+    if !hit.is_empty() {
+        w.hosts_hit.extend(hit);
         return true;
     }
     if !var {
@@ -158,7 +159,7 @@ fn constant_initialised(w: &mut Walk<'_>, e: DeclId, rep: DeclId, ty: Option<Qua
         // `CXXConstructExpr` with no argument: constant when the
         // constructor it calls is trivial.
         Some(init) if ast.is_trivial_default_construction(init) => true,
-        Some(init) => plain_type(w, ty) && plain(w, init),
+        Some(init) => plain_type(w, ty) && plain(w, init, w.ast.types.is_reference(ty)),
     }
 }
 
@@ -198,13 +199,20 @@ fn plain_type(w: &Walk<'_>, q: QualType) -> bool {
 /// ```
 ///
 /// Anything else (a call, a read of a variable, a temporary, a cast
-/// written in the source) is not plainly constant.
-fn plain(w: &Walk<'_>, e: ExprId) -> bool {
+/// written in the source) is not plainly constant. An `object` or
+/// `function` named bare (a `DeclRefExpr` that is not an enumerator) is
+/// read as bound only where the initialiser binds it as it is: when the
+/// declared type is a reference (`reference`), at the root of the
+/// initialiser, under parentheses, under a list of one element or under
+/// a `NoOp` conversion, and nowhere else. The grammar does not rest on
+/// where Kiln places an lvalue-to-rvalue conversion.
+fn plain(w: &Walk<'_>, e: ExprId, reference: bool) -> bool {
     let ast = w.ast;
     let exprs = &ast.exprs;
-    let mut work = vec![e];
+    // Each node with whether a bare designator is bound there.
+    let mut work = vec![(e, reference)];
     let mut seen = 0;
-    while let Some(e) = work.pop() {
+    while let Some((e, bound)) = work.pop() {
         seen += 1;
         if seen > PLAIN_LIMIT {
             return false;
@@ -225,16 +233,16 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
                     return false;
                 }
             }
-            ExprKind::ParenExpr => work.push(exprs.operand(e)),
+            ExprKind::ParenExpr => work.push((exprs.operand(e), bound)),
             ExprKind::InitListExpr => {
                 let kids = exprs.children(e, &ast.lists);
                 if kids.len() > 1 {
                     return false;
                 }
-                work.extend(kids);
+                work.extend(kids.into_iter().map(|k| (k, bound)));
             }
             ExprKind::UnaryOperator => match exprs.unary_op(e) {
-                UnaryOp::Plus | UnaryOp::Minus => work.push(exprs.operand(e)),
+                UnaryOp::Plus | UnaryOp::Minus => work.push((exprs.operand(e), false)),
                 UnaryOp::AddrOf => {
                     if !designates(w, exprs.operand(e)) {
                         return false;
@@ -250,8 +258,8 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
                 | CastKind::IntegralToBoolean
                 | CastKind::FloatingToBoolean
                 | CastKind::BooleanToSignedIntegral
-                | CastKind::NullToPointer
-                | CastKind::NoOp => work.push(exprs.operand(e)),
+                | CastKind::NullToPointer => work.push((exprs.operand(e), false)),
+                CastKind::NoOp => work.push((exprs.operand(e), bound)),
                 CastKind::ArrayToPointerDecay | CastKind::FunctionToPointerDecay => {
                     if !designates(w, exprs.operand(e)) {
                         return false;
@@ -259,11 +267,12 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
                 }
                 _ => return false,
             },
-            // An enumerator; or, bound to a reference, an object or a
-            // function.
+            // An enumerator; or, bound to a reference as it is, an
+            // object or a function.
             ExprKind::DeclRefExpr => {
                 let d = exprs.decl(e);
-                if ast.decls.get(d).kind() != DeclKind::EnumConstant && !designates(w, e) {
+                if ast.decls.get(d).kind() != DeclKind::EnumConstant && !(bound && designates(w, e))
+                {
                     return false;
                 }
             }
@@ -275,7 +284,9 @@ fn plain(w: &Walk<'_>, e: ExprId) -> bool {
 
 /// `e`, through parentheses, names an object of static storage duration
 /// that is not thread-local and not a reference, a function, or is a
-/// string literal: its address is a constant.
+/// string literal: its address is a constant. An object is a declaration
+/// of kind `DeclKind::Var` exactly: a binding, a parameter or any other
+/// kind is refused.
 fn designates(w: &Walk<'_>, mut e: ExprId) -> bool {
     let ast = w.ast;
     let exprs = &ast.exprs;
@@ -303,36 +314,114 @@ fn designates(w: &Walk<'_>, mut e: ExprId) -> bool {
     false
 }
 
-/// The declarations around a local function with the attribute
-/// `constructor`, `destructor` or `used` (`Ast::inherited_attr`): every
+/// Function `f` has the attribute `constructor`, `destructor` or `used`
+/// (`Ast::inherited_attr`).
+fn attributed(w: &Walk<'_>, f: DeclId) -> bool {
+    let ast = w.ast;
+    let attr = |k: AttrKind| ast.inherited_attr(f, k).is_some();
+    attr(AttrKind::CONSTRUCTOR) || attr(AttrKind::DESTRUCTOR) || attr(AttrKind::USED)
+}
+
+/// Rule 1 of the mark (`spec/digest.md` §11, "The mark"): the walk is
+/// about to write in place, into the stream of the unit being written,
+/// the definition of `f`, a member of a local type (a local class's
+/// member function at any depth, a closure's call operator). When `f` has
+/// `constructor`, `destructor` or `used`, it is recorded in the unit's
+/// state ([`crate::walk::UnitState::emits`]), which a key, a content
+/// digest, a candidate stream and a nested unit put aside with the rest
+/// (`Walk::take_unit`). Nothing is recorded while numbering an owner,
+/// inside a key, a type digest or a profile, or in a stream whose local
+/// state is put aside (`local::detached`): these are no unit's own
+/// stream, or are memoised across units.
+pub(crate) fn in_place(w: &mut Walk<'_>, f: DeclId) {
+    if crate::local::numbering_mode(w)
+        || !w.unit_level()
+        || w.unit.expr.profile.is_some()
+        || w.unit.local.detached
+        || w.ast.decls.function(f).is_none()
+        || !attributed(w, f)
+        || crate::units::defining_decl(w, f).is_none()
+    {
+        return;
+    }
+    w.unit.emits.push(f);
+}
+
+/// Whether the unit of entity `e` whose stream was just written is marked
+/// by rule 1: its state met a function [`in_place`] recorded, and `e` is
+/// not templated (a pattern's unit is emitted by nothing). The functions
+/// are placed (`emitted::unplaced`). Read before the state is put back.
+pub(crate) fn written(w: &mut Walk<'_>, e: DeclId, emits: Vec<DeclId>) -> bool {
+    if emits.is_empty() || templated(w, e) {
+        return false;
+    }
+    w.emits_placed.extend(emits);
+    true
+}
+
+/// `digest.emitted.unplaced` (`spec/digest.md` §12): the local functions
+/// that are not templated, have a definition and have `constructor`,
+/// `destructor` or `used`, that neither way placed: rule 1 did not meet
+/// them in a unit's own stream, and no declaration around them is one the
+/// second way marked an entity for. Zero over every fixture; a shape that
+/// makes it non-zero is a mark too few the walk can see.
+pub(crate) fn unplaced(w: &mut Walk<'_>) -> u64 {
+    let ast = w.ast;
+    let mut n = 0;
+    for f in ast.decls.ids() {
+        if ast.decls.function(f).is_none()
+            || !w.is_local(f)
+            || templated(w, f)
+            || !attributed(w, f)
+            || crate::units::defining_decl(w, f).is_none()
+            || w.emits_placed.contains(&f)
+        {
+            continue;
+        }
+        let mut hit = false;
+        climb(w, f, |d| {
+            hit |= w.hosts_hit.contains(&d);
+            true
+        });
+        n += u64::from(!hit);
+    }
+    n
+}
+
+/// Calls `at` with every declaration around local function `d`: each
 /// enclosing declaration, and for a closure type the declaration its name
-/// is prefixed by (a variable a lambda initialises). Built once per walk.
+/// is prefixed by (a variable a lambda initialises); at most
+/// [`CTX_LIMIT`] steps. Returns early when `at` returns `false`.
+fn climb(w: &Walk<'_>, d: DeclId, mut at: impl FnMut(DeclId) -> bool) {
+    let ast = w.ast;
+    let mut next = ast.decls.get(d).ctx();
+    for _ in 0..CTX_LIMIT {
+        let Some(up) = next else { break };
+        if !at(up) {
+            break;
+        }
+        let lambda = ast.decls.record(up).and_then(|r| r.lambda);
+        if let Some(var) = lambda.and_then(|id| ast.exprs.lambdas.get(id).mangling.context) {
+            at(var);
+        }
+        next = ast.decls.get(up).ctx();
+    }
+}
+
+/// The second way of the mark: the declarations around a local function
+/// with the attribute `constructor`, `destructor` or `used` ([`climb`]).
+/// Built once per walk.
 fn hosts<'w>(w: &'w mut Walk<'_>) -> &'w HashSet<DeclId> {
     if w.emitted_hosts.is_none() {
         let ast = w.ast;
         let mut set = HashSet::new();
         for d in ast.decls.ids() {
-            if ast.decls.function(d).is_none() || !w.is_local(d) {
+            if ast.decls.function(d).is_none() || !w.is_local(d) || !attributed(w, d) {
                 continue;
             }
-            let attr = |k: AttrKind| ast.inherited_attr(d, k).is_some();
-            if !(attr(AttrKind::CONSTRUCTOR) || attr(AttrKind::DESTRUCTOR) || attr(AttrKind::USED))
-            {
-                continue;
-            }
-            let mut next = ast.decls.get(d).ctx();
-            for _ in 0..CTX_LIMIT {
-                let Some(up) = next else { break };
-                if !set.insert(up) {
-                    break;
-                }
-                let lambda = ast.decls.record(up).and_then(|r| r.lambda);
-                let by = lambda.and_then(|id| ast.exprs.lambdas.get(id).mangling.context);
-                if let Some(var) = by {
-                    set.insert(var);
-                }
-                next = ast.decls.get(up).ctx();
-            }
+            // A declaration met again ends the climb: what is above it is
+            // in the set already.
+            climb(w, d, |up| set.insert(up));
         }
         w.emitted_hosts = Some(set);
     }
@@ -383,11 +472,24 @@ fn class_of(w: &Walk<'_>, q: QualType) -> Held {
     Held::Unread
 }
 
-/// `d` is a template's pattern, a partial specialisation or a
+/// `d` is a template, a template's pattern, a partial specialisation or a
 /// declaration in a dependent context: nothing of it is emitted.
 fn templated(w: &Walk<'_>, d: DeclId) -> bool {
     let ast = w.ast;
     if ast.decls.get(d).has(DeclFlags::DEPENDENT_CTX) || ast.described_template(d).is_some() {
+        return true;
+    }
+    // A template itself (the unit of a template is keyed by it).
+    if matches!(
+        ast.decls.get(d).kind(),
+        DeclKind::FunctionTemplate
+            | DeclKind::ClassTemplate
+            | DeclKind::VarTemplate
+            | DeclKind::TypeAliasTemplate
+            | DeclKind::ClassTemplatePartialSpecialization
+            | DeclKind::VarTemplatePartialSpecialization
+            | DeclKind::Concept
+    ) {
         return true;
     }
     matches!(

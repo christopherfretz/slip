@@ -69,6 +69,9 @@ impl Walk<'_> {
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
         crate::own_spelling::write_unit_list(self, &mut s);
+        // What rule 1 of the mark met, read when the unit is written
+        // (`units::write`).
+        let emits = std::mem::take(&mut self.unit.emits);
         self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);
@@ -78,6 +81,9 @@ impl Walk<'_> {
         self.content_in_progress.remove(&e);
         if self.aborts == aborts {
             self.content.insert(e, h);
+        }
+        if !emits.is_empty() {
+            self.content_emits.insert(e, emits);
         }
         h
     }

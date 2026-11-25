@@ -1514,11 +1514,34 @@ so it shares the number. WP-141 landed beside it saying "`scheme` stays
 2" (`spec/landed/digest/WP-141.md`): written before this move, it reads
 as "no move of its own"; its changes are under 3 for the same reason.
 
-**The mark** (`crates/slip_digest/src/emitted.rs`). The entities read are
-the variables (`DeclKind::Var`) and functions that are not local (a
-block-scope `extern` declaration is the namespace's) and not a template's
-pattern, a partial specialisation or in a dependent context. One is
-marked when any of these holds:
+**The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
+either of two ways; the mark is their union.
+
+**In place.** A unit is marked when its own stream writes in place, in
+the full walk, the definition of a function with the attribute
+`constructor`, `destructor` or `used`: a member of a local type written
+where the type is declared (a local class's member function, at any
+depth, also inside a lambda's body; a closure type's call operator), the
+function itself in a dependent context or not. That holds whatever the
+unit's kind: an entity's own unit, a resolved unit `definition`, a
+`default_argument` unit (the initialiser of a field an instantiation
+made), a content-keyed unit; except a unit whose entity is a template, a
+template's pattern, a partial specialisation or in a dependent context,
+which is never marked. The walk records the function in the state of the
+unit being written (§4.3), which a key, a content digest, a candidate
+stream (§2.2) and any other stream written with a fresh unit state put
+aside and restore with the rest; nothing is recorded while an owner is
+numbered (§4.3), inside a key, a type digest or a profile, or in a stream
+whose local state is put aside. So the initialiser of a variable, of a
+static data member or of a field, and the body of a function, mark the
+unit that holds them, wherever the lambda in them is.
+
+**By entity.** The entities read are the variables (`DeclKind::Var`) and
+functions that are not local (a block-scope `extern` declaration is the
+namespace's) and not a template's pattern, a partial specialisation or in
+a dependent context. The unit marked is the entity's resolved unit
+`definition` when there is one, else its own unit when the entity is
+defined. One is marked when any of these holds:
 
 1. It, or its defining declaration, has the attribute `used`.
 2. Its body or initialiser declares, at any depth, a function with the
@@ -1572,13 +1595,33 @@ sizeof  := UnaryExprOrTypeTraitExpr: sizeof, alignof, __alignof
 address := & designator                     UnaryOperator AddrOf
          | decay of designator              ImplicitCastExpr ArrayToPointerDecay,
                                             FunctionToPointerDecay
-         | designator                       a DeclRefExpr bound as it is (a reference)
+         | designator                       a DeclRefExpr bound as it is: see below
 designator := ( designator ) | StringLiteral
          | DeclRefExpr naming a function
          | DeclRefExpr naming a variable (DeclKind::Var) that is not
            thread-local, not of reference type, and of static storage
            duration (not local, or a static local)
 ```
+
+A bare designator (a `DeclRefExpr` that names no enumerator) is `plain`
+only where it is bound as it is: the declared type is a reference, and the
+`DeclRefExpr` is the root of the initialiser or is reached from the root
+through parentheses, lists of one element and `NoOp` conversions alone.
+Anywhere else (under a sign, under another conversion, or for a declared
+type that is not a reference) a `DeclRefExpr` is an enumerator or the
+initialiser is not plain. The grammar does not rest on Kiln placing an
+lvalue-to-rvalue conversion on a read. `designator` reads the declaration
+kind `DeclKind::Var` exactly: a binding, a parameter or a declaration of
+any other kind is refused.
+
+**What neither way placed.** The counter `digest.emitted.unplaced` (§12)
+is the number of local functions that are not in a dependent context,
+have a definition and have `constructor`, `destructor` or `used`, which
+neither way placed: the first did not meet them in a unit's own stream,
+and no declaration around them (rule 2's climb) is one the second way
+marked an entity for. It is zero over every fixture; a shape that makes
+it non-zero is a mark too few the walk can see, and is listed in
+`spec/landed/verify/WP-155.md`.
 
 A mark too many is a finding too many; a mark too few a wrong `verified`.
 The marks too many that remain are listed in `spec/landed/verify/WP-155.md`
@@ -1645,6 +1688,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units` | units, declared and derived |
 | `digest.units.derived` | derived units |
 | `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
+| `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |

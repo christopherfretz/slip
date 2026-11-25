@@ -1,0 +1,2 @@
+marked-a A<int>::k::<definition>
+marked-a U<int>::k::<definition>

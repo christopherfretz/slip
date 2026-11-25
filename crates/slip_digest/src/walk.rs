@@ -72,6 +72,11 @@ pub(crate) struct UnitState {
     /// stream reads every declaration of its entity, those an
     /// instantiation made out of line included (`Walk::redecls`).
     pub definition: bool,
+    /// The functions with `constructor`, `destructor` or `used` whose
+    /// definitions the stream wrote in place, in the full walk (rule 1 of
+    /// the mark "emitted unreferenced", `emitted::in_place`, WP-155): the
+    /// unit is marked when there is one.
+    pub emits: Vec<DeclId>,
     /// The stream's holder and the local types it declared
     /// (`local::UnitLocals`).
     pub local: crate::local::UnitLocals,
@@ -289,6 +294,17 @@ pub(crate) struct Walk<'a> {
     /// `constructor`, `destructor` or `used`, built when the mark first
     /// needs it (`emitted::hosts`, WP-155).
     pub emitted_hosts: Option<HashSet<DeclId>>,
+    /// What [`UnitState::emits`] held for each content-keyed entity's
+    /// stream (`Walk::content_hash`, memoised), read when its unit is
+    /// written.
+    pub content_emits: HashMap<DeclId, Vec<DeclId>>,
+    /// The local functions with `constructor`, `destructor` or `used` the
+    /// mark placed: met by rule 1 in a unit's own stream, or reached by
+    /// [`crate::emitted`]'s second way (`emitted::unplaced`).
+    pub emits_placed: HashSet<DeclId>,
+    /// The declarations the second way marked an entity for, as `hosts`
+    /// holds them.
+    pub hosts_hit: HashSet<DeclId>,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -388,6 +404,9 @@ impl<'a> Walk<'a> {
             lets: None,
             declared_operators: None,
             emitted_hosts: None,
+            content_emits: HashMap::new(),
+            emits_placed: HashSet::new(),
+            hosts_hit: HashSet::new(),
             name_values: None,
             by_value: 0,
             in_constant: 0,
@@ -694,6 +713,11 @@ pub(crate) fn run_kept<R>(
     let (digests, totals) = crate::groups::build(&written, &options.detail);
     let causes = causes(&written);
     let mut counters = crate::groups::counters(&totals, collisions, w.bytes, &causes);
+    // Rule 3 of the second fix round of WP-155: what neither way of the
+    // mark placed, always counted (`emitted::unplaced`).
+    let unplaced = crate::emitted::unplaced(&mut w);
+    counters
+        .push(slip_model::Counter { name: "digest.emitted.unplaced".to_owned(), value: unplaced });
     crate::ns_refs::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);
