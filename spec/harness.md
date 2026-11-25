@@ -595,7 +595,8 @@ nothing observable is turned off per test with `oracle: no-mutation
 
 ```
 cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-        [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
+        [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+        [-j <n>] [--slip <path>]
 ```
 
 runs `slip rename` over the corpus's database (§8) with a store under the
@@ -652,17 +653,19 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `--relative-to`, so uses in projects the corpus does not configure are
   residue. A given `--owned` must be under `src/` (real paths), or the
   command stops before `slip` runs.
-- **Census pre-flight (`--expect verified`, `--expect verified_with_residue`,
-  `--accept`).** Runs that need verification (`--expect verified`,
-  `--expect verified_with_residue`, or `--accept`, except when `--expect`
-  explicitly names `refused`, `not_verified` or `incomplete`) first run
+- **Census pre-flight.** Every run whose expected state is `verified` or
+  `verified_with_residue` — including runs with no `--expect` (whose
+  check 1 defaults to `verified` or `verified_with_residue`) — first runs
   the census (§9.5) into `<root>/<name>/stores/census` with the same `slip`
-  and `-j`, print the census's last line, and refuse to start (exit status
+  and `-j`, prints the census's last line, and refuses to start (exit status
   1, one line naming `cargo xtask census <corpus>`) if the census is not
-  clean, unless `--skip-census` is given (which skips the check and appends
-  ` (census skipped)` to the final `corpus rename:` line). `--expect refused`
-  and `--expect not_verified` do not run the census. The census store holds
-  transform-free round-0 map shards and is not reused as `slip-store/`,
+  clean. Only runs whose `--expect` names a non-verified state (`refused`,
+  `not_verified`, or `incomplete`) do not run the census. Passing
+  `--skip-census` bypasses the check, prints `census: skipped (--skip-census)`
+  up front before running `slip rename`, records `options.skip_census: true`
+  in the result file, and appends ` (census skipped)` to the final
+  `corpus rename: ok` or `corpus rename: FAILED (…)` line. The census store
+  holds transform-free round-0 map shards and is not reused as `slip-store/`,
   which holds round-1+ transform shards.
 - **The run.** `slip rename` is given `--kind` and `-j` when the command
   is; its lines are printed as they come. Status 2 or 3, or a run that
@@ -714,7 +717,7 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   (§9.1's rule); `removed <path>` or `kept <path>` is printed for each.
 - **The result file** holds `corpus`, `pin`, `from`, `to`, `kind`,
   `options` (`owned` relative to `src/`, `expect`, `accept`, `build`,
-  `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
+  `skip_census`, `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
   `transform`, `edits`, `declared`, `overlay` and `result`, `checks`
   (`check`, `outcome`, `detail`), then the exact members `state`,
   `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
@@ -1421,10 +1424,10 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
 cargo xtask census <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>] [--store <dir>]
 ```
 
-Counts indeterminate keys and non-`ok` shards over a configured corpus before
-a run that needs `verified` (`docs/demos/demo-2.md` §1, §6.5). Locating
-`slip`, checking that `<corpus>` is configured, and applying `--only`,
-`--limit` and `-j` follow §9.
+Counts indeterminate keys, unparsed observers, and unclean non-`ok` shards
+over a configured corpus before a run that needs `verified`
+(`docs/demos/demo-2.md` §1, §6.5). Locating `slip`, checking that `<corpus>`
+is configured, and applying `--only`, `--limit` and `-j` follow §9.
 
 - **Store and reuse.** Default store: `<corpus dir>/stores/census`;
   `--store <dir>` overrides it. The command reads `<store>/census.json` and
@@ -1440,43 +1443,68 @@ a run that needs `verified` (`docs/demos/demo-2.md` §1, §6.5). Locating
   5. `selection.only` and `selection.limit` match the current arguments;
   6. `plan` matches `slip plan --db <database> --store <store>`;
   7. the newest map run of `plan` in `<store>` is round 0, has no missing
-     shards, and covers the exact selected observer set.
-  When any check fails (or when in doubt), `slip parse` runs afresh: if
-  `<store>` lies strictly under `<corpus dir>`, it is removed first via
-  `slip_run::remove_tree`; if `--store` names an existing non-reusable
-  directory outside `<corpus dir>`, the command fails without deleting it.
+     shards, and covers the exact selected observer set;
+  8. every reused shard records `inputs` and every recorded input file still
+     exists on disk as a regular file with the exact recorded size and
+     content digest (catching header edits, reconfigured/regenerated headers,
+     and updated system headers that the plan id does not cover).
+  When any check fails (or when in doubt), `slip parse` runs afresh. An
+  existing non-reusable `<store>` is removed (via `slip_run::remove_tree`)
+  **only** if it is the default store (`<corpus dir>/stores/census`) or a
+  direct child directory of `<corpus dir>/stores/` containing a regular
+  `census.json` file; for any other existing path (including `<corpus dir>/src`,
+  a sibling store without `census.json`, a nested subdirectory under
+  `stores/`, or a path outside `<corpus dir>`), the command refuses with
+  exit status 2 without deleting anything.
 - **Aggregation.** Each selected observer's map shard is read from the store
   through `perf::load` and verified against the run record via
   `invariants::side`.
-  - For each `ok` shard: every non-zero `digest.indeterminate.<cause>`
-    counter (including `pending.<area>`) is summed into `causes` (keys,
-    observers with at least one, and the first 5 such observers sorted by
-    main file path bytes), and every non-zero `digest.cause.<cause>.<word>`
-    counter is summed into `cause_texts` (keys and observers). To avoid
-    double-counting `pending` alongside `pending.<area>`, total
-    `indeterminate_keys` sums top-level `digest.indeterminate.<cause>`
-    counters (or `pending.<area>` if `pending` is absent, and at least
-    `digest.indeterminate` when present).
-  - Every selected observer whose `side` is not `ok` is counted in `not_ok`
-    and grouped in `not_ok_by_status` (`diagnosed`, `rejected`, `failed`,
-    or `incomplete` for `NoJob`/`NoShard`/`Absent`/`Other`).
+  - For each `ok` shard with `digests` present: every non-zero
+    `digest.indeterminate.<cause>` counter (including `pending.<area>` and
+    any other dotted sub-cause) is summed into `causes` (keys, observers
+    with at least one, and the first 5 such observers sorted by main file
+    path bytes), and every non-zero `digest.cause.<cause>.<word>` counter
+    is summed into `cause_texts` (keys and observers). To avoid
+    double-counting dotted sub-causes alongside their top-level parent
+    (such as `pending` and `pending.<area>`), total `indeterminate_keys`
+    sums top-level `digest.indeterminate.<cause>` counters plus any dotted
+    `digest.indeterminate.<parent>.<sub>` counter whose `<parent>` is absent
+    in that shard, taking `max` with `digest.indeterminate` when present.
+  - An `ok` map shard with `digests` absent (`spec/verify.md` §5.3 P3) is
+    counted in `not_ok` under status `no_digests` and makes the census
+    unclean.
+  - `diagnosed` and `rejected` shards (unparsed observers) are counted in
+    `unparsed` and grouped in `unparsed_by_status` (`diagnosed`,
+    `rejected`); they are listed with their counts and noted in the last
+    line, but do **not** make the census unclean (`corpus rename` passes
+    `--allow-unparsed`, and unparsed coverage is a separate check).
+  - `failed` shards and missing/mismatched shards (`NoJob`, `NoShard`,
+    `Absent`, `Other`, grouped as `incomplete`) are counted in `not_ok` and
+    `not_ok_by_status` and make the census unclean.
+- **Cleanliness.** A census is clean iff `observers > 0`, `not_ok == 0`,
+  `indeterminate_keys == 0`, `indeterminate_observers == 0`, and
+  `causes.is_empty()`.
 - **Output.** Standard output prints `census <corpus>`, `plan <id>`,
-  `observers`, `ok`, `not_ok` (and per-status counts), `indeterminate_keys`,
-  `indeterminate_observers`, `causes` (sorted by keys descending, name
-  ascending; up to 5 observer paths each), `cause_texts` (keys descending,
-  name ascending), `run <path>`, `json <path>`, and the last line:
-  - `census: clean (<n> observers)` when `observers > 0`, `not_ok == 0`,
-    and `indeterminate_keys == 0`;
+  `observers`, `ok`, `unparsed` (and per-status counts), `not_ok` (and
+  per-status counts), `indeterminate_keys`, `indeterminate_observers`,
+  `causes` (sorted by keys descending, name ascending; up to 5 observer
+  paths each), `cause_texts` (keys descending, name ascending),
+  `run <path>`, `json <path>`, and the last line:
+  - `census: clean (<n> observers)` when clean and `unparsed == 0`, or
+    `census: clean (<n> observers; <u> unparsed (not counted))` when clean
+    and `unparsed > 0`;
   - `census: <k> indeterminate keys in <m> of <n> observers, <c> causes; <f> not ok`
-    otherwise (with `(no observer selected)` when `n == 0`);
+    when not clean (with `; <u> unparsed (not counted)` before any selection
+    suffix when `unparsed > 0`, or `(no observer selected)` when `n == 0`);
   - suffixed with ` (selection)` when `--only` or `--limit` was given.
 - **JSON (`<store>/census.json`).** Written atomically (`census.json.tmp`
   renamed into place) with top-level keys `format` (`"slip.census.v1"`),
   `corpus`, `plan`, `run`, `tool_slip`, `tool_kiln`, `kiln_pin`,
   `slip_digest`, `selection` (`only`, `limit`), `clean`, `observers`, `ok`,
-  `not_ok`, `not_ok_by_status`, `indeterminate_keys`,
-  `indeterminate_observers`, `causes` (array of `{cause, keys, observers,
-  sample_observers}`), and `cause_texts` (array of `{name, keys, observers}`).
+  `unparsed`, `unparsed_by_status`, `not_ok`, `not_ok_by_status`,
+  `indeterminate_keys`, `indeterminate_observers`, `causes` (array of
+  `{cause, keys, observers, sample_observers}`), and `cause_texts` (array
+  of `{name, keys, observers}`).
 - **Exit status:** `0` clean, `1` not clean, `2` for any command or usage
   error.
 
@@ -1998,6 +2026,21 @@ such tests prints which kind each root is, and fails in the same case.
   output of `a` and `b` and their exit statuses; `check_identity` for
   each state; a `slip` that exits 3; a corpus that is not configured;
   `remove_tree` refusing a path outside the corpus directory.
+- `xtask/tests/census.rs` — §9.5, over stores the test writes and a fake
+  `slip` (emitting the counters of `ExprKind/CXXReflectExpr` from
+  `crates/slip_digest/tests/indeterminate/ExprKind/CXXReflectExpr/`):
+  `summarize` over clean, indeterminate (including `pending` +
+  `pending.<area>` without double-counting, dotted non-pending causes,
+  total-only `digest.indeterminate`, sample observers capped at 5 by
+  path), unparsed (`diagnosed`, `rejected` listed and not counted toward
+  uncleanliness for both `u == 0` and `u > 0`), unclean shards (`failed`,
+  `no_digests`, `NoJob`, `NoShard`, `Absent`, `Other`), `is_clean` guards,
+  store reuse and invalidation (`slip_digest`, `plan`, `selection`,
+  round 0, missing shards, observer set, and recorded shard inputs on
+  disk), `--store` deletion guard (refusing `<corpus>/src`, sibling
+  stores without `census.json`, and nested directories; allowing default
+  store and direct children of `stores/` with `census.json`), `--only`
+  `(selection)`, binary exit statuses (0, 1, 2), and usage errors.
 - `xtask/tests/demo.rs` — §10 without a corpus: `demo.toml`; every form
   and every error of `edit.txt`; `plan_edit` and `build_tree` on a tree
   the test makes (§11.3), with the pristine file unchanged and never

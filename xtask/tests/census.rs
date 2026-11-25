@@ -5,23 +5,29 @@
 //! the store-reuse rule, and the binary's exit statuses (0, 1, 2).
 
 #![cfg(target_os = "linux")]
-#![allow(clippy::many_single_char_names)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "integration tests set up fixture stores and check multiple reuse and status cases"
+)]
 
 mod common;
 
 use common::Fixture;
 use slip_exec::store::{Access, Store};
 use slip_model::digests::{self, Digests, Group, GroupClass};
+use slip_model::hash::content_digest;
 use slip_model::json;
 use slip_model::{
     Command as Cmd, Configuration, Counter, Digest, End, FileRef, Job, Language, Observer, Origin,
     Outcome, Phase, Plan, Run, RunRecord, Shard, Status, formats,
 };
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use xtask::census::{self, Census, FORMAT, SAMPLE_OBSERVERS};
+use xtask::census::{self, CauseRow, Census, FORMAT, SAMPLE_OBSERVERS};
 use xtask::corpus::{self, Layout, rows};
 use xtask::invariants::{Env, Failure};
 use xtask::perf::{Loaded, RunPath};
@@ -109,6 +115,7 @@ fn shard_with(observer: Digest, status: Status, counters: Vec<(&str, u64)>) -> S
         names: (status == Status::Ok).then(slip_model::names::Names::default),
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -208,10 +215,12 @@ fn s9_5_summarize_causes_and_non_ok() {
     assert!(!c.is_clean());
     assert_eq!(c.observers, 9);
     assert_eq!(c.ok, 6);
-    assert_eq!(c.not_ok, 3);
-    assert_eq!(c.not_ok_by_status.get("diagnosed"), Some(&1));
+    assert_eq!(c.unparsed, 1);
+    assert_eq!(c.unparsed_by_status.get("diagnosed"), Some(&1));
+    assert_eq!(c.not_ok, 2);
     assert_eq!(c.not_ok_by_status.get("failed"), Some(&1));
     assert_eq!(c.not_ok_by_status.get("incomplete"), Some(&1));
+    assert_eq!(c.not_ok_by_status.get("diagnosed"), None);
     // 6 unsupported + 2 pending = 8 keys (NOT 10!).
     assert_eq!(c.indeterminate_keys, 8);
     assert_eq!(c.indeterminate_observers, 6);
@@ -238,12 +247,257 @@ fn s9_5_summarize_causes_and_non_ok() {
     assert_eq!(c.cause_texts[0].observers, 6);
     assert_eq!(
         c.last_line(false),
-        "census: 8 indeterminate keys in 6 of 9 observers, 3 causes; 3 not ok"
+        "census: 8 indeterminate keys in 6 of 9 observers, 3 causes; 2 not ok; 1 unparsed (not counted)"
     );
     assert_eq!(
         c.last_line(true),
-        "census: 8 indeterminate keys in 6 of 9 observers, 3 causes; 3 not ok (selection)"
+        "census: 8 indeterminate keys in 6 of 9 observers, 3 causes; 2 not ok; 1 unparsed (not counted) (selection)"
     );
+}
+
+// §9.5: unparsed observers (`diagnosed`, `rejected`) are listed and noted in
+// the last line without making the census unclean; `ok` without `digests`
+// (`no_digests`) and `NoJob`/`NoShard`/`Absent`/`Other` (`incomplete`) are
+// counted in `not_ok` and make the census unclean.
+#[test]
+fn s9_5_unparsed_clean_and_not_ok_statuses() {
+    // 1. Clean with `u == 0`.
+    let p = plan_of(&["/src/a.cpp", "/src/b.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let loaded = loaded_of(
+        p,
+        vec![
+            shard_with(ids[0], Status::Ok, vec![("digest.indeterminate", 0)]),
+            shard_with(ids[1], Status::Ok, vec![("digest.indeterminate", 0)]),
+        ],
+        vec![],
+    );
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(c.is_clean());
+    assert_eq!(c.unparsed, 0);
+    assert_eq!(c.last_line(false), "census: clean (2 observers)");
+    assert_eq!(c.last_line(true), "census: clean (2 observers) (selection)");
+
+    // 2. Clean with `u > 0` (`diagnosed` + `rejected` do NOT make census unclean).
+    let p = plan_of(&["/src/a.cpp", "/src/diag.cpp", "/src/rej.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let loaded = loaded_of(
+        p,
+        vec![
+            shard_with(ids[0], Status::Ok, vec![("digest.indeterminate", 0)]),
+            shard_with(ids[1], Status::Diagnosed, vec![]),
+            shard_with(ids[2], Status::Rejected, vec![]),
+        ],
+        vec![],
+    );
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(c.is_clean());
+    assert_eq!(c.ok, 1);
+    assert_eq!(c.unparsed, 2);
+    assert_eq!(c.unparsed_by_status.get("diagnosed"), Some(&1));
+    assert_eq!(c.unparsed_by_status.get("rejected"), Some(&1));
+    assert_eq!(c.not_ok, 0);
+    assert_eq!(c.last_line(false), "census: clean (3 observers; 2 unparsed (not counted))");
+    assert_eq!(
+        c.last_line(true),
+        "census: clean (3 observers; 2 unparsed (not counted)) (selection)"
+    );
+
+    // 3. `ok` map shard with `digests: None` (`spec/verify.md` §5.3 P3) -> `no_digests`, unclean.
+    let p = plan_of(&["/src/nodig.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let mut no_dig = shard_with(ids[0], Status::Ok, vec![]);
+    no_dig.digests = None;
+    no_dig.names = None;
+    let loaded = loaded_of(p, vec![no_dig], vec![]);
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.ok, 0);
+    assert_eq!(c.not_ok, 1);
+    assert_eq!(c.not_ok_by_status.get("no_digests"), Some(&1));
+
+    // 4. Each incomplete `Side` variant individually counted: `NoJob`, `NoShard`, `Absent`, `Other`.
+    // 4a. `NoJob`.
+    let p = plan_of(&["/src/nojob.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let loaded = loaded_of(p, vec![], vec![]);
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.not_ok, 1);
+    assert_eq!(c.not_ok_by_status.get("incomplete"), Some(&1));
+
+    // 4b. `NoShard`.
+    let p = plan_of(&["/src/noshard.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let no_shard_job = Job {
+        observer: ids[0],
+        attempt: 1,
+        end: End::Crashed,
+        shard: None,
+        queued_ns: 0,
+        wall_ns: 1_000,
+        cpu_ns: 1_000,
+        peak_rss: 1 << 20,
+        estimate: 1 << 20,
+    };
+    let loaded = loaded_of(p, vec![], vec![no_shard_job]);
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.not_ok, 1);
+    assert_eq!(c.not_ok_by_status.get("incomplete"), Some(&1));
+
+    // 4c. `Absent` (job names a shard id, store has `None`).
+    let p = plan_of(&["/src/absent.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let absent_job = Job {
+        observer: ids[0],
+        attempt: 1,
+        end: End::Completed,
+        shard: Some(d(0x55)),
+        queued_ns: 0,
+        wall_ns: 1_000,
+        cpu_ns: 1_000,
+        peak_rss: 1 << 20,
+        estimate: 1 << 20,
+    };
+    let mut loaded = loaded_of(p, vec![], vec![absent_job]);
+    loaded.shards.insert(ids[0], None);
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.not_ok, 1);
+    assert_eq!(c.not_ok_by_status.get("incomplete"), Some(&1));
+
+    // 4d. `Other` (job names a different shard content id than the shard in the store).
+    let p = plan_of(&["/src/other.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let sh = shard_with(ids[0], Status::Ok, vec![("digest.indeterminate", 0)]);
+    let mut loaded = loaded_of(p, vec![sh], vec![]);
+    loaded.record.jobs[0].shard = Some(d(0x66));
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.not_ok, 1);
+    assert_eq!(c.not_ok_by_status.get("incomplete"), Some(&1));
+}
+
+// §9.5: `is_clean` requires `causes.is_empty()` and
+// `indeterminate_observers == 0`, dotted non-pending `digest.indeterminate.x.y`
+// is counted without a top-level total, and `digest.indeterminate` alone is
+// respected via `.max(total_counter)`.
+#[test]
+fn s9_5_is_clean_guards_and_counter_edge_cases() {
+    // 1. Dotted non-pending `digest.indeterminate.x.y` with no top-level counter.
+    let p = plan_of(&["/src/dotted.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let loaded = loaded_of(
+        p,
+        vec![shard_with(ids[0], Status::Ok, vec![("digest.indeterminate.x.y", 2)])],
+        vec![],
+    );
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.indeterminate_keys, 2);
+    assert_eq!(c.indeterminate_observers, 1);
+    assert_eq!(c.causes.len(), 1);
+    assert_eq!(c.causes[0].cause, "x.y");
+
+    // 2. Top-level `digest.indeterminate` alone (no `digest.indeterminate.<cause>`):
+    //    kills dropping `.max(total_counter)`.
+    let p = plan_of(&["/src/total.cpp"]);
+    let ids: Vec<Digest> = p.observers.iter().map(|o| o.id).collect();
+    let loaded = loaded_of(
+        p,
+        vec![shard_with(ids[0], Status::Ok, vec![("digest.indeterminate", 4)])],
+        vec![],
+    );
+    let c = census::summarize(&loaded, &ids).unwrap();
+    assert!(!c.is_clean());
+    assert_eq!(c.indeterminate_keys, 4);
+    assert_eq!(c.indeterminate_observers, 1);
+    assert!(c.causes.is_empty());
+
+    // 3. Direct `Census::is_clean()` guards: `indeterminate_observers > 0` and
+    //    `!causes.is_empty()` independently mark a census unclean even when
+    //    `indeterminate_keys == 0`.
+    let base = Census {
+        observers: 1,
+        ok: 1,
+        unparsed: 0,
+        unparsed_by_status: BTreeMap::new(),
+        not_ok: 0,
+        not_ok_by_status: BTreeMap::new(),
+        indeterminate_keys: 0,
+        indeterminate_observers: 0,
+        causes: Vec::new(),
+        cause_texts: Vec::new(),
+    };
+    assert!(base.is_clean());
+
+    let mut only_indet_obs = base.clone();
+    only_indet_obs.indeterminate_observers = 1;
+    assert!(!only_indet_obs.is_clean());
+
+    let mut only_causes = base.clone();
+    only_causes.causes.push(CauseRow {
+        cause: "x.y".to_owned(),
+        keys: 0,
+        observers: 0,
+        sample_observers: Vec::new(),
+    });
+    assert!(!only_causes.is_clean());
+
+    let mut zero_obs = base.clone();
+    zero_obs.observers = 0;
+    assert!(!zero_obs.is_clean());
+
+    let mut only_unparsed = base;
+    only_unparsed.unparsed = 2;
+    assert!(only_unparsed.is_clean());
+}
+
+// §9.5 end-to-end: `diagnosed` + `rejected` yield a clean census (exit 0,
+// `census.json` lists `unparsed` and `unparsed_by_status`); an `ok` map shard
+// without `digests` yields an unclean census (`no_digests`, exit 1).
+#[test]
+fn s9_5_unparsed_and_no_digests_end_to_end() {
+    let w = World::new("census-unparsed-e2e");
+    let obs = &w.plan.observers;
+    w.seed(&[
+        shard_with(obs[0].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+        shard_with(obs[1].id, Status::Diagnosed, vec![]),
+        shard_with(obs[2].id, Status::Rejected, vec![]),
+    ]);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(out.contains("unparsed 2\n  diagnosed 1\n  rejected 1\n"), "{out}");
+    assert!(out.ends_with("census: clean (3 observers; 2 unparsed (not counted))\n"), "{out}");
+    let doc =
+        json::parse(&std::fs::read(w.f.path("corpora/toy/stores/census/census.json")).unwrap())
+            .unwrap();
+    assert_eq!(doc.get("clean").unwrap().as_bool(), Some(true));
+    assert_eq!(doc.get("unparsed").unwrap().as_u64(), Some(2));
+    assert_eq!(doc.get("unparsed_by_status").unwrap().get("diagnosed").unwrap().as_u64(), Some(1));
+    assert_eq!(doc.get("unparsed_by_status").unwrap().get("rejected").unwrap().as_u64(), Some(1));
+    assert_eq!(doc.get("not_ok").unwrap().as_u64(), Some(0));
+
+    let w = World::new("census-no-digests-e2e");
+    let obs = &w.plan.observers;
+    let mut no_dig = shard_with(obs[0].id, Status::Ok, vec![]);
+    no_dig.digests = None;
+    no_dig.names = None;
+    w.seed(&[
+        no_dig,
+        shard_with(obs[1].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+        shard_with(obs[2].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+    ]);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(out.contains("not_ok 1\n  no_digests 1\n"), "{out}");
+    let doc =
+        json::parse(&std::fs::read(w.f.path("corpora/toy/stores/census/census.json")).unwrap())
+            .unwrap();
+    assert_eq!(doc.get("clean").unwrap().as_bool(), Some(false));
+    assert_eq!(doc.get("not_ok").unwrap().as_u64(), Some(1));
+    assert_eq!(doc.get("not_ok_by_status").unwrap().get("no_digests").unwrap().as_u64(), Some(1));
 }
 
 // ---------------------------------------------------------------- fixture
@@ -320,16 +574,20 @@ impl World {
     }
 
     fn seed(&self, shards: &[Shard]) {
+        self.seed_plan(&self.plan, self.plan_id, shards);
+    }
+
+    fn seed_plan(&self, plan: &Plan, plan_id: Digest, shards: &[Shard]) {
         let store_dir = self.f.path("fake/store");
         let _ = std::fs::remove_dir_all(&store_dir);
         let st = Store::open(&store_dir, Access::Exclusive).unwrap();
-        let published = st.publish_plan(&self.plan.to_bytes()).unwrap();
-        assert_eq!(published, self.plan_id);
+        let published = st.publish_plan(&plan.to_bytes()).unwrap();
+        assert_eq!(published, plan_id);
         let mut jobs = Vec::new();
         for s in shards {
             let bytes = s.to_bytes();
             let sid = formats::content_id(&bytes).unwrap();
-            st.publish_shard(&self.plan_id, Phase::Map, 0, &s.observer, &bytes).unwrap();
+            st.publish_shard(&plan_id, Phase::Map, 0, &s.observer, &bytes).unwrap();
             jobs.push(Job {
                 observer: s.observer,
                 attempt: 1,
@@ -347,7 +605,7 @@ impl World {
             run: Run {
                 tool_slip: "0.0.0".into(),
                 tool_kiln: "1.3.0".into(),
-                plan: self.plan_id,
+                plan: plan_id,
                 phase: Phase::Map,
                 round: 0,
                 started_unix_ns: started,
@@ -359,15 +617,15 @@ impl World {
             },
             jobs,
         };
-        st.publish_run(&self.plan_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
+        st.publish_run(&plan_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
         let rel = st
-            .run_path(&self.plan_id, Phase::Map, 0, started)
+            .run_path(&plan_id, Phase::Map, 0, started)
             .strip_prefix(&store_dir)
             .unwrap()
             .to_string_lossy()
             .into_owned();
         drop(st);
-        std::fs::write(self.f.path("fake/plan"), self.plan_id.to_string()).unwrap();
+        std::fs::write(self.f.path("fake/plan"), plan_id.to_string()).unwrap();
         std::fs::write(self.f.path("fake/run.rel"), rel).unwrap();
     }
 
@@ -416,6 +674,7 @@ fn s9_5_clean_and_reuse_rule() {
     assert_eq!(doc.get("format").unwrap().as_str(), Some(FORMAT));
     assert_eq!(doc.get("clean").unwrap().as_bool(), Some(true));
     assert_eq!(doc.get("observers").unwrap().as_u64(), Some(3));
+    assert_eq!(doc.get("unparsed").unwrap().as_u64(), Some(0));
     assert_eq!(doc.get("not_ok").unwrap().as_u64(), Some(0));
     assert_eq!(doc.get("indeterminate_keys").unwrap().as_u64(), Some(0));
 
@@ -435,10 +694,350 @@ fn s9_5_clean_and_reuse_rule() {
     assert_eq!(w.parse_calls(), 2, "must re-parse when slip binary changes");
 }
 
-// §9.5: indeterminate unit, non-ok shard, `--only` selection, and binary exit
-// statuses (0 clean, 1 not clean, 2 command/usage error).
+// §9.5: every store-reuse invalidation condition: recorded shard inputs on
+// disk (same-size content edit and deletion), `plan`, missing shards,
+// observer set, `selection` (`--only` / `--limit`), and round != 0.
+#[test]
+fn s9_5_reuse_invalidation_rules() {
+    // 1. Modifying or deleting a header recorded in `Shard::inputs` invalidates reuse.
+    let w = World::new("census-reuse-inputs");
+    let hdr = w.f.path("corpora/toy/src/hdr.h");
+    let v1 = b"int x = 1;\n";
+    std::fs::write(&hdr, v1).unwrap();
+    let mk_shards = |bytes: &[u8]| -> Vec<Shard> {
+        let fref = FileRef {
+            path: hdr.as_os_str().as_bytes().to_vec(),
+            size: bytes.len() as u64,
+            content: content_digest(bytes),
+        };
+        w.plan
+            .observers
+            .iter()
+            .map(|o| {
+                let mut sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+                sh.inputs = Some(vec![fref.clone()]);
+                sh
+            })
+            .collect()
+    };
+    w.seed(&mk_shards(v1));
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    // Unchanged header on disk -> reuses.
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    // Same-length content change in header -> invalidates reuse.
+    let v2 = b"int x = 2;\n";
+    assert_eq!(v1.len(), v2.len());
+    std::fs::write(&hdr, v2).unwrap();
+    w.seed(&mk_shards(v2));
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "same-size header edit must invalidate reuse");
+    // Unchanged v2 -> reuses again.
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2);
+    // Missing header on disk -> invalidates reuse.
+    std::fs::remove_file(&hdr).unwrap();
+    w.seed(
+        &w.plan
+            .observers
+            .iter()
+            .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 3, "deleted header must invalidate reuse");
+
+    // 2. Plan mismatch: even when the store ALREADY contains a valid round-0
+    //    run for the new plan, `prev.plan != plan` must force a fresh parse.
+    let w = World::new("census-reuse-plan");
+    let shards_a: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards_a);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    // Publish a second plan directly into the existing census store, and point
+    // `fake/plan` and `fake/store` to it.
+    let mut plan_b = w.plan.clone();
+    plan_b.configurations[0].database.content = d(0x42);
+    let plan_b_id = formats::content_id(&plan_b.to_bytes()).unwrap();
+    assert_ne!(plan_b_id, w.plan_id);
+    let census_store = w.f.path("corpora/toy/stores/census");
+    {
+        let st = Store::open(&census_store, Access::Exclusive).unwrap();
+        st.publish_plan(&plan_b.to_bytes()).unwrap();
+        let mut jobs = Vec::new();
+        for s in &shards_a {
+            let bytes = s.to_bytes();
+            let sid = formats::content_id(&bytes).unwrap();
+            st.publish_shard(&plan_b_id, Phase::Map, 0, &s.observer, &bytes).unwrap();
+            jobs.push(Job {
+                observer: s.observer,
+                attempt: 1,
+                end: End::Completed,
+                shard: Some(sid),
+                queued_ns: 0,
+                wall_ns: 1_000,
+                cpu_ns: 1_000,
+                peak_rss: 1 << 20,
+                estimate: 1 << 20,
+            });
+        }
+        let started = 1_700_000_000_000_000_500;
+        let rec = RunRecord {
+            run: Run {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                plan: plan_b_id,
+                phase: Phase::Map,
+                round: 0,
+                started_unix_ns: started,
+                wall_ns: 5_000,
+                cores: 4,
+                workers_max: 2,
+                memory_budget: 1 << 30,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        st.publish_run(&plan_b_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
+    }
+    w.seed_plan(&plan_b, plan_b_id, &shards_a);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "plan change must invalidate reuse");
+
+    // 3. Missing shard in store -> invalidates reuse.
+    let w = World::new("census-reuse-missing-shard");
+    let shards: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    let census_store = w.f.path("corpora/toy/stores/census");
+    {
+        let st = Store::open(&census_store, Access::Shared).unwrap();
+        let shard_file = st.shard_path(&w.plan_id, Phase::Map, 0, &w.plan.observers[0].id);
+        drop(st);
+        std::fs::remove_file(&shard_file).unwrap();
+    }
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "missing shard must invalidate reuse");
+
+    // 4. Observer set mismatch (`observers != selected`) -> invalidates reuse.
+    let w = World::new("census-reuse-observers");
+    let shards: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    let census_store = w.f.path("corpora/toy/stores/census");
+    {
+        // Publish a newer round-0 run covering only 2 of the 3 observers.
+        let st = Store::open(&census_store, Access::Exclusive).unwrap();
+        let jobs: Vec<Job> = shards[..2]
+            .iter()
+            .map(|s| Job {
+                observer: s.observer,
+                attempt: 1,
+                end: End::Completed,
+                shard: Some(id_of(s)),
+                queued_ns: 0,
+                wall_ns: 1_000,
+                cpu_ns: 1_000,
+                peak_rss: 1 << 20,
+                estimate: 1 << 20,
+            })
+            .collect();
+        let started = 1_700_000_000_000_001_000;
+        let rec = RunRecord {
+            run: Run {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                plan: w.plan_id,
+                phase: Phase::Map,
+                round: 0,
+                started_unix_ns: started,
+                wall_ns: 5_000,
+                cores: 4,
+                workers_max: 2,
+                memory_budget: 1 << 30,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        st.publish_run(&w.plan_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
+    }
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "observer set mismatch must invalidate reuse");
+
+    // 5. Selection change (`--only` and `--limit`) even when selected observers match.
+    let w = World::new("census-reuse-selection");
+    w.seed(&[shard_with(w.plan.observers[0].id, Status::Ok, vec![("digest.indeterminate", 0)])]);
+    assert_eq!(w.run(&["--only", "a.cpp"]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    assert_eq!(w.run(&["--only", "/src/a.cpp"]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "changed --only must invalidate reuse");
+    assert_eq!(w.run(&["--only", "/src/a.cpp", "--limit", "1"]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 3, "changed --limit must invalidate reuse");
+
+    // 6. Round != 0: a newer round-1 map run in the store must invalidate reuse.
+    let w = World::new("census-reuse-round");
+    let shards: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    let census_store = w.f.path("corpora/toy/stores/census");
+    {
+        let st = Store::open(&census_store, Access::Exclusive).unwrap();
+        let mut jobs = Vec::new();
+        for o in &w.plan.observers {
+            let mut sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+            sh.round = 1;
+            let bytes = sh.to_bytes();
+            let sid = formats::content_id(&bytes).unwrap();
+            st.publish_shard(&w.plan_id, Phase::Map, 1, &o.id, &bytes).unwrap();
+            jobs.push(Job {
+                observer: o.id,
+                attempt: 1,
+                end: End::Completed,
+                shard: Some(sid),
+                queued_ns: 0,
+                wall_ns: 1_000,
+                cpu_ns: 1_000,
+                peak_rss: 1 << 20,
+                estimate: 1 << 20,
+            });
+        }
+        let started = 1_700_000_000_000_002_000;
+        let rec = RunRecord {
+            run: Run {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                plan: w.plan_id,
+                phase: Phase::Map,
+                round: 1,
+                started_unix_ns: started,
+                wall_ns: 5_000,
+                cores: 4,
+                workers_max: 2,
+                memory_budget: 1 << 30,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        st.publish_run(&w.plan_id, Phase::Map, 1, started, &rec.to_bytes()).unwrap();
+    }
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "round != 0 map run must invalidate reuse");
+}
+
+// §9.5: `--store` deletion guard refuses `<corpus>/src`, a subdir of `stores/`
+// without `census.json`, and a nested subdir under `stores/` (exit 2, without
+// deleting anything), while allowing removal of the default store and a direct
+// child of `stores/` that has `census.json`.
+#[test]
+fn s9_5_store_deletion_guard() {
+    let w = World::new("census-store-guard");
+    let shards: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards);
+
+    let bin = env!("CARGO_BIN_EXE_xtask");
+    let run_bin = |store: &Path| {
+        Command::new(bin)
+            .args([
+                "census",
+                "toy",
+                "--slip",
+                w.f.path("bin/slip").to_str().unwrap(),
+                "--store",
+                store.to_str().unwrap(),
+            ])
+            .env("CARGO_MANIFEST_DIR", w.f.path("repo/xtask"))
+            .env("SLIP_CORPUS_DIR", w.f.path("corpora"))
+            .output()
+            .unwrap()
+    };
+
+    // 1. Refuse `<corpus>/src` without deleting its files.
+    let src_dir = w.f.path("corpora/toy/src");
+    let src_keep = src_dir.join("keep.cpp");
+    std::fs::write(&src_keep, "int keep() { return 0; }\n").unwrap();
+    let out = run_bin(&src_dir);
+    assert_eq!(out.status.code(), Some(2), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(src_keep.is_file(), "<corpus>/src must never be deleted");
+
+    // 2. Refuse a direct child of `stores/` that has no `census.json`.
+    let other_dir = w.f.path("corpora/toy/stores/a1");
+    std::fs::create_dir_all(&other_dir).unwrap();
+    let other_keep = other_dir.join("keep.txt");
+    std::fs::write(&other_keep, "keep\n").unwrap();
+    let out = run_bin(&other_dir);
+    assert_eq!(out.status.code(), Some(2), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(other_keep.is_file(), "stores/a1 without census.json must not be deleted");
+
+    // 3. Refuse a nested directory under `stores/` even when it contains `census.json`.
+    let nested_dir = w.f.path("corpora/toy/stores/nested/sub");
+    std::fs::create_dir_all(&nested_dir).unwrap();
+    std::fs::write(nested_dir.join("census.json"), "{}").unwrap();
+    let nested_keep = nested_dir.join("keep.txt");
+    std::fs::write(&nested_keep, "keep\n").unwrap();
+    let out = run_bin(&nested_dir);
+    assert_eq!(out.status.code(), Some(2), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(nested_keep.is_file(), "nested directory under stores/ must not be deleted");
+
+    // 4. Allow deleting and re-parsing a direct child of `stores/` that has `census.json`.
+    let custom = w.f.path("corpora/toy/stores/custom");
+    let (r, _) = w.run(&["--store", custom.to_str().unwrap()]);
+    assert_eq!(r, Ok(true));
+    assert!(custom.join("census.json").is_file());
+    w.seed(&[shard_with(w.plan.observers[0].id, Status::Ok, vec![("digest.indeterminate", 0)])]);
+    let (r, out) = w.run(&["--store", custom.to_str().unwrap(), "--only", "a.cpp"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(out.ends_with("census: clean (1 observers) (selection)\n"), "{out}");
+
+    // 5. Allow deleting the default store `<corpus>/stores/census` even without `census.json`.
+    let default_store = w.f.path("corpora/toy/stores/census");
+    std::fs::create_dir_all(&default_store).unwrap();
+    std::fs::write(default_store.join("partial"), "x").unwrap();
+    w.seed(&shards);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(!default_store.join("partial").exists());
+    assert!(default_store.join("census.json").is_file());
+}
+
+// §9.5: indeterminate unit (using the real `ExprKind/CXXReflectExpr` cause
+// from `crates/slip_digest/tests/indeterminate/ExprKind/CXXReflectExpr/`),
+// non-ok shard, `--only` selection, and binary exit statuses (0 clean,
+// 1 not clean, 2 command/usage error).
 #[test]
 fn s9_5_indeterminate_non_ok_selection_and_exit_codes() {
+    let real_cause = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/slip_digest/tests/indeterminate/ExprKind/CXXReflectExpr/t.cpp");
+    assert!(real_cause.is_file(), "expected real cause fixture at {}", real_cause.display());
+
     let w = World::new("census-dirty");
     let obs = &w.plan.observers;
     w.seed(&[
@@ -540,8 +1139,7 @@ fn s9_5_indeterminate_non_ok_selection_and_exit_codes() {
     );
 }
 
-// Verify `crates/slip_digest/tests/indeterminate/` still defines the cause
-// family referenced in our fixture (compile-time / path sanity).
+// §9.5: usage errors rejected by `census::parse_args`.
 #[test]
 fn s9_5_usage_errors() {
     for bad in [
@@ -554,5 +1152,4 @@ fn s9_5_usage_errors() {
         let args: Vec<String> = bad.iter().map(|s| (*s).to_owned()).collect();
         assert!(census::parse_args(&args).is_err(), "{bad:?}");
     }
-    let _ = Path::new("ok");
 }

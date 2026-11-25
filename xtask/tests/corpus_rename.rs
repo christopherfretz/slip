@@ -83,12 +83,14 @@ case "$cmd" in
     echo "plan $(cat "$D/census.plan")"
     exit 0 ;;
   parse)
+    [ -e "$D/census.fail" ] && exit 3
     mkdir -p "$store"
     cp -r "$D/census.store/." "$store/"
     echo "plan $(cat "$D/census.plan")"
     echo "run $store/$(cat "$D/census.run")"
     exit 0 ;;
   rename)
+    [ -e "$D/rename.fail" ] && exit 3
     if [ -n "$write" ]; then
       if [ ! -e "$D/back.broken" ]; then
         (cd "$owned" && patch -R -p0 --batch --no-backup-if-mismatch -i "$D/patch" > /dev/null) || exit 9
@@ -364,6 +366,10 @@ impl World {
                 Some(RunVerdict::NotVerified),
                 Tally { selected: 3, verified: 2, mismatch: 1, ..Tally::default() },
             ),
+            State::Incomplete => (
+                Some(RunVerdict::Incomplete),
+                Tally { selected: 3, verified: 2, failed: 1, ..Tally::default() },
+            ),
             _ => {
                 (Some(RunVerdict::Verified), Tally { selected: 3, verified: 3, ..Tally::default() })
             }
@@ -536,6 +542,7 @@ impl World {
                 names: Some(slip_model::names::Names::default()),
                 negatives: None,
                 found: None,
+                rebuilt_use: None,
             };
             let bytes = sh.to_bytes();
             let sid = id(&bytes);
@@ -908,6 +915,7 @@ fn s6_5_result_file() {
     assert_eq!(opts.get("owned").unwrap().as_array().unwrap(), &[Value::Str(".".into())]);
     assert_eq!(opts.get("jobs"), Some(&Value::Int(2)));
     assert_eq!(opts.get("accept"), Some(&Value::Bool(false)));
+    assert_eq!(opts.get("skip_census"), Some(&Value::Bool(false)));
     let counters = doc.get("counters").unwrap();
     assert_eq!(counters.get("edits.planned"), Some(&Value::Int(2)));
     assert_eq!(counters.get("edits.kept"), Some(&Value::Int(1)));
@@ -1180,9 +1188,18 @@ fn s6_5_verified_without_a_patch() {
     );
 }
 
-// §6.5 / §9.5 (WP-166): census pre-flight check on `--expect verified` and
-// `--accept`, bypassed by `--skip-census`, and skipped on `--expect refused`
-// and `--expect not_verified`.
+/// Whether any logged stand-in command line starts with `cmd`.
+fn has_call(log: &str, cmd: &str) -> bool {
+    log.lines().any(|l| l.starts_with(cmd))
+}
+
+// §6.5 / §9.5 (WP-166): census pre-flight check on every run that needs
+// `verified` / `verified_with_residue` (including default with no `--expect`,
+// `--expect verified`, `--expect verified_with_residue`, and `--accept`),
+// bypassed by `--skip-census` (printed up front, recorded in result.json,
+// appended to final line including on FAILED), census errors surfaced rather
+// than treated as clean, and skipped on `--expect refused` / `not_verified` /
+// `incomplete`.
 #[test]
 fn s6_5_census_gate() {
     // 1. `--expect verified` refused before rename's map phase on unclean census.
@@ -1196,39 +1213,110 @@ fn s6_5_census_gate() {
         "{out}"
     );
     assert!(out.contains("cargo xtask census tiny"), "{out}");
-    assert!(!w.log().contains("rename "), "rename must not start: {}", w.log());
+    assert!(!has_call(&w.log(), "rename "), "rename must not start: {}", w.log());
 
-    // 2. `--accept` (without `--expect`) also refused on unclean census.
+    // 2. `--expect verified_with_residue` refused on unclean census.
+    let w = World::new("rename-census-residue");
+    w.records(&Run1::of(State::VerifiedWithResidue));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "verified_with_residue"]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(out.contains("cargo xtask census tiny"), "{out}");
+    assert!(!has_call(&w.log(), "rename "), "rename must not start: {}", w.log());
+
+    // 3. Default (no `--expect`, no `--accept`) still requires verified /
+    //    verified_with_residue and is refused on unclean census.
+    let w = World::new("rename-census-default");
+    w.records(&Run1::of(State::Verified));
+    w.seed_census(2);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(out.contains("cargo xtask census tiny"), "{out}");
+    assert!(!has_call(&w.log(), "rename "), "rename must not start: {}", w.log());
+
+    // 4. `--accept` (without `--expect`) also refused on unclean census.
     let w = World::new("rename-census-accept");
     w.records(&Run1::of(State::Verified));
     w.seed_census(2);
     let (r, out) = w.run(&["--accept"]);
     assert_eq!(r, Ok(false), "{out}");
     assert!(out.contains("cargo xtask census tiny"), "{out}");
-    assert!(!w.log().contains("rename "), "rename must not start: {}", w.log());
+    assert!(!has_call(&w.log(), "rename "), "rename must not start: {}", w.log());
 
-    // 3. `--skip-census` starts the rename and notes it in the last line.
+    // 5. `--skip-census` prints `census: skipped (--skip-census)` up front,
+    //    records `options.skip_census: true` in result.json, and notes it on
+    //    the final `ok` line.
     let w = World::new("rename-census-skip");
     w.records(&Run1::of(State::Verified));
     w.seed_census(2);
     let (r, out) = w.run(&["--expect", "verified", "--skip-census"]);
     assert_eq!(r, Ok(true), "{out}");
+    assert!(
+        at(&out, "census: skipped (--skip-census)") < at(&out, "step rename: started"),
+        "{out}"
+    );
     assert!(out.ends_with("corpus rename: ok (census skipped)\n"), "{out}");
-    assert!(!w.log().contains("parse "), "census must not run: {}", w.log());
-    assert!(w.log().contains("rename "), "rename must run: {}", w.log());
+    assert_eq!(
+        w.result_file().get("options").unwrap().get("skip_census"),
+        Some(&Value::Bool(true))
+    );
+    assert!(!has_call(&w.log(), "parse "), "census must not run: {}", w.log());
+    assert!(has_call(&w.log(), "rename "), "rename must run: {}", w.log());
 
-    // 4. `--expect refused` and `--expect not_verified` do not run the census.
+    // 6. `--skip-census` on a failing check still prints the upfront line,
+    //    records `skip_census: true` in `.new`, and keeps `(census skipped)`
+    //    on the final `FAILED` line.
+    let w = World::new("rename-census-skip-fail");
+    w.records(&Run1::of(State::Refused));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "verified", "--skip-census"]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert!(
+        at(&out, "census: skipped (--skip-census)") < at(&out, "step rename: started"),
+        "{out}"
+    );
+    assert!(out.ends_with("corpus rename: FAILED (state) (census skipped)\n"), "{out}");
+    let new_doc =
+        json::parse(&std::fs::read(rename::new_path(&w.f.path(RESULT_FILE))).unwrap()).unwrap();
+    assert_eq!(new_doc.get("options").unwrap().get("skip_census"), Some(&Value::Bool(true)));
+
+    // 7. `--skip-census` when `slip rename` errors still prints the upfront line.
+    let w = World::new("rename-census-skip-err");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/rename.fail"), "").unwrap();
+    let (r, out) = w.run(&["--expect", "verified", "--skip-census"]);
+    assert!(matches!(r, Err(Failure::Error(_))), "{r:?}\n{out}");
+    assert!(out.contains("census: skipped (--skip-census)\n"), "{out}");
+
+    // 8. A census error inside `corpus rename` is surfaced as an error (never
+    //    treated as clean) and rename does not start.
+    let w = World::new("rename-census-err");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/census.fail"), "").unwrap();
+    let (r, out) = w.run(&["--expect", "verified"]);
+    assert!(matches!(&r, Err(Failure::Error(e)) if e.contains("census:")), "{r:?}\n{out}");
+    assert!(!has_call(&w.log(), "rename "), "rename must not start on census error: {}", w.log());
+
+    // 9. `--expect refused`, `--expect not_verified`, and `--expect incomplete`
+    //    do not run the census.
     let w = World::new("rename-census-refused");
     w.records(&Run1::of(State::Refused));
     w.seed_census(2);
     let (r, out) = w.run(&["--expect", "refused"]);
     assert_eq!(r, Ok(true), "{out}");
-    assert!(!w.log().contains("parse "), "refused must not run census: {}", w.log());
+    assert!(!has_call(&w.log(), "parse "), "refused must not run census: {}", w.log());
 
     let w = World::new("rename-census-not-verified");
     w.records(&Run1::of(State::NotVerified));
     w.seed_census(2);
     let (r, out) = w.run(&["--expect", "not_verified"]);
     assert_eq!(r, Ok(true), "{out}");
-    assert!(!w.log().contains("parse "), "not_verified must not run census: {}", w.log());
+    assert!(!has_call(&w.log(), "parse "), "not_verified must not run census: {}", w.log());
+
+    let w = World::new("rename-census-incomplete");
+    w.records(&Run1::of(State::Incomplete));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--expect", "incomplete"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(!has_call(&w.log(), "parse "), "incomplete must not run census: {}", w.log());
 }

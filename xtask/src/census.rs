@@ -8,27 +8,30 @@
 //!
 //! Runs `slip parse` into `<corpus dir>/stores/census` (or `--store <dir>`),
 //! or reuses the newest map run already in that store when its plan, Kiln
-//! pin, `slip` binary digest, tool versions and selection all match
-//! `census.json`. Reads every selected observer's own map shard through
-//! `perf::load` and `invariants::side`, writes `<store>/census.json`, and
-//! prints per-cause counts (with the first five observers by path), per-cause
-//! text counts, non-`ok` shards by status, and the verdict line.
+//! pin, `slip` binary digest, tool versions, selection, and every reused
+//! shard's recorded inputs on disk all match. Reads every selected observer's
+//! own map shard through `perf::load` and `invariants::side`, writes
+//! `<store>/census.json`, and prints per-cause counts (with the first five
+//! observers by path), per-cause text counts, unparsed (`diagnosed`,
+//! `rejected`, not counted toward uncleanliness) and unclean non-`ok`
+//! (`failed`, `incomplete`, `no_digests`) shards by status, and the verdict
+//! line.
 //!
 //! Exit status: 0 clean, 1 not clean, 2 for an error of the command.
 
 use crate::corpus::{self, Corpus, Layout, rows};
-use crate::invariants::{self, Env, Failure, Side, side};
+use crate::invariants::{self, Env, Failure, Side, latest_map_run, run_slip, side, versions};
 use crate::perf::{self, Loaded, render::text};
-use crate::slip_run::{self, Ran};
-use slip_exec::store::{Access, Store};
+use crate::slip_run;
 use slip_model::hash::content_digest;
 use slip_model::json::{self, Value};
-use slip_model::{Digest, Phase, RunRecord, Status};
+use slip_model::{Digest, Status};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const USAGE: &str = "\
@@ -110,14 +113,20 @@ pub struct CauseTextRow {
 pub struct Census {
     pub observers: u64,
     pub ok: u64,
+    /// Unparsed observers (`diagnosed` and `rejected`): listed with their
+    /// counts, not counted toward uncleanliness.
+    pub unparsed: u64,
+    /// Unparsed observers grouped by status (`diagnosed`, `rejected`).
+    pub unparsed_by_status: BTreeMap<String, u64>,
+    /// Unclean non-`ok` observers (`failed`, `incomplete`, `no_digests`).
     pub not_ok: u64,
-    /// Non-`ok` observers grouped by status (`diagnosed`, `rejected`,
-    /// `failed`, `incomplete`).
+    /// Unclean non-`ok` observers grouped by status (`failed`, `incomplete`,
+    /// `no_digests`).
     pub not_ok_by_status: BTreeMap<String, u64>,
     /// Total indeterminate keys across `ok` observers without double-counting
-    /// `pending` alongside `pending.<area>`.
+    /// dotted sub-causes alongside their top-level cause.
     pub indeterminate_keys: u64,
-    /// Number of `ok` observers with at least one indeterminate key.
+    /// Number of `ok` observers with at least one indeterminate key or cause.
     pub indeterminate_observers: u64,
     /// Per-cause rows (`digest.indeterminate.<cause>`), ordered by `keys`
     /// descending then `cause` ascending.
@@ -129,17 +138,29 @@ pub struct Census {
 
 impl Census {
     /// Whether the corpus (or selection) is clean: at least one selected
-    /// observer, every selected shard `ok`, and zero indeterminate keys.
+    /// observer, no unclean shards (`failed`, `incomplete`, `no_digests`),
+    /// zero indeterminate keys and observers, and no indeterminate causes.
+    /// Unparsed observers (`diagnosed`, `rejected`) do not make the census
+    /// unclean.
     pub fn is_clean(&self) -> bool {
-        self.observers > 0 && self.not_ok == 0 && self.indeterminate_keys == 0
+        self.observers > 0
+            && self.not_ok == 0
+            && self.indeterminate_keys == 0
+            && self.indeterminate_observers == 0
+            && self.causes.is_empty()
     }
 
     /// The last line printed by `cargo xtask census` (and echoed by
     /// `cargo xtask corpus rename`).
     pub fn last_line(&self, selection: bool) -> String {
         let suffix = if selection { " (selection)" } else { "" };
+        let unparsed = if self.unparsed > 0 {
+            format!("; {} unparsed (not counted)", self.unparsed)
+        } else {
+            String::new()
+        };
         if self.is_clean() {
-            format!("census: clean ({} observers){suffix}", self.observers)
+            format!("census: clean ({} observers{unparsed}){suffix}", self.observers)
         } else if self.observers == 0 {
             format!(
                 "census: 0 indeterminate keys in 0 of 0 observers, 0 causes; 0 not ok \
@@ -147,7 +168,8 @@ impl Census {
             )
         } else {
             format!(
-                "census: {} indeterminate keys in {} of {} observers, {} causes; {} not ok{suffix}",
+                "census: {} indeterminate keys in {} of {} observers, {} causes; {} not ok\
+                 {unparsed}{suffix}",
                 self.indeterminate_keys,
                 self.indeterminate_observers,
                 self.observers,
@@ -163,23 +185,82 @@ fn add(total: &mut u64, n: u64, what: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Aggregates one `ok` shard's indeterminate and cause-text counters into
+/// `causes_map` and `texts_map`, returning `(indeterminate_keys, any_indet)`.
+#[allow(clippy::type_complexity, reason = "local aggregation map for summarize")]
+fn tally_ok_shard(
+    shard: &slip_model::Shard,
+    main_path: &[u8],
+    causes_map: &mut BTreeMap<String, (u64, u64, Vec<Vec<u8>>)>,
+    texts_map: &mut BTreeMap<String, (u64, u64)>,
+) -> Result<(u64, bool), String> {
+    let mut total_counter = 0u64;
+    let mut top_sum = 0u64;
+    let mut top_causes: BTreeSet<&str> = BTreeSet::new();
+    let mut sub_causes: Vec<(&str, u64)> = Vec::new();
+    let mut any_indet = false;
+
+    for c in &shard.counters {
+        if c.value == 0 {
+            continue;
+        }
+        if c.name == "digest.indeterminate" {
+            total_counter = c.value;
+            any_indet = true;
+        } else if let Some(cause) = c.name.strip_prefix("digest.indeterminate.") {
+            any_indet = true;
+            let entry = causes_map.entry(cause.to_owned()).or_insert_with(|| (0, 0, Vec::new()));
+            add(&mut entry.0, c.value, &c.name)?;
+            entry.1 += 1;
+            entry.2.push(main_path.to_vec());
+            if let Some((parent, _)) = cause.split_once('.') {
+                sub_causes.push((parent, c.value));
+            } else {
+                top_causes.insert(cause);
+                add(&mut top_sum, c.value, "indeterminate_keys")?;
+            }
+        } else if let Some(name) = c.name.strip_prefix("digest.cause.") {
+            let entry = texts_map.entry(name.to_owned()).or_insert((0, 0));
+            add(&mut entry.0, c.value, &c.name)?;
+            entry.1 += 1;
+        }
+    }
+
+    let mut obs_keys = top_sum;
+    for (parent, value) in sub_causes {
+        if !top_causes.contains(parent) {
+            add(&mut obs_keys, value, "indeterminate_keys")?;
+        }
+    }
+    obs_keys = obs_keys.max(total_counter);
+    Ok((obs_keys, any_indet))
+}
+
 /// Computes the census over `loaded` for `selected` observers (in plan order).
 ///
 /// For each selected observer:
-/// - if `invariants::side(loaded, &o.id)` is `Side::Shard(Status::Ok, _)`,
-///   its `digest.indeterminate.<cause>` and `digest.cause.<cause>.<word>`
-///   counters are aggregated. Because `slip_digest` emits both
-///   `digest.indeterminate.pending` and `digest.indeterminate.pending.<area>`
-///   for a pending key, total `indeterminate_keys` sums top-level
-///   `digest.indeterminate.<cause>` counters (falling back to `pending.<area>`
-///   if `pending` is absent, and at least `digest.indeterminate` when present)
-///   so keys are never double-counted.
-/// - otherwise, it is counted in `not_ok` and `not_ok_by_status` (`diagnosed`,
-///   `rejected`, `failed`, or `incomplete` for `NoJob`/`NoShard`/`Absent`/`Other`).
+/// - if `invariants::side(loaded, &o.id)` is `Side::Shard(Status::Ok, _)` and
+///   the shard carries `digests`, its `digest.indeterminate.<cause>` and
+///   `digest.cause.<cause>.<word>` counters are aggregated. Because
+///   `slip_digest` emits both a top-level `digest.indeterminate.<parent>` and
+///   dotted `digest.indeterminate.<parent>.<sub>` (such as `pending` and
+///   `pending.<area>`), total `indeterminate_keys` sums top-level
+///   `digest.indeterminate.<cause>` counters plus any dotted counter whose
+///   top-level parent is absent in that shard, taking `max` with
+///   `digest.indeterminate` when present.
+/// - if `Side::Shard(Status::Ok, _)` has no `digests` (`spec/verify.md` §5.3
+///   P3), it is counted as unclean in `not_ok` under `no_digests`.
+/// - `Side::Shard(Status::Diagnosed | Status::Rejected, _)` are counted in
+///   `unparsed` and `unparsed_by_status` (`diagnosed`, `rejected`) and do not
+///   make the census unclean.
+/// - `Side::Shard(Status::Failed, _)` is counted in `not_ok` under `failed`,
+///   and `NoJob`/`NoShard`/`Absent`/`Other` under `incomplete`.
 pub fn summarize(loaded: &Loaded, selected: &[Digest]) -> Result<Census, String> {
     let selected: BTreeSet<&Digest> = selected.iter().collect();
     let mut observers = 0u64;
     let mut ok = 0u64;
+    let mut unparsed = 0u64;
+    let mut unparsed_by_status: BTreeMap<String, u64> = BTreeMap::new();
     let mut not_ok = 0u64;
     let mut not_ok_by_status: BTreeMap<String, u64> = BTreeMap::new();
     let mut indeterminate_keys = 0u64;
@@ -194,68 +275,37 @@ pub fn summarize(loaded: &Loaded, selected: &[Digest]) -> Result<Census, String>
         observers += 1;
         match side(loaded, &o.id) {
             Side::Shard(Status::Ok, _) => {
-                ok += 1;
                 let Some(Some(shard)) = loaded.shards.get(&o.id) else {
                     unreachable!("Side::Shard(Status::Ok, _) guarantees the shard is loaded");
                 };
-                let mut total_counter = 0u64;
-                let mut top_sum = 0u64;
-                let mut has_pending_top = false;
-                let mut pending_sub_sum = 0u64;
-                let mut any_indet = false;
-
-                for c in &shard.counters {
-                    if c.value == 0 {
-                        continue;
-                    }
-                    if c.name == "digest.indeterminate" {
-                        total_counter = c.value;
-                        any_indet = true;
-                    } else if let Some(cause) = c.name.strip_prefix("digest.indeterminate.") {
-                        any_indet = true;
-                        let entry = causes_map
-                            .entry(cause.to_owned())
-                            .or_insert_with(|| (0, 0, Vec::new()));
-                        add(&mut entry.0, c.value, &c.name)?;
-                        entry.1 += 1;
-                        entry.2.push(o.main.path.clone());
-                        if !cause.contains('.') {
-                            if cause == "pending" {
-                                has_pending_top = true;
-                            }
-                            add(&mut top_sum, c.value, "indeterminate_keys")?;
-                        } else if cause.starts_with("pending.") {
-                            add(&mut pending_sub_sum, c.value, "indeterminate_keys")?;
-                        }
-                    } else if let Some(name) = c.name.strip_prefix("digest.cause.") {
-                        let entry = texts_map.entry(name.to_owned()).or_insert((0, 0));
-                        add(&mut entry.0, c.value, &c.name)?;
-                        entry.1 += 1;
-                    }
+                if shard.digests.is_none() {
+                    not_ok += 1;
+                    *not_ok_by_status.entry("no_digests".to_owned()).or_default() += 1;
+                    continue;
                 }
-
-                let mut obs_keys = top_sum;
-                if !has_pending_top {
-                    add(&mut obs_keys, pending_sub_sum, "indeterminate_keys")?;
-                }
-                obs_keys = obs_keys.max(total_counter);
+                ok += 1;
+                let (obs_keys, any_indet) =
+                    tally_ok_shard(shard, &o.main.path, &mut causes_map, &mut texts_map)?;
                 if any_indet || obs_keys > 0 {
                     indeterminate_observers += 1;
                     add(&mut indeterminate_keys, obs_keys, "indeterminate_keys")?;
                 }
             }
-            other => {
+            Side::Shard(Status::Diagnosed, _) => {
+                unparsed += 1;
+                *unparsed_by_status.entry("diagnosed".to_owned()).or_default() += 1;
+            }
+            Side::Shard(Status::Rejected, _) => {
+                unparsed += 1;
+                *unparsed_by_status.entry("rejected".to_owned()).or_default() += 1;
+            }
+            Side::Shard(Status::Failed, _) => {
                 not_ok += 1;
-                let label = match other {
-                    Side::Shard(Status::Diagnosed, _) => "diagnosed",
-                    Side::Shard(Status::Rejected, _) => "rejected",
-                    Side::Shard(Status::Failed, _) => "failed",
-                    Side::Shard(Status::Ok, _) => unreachable!("handled above"),
-                    Side::NoJob | Side::NoShard(_) | Side::Absent(_) | Side::Other(_) => {
-                        "incomplete"
-                    }
-                };
-                *not_ok_by_status.entry(label.to_owned()).or_default() += 1;
+                *not_ok_by_status.entry("failed".to_owned()).or_default() += 1;
+            }
+            Side::NoJob | Side::NoShard(_) | Side::Absent(_) | Side::Other(_) => {
+                not_ok += 1;
+                *not_ok_by_status.entry("incomplete".to_owned()).or_default() += 1;
             }
         }
     }
@@ -279,6 +329,8 @@ pub fn summarize(loaded: &Loaded, selected: &[Digest]) -> Result<Census, String>
     Ok(Census {
         observers,
         ok,
+        unparsed,
+        unparsed_by_status,
         not_ok,
         not_ok_by_status,
         indeterminate_keys,
@@ -302,6 +354,10 @@ pub fn render(
     let _ = writeln!(o, "plan {plan}");
     let _ = writeln!(o, "observers {}", c.observers);
     let _ = writeln!(o, "ok {}", c.ok);
+    let _ = writeln!(o, "unparsed {}", c.unparsed);
+    for (status, count) in &c.unparsed_by_status {
+        let _ = writeln!(o, "  {status} {count}");
+    }
     let _ = writeln!(o, "not_ok {}", c.not_ok);
     for (status, count) in &c.not_ok_by_status {
         let _ = writeln!(o, "  {status} {count}");
@@ -356,6 +412,8 @@ fn obj(entries: Vec<(&str, Value)>) -> Value {
 
 /// Builds the JSON document written to `<store>/census.json`.
 pub fn to_json(meta: &Meta, c: &Census) -> Value {
+    let unparsed_obj =
+        Value::Object(c.unparsed_by_status.iter().map(|(k, &v)| (k.clone(), int(v))).collect());
     let not_ok_obj =
         Value::Object(c.not_ok_by_status.iter().map(|(k, &v)| (k.clone(), int(v))).collect());
     let causes = Value::Array(
@@ -403,6 +461,8 @@ pub fn to_json(meta: &Meta, c: &Census) -> Value {
         ("clean", Value::Bool(c.is_clean())),
         ("observers", int(c.observers)),
         ("ok", int(c.ok)),
+        ("unparsed", int(c.unparsed)),
+        ("unparsed_by_status", unparsed_obj),
         ("not_ok", int(c.not_ok)),
         ("not_ok_by_status", not_ok_obj),
         ("indeterminate_keys", int(c.indeterminate_keys)),
@@ -581,26 +641,6 @@ fn configured(c: &Corpus, layout: &Layout) -> Result<(), String> {
     }
 }
 
-fn run_slip(slip: &Path, args: &[OsString], accept: &[i32]) -> Result<Ran, String> {
-    let what = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
-    let ran = slip_run::run(slip, args)?;
-    if accept.contains(&ran.status) {
-        Ok(ran)
-    } else {
-        Err(format!("`slip {what}` exited with status {}", ran.status))
-    }
-}
-
-fn versions(slip: &Path) -> Result<(String, String), String> {
-    let ran = run_slip(slip, &["--version".into()], &[0])?;
-    let line = ran.stdout.lines().next().unwrap_or("");
-    line.strip_prefix("slip ")
-        .and_then(|r| r.strip_suffix(')'))
-        .and_then(|r| r.split_once(" (kiln "))
-        .map(|(s, k)| (s.to_owned(), k.to_owned()))
-        .ok_or_else(|| format!("`slip --version` printed `{line}`, not `slip <v> (kiln <v>)`"))
-}
-
 /// The Kiln submodule's commit (`git -C <repo>/kiln rev-parse HEAD`) when
 /// present, else the corpus's pinned tag so tests without a git submodule
 /// still have a deterministic pin.
@@ -619,15 +659,69 @@ fn kiln_pin_of(repo: &Path, c: &Corpus) -> String {
     c.tag.clone()
 }
 
-fn latest_map_run(store: &Path, plan: &Digest) -> Result<Option<PathBuf>, String> {
-    let st = Store::open(store, Access::Shared)
-        .map_err(|e| format!("{}: cannot open the store: {e}", store.display()))?;
-    let Some(bytes) = st.latest_run(plan, Phase::Map).map_err(|e| e.to_string())? else {
-        return Ok(None);
+/// Returns `true` only when every loaded shard records its inputs and every
+/// recorded input file still exists on disk as a regular file with the exact
+/// recorded size and content digest. When in doubt, returns `false` so the
+/// census parses again.
+fn inputs_current(loaded: &Loaded) -> bool {
+    let mut seen: BTreeMap<&[u8], (u64, Digest)> = BTreeMap::new();
+    for shard in loaded.shards.values().flatten() {
+        let Some(inputs) = &shard.inputs else {
+            return false;
+        };
+        for f in inputs {
+            if let Some(&(size, content)) = seen.get(f.path.as_slice()) {
+                if size != f.size || content != f.content {
+                    return false;
+                }
+                continue;
+            }
+            let path = Path::new(OsStr::from_bytes(&f.path));
+            let Ok(meta) = std::fs::metadata(path) else {
+                return false;
+            };
+            if !meta.is_file() || meta.len() != f.size {
+                return false;
+            }
+            let Ok(bytes) = std::fs::read(path) else {
+                return false;
+            };
+            if bytes.len() as u64 != f.size || content_digest(&bytes) != f.content {
+                return false;
+            }
+            seen.insert(f.path.as_slice(), (f.size, f.content));
+        }
+    }
+    true
+}
+
+/// Whether `parse_into` is allowed to remove an existing non-reusable `store`:
+/// only the default store (`<corpus dir>/stores/census`), or a direct child
+/// directory of `<corpus dir>/stores/` that contains a regular `census.json`
+/// file.
+fn can_remove_store(layout: &Layout, store: &Path) -> bool {
+    let plain = |p: &Path| {
+        p.is_absolute()
+            && p.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
     };
-    let r = RunRecord::from_bytes(&bytes)
-        .map_err(|e| format!("{}: the latest map run is not valid: {e}", store.display()))?;
-    Ok(Some(st.run_path(plan, Phase::Map, r.run.round, r.run.started_unix_ns)))
+    if !plain(&layout.dir) || !plain(store) {
+        return false;
+    }
+    let stores_dir = layout.dir.join("stores");
+    if !std::fs::symlink_metadata(&stores_dir).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let default_store = stores_dir.join("census");
+    if store == default_store {
+        return true;
+    }
+    if store.parent() != Some(stores_dir.as_path()) {
+        return false;
+    }
+    let is_real_dir = std::fs::symlink_metadata(store).is_ok_and(|m| m.is_dir());
+    let has_census_json =
+        std::fs::symlink_metadata(store.join("census.json")).is_ok_and(|m| m.is_file());
+    is_real_dir && has_census_json
 }
 
 #[allow(clippy::too_many_arguments, reason = "explicit inputs of the store-reuse predicate")]
@@ -682,7 +776,8 @@ fn try_reuse(
     let same = (run.tool_slip.as_str(), run.tool_kiln.as_str()) == (&tools.0[..], &tools.1[..])
         && run.round == 0
         && loaded.missing_shards() == 0
-        && observers == selected;
+        && observers == selected
+        && inputs_current(&loaded);
     Ok(same.then_some((loaded, run_path)))
 }
 
@@ -692,14 +787,19 @@ fn parse_into(
     store: &Path,
     opts: &Options,
 ) -> Result<(Loaded, PathBuf), String> {
-    if store.exists() {
-        if store.starts_with(&layout.dir) && store != layout.dir {
+    if std::fs::symlink_metadata(store).is_ok() {
+        if can_remove_store(layout, store) {
             slip_run::remove_tree(&layout.dir, store)?;
         } else {
+            let stores_dir = layout.dir.join("stores");
+            let default_store = stores_dir.join("census");
             return Err(format!(
-                "{} exists and cannot be reused (different plan, slip binary, Kiln pin or \
-                 selection); remove it or pass a fresh `--store`",
-                store.display()
+                "{} exists and cannot be reused; refusing to remove it (only {} or a direct \
+                 child of {} containing census.json is removed automatically); remove it or pass \
+                 a fresh `--store`",
+                store.display(),
+                default_store.display(),
+                stores_dir.display(),
             ));
         }
     }

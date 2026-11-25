@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]
+//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+//!         [-j <n>] [--slip <path>]
 //! ```
 //!
 //! The command never edits C++ itself: it hands names to `slip rename`,
@@ -91,15 +92,13 @@ pub struct Options {
 }
 
 /// Whether this rename requires a clean census before its map phase
-/// (`spec/harness.md` §6.5): runs passing `--expect verified`,
-/// `--expect verified_with_residue`, or `--accept`, except when `--expect`
-/// explicitly names a non-verified state (`refused`, `not_verified`,
-/// `incomplete`).
+/// (`spec/harness.md` §6.5): every run whose expected state is `verified` or
+/// `verified_with_residue` — including runs with no `--expect` (since
+/// [`check_state`] defaults to `verified` or `verified_with_residue`). Only
+/// runs whose `--expect` names a non-verified state (`refused`,
+/// `not_verified`, `incomplete`) skip the census.
 pub fn needs_census(o: &Options) -> bool {
-    if matches!(o.expect, Some(State::Refused | State::NotVerified | State::Incomplete)) {
-        return false;
-    }
-    matches!(o.expect, Some(State::Verified | State::VerifiedWithResidue)) || o.accept
+    !matches!(o.expect, Some(State::Refused | State::NotVerified | State::Incomplete))
 }
 
 /// The state named `name` (`spec/edits.md` §8.5).
@@ -521,6 +520,7 @@ pub fn result_json(h: &Header<'_>, r: &Records, checks: &[Check]) -> Value {
                 ("expect", o.expect.map_or(Value::Null, |e| s(e.name()))),
                 ("accept", Value::Bool(o.accept)),
                 ("build", Value::Bool(o.build)),
+                ("skip_census", Value::Bool(o.skip_census)),
                 ("jobs", o.jobs.map_or(Value::Null, |j| int(j as u64))),
             ]),
         ),
@@ -1183,8 +1183,12 @@ impl Rename<'_> {
         say(out, &format!("corpus rename {}: {} to {}", self.c.name, self.opts.from, self.opts.to));
         let owned = self.owned()?;
         let check_census = needs_census(self.opts);
-        if check_census && !self.opts.skip_census && !self.check_census(out)? {
-            return Ok(false);
+        if check_census {
+            if self.opts.skip_census {
+                say(out, "census: skipped (--skip-census)");
+            } else if !self.check_census(out)? {
+                return Ok(false);
+            }
         }
         if self.opts.build {
             self.prepare_build(out)?;
