@@ -4188,7 +4188,7 @@ pub(crate) mod cold_expr_data {
         ("source_loc", Decision::Symbolic),
         ("string_maker", Decision::Out),
         ("default_imm", Decision::Demand),
-        ("use_imm", Decision::Symbolic),
+        ("use_imm", Decision::Out),
         ("union_field", Decision::In),
         ("cast_written-unresolved-construct", Decision::In),
         ("cast_written-cast", Decision::In),

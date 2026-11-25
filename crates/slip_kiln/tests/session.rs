@@ -1312,3 +1312,39 @@ fn kn1_an_instantiation_at_run_time_away_completes() {
     assert_eq!(kn1(false, guard), ((true, false), (true, false), false), "at home");
     assert_eq!(kn1(true, guard), ((true, false), (true, false), false), "away, then home");
 }
+
+// WP-163 fix round 1 (F3): a transform's compile is refused while the
+// process environment turns on a Kiln check Slip does not model
+// (`slip_kiln::check::kiln_switch_in_environment`), as a parse is
+// (`tests/parse.rs` `wp163_kiln_switch_in_environment_is_refused`). In a
+// child: this binary again with the variable set and only this test
+// selected.
+#[test]
+fn wp163_kiln_switch_in_environment_refuses_the_compile() {
+    const CHILD: &str = "SLIP_KILN_SESSION_SWITCH_CHILD";
+    if let Some(var) = std::env::var_os(CHILD) {
+        let var = var.to_str().unwrap().to_owned();
+        let cmd = transform("wp163_switch", "consteval void transform() {}");
+        let got = on_stack(&cmd, |opened| match opened {
+            Err(CompileError::CommandLine(m)) => Some(m),
+            _ => None,
+        });
+        assert!(got.as_ref().is_some_and(|m| m.contains(&var)), "{got:?}");
+        return;
+    }
+    for var in ["KILN_VERIFY_SUBST_FAILED", "KILN_FN_NAMES_VERIFY"] {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["wp163_kiln_switch_in_environment_refuses_the_compile", "--exact"])
+            .args(["--test-threads=1", "--nocapture"])
+            .env(CHILD, var)
+            .env(var, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{var}: the child failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

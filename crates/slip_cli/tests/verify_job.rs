@@ -4239,3 +4239,37 @@ fn s9_3_map_shard_republished_between_job_and_report() {
     tree.put_map(&o, &map);
     assert_eq!(run_report(&tree, &params, &shards).verdict(), RunVerdict::Verified);
 }
+
+// WP-163 fix round 1 (F6): an `#embed` whose resolution differs between
+// the pre- and the post-image. `--embed-dir=s/e --embed-dir=ext`: at the
+// map phase `s/e` holds no `x.bin` and the embed reads `ext/x.bin`; the
+// edit creates `e/x.bin` in the post tree, so the post parse reads it
+// through the first `--embed-dir` (Kiln's lookup log records it as
+// `Found::EmbedDir` since WP-2829, `slip_kiln::lookups::embed_read`).
+// With other bytes the embedded array differs: the digests compare
+// unequal (§5.2, the comparison of the sums), a mismatch, never
+// `verified`; the truth (the edit applied to the subject) differs too.
+// With the same bytes the program is the same and `verified` is right:
+// G6 admits `post-tree/e/x.bin` as a created path under a real directory
+// of the subject, and the comparison finds the sums equal.
+#[test]
+fn f6_embed_resolved_through_another_embed_dir() {
+    for (post_bytes, expect) in [("2\n", VerdictKind::Mismatch), ("1\n", VerdictKind::Verified)] {
+        let main = "const char a[] = {\n#embed <x.bin>\n};\nint f() { return a[0]; }\n";
+        let tree = Tree::new("f6-embed-dir", &[("a.cpp", main)]);
+        std::fs::create_dir_all(tree.subject.join("e")).unwrap();
+        std::fs::create_dir_all(tree.post.join("e")).unwrap();
+        write(&tree.base.join("ext/x.bin"), "1\n");
+        let flags = [
+            arg("--embed-dir=", &tree.subject.join("e")),
+            arg("--embed-dir=", &tree.base.join("ext")),
+        ];
+        let o = tree.observer_in(&tree.subject, &flags);
+        let m = tree.map(&o);
+        assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
+        write(&tree.post.join("e/x.bin"), post_bytes);
+        let v = tree.verify(&o);
+        assert_eq!(kind(&v), expect, "{post_bytes:?}: {}", reason(&v));
+        assert_eq!(tree.truth_differs(&o, &m), expect == VerdictKind::Mismatch, "{post_bytes:?}");
+    }
+}

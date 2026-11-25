@@ -154,7 +154,15 @@ impl Lookups {
             // An absolute name is tried where it is, whatever the form
             // (Kiln's log records one since WP-2620: `Found::Absolute`, or
             // `Found::Embed` with the name as its path, when it is found).
-            if l.name.starts_with('/') {
+            // So is a module probe of `import` (`LookupForm::Module`, Kiln
+            // WP-3276, `fa2338ed3`, in the pin since WP-163): its name is
+            // the candidate file's path joined onto the working directory,
+            // absolute, and it uses no search list. The form is tested as
+            // well as the name, as Kiln's `LookupLog::check_absolute` does
+            // (`kiln_pp/src/lookups.rs:646`), so that a probe is never
+            // placed in a directory of the list
+            // (`tests/lookups.rs` `module_probe_is_absolute`).
+            if l.name.starts_with('/') || l.form == LookupForm::Module {
                 tried.push("/", &l.name);
                 if matches!(l.found, Found::Missing) {
                     missed.push("/", &l.name);

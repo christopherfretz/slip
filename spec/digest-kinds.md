@@ -1548,6 +1548,29 @@ The rest of profile mode:
        pattern): Kiln keeps its converted arguments, not the expressions
        written: `spelling/specialisation-arguments`.
      Off unit level each raises the mark instead.
+  12. *Converted arguments of a dependent template-id* (WP-163 fix
+     round 1). Since Kiln WP-3321 (`ea9a8e141`) the canonical type of a
+     dependent class template-id holds a value argument converted
+     (`It<T, n::k>` is `It<T, 0>`, `ArgView::Value`) where it held the
+     expression's profile, which named the entity. The written argument
+     is in the `TemplateSpecialization` sugar (`args`, its canonical form
+     `underlying`): every position whose written argument is an expression
+     and whose canonical argument is a converted value
+     (`own_spelling::converted_positions`) is read as rule 7 reads an
+     instantiation-dependent one, its profile a `Profile` entry, then the
+     expression as written (rule 1), so two template-ids naming different
+     entities of one value differ in the units that write them (member,
+     parameter, return type, friend, base, alias, alias template,
+     variable, variable template, nested argument, default template
+     argument, requires-clause, local: `differ/_/converted-arg-*`). Kiln's
+     conversion is not re-derived: the written and canonical lists are
+     compared position by position. A dependent specialisation met with
+     no sugar (its canonical type handed to the reading) that holds a
+     converted value is `Unaccounted("spelling/converted-argument")`
+     (`own_spelling::CONVERTED_ARGUMENT`): which entity was written is
+     not known. No source the tests hold reaches it through a unit; the
+     walk test `a_converted_argument_with_no_written_form_is_a_cause`
+     meets it through a canonical type.
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is
@@ -4613,7 +4636,7 @@ One element of `ColdExprData` `use_imm` (Kiln WP-3278, `expr.rs:1706`).
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
 | `invocation` | child | out | - | the immediate invocation of the shared default argument or initialiser: written with it |
-| `value` | value | out | - | its value at the use: symbolic, as `use_imm` |
+| `value` | value | out | - | its value at the use: `out`, as `use_imm` |
 
 ### `kiln_ast::expr::ColdExprData`
 
@@ -4632,7 +4655,7 @@ One element of `ColdExprData` `use_imm` (Kiln WP-3278, `expr.rs:1706`).
 | `source_loc` | value | symbolic | - | the rows of `SourceLocValues` |
 | `string_maker` | value | out | - | what made a string object Kiln made itself, keyed by its `StringLiteral` (Kiln WP-3000, WP-3280, `kiln_ast/src/expr.rs:1530`): a source-location value's role and the declaration it is evaluated in, reflection, a contract's site. The object's content is the fact, written as a string by the rows of `Entry`; which object one use shares with another follows from the role and the declaration, which `source_loc` (symbolic) and the using unit hold |
 | `default_imm` | value | demand | - | §11.4 |
-| `use_imm` | value | symbolic | - | the value at one use of each immediate invocation of a default argument or default member initialiser with source-location values (Kiln WP-3278, `expr.rs:1546`; CWG 2631): each is a function of where the use is and the declaration it is in, which are `source_loc`'s symbolic values |
+| `use_imm` | value | out | - | the value at one use of each immediate invocation of a default argument or default member initialiser with source-location values (Kiln WP-3278, `expr.rs:1546`; CWG 2631). Nothing reads it: each value is a function of where the use is (a location, `out`) and of the declaration it is in (the using unit, whose key holds it), and the default argument or initialiser is written once, its source-location builtins symbolic (`source_loc`). `equal/_/use-imm-line` moves the use |
 | `union_field` | entity | in | ref |  |
 | `cast_written-unresolved-construct` | type | in | type? | on a `CXXUnresolvedConstructExpr`: the type as written, which instantiation and mangling use |
 | `cast_written-cast` | type | in | type? | on an explicit cast: the type as written, with the qualifiers and the reference the node's type drops. Partial ordering, the search for unexpanded packs and the normal form of a constraint read it |

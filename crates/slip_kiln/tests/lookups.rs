@@ -244,6 +244,17 @@ fn dash_imacros_kiln_accepts_slip_does_not_pass() {
         vec!["-imacros", &m],
         vec!["-iprefix", &prefix, "-iwithprefix", "inc"],
         vec!["-iwithprefixbefore", &inc],
+        vec!["--imacros", &m],
+        vec!["--include-prefix", &prefix, "--include-with-prefix", "inc"],
+        vec!["--include-with-prefix-after", &inc],
+        vec!["--include-with-prefix-before", &inc],
+        // The tables, checks and dumps of `not_modelled` (fix round 1).
+        vec!["-fkiln-written-ref-keys"],
+        vec!["-fkiln-fn-names"],
+        vec!["-fkiln-builtin-literals"],
+        vec!["-fkiln-verify-subst-failed"],
+        vec!["-fkiln-dump-friend-forms"],
+        vec!["-fkiln-dump-fn-names"],
     ] {
         let (status, l) = d.parse("", &flags);
         assert_eq!((status, l), (Status::Rejected, None), "{flags:?}");
@@ -262,6 +273,23 @@ fn absolute_name_recorded() {
     let (status, l) = d.lookups("", &[]);
     assert_eq!(status, Status::Ok);
     assert!(l.tried.iter().any(|(at, n)| at == "/" && *n == gone), "{l:?}");
+}
+
+// A module probe of `import` (Kiln WP-3276, `LookupForm::Module`, in the
+// pin since WP-163) is recorded as an absolute name: tried where it is,
+// missed when absent, never placed in a directory of the search list.
+#[test]
+fn module_probe_is_absolute() {
+    let d = Dir::new("module-probe");
+    d.write("a.cpp", "import m;\n");
+    let pre = d.at("pre");
+    std::fs::create_dir_all(&pre).unwrap();
+    let flag = format!("-fprebuilt-module-path={pre}");
+    let (_, l) = d.lookups("", &["-std=c++20", &flag]);
+    let pcm = format!("{pre}/m.pcm");
+    assert!(tried(&l, "/", &pcm), "{l:?}");
+    assert!(l.missed.iter().any(|(at, n)| at == "/" && *n == pcm), "{l:?}");
+    assert!(l.tried.iter().all(|(at, n)| !n.ends_with("m.pcm") || at == "/"), "{l:?}");
 }
 
 // A lookup after the first few thousand is recorded (the log is not cut).

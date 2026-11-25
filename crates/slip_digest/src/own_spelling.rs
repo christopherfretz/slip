@@ -471,12 +471,33 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: Option<DeclId>) {
                     alias(w, s, pattern);
                 }
                 args(w, s, l, here);
-            } else {
+            } else if let Some(u) = underlying {
                 // With `underlying` (a specialisation that is not
-                // dependent), the canonical type holds the arguments'
-                // values: an instantiation-dependent one is read as
-                // written, its profile with it (`written_expr`).
-                let _ = underlying;
+                // dependent, or a dependent one whose canonical form holds
+                // converted values, Kiln WP-3321), the canonical type holds
+                // the arguments' values: an instantiation-dependent one is
+                // read as written, its profile with it (`written_expr`),
+                // and so is a converted one (`converted_positions`).
+                let converted = converted_positions(w, l, u);
+                template_name(w, s, name);
+                let list = w.ast.types.args(l).to_vec();
+                for (i, a) in list.into_iter().enumerate() {
+                    match a.view() {
+                        ArgView::Expr { expr: e, profile: _ } if converted.contains(&i) => {
+                            profiled_expr(w, s, e);
+                        }
+                        _ => arg(w, s, a, here),
+                    }
+                }
+            } else {
+                // A canonical dependent specialisation with no spelling of
+                // its own: a converted value argument hides which entity
+                // was written (WP-163; `CONVERTED_ARGUMENT`).
+                if types.flags(q.ty()).intersects(TypeFlags::DEPENDENT)
+                    && types.args(l).iter().any(|a| matches!(a.view(), ArgView::Value { .. }))
+                {
+                    s.indeterminate(CONVERTED_ARGUMENT);
+                }
                 template_name(w, s, name);
                 args(w, s, l, here);
             }
@@ -556,6 +577,63 @@ fn instantiation_only(w: &Walk<'_>, e: ExprId) -> bool {
     d.contains(ExprDeps::INSTANTIATION)
         && !d.intersects(ExprDeps::TYPE)
         && !d.intersects(ExprDeps::VALUE)
+}
+
+/// A dependent class template-id's canonical type whose arguments hold a
+/// converted value where the template-id was written with an expression
+/// (Kiln WP-3321, `ea9a8e141`, in the pin since WP-163: `It<T, n::k>` is
+/// `It<T, 0>`), met where the unit holds no written form of it: which
+/// entity the argument named is not known, so the unit is indeterminate
+/// (`spec/digest-kinds.md` §4.4 "Spellings", rule 12).
+pub(crate) const CONVERTED_ARGUMENT: Cause = Cause::Unaccounted("spelling/converted-argument");
+
+/// The positions of written list `l` whose argument the canonical form
+/// `underlying` of a dependent specialisation holds as a converted value
+/// (Kiln WP-3321): there the canonical type no longer says which entity
+/// the expression names, which the profile of the written expression did
+/// at the pin before. Empty for a specialisation that is not dependent
+/// (its canonical type is its specialisation's record at both pins) and
+/// where the canonical form is not a specialisation of the same arity (a
+/// partial specialisation's current instantiation; a pack, which Kiln
+/// does not convert).
+fn converted_positions(w: &Walk<'_>, l: ArgListId, underlying: QualType) -> Vec<usize> {
+    let types = &w.ast.types;
+    if !types.flags(underlying.ty()).intersects(TypeFlags::DEPENDENT) {
+        return Vec::new();
+    }
+    let TypeView::TemplateSpecialization { args: cl, .. } =
+        types.view(types.canonical(underlying).ty())
+    else {
+        return Vec::new();
+    };
+    let written = types.args(l);
+    let canon = types.args(cl);
+    written
+        .iter()
+        .zip(canon.iter())
+        .enumerate()
+        .filter(|(_, (a, c))| {
+            matches!(a.view(), ArgView::Expr { .. }) && matches!(c.view(), ArgView::Value { .. })
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// A written argument expression `e` whose canonical form is a converted
+/// value (`converted_positions`): its profile bytes added to the list
+/// first, then read as written, as an instantiation-dependent one is
+/// (rule 7, `written_expr`).
+fn profiled_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
+    let mut p = Stream::new();
+    let left_out = w.left_out;
+    w.spelling_off += 1;
+    crate::expr_dep::profile_expr(w, &mut p, e);
+    w.spelling_off -= 1;
+    let marked = w.left_out != left_out;
+    w.left_out = left_out;
+    s.absorb(p.cause());
+    push(w, Fact::Profile(p.as_bytes().to_vec()));
+    expr(w, s, e, Ctx::Known(marked));
 }
 
 /// An expression a written type holds where the canonical type holds a
