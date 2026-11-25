@@ -12,6 +12,7 @@
 //!   runs/<plan id>/<phase>.<round>.<started_unix_ns>.run
 //!   logs/<plan id>/<phase>.<round>/<observer id>.<attempt>.log
 //!   tmp/<pid>.<t>.<n>.tmp                     files being written by process <pid>
+//!   tmp/<pid>.<t>.<n>.claim                   process <pid> taking the lock
 //!   tmp/<pid>.d/                              scratch directory of process <pid>
 //! ```
 //!
@@ -26,8 +27,10 @@
 //! [`Store::open_for_recovery`] is the one opener that accepts it.
 //!
 //! Every file is published by writing it under `tmp/` and renaming it to its
-//! final name, so a reader never sees a partial file. An exclusive [`Store`]
-//! holds `lock`; a shared one only reads and publishes. A `Store` removes
+//! final name, so a reader never sees a partial file; the lock and the
+//! journal alone are created in place (`create_new`), and the store makes
+//! no hard link. An exclusive [`Store`] holds `lock`, taken through claims
+//! (§2.1 "The lock"); a shared one only reads and publishes. A `Store` removes
 //! its own `tmp/` entries and, if it holds it, the lock, when dropped, and
 //! [`cleanup_on_signal`] does the same from the signal path (§7).
 //! [`Store::remove_entries_of`] removes the entries of a dead child (the
@@ -158,12 +161,39 @@ pub fn process_token() -> u64 {
     })
 }
 
+/// The name of this process's `n`-th claim (§2.1 "The lock"),
+/// `<pid>.<t>.<n>.claim`: never made again, as a temporary's name.
+fn claim_name(n: u64) -> String {
+    format!("{}.{}.{n}.claim", std::process::id(), process_token())
+}
+
+/// The locks this process holds now, by [`lock_key`], under the mutex that
+/// makes this process's takes one at a time (§2.1 "The lock", steps 2
+/// and 3).
+static HELD: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
+/// What [`HELD`] knows a store's lock by: the lock of the store's
+/// canonical path (two spellings of one store are one lock), or of the
+/// path given if it has none.
+fn lock_key(root: &Path) -> PathBuf {
+    fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).join("lock")
+}
+
+/// The lock a store holds.
+#[derive(Debug)]
+struct Held {
+    path: PathBuf,
+    key: PathBuf,
+    /// The close ran: the lock is released (or left) and unregistered.
+    released: AtomicBool,
+}
+
 /// What a `Store` and its signal cleanup share.
 #[derive(Debug)]
 struct Inner {
     root: PathBuf,
-    /// The lock path, when this store holds it.
-    lock: Option<PathBuf>,
+    /// The lock, when this store holds it.
+    lock: Option<Held>,
     /// This store's `tmp/` files that exist now, and whether it is closed
     /// (cleaned up: no more files may be created).
     tmp: Mutex<(HashSet<PathBuf>, bool)>,
@@ -195,10 +225,16 @@ impl Inner {
         if self.scratch.swap(false, Ordering::SeqCst) {
             let _ = fs::remove_dir_all(self.scratch_path());
         }
-        if let Some(lock) = &self.lock {
-            // Only our own lock: never one another process has taken over.
-            if fs::read(lock).ok().as_deref() == Some(lock_text().as_bytes()) {
-                let _ = fs::remove_file(lock);
+        if let Some(held) = &self.lock {
+            // Under the mutex of the takes: no take of this process sees
+            // the lock removed and still registered, or registered again
+            // and then removed by this close.
+            let mut registry = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+            if !held.released.swap(true, Ordering::SeqCst) {
+                release(&RealFs, &held.path, std::process::id());
+                if let Some(set) = registry.as_mut() {
+                    set.remove(&held.key);
+                }
             }
         }
     }
@@ -271,9 +307,249 @@ impl Inner {
     }
 }
 
-/// The contents of a lock held by this process.
-fn lock_text() -> String {
-    format!("{}\n", std::process::id())
+/// The contents of a lock held by process `pid`.
+fn lock_text(pid: u32) -> String {
+    format!("{pid}\n")
+}
+
+// -- the lock (§2.1 "The lock") ----------------------------------------------
+
+/// How many rounds a take tries before it is `Busy` (§2.1 "The lock").
+const ROUNDS: u32 = 8;
+
+/// What a creation of a name that must not exist did.
+#[derive(Debug)]
+enum Made {
+    /// Nothing was created (`AlreadyExists` among others).
+    Not(io::Error),
+    /// The name was created, then writing or syncing it failed.
+    Partly(io::Error),
+}
+
+/// The operations of the lock on names, so that its tests can run it
+/// over a file system in memory: [`RealFs`] is the store's.
+trait LockFs {
+    /// Creates `path`, which must not exist, empty.
+    fn create(&self, path: &Path) -> io::Result<()>;
+    /// Creates `path`, which must not exist, then writes `bytes` to it and
+    /// syncs it.
+    fn create_written(&self, path: &Path, bytes: &[u8]) -> std::result::Result<(), Made>;
+    /// The bytes of `path`; `None` when there is no such file.
+    fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>>;
+    /// Removes the file `path` (`NotFound` if there is none).
+    fn remove(&self, path: &Path) -> io::Result<()>;
+    /// The UTF-8 names in directory `dir`; none if it does not exist.
+    fn list(&self, dir: &Path) -> io::Result<Vec<String>>;
+    /// Whether process `pid` exists ([`alive`]).
+    fn alive(&self, pid: u32) -> bool;
+    /// Waits before round `round` + 1 after meeting a contender.
+    fn pause(&self, round: u32);
+}
+
+/// The file system.
+struct RealFs;
+
+impl LockFs for RealFs {
+    fn create(&self, path: &Path) -> io::Result<()> {
+        fs::OpenOptions::new().write(true).create_new(true).open(path).map(drop)
+    }
+
+    fn create_written(&self, path: &Path, bytes: &[u8]) -> std::result::Result<(), Made> {
+        let mut f =
+            fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(Made::Not)?;
+        f.write_all(bytes).and_then(|()| f.sync_all()).map_err(Made::Partly)
+    }
+
+    fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        match fs::read(path) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn remove(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
+    }
+
+    fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            if let Ok(name) = entry?.file_name().into_string() {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
+
+    fn alive(&self, pid: u32) -> bool {
+        alive(pid)
+    }
+
+    /// 1 to 5 ms, varied by the pid and the round, doubled each round up to
+    /// the sixth: at most about 0.6 s over the 8 rounds.
+    fn pause(&self, round: u32) {
+        let base = 1 + (u64::from(std::process::id()) * 7 + u64::from(round) * 13) % 5;
+        std::thread::sleep(std::time::Duration::from_millis(base << round.min(5)));
+    }
+}
+
+/// What a lock's bytes say (§2.1 "The lock", step 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockText {
+    /// `<pid>\n`, the pid canonical decimal.
+    Whole(u32),
+    /// Empty, or one to ten decimal digits without the newline: what a
+    /// creator leaves between the creation and the write.
+    Partial,
+    /// Anything else: not a lock Slip made.
+    Other,
+}
+
+fn lock_state(text: &[u8]) -> LockText {
+    if let Some(line) = text.strip_suffix(b"\n") {
+        return std::str::from_utf8(line)
+            .ok()
+            .and_then(decimal)
+            .and_then(|p| u32::try_from(p).ok())
+            .map_or(LockText::Other, LockText::Whole);
+    }
+    if text.len() <= 10 && text.iter().all(u8::is_ascii_digit) {
+        LockText::Partial
+    } else {
+        LockText::Other
+    }
+}
+
+/// What a round inside ended with.
+enum Inside {
+    /// Another live process's claim (its pid), or a lock made by an opener
+    /// that does not follow §2.1 (none): the next round.
+    Again(Option<u32>),
+    /// The lock is taken, or the take failed.
+    Done(Result<()>),
+}
+
+/// §2.1 "The lock": takes `lock` for process `me`, its claims made in
+/// `tmp` under the names `next` gives. `held_here`: this process holds
+/// `lock` now (the caller's registry, under the mutex of the takes).
+fn take(
+    fs: &dyn LockFs,
+    lock: &Path,
+    tmp: &Path,
+    me: u32,
+    held_here: bool,
+    next: &mut dyn FnMut() -> String,
+) -> Result<()> {
+    let mut contender = None;
+    for round in 0..ROUNDS {
+        // 1. Claim.
+        let claim = tmp.join(next());
+        fs.create(&claim).map_err(io_err(&claim))?;
+        let inside = inside(fs, lock, tmp, me, held_here);
+        // 5. Leave (and every other way out of the round).
+        let left = fs.remove(&claim);
+        match inside {
+            Inside::Done(Ok(())) => {
+                if let Err(e) = left {
+                    // A claim of this live process left behind would make
+                    // every other opener wait until it ends: give the lock
+                    // back rather than hold it so.
+                    let _ = fs.remove(lock);
+                    return Err(StoreError::Io { path: claim, error: e });
+                }
+                return Ok(());
+            }
+            Inside::Done(Err(e)) => return Err(e),
+            Inside::Again(c) => {
+                contender = c.or(contender);
+                fs.pause(round);
+            }
+        }
+    }
+    // The lock's live owner if it reads one, else the last contender.
+    let owner = match fs.read(lock) {
+        Ok(Some(text)) => match lock_state(&text) {
+            LockText::Whole(q) if fs.alive(q) => Some(q),
+            _ => None,
+        },
+        _ => None,
+    };
+    Err(StoreError::Busy { pid: owner.or(contender).unwrap_or(0), lock: lock.to_path_buf() })
+}
+
+/// Steps 2 to 4 of a round, `me`'s claim made.
+fn inside(fs: &dyn LockFs, lock: &Path, tmp: &Path, me: u32, held_here: bool) -> Inside {
+    // 2. Look for others.
+    let names = match fs.list(tmp) {
+        Ok(n) => n,
+        Err(e) => return Inside::Done(Err(StoreError::Io { path: tmp.to_path_buf(), error: e })),
+    };
+    for name in &names {
+        let Some(pid) = name.strip_suffix(".claim").and_then(pid_prefix) else { continue };
+        if pid != me && fs.alive(pid) {
+            return Inside::Again(Some(pid));
+        }
+    }
+    // 3. Read the lock: only one live process at a time gets here.
+    let busy = |pid| Inside::Done(Err(StoreError::Busy { pid, lock: lock.to_path_buf() }));
+    match fs.read(lock) {
+        Ok(None) => {}
+        Ok(Some(text)) => match lock_state(&text) {
+            LockText::Whole(q) if q == me && held_here => return busy(q),
+            LockText::Whole(q) if q != me && fs.alive(q) => return busy(q),
+            // A dead owner's, this process's own left behind, or one whose
+            // creator died before its write: no process holds it.
+            LockText::Whole(_) | LockText::Partial => match fs.remove(lock) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Inside::Done(Err(StoreError::Io {
+                        path: lock.to_path_buf(),
+                        error: e,
+                    }));
+                }
+            },
+            LockText::Other => return Inside::Done(Err(not_a_lock(lock))),
+        },
+        Err(e) => return Inside::Done(Err(StoreError::Io { path: lock.to_path_buf(), error: e })),
+    }
+    // 4. Create.
+    match fs.create_written(lock, lock_text(me).as_bytes()) {
+        Ok(()) => Inside::Done(Ok(())),
+        Err(Made::Not(e)) if e.kind() == io::ErrorKind::AlreadyExists => Inside::Again(None),
+        Err(Made::Not(e)) => {
+            Inside::Done(Err(StoreError::Io { path: lock.to_path_buf(), error: e }))
+        }
+        Err(Made::Partly(e)) => {
+            let _ = fs.remove(lock);
+            Inside::Done(Err(StoreError::Io { path: lock.to_path_buf(), error: e }))
+        }
+    }
+}
+
+/// The close's part of the lock (§2.1 "Closing"): removes `lock` if it
+/// holds `me`'s line. Returns whether it did.
+fn release(fs: &dyn LockFs, lock: &Path, me: u32) -> bool {
+    if fs.read(lock).ok().flatten().as_deref() == Some(lock_text(me).as_bytes()) {
+        return fs.remove(lock).is_ok();
+    }
+    false
+}
+
+fn not_a_lock(lock: &Path) -> StoreError {
+    StoreError::Io {
+        path: lock.to_path_buf(),
+        error: io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the lock file does not hold a process id; remove it if no Slip runs here",
+        ),
+    }
 }
 
 /// Whether process `pid` exists (§2 "Locking"): `/proc/<pid>` exists, or
@@ -379,52 +655,21 @@ impl Store {
         &self.inner.root
     }
 
-    /// Creates `<lock>` naming this process, or takes over a lock whose
-    /// owner is gone.
-    fn take_lock(&self) -> Result<PathBuf> {
+    /// Takes `<root>/lock` for this process (§2.1 "The lock"), or fails
+    /// with `Busy`, and registers it as held.
+    fn take_lock(&self) -> Result<Held> {
         let lock = self.root().join("lock");
-        // A few rounds: each lost race against another opener retries.
-        for _ in 0..8 {
-            // Written in full under tmp/ and linked into place, so the lock
-            // never exists without its process id.
-            let tmp = self.inner.write_tmp(lock_text().as_bytes())?;
-            let linked = fs::hard_link(&tmp, &lock);
-            self.inner.forget_tmp(&tmp, true);
-            match linked {
-                Ok(()) => return Ok(lock),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(StoreError::Io { path: lock, error: e }),
-            }
-            let owner = match fs::read(&lock) {
-                Ok(text) => parse_lock(&lock, &text)?,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(StoreError::Io { path: lock, error: e }),
-            };
-            if alive(owner) {
-                return Err(StoreError::Busy { pid: owner, lock });
-            }
-            // Take over: move the stale lock aside, then check that what we
-            // moved is the stale lock and not one a racing opener just made.
-            let n = TMP_SEQ.fetch_add(1, Ordering::SeqCst);
-            let aside = self.inner.tmp_dir().join(tmp_name(n));
-            match fs::rename(&lock, &aside) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(StoreError::Io { path: lock, error: e }),
-            }
-            let moved = fs::read(&aside);
-            let moved_owner = moved.as_ref().ok().and_then(|t| parse_lock(&lock, t).ok());
-            if moved_owner == Some(owner) {
-                let _ = fs::remove_file(&aside);
-                continue;
-            }
-            // Someone else's fresh lock: put it back and report it.
-            let _ = fs::hard_link(&aside, &lock);
-            let _ = fs::remove_file(&aside);
-            return Err(StoreError::Busy { pid: moved_owner.unwrap_or(0), lock });
-        }
-        let pid = fs::read(&lock).ok().and_then(|t| parse_lock(&lock, &t).ok()).unwrap_or(0);
-        Err(StoreError::Busy { pid, lock })
+        let key = lock_key(self.root());
+        let tmp = self.inner.tmp_dir();
+        // The mutex of the takes: this process's takes one at a time.
+        let mut registry = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        let set = registry.get_or_insert_with(HashSet::new);
+        fs::create_dir_all(&tmp).map_err(io_err(&tmp))?;
+        let me = std::process::id();
+        let mut next = || claim_name(TMP_SEQ.fetch_add(1, Ordering::SeqCst));
+        take(&RealFs, &lock, &tmp, me, set.contains(&key), &mut next)?;
+        set.insert(key.clone());
+        Ok(Held { path: lock, key, released: AtomicBool::new(false) })
     }
 
     /// Removes `tmp/` entries whose process is gone (§2 "Cleaning").
@@ -860,6 +1105,42 @@ impl Store {
         self.root().join("write.journal")
     }
 
+    /// Creates `write.journal` holding `bytes` (§2.1 "The journal"): created
+    /// exclusively under its name, written, synced, then the store's
+    /// directory synced. An existing journal is `Io` `AlreadyExists` and is
+    /// left as it was. If the write or a sync fails, the journal is removed
+    /// (if it can be) and the error returned.
+    pub fn publish_journal(&self, bytes: &[u8]) -> Result<()> {
+        let path = self.journal_path();
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io_err(&path))?;
+        let written = f.write_all(bytes).and_then(|()| f.sync_all()).and_then(|()| {
+            drop(f);
+            sync_dir(self.root())
+        });
+        if let Err(e) = written {
+            let _ = fs::remove_file(&path);
+            return Err(StoreError::Io { path, error: e });
+        }
+        Ok(())
+    }
+
+    /// The bytes of `write.journal`; `None` if there is none.
+    pub fn read_journal(&self) -> Result<Option<Vec<u8>>> {
+        read_optional(&self.journal_path())
+    }
+
+    /// Removes `write.journal` and syncs the store's directory. No journal
+    /// is `Io` `NotFound`.
+    pub fn remove_journal(&self) -> Result<()> {
+        let path = self.journal_path();
+        fs::remove_file(&path).map_err(io_err(&path))?;
+        sync_dir(self.root()).map_err(io_err(self.root()))
+    }
+
     /// Publishes content-addressed `bytes` at `dest`, leaving `dest`
     /// untouched when it already holds that content: a regular file (not a
     /// symbolic link) whose bytes are `bytes`. Anything else at the name (other
@@ -1082,21 +1363,6 @@ fn trailer(bytes: &[u8]) -> Digest {
     Digest(out)
 }
 
-fn parse_lock(lock: &Path, text: &[u8]) -> Result<u32> {
-    std::str::from_utf8(text)
-        .ok()
-        .and_then(|t| t.strip_suffix('\n'))
-        .and_then(decimal)
-        .and_then(|p| u32::try_from(p).ok())
-        .ok_or_else(|| StoreError::Io {
-            path: lock.to_path_buf(),
-            error: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the lock file does not hold a process id; remove it if no Slip runs here",
-            ),
-        })
-}
-
 /// `<phase>.<round>.<started_unix_ns>.run` for `phase`: (round, started).
 fn parse_run_name(name: &str, phase: Phase) -> Option<(u64, u64)> {
     let rest = name.strip_suffix(".run")?.strip_prefix(phase_name(phase))?.strip_prefix('.')?;
@@ -1138,6 +1404,11 @@ fn list_names(dir: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// Syncs directory `dir`, so that the names created or removed in it last.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    fs::File::open(dir)?.sync_all()
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -1247,16 +1518,17 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
-    // spec/exec.md §2.1 "The lock": written under `tmp/`, linked to `lock`,
-    // the temporary unlinked: `lock` is then the file's one name, and no
-    // `tmp/` entry of this process is left.
+    // spec/exec.md §2.1 "The lock": created in place, so `lock` is its
+    // file's one name, and the claim is gone once the lock is held.
     #[test]
-    fn the_lock_is_one_name_of_its_file() {
+    fn the_lock_is_created_in_place() {
         use std::os::unix::fs::MetadataExt as _;
         let d = scratch("lock");
         let store = Store::open(&d, Access::Exclusive).unwrap();
+        let pid = std::process::id();
+        assert_eq!(fs::read_to_string(d.join("lock")).unwrap(), format!("{pid}\n"));
         assert_eq!(fs::metadata(d.join("lock")).unwrap().nlink(), 1);
-        let mine = format!("{}.", std::process::id());
+        let mine = format!("{pid}.");
         let left: Vec<String> = fs::read_dir(d.join("tmp"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1266,5 +1538,443 @@ mod tests {
         drop(store);
         assert!(!d.join("lock").exists());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn lock_texts() {
+        assert_eq!(lock_state(b"12\n"), LockText::Whole(12));
+        assert_eq!(lock_state(b"0\n"), LockText::Whole(0));
+        assert_eq!(lock_state(b""), LockText::Partial);
+        assert_eq!(lock_state(b"12"), LockText::Partial);
+        assert_eq!(lock_state(b"4294967296"), LockText::Partial);
+        assert_eq!(lock_state(b"012\n"), LockText::Other);
+        assert_eq!(lock_state(b"4294967296\n"), LockText::Other);
+        assert_eq!(lock_state(b"12345678901"), LockText::Other);
+        assert_eq!(lock_state(b"x"), LockText::Other);
+        assert_eq!(lock_state(b"\n"), LockText::Other);
+    }
+
+    /// A file system in memory for [`take`] and [`release`], seen by
+    /// processes ([`Proc`]): every operation of a process is numbered, and
+    /// a process can crash before, fail at, or let another run before, any
+    /// one of them.
+    mod world {
+        use super::*;
+        use std::cell::{Cell, RefCell};
+        use std::collections::{BTreeMap, HashMap};
+
+        pub const LOCK: &str = "/s/lock";
+        pub const TMP: &str = "/s/tmp";
+
+        #[derive(Default)]
+        pub struct World {
+            /// Name to (inode, bytes).
+            pub files: RefCell<BTreeMap<PathBuf, (u64, Vec<u8>)>>,
+            pub dead: RefCell<HashSet<u32>>,
+            /// A name created from now on reads as absent its next `lie`
+            /// reads (the hazard of `spec/harness.md` §11 for a new name).
+            pub lie: Cell<u32>,
+            lies: RefCell<HashMap<PathBuf, u32>>,
+            ino: Cell<u64>,
+        }
+
+        impl World {
+            pub fn put(&self, path: &str, bytes: &[u8]) {
+                let ino = self.ino.get() + 1;
+                self.ino.set(ino);
+                self.files.borrow_mut().insert(PathBuf::from(path), (ino, bytes.to_vec()));
+            }
+
+            pub fn lock(&self) -> Option<Vec<u8>> {
+                self.files.borrow().get(Path::new(LOCK)).map(|f| f.1.clone())
+            }
+
+            pub fn kill(&self, pid: u32) {
+                self.dead.borrow_mut().insert(pid);
+            }
+        }
+
+        type Hook<'w> = Box<dyn FnOnce() + 'w>;
+
+        pub struct Proc<'w> {
+            pub w: &'w World,
+            pub pid: u32,
+            pub n: Cell<u64>,
+            pub crash_at: Option<u64>,
+            pub fail_at: Option<u64>,
+            pub hook: RefCell<Option<(u64, Hook<'w>)>>,
+            seq: Cell<u64>,
+        }
+
+        impl<'w> Proc<'w> {
+            pub fn new(w: &'w World, pid: u32) -> Proc<'w> {
+                Proc {
+                    w,
+                    pid,
+                    n: Cell::new(0),
+                    crash_at: None,
+                    fail_at: None,
+                    hook: RefCell::new(None),
+                    seq: Cell::new(0),
+                }
+            }
+
+            pub fn take(&self, held_here: bool) -> Result<()> {
+                let mut next = || {
+                    let n = self.seq.get();
+                    self.seq.set(n + 1);
+                    format!("{}.1.{n}.claim", self.pid)
+                };
+                take(self, Path::new(LOCK), Path::new(TMP), self.pid, held_here, &mut next)
+            }
+
+            pub fn release(&self) -> bool {
+                release(self, Path::new(LOCK), self.pid)
+            }
+
+            /// One operation: the crash, the hook, the failure.
+            fn op(&self) -> io::Result<()> {
+                let k = self.n.get();
+                self.n.set(k + 1);
+                if self.crash_at == Some(k) {
+                    self.w.kill(self.pid);
+                }
+                if self.w.dead.borrow().contains(&self.pid) {
+                    // A dead process does nothing more.
+                    return Err(io::Error::other("dead"));
+                }
+                let hook = {
+                    let mut h = self.hook.borrow_mut();
+                    if h.as_ref().is_some_and(|(at, _)| *at == k) { h.take() } else { None }
+                };
+                if let Some((_, f)) = hook {
+                    f();
+                }
+                if self.fail_at == Some(k) {
+                    return Err(io::Error::other("injected"));
+                }
+                Ok(())
+            }
+
+            fn make(&self, path: &Path) -> io::Result<u64> {
+                let mut files = self.w.files.borrow_mut();
+                if files.contains_key(path) {
+                    return Err(io::ErrorKind::AlreadyExists.into());
+                }
+                let ino = self.w.ino.get() + 1;
+                self.w.ino.set(ino);
+                files.insert(path.to_path_buf(), (ino, Vec::new()));
+                self.w.lies.borrow_mut().insert(path.to_path_buf(), self.w.lie.get());
+                Ok(ino)
+            }
+
+            /// Writes to the file `ino`, if it still has the name `path`.
+            fn write(&self, path: &Path, ino: u64, bytes: &[u8]) {
+                if let Some(f) = self.w.files.borrow_mut().get_mut(path) {
+                    if f.0 == ino {
+                        f.1 = bytes.to_vec();
+                    }
+                }
+            }
+        }
+
+        impl LockFs for Proc<'_> {
+            fn create(&self, path: &Path) -> io::Result<()> {
+                self.op()?;
+                self.make(path).map(drop)
+            }
+
+            fn create_written(&self, path: &Path, bytes: &[u8]) -> std::result::Result<(), Made> {
+                self.op().map_err(Made::Not)?;
+                let ino = self.make(path).map_err(Made::Not)?;
+                // The line in two writes, then the sync: a crash between
+                // leaves the empty file, or the digits without the newline.
+                self.op().map_err(Made::Partly)?;
+                self.write(path, ino, &bytes[..bytes.len() - 1]);
+                self.op().map_err(Made::Partly)?;
+                self.write(path, ino, bytes);
+                self.op().map_err(Made::Partly)
+            }
+
+            fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+                self.op()?;
+                if let Some(n) = self.w.lies.borrow_mut().get_mut(path) {
+                    if *n > 0 {
+                        *n -= 1;
+                        return Ok(None);
+                    }
+                }
+                Ok(self.w.files.borrow().get(path).map(|f| f.1.clone()))
+            }
+
+            fn remove(&self, path: &Path) -> io::Result<()> {
+                self.op()?;
+                self.w.lies.borrow_mut().remove(path);
+                match self.w.files.borrow_mut().remove(path) {
+                    Some(_) => Ok(()),
+                    None => Err(io::ErrorKind::NotFound.into()),
+                }
+            }
+
+            fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
+                self.op()?;
+                Ok(self
+                    .w
+                    .files
+                    .borrow()
+                    .keys()
+                    .filter(|p| p.parent() == Some(dir))
+                    .filter_map(|p| p.file_name()?.to_str().map(str::to_owned))
+                    .collect())
+            }
+
+            fn alive(&self, pid: u32) -> bool {
+                let _ = self.op();
+                !self.w.dead.borrow().contains(&pid)
+            }
+
+            fn pause(&self, _round: u32) {}
+        }
+    }
+
+    use world::{Proc, World};
+
+    const A: u32 = 100;
+    const B: u32 = 200;
+    const C: u32 = 300;
+    const DEAD: u32 = 7;
+
+    /// The stores an opener can find: (name, files, whether the lock is
+    /// `A`'s own left by a close of this process).
+    fn starts() -> Vec<(&'static str, World)> {
+        let mut out = Vec::new();
+        for (name, lock, claim) in [
+            ("absent", None, false),
+            ("a dead pid's", Some(format!("{DEAD}\n")), false),
+            ("empty", Some(String::new()), false),
+            ("partial", Some("12".to_owned()), false),
+            ("ten digits", Some("4294967295".to_owned()), false),
+            ("a dead claim", None, true),
+            ("a dead claim and lock", Some(format!("{DEAD}\n")), true),
+            ("A's own, left", Some(format!("{A}\n")), false),
+        ] {
+            let w = World::default();
+            w.kill(DEAD);
+            if let Some(text) = lock {
+                w.put(world::LOCK, text.as_bytes());
+            }
+            if claim {
+                w.put(&format!("{}/{DEAD}.1.0.claim", world::TMP), b"");
+            }
+            out.push((name, w));
+        }
+        out
+    }
+
+    fn holds(w: &World, pid: u32) -> bool {
+        w.lock().as_deref() == Some(lock_text(pid).as_bytes())
+    }
+
+    /// The operations of `A`'s take when alone, from each start.
+    fn solo_ops() -> u64 {
+        starts()
+            .iter()
+            .map(|(_, w)| {
+                let a = Proc::new(w, A);
+                a.take(false).unwrap();
+                a.n.get()
+            })
+            .max()
+            .unwrap()
+    }
+
+    fn is_busy(r: &Result<()>, pid: u32) -> bool {
+        matches!(r, Err(StoreError::Busy { pid: p, .. }) if *p == pid)
+    }
+
+    // §2.1 "After a crash at any one step": `A` dies before each of the
+    // operations of its take or of its close; then `B` alone takes the
+    // lock. Kills "an empty or partial lock is not a lock to take over"
+    // and "a dead process's claim is a contender".
+    #[test]
+    fn a_crash_at_any_step_never_wedges_the_lock() {
+        let n = solo_ops();
+        for k in 0..=n {
+            for (name, w) in starts() {
+                let mut a = Proc::new(&w, A);
+                a.crash_at = Some(k);
+                let r = a.take(false);
+                if r.is_ok() {
+                    assert!(holds(&w, A), "{name}, crash at {k}");
+                    w.kill(A);
+                }
+                let b = Proc::new(&w, B);
+                let rb = b.take(false);
+                assert!(rb.is_ok(), "{name}, crash at {k}: {rb:?}");
+                assert!(holds(&w, B), "{name}, crash at {k}");
+            }
+        }
+        // The close: `A` holds, and dies before each step of its release.
+        for k in 0..4 {
+            let w = World::default();
+            Proc::new(&w, A).take(false).unwrap();
+            let mut a = Proc::new(&w, A);
+            a.crash_at = Some(k);
+            a.release();
+            let rb = Proc::new(&w, B).take(false);
+            assert!(rb.is_ok(), "close crash at {k}: {rb:?}");
+        }
+    }
+
+    // A take that fails at any one operation leaves no lock of its own
+    // behind, and the lock is free again once `A` ends (a claim whose
+    // removal failed is a contender while `A` lives).
+    #[test]
+    fn a_failure_at_any_step_leaves_the_lock_takeable() {
+        let n = solo_ops();
+        for k in 0..n {
+            for (name, w) in starts() {
+                let left = holds(&w, A);
+                let mut a = Proc::new(&w, A);
+                a.fail_at = Some(k);
+                let r = a.take(false);
+                if r.is_ok() {
+                    assert!(holds(&w, A), "{name}, fail at {k}");
+                    assert!(Proc::new(&w, A).release());
+                } else if !left {
+                    assert!(!holds(&w, A), "{name}, fail at {k}: {r:?}");
+                }
+                let b = Proc::new(&w, B);
+                if b.take(false).is_err() {
+                    w.kill(A);
+                    let rb = Proc::new(&w, B).take(false);
+                    assert!(rb.is_ok(), "{name}, fail at {k}: {rb:?}");
+                }
+                assert!(holds(&w, B), "{name}, fail at {k}");
+            }
+        }
+    }
+
+    // §2.1 "Why two openers never both hold the lock": `B` takes (to the
+    // end) between any two operations of `A`'s take, from every start,
+    // with created names read as absent 0, 1 or 3 times. Never both; with
+    // honest reads, exactly one, and the lock is its. Kills "the reader
+    // takes an empty lock as free without its claim" (step 2 skipped) and
+    // "a claim made after the listing".
+    #[test]
+    fn two_openers_never_both_hold_the_lock() {
+        let n = solo_ops();
+        for lie in [0, 1, 3] {
+            for k in 0..n {
+                for (name, w) in starts() {
+                    w.lie.set(lie);
+                    let rb = std::rc::Rc::new(std::cell::RefCell::new(None));
+                    let a = Proc::new(&w, A);
+                    let (wr, rbr) = (&w, rb.clone());
+                    *a.hook.borrow_mut() = Some((
+                        k,
+                        Box::new(move || {
+                            let r = Proc::new(wr, B).take(false);
+                            *rbr.borrow_mut() = Some(r);
+                        }),
+                    ));
+                    let ra = a.take(false);
+                    // A take shorter than `k` operations: `B` after it.
+                    let ran = rb.borrow_mut().take();
+                    let rb = ran.unwrap_or_else(|| Proc::new(&w, B).take(false));
+                    let at = format!("{name}, lie {lie}, B before A's op {k}: {ra:?} {rb:?}");
+                    assert!(!(ra.is_ok() && rb.is_ok()), "{at}");
+                    if lie == 0 {
+                        assert!(ra.is_ok() != rb.is_ok(), "{at}");
+                        assert!(holds(&w, if ra.is_ok() { A } else { B }), "{at}");
+                    }
+                }
+            }
+        }
+    }
+
+    // Three: `C` takes between two operations of `B`'s, itself between two
+    // of `A`'s.
+    #[test]
+    fn three_openers_never_two_hold_the_lock() {
+        let n = solo_ops();
+        for k in 0..n {
+            for j in 0..n + 8 {
+                for (name, w) in starts() {
+                    let res = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    let a = Proc::new(&w, A);
+                    let (wr, r1) = (&w, res.clone());
+                    *a.hook.borrow_mut() = Some((
+                        k,
+                        Box::new(move || {
+                            let b = Proc::new(wr, B);
+                            let r2 = r1.clone();
+                            *b.hook.borrow_mut() = Some((
+                                j,
+                                Box::new(move || {
+                                    let ok = Proc::new(wr, C).take(false).is_ok();
+                                    r2.borrow_mut().push(ok);
+                                }),
+                            ));
+                            let ok = b.take(false).is_ok();
+                            r1.borrow_mut().push(ok);
+                        }),
+                    ));
+                    let ra = a.take(false).is_ok();
+                    res.borrow_mut().push(ra);
+                    let oks = res.borrow().iter().filter(|ok| **ok).count();
+                    assert_eq!(oks, 1, "{name}, B before A's op {k}, C before B's op {j}");
+                }
+            }
+        }
+    }
+
+    // §2.1 "Closing", with the hazard: the close reads its lock as absent
+    // and leaves it. Others are then `Busy` naming this process; its own
+    // next exclusive open takes the lock; while it holds it again, a third
+    // open of this process is `Busy`.
+    #[test]
+    fn a_close_that_reads_its_lock_as_absent() {
+        let w = World::default();
+        w.lie.set(1);
+        let a = Proc::new(&w, A);
+        a.take(false).unwrap();
+        assert!(!a.release(), "the close read the lock as absent");
+        assert!(holds(&w, A), "the lock is left");
+        assert!(is_busy(&Proc::new(&w, B).take(false), A));
+        // The re-open of this process (no longer registered as holding it).
+        w.lie.set(0);
+        let again = Proc::new(&w, A);
+        assert!(again.take(false).is_ok());
+        assert!(holds(&w, A));
+        // Registered again: a second open of this process is `Busy`.
+        assert!(is_busy(&Proc::new(&w, A).take(true), A));
+        assert!(is_busy(&Proc::new(&w, B).take(false), A));
+        assert!(again.release());
+        assert!(Proc::new(&w, B).take(false).is_ok());
+    }
+
+    // A live pid's lock, or a live contender's claim, is `Busy`, and a lock
+    // that is not Slip's is an error left alone.
+    #[test]
+    fn busy_and_foreign_locks() {
+        let w = World::default();
+        w.put(world::LOCK, format!("{B}\n").as_bytes());
+        assert!(is_busy(&Proc::new(&w, A).take(false), B));
+        let w = World::default();
+        w.put(&format!("{}/{C}.1.0.claim", world::TMP), b"");
+        assert!(is_busy(&Proc::new(&w, A).take(false), C));
+        assert_eq!(w.lock(), None);
+        let w = World::default();
+        w.put(world::LOCK, b"not a lock");
+        let r = Proc::new(&w, A).take(false);
+        assert!(
+            matches!(&r, Err(StoreError::Io { error, .. })
+            if error.kind() == io::ErrorKind::InvalidData),
+            "{r:?}"
+        );
+        assert_eq!(w.lock().as_deref(), Some(&b"not a lock"[..]));
+        // No claim of A is left in any of these.
+        assert!(w.files.borrow().keys().all(|p| !p.to_string_lossy().ends_with(".claim")));
     }
 }

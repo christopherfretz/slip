@@ -1702,7 +1702,8 @@ goes on.
 | `link-read-both` | `B` a link to `A`, read through both | the trees' unedited files, the tests of identity |
 | `tmp-again-after-link` | `T` linked to `L` and unlinked; `T` created again | nothing (the store's lock and journal before WP-159) |
 | `tmp-again-after-rename` | `T` renamed to `D`; `T` created again | the patch's and a report's temporary, staged names |
-| `unique-tmp-link` | `T` linked to `L` and unlinked; `T`'s name never used again | the store's lock and journal |
+| `unique-tmp-link` | `T` linked to `L` and unlinked; `T`'s name never used again | nothing (the store's lock and journal before WP-161) |
+| `create-new-read` | `L` created exclusively, written and synced in place, read by name; a claim `C` created exclusively (a name never used again), listed by its directory, removed | the store's lock, its claims and the journal (`spec/exec.md` §2.1) |
 | `inode-stable` | files created fresh, their device and inode numbers read, read again at once and 2 s later | a test's work directory (§11.5) |
 
 Output: `fscheck: <dir>: <n> rounds per row`, then per row
@@ -1751,10 +1752,10 @@ names"); which of its reads are checked against a digest is
 
 On the workspace mount `unique-tmp-link` is not clean (WP-159): after a
 link and the unlink of its source, the new name can read as absent for a
-while, never as other bytes. The harness's trees do not depend on it;
-what it means for the store's lock and journal is
-`spec/landed/harness/WP-159.md` "A finding: a linked name read as
-absent", an open question.
+while, never as other bytes. Nothing relies on it: the store's lock and
+journal are created exclusively under their own names and written there
+(WP-161, `spec/exec.md` §2.1), which is the row `create-new-read`, and
+the store makes no hard link.
 
 ### 11.5 A file system that changes the inode numbers of new files
 

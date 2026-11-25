@@ -1435,10 +1435,27 @@ The **staged name** of an overlay file is, in the file's own directory,
    JournalFile := path: path, staged: bytes, pre: Content, post: Content
    ```
 
-   one record in the encoding of `model.md` §2, with no container; it is
-   not addressed by content and never leaves the store. The publish is
-   exclusive: it fails if a journal exists, which is the unfinished-write
-   refusal (two writes on one store cannot both proceed).
+   one record in the encoding of `model.md` §2, the one section (id 1,
+   required) of a container of kind `JRNL`, version 1 (`model.md` §5),
+   so that its length (the section's) and its digest (the trailer) are
+   in it; it is not addressed by content and never leaves the store.
+   The publish is exclusive: it fails if a journal exists, which is the
+   unfinished-write refusal (two writes on one store cannot both
+   proceed). It creates `write.journal` exclusively, writes it, syncs
+   it and the store's directory (`exec.md` §2.1 "The journal"), and
+   returns only then: nothing of the tree is touched before (step 3
+   comes after it).
+
+   A journal is **whole** when it passes `model.md` §5 rule 5 (magic,
+   kind, version, trailer, framing). One that does not, other than for
+   its version (`UnsupportedVersion`: a newer Slip's, refused and kept),
+   was cut short by a crash before its publish returned, so before any
+   file of the tree was touched: it is an **interrupted** journal. A
+   journal with no container (an earlier Slip's, version 0) is whole
+   when it decodes as the record above and passes the reader's rules;
+   otherwise it is interrupted too. A whole journal whose record does not
+   decode, or breaks a rule of the reader, is malformed: refused and
+   kept.
 3. **Stage.** For every file, in path order: the post-image blob is
    copied to the staged name (created exclusively, with the original's
    permission bits) and synced.
@@ -1492,7 +1509,12 @@ From step 2 on, a failure that the command cannot undo, or an
 interruption, leaves a journal, and the journal names every file the
 write may have created. Every Slip command that opens the store
 exclusively finds it and refuses to run (`Input`: the store has an
-unfinished write). `slip apply --recover` finishes it. The journal must be exactly the one a
+unfinished write). `slip apply --recover` finishes it. An interrupted
+journal (step 2) is removed, durably, and `--recover` says so
+(`recovered: the write was interrupted before any file was touched;
+the journal is removed`, status 0); nothing else is read or touched.
+`--write` refuses a store with an interrupted journal as it refuses any
+journal. Otherwise the journal must be exactly the one a
 write of the overlay it names publishes (the same files, `pre` and
 `post` images and staged names), or it is refused (`Input`) before
 anything is touched, and kept: a journal naming a file its overlay does
@@ -1584,12 +1606,19 @@ pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>),
                    JournalNotOwned(Vec<u8>) }
 pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String),
                       Invalid(String) }   // the overlay or the ownership is malformed, or the id is wrong
-pub struct Recovered { pub restored: Vec<Vec<u8>>, pub left: Vec<Vec<u8>>, pub reported: Vec<Vec<u8>> }
+pub struct Recovered { pub restored: Vec<Vec<u8>>, pub left: Vec<Vec<u8>>, pub reported: Vec<Vec<u8>>,
+                       pub interrupted: bool }   // an interrupted journal (§7.3 step 2), removed; nothing else done
 
 pub fn write(overlay: &Overlay, overlay_id: Digest, ownership: &Ownership,
              tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore) -> Result<u64, WriteError>;
 pub fn recover(ownership: &Ownership, tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore)
     -> Result<Option<Recovered>, WriteError>;   // the ownership the write was given
+/// Removes the journal if it is interrupted (§7.3 step 2): `true`. A whole journal, or none: `false`,
+/// nothing done; a malformed one: `Journal`.
+pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<bool, WriteError>;
+// slip_apply::journal
+pub enum Read { Whole(Journal), Interrupted(String) }   // the reason, for a message
+impl Journal { pub fn read(bytes: &[u8]) -> Result<Read, String>; }   // Err: malformed, refused and kept
 ```
 
 `write` returns the number of files replaced; `recover` returns `None`
@@ -2532,10 +2561,10 @@ A blob is published like every file (`exec.md` §2). A reader checks a
 blob's digest when it reads it; a blob that does not hash to its name is
 an `Input` error.
 
-`write.journal` is published from a temporary in the process's scratch
-directory, `journal.<t>.<n>.tmp` with the token of `exec.md` §2.1, hard-linked
-to the journal's name and unlinked: the temporary's name is never made
-again while the journal is alive (`harness.md` §11).
+`write.journal` is created exclusively under its own name, written and
+synced there (`exec.md` §2.1 "The journal"): no temporary, no link
+(`harness.md` §11). A crash before it is synced leaves an interrupted
+journal (§7.3 step 2).
 
 **What a write promises about names** (`harness.md` §11). `--write`
 (§7.3), `--patch <file>` (§7.2) and `--report <file>` (§10.2) each
