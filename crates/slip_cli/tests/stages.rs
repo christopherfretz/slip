@@ -5,8 +5,10 @@
 //! Kiln: nothing here parses.
 //!
 //! Each test has its own directory (a small tree `src/` and a store),
-//! under the target directory, removed on drop. Every wait on a child is
+//! under the work root (`common::work_root()`), removed on drop. Every wait on a child is
 //! bounded.
+
+mod common;
 
 use std::fs;
 use std::io::Read;
@@ -213,8 +215,7 @@ impl Fx {
     fn new(name: &str) -> Fx {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp075-{name}-{}-{n}", std::process::id()));
+        let root = common::work_root().join(format!("wp075-{name}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).unwrap();
         // Real paths: the store, the shards and the overlay name them.

@@ -24,6 +24,8 @@
 
 #![forbid(unsafe_code)]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -86,8 +88,7 @@ fn resource() -> PathBuf {
 }
 
 fn transform_file() -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("wp132-identifier-{}", std::process::id()));
+    let dir = common::work_root().join(format!("wp132-identifier-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = std::fs::canonicalize(&dir).unwrap().join("transform.cpp");
     std::fs::write(&path, TRANSFORM).unwrap();

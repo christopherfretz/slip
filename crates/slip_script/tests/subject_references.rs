@@ -6,6 +6,8 @@
 //! A range is shown as `path:text` (or `path:lo..hi:text` where the test
 //! is byte-exact); no range as `-`.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -641,7 +643,7 @@ fn on_disk<R: Send>(
     std: &str,
     f: impl FnOnce(&KilnSubject<'_>) -> R + Send,
 ) -> R {
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
+    let tree = Tree::new(&common::work_root(), name, files).unwrap();
     let observer = tree.observer(files[0].0, std, &[]);
     let (_, got) = tree
         .parse(&observer, &written_options(), |unit| {
@@ -1807,11 +1809,8 @@ fn wp085_one_name_rule_with_sites_over_digest_pair_tests() {
             }
             let files: Vec<(&str, &[u8])> =
                 side.files.iter().map(|(p, t)| (p.as_str(), t.as_bytes())).collect();
-            let Ok(tree) = Tree::new(
-                Path::new(env!("CARGO_TARGET_TMPDIR")),
-                &format!("wp085-rule-{k}-{i}"),
-                &files,
-            ) else {
+            let Ok(tree) = Tree::new(&common::work_root(), &format!("wp085-rule-{k}-{i}"), &files)
+            else {
                 skipped += 1;
                 continue;
             };

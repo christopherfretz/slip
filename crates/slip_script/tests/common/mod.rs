@@ -1,8 +1,18 @@
 //! What the driver's tests share (`docs/wp/WP-089.md`): transforms written
-//! to a directory of their own under Cargo's temporary directory and named
+//! to a directory of their own under the work root ([`work_root`]) and named
 //! by absolute path, loaded on a thread with the stack Kiln needs.
 
 #![allow(dead_code, reason = "each test file uses a part")]
+
+#[path = "../../../slip_kiln/tests/common/work_root.rs"]
+pub mod work_root;
+
+/// The directory under which a test makes the trees a front end, `slip`
+/// or `slip_apply` reads: under `$SLIP_TEST_ROOT` when set, else
+/// `CARGO_TARGET_TMPDIR` (`spec/harness.md` §11.5).
+pub fn work_root() -> PathBuf {
+    work_root::work_root_or(env!("CARGO_TARGET_TMPDIR"))
+}
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,8 +41,7 @@ pub fn resource() -> PathBuf {
 pub fn scratch(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("driver-{}-{n}-{name}", std::process::id()));
+    let dir = work_root().join(format!("driver-{}-{n}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::canonicalize(&dir).unwrap()

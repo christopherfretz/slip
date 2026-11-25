@@ -2,7 +2,7 @@
 //! fails, or loses power, at the n-th operation, for every n, over a
 //! three-file overlay; the same sweep over `recover`; the refusals; the
 //! journal's record; and the disk implementation over a directory under
-//! the target directory.
+//! the work root (`common::work_root()`).
 
 #![allow(
     clippy::many_single_char_names,
@@ -1462,8 +1462,7 @@ mod disk {
     }
 
     pub fn root(name: &str) -> PathBuf {
-        let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp063-write-{name}-{}", std::process::id()));
+        let d = common::work_root().join(format!("wp063-write-{name}-{}", std::process::id()));
         if d.exists() {
             common::remove_tree(&d);
         }
@@ -1681,7 +1680,7 @@ fn s7_3_disk_refusals() {
     assert_eq!(try_write(), Err(WriteError::Refused(Refused::NotRegular(c.clone()))));
     std::fs::remove_file(&sub).unwrap();
     std::fs::rename(r.join("sub.real"), &sub).unwrap();
-    // A read-only directory (our own, under the target directory).
+    // A read-only directory (our own, under the work root).
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
     assert_eq!(try_write(), Err(WriteError::Refused(Refused::NotWritable(c))));
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -29,7 +29,7 @@ fn run(req: &Request, read: fscheck::Reader<'_>) -> (u8, Vec<String>) {
 #[test]
 fn s11_2_parse() {
     let r = fscheck::parse(&args(&["d"])).unwrap();
-    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 9));
+    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 10));
     let r = fscheck::parse(&args(&[
         "--row",
         "unique-tmp-link",
@@ -133,4 +133,58 @@ fn s11_2_no_directory() {
     let (code, lines) = run(&req, &|p| std::fs::read(p));
     assert_eq!(code, 1);
     assert!(lines[0].starts_with(&format!("fscheck: {}: ", f.path("none").display())), "{lines:?}");
+}
+
+// §11.5: `inode-stable` reads the numbers of the files it creates, at once
+// and after its wait; a file whose numbers changed is a wrong read of a
+// relied-on row (planted here through the reader of numbers: a local file
+// system never changes them), shown with its numbers, and the status is 1.
+#[test]
+fn s11_5_inode_stable() {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+    let f = Fixture::empty("fscheck-inode");
+    let row = *ROWS.iter().find(|r| r.name == "inode-stable").unwrap();
+    assert!(row.relied);
+    let req = Request { dir: f.root().to_owned(), rounds: 5, rows: vec![row] };
+    // The real numbers: clean here, and the row waits.
+    let t0 = Instant::now();
+    let (code, lines) = run(&req, &|p| std::fs::read(p));
+    assert!(t0.elapsed() >= fscheck::INODE_WAIT, "the row waited");
+    assert_eq!(code, 0, "{lines:#?}");
+    assert!(lines[1].starts_with("inode-stable") && lines[1].contains(" rounds 5 wrong 0 "));
+    assert!(
+        lines[1].ends_with(
+            "relied on: a file created fresh keeps its device and inode numbers for 2 s"
+        )
+    );
+    // Planted: the numbers of `f3.h` change after the first read.
+    let seen: RefCell<BTreeMap<std::path::PathBuf, u64>> = RefCell::new(BTreeMap::new());
+    let planted = |p: &Path| -> std::io::Result<(u64, u64)> {
+        let (dev, ino) = fscheck::identity(p)?;
+        let mut seen = seen.borrow_mut();
+        let n = seen.entry(p.to_owned()).or_insert(0);
+        *n += 1;
+        Ok(if p.ends_with("f3.h") && *n > 1 { (dev, ino + 1) } else { (dev, ino) })
+    };
+    let mut lines = Vec::new();
+    let code = fscheck::run_with(&req, &|p| std::fs::read(p), &planted, &mut |l| {
+        lines.push(l.to_owned());
+    });
+    assert_eq!(code, 1, "{lines:#?}");
+    assert!(lines[1].contains(" rounds 5 wrong 1 "), "{lines:#?}");
+    assert!(
+        lines[2].starts_with("  first: ")
+            && lines[2].contains("f3.h was ")
+            && lines[2].contains(", then "),
+        "{lines:#?}"
+    );
+    assert_eq!(lines.last().unwrap(), "fscheck: FAILED (inode-stable)");
+    // Every file was read when made, at once and after the wait (the one
+    // changed is not read again); none is left.
+    let want = |p: &Path| if p.ends_with("f3.h") { 2 } else { 3 };
+    assert!(seen.borrow().iter().all(|(p, n)| *n == want(p)), "{:?}", seen.borrow());
+    assert_eq!(seen.borrow().len(), 5);
+    assert_eq!(std::fs::read_dir(f.root()).unwrap().count(), 0, "the row's directory removed");
 }

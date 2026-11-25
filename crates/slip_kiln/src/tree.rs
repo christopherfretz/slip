@@ -40,7 +40,8 @@ pub struct Tree {
 
 impl Tree {
     /// Writes `files` (relative path, bytes) under a new directory of
-    /// `base` (a test passes `env!("CARGO_TARGET_TMPDIR")`), named after
+    /// `base` (a test passes its crate's `common::work_root()`,
+    /// `spec/harness.md` §11.5), named after
     /// `name`, the process and a counter. `base` is created if missing;
     /// the root is its real path.
     ///

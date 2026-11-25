@@ -6,6 +6,8 @@
 //! A parse changes the process's current directory: every test that
 //! parses holds [`LOCK`], and every path is absolute.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -57,8 +59,7 @@ impl Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp052-{name}-{}-{n}", std::process::id()));
+        let base = common::work_root().join(format!("wp052-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();

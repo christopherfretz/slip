@@ -189,10 +189,12 @@ pub fn changed_files(before: &Files, after: &Files) -> Vec<String> {
 }
 
 /// Checks that `work` is a test's own work directory,
-/// `<target>/transform/<area>/<name>` (absolute, no `.` or `..` component,
-/// its last three components `transform`, `area` and `name`), and that it
-/// neither holds nor lies inside `test_dir`. The work directory is removed
-/// by this path, so nothing else may pass.
+/// `<target>/transform/<area>/<name>` or
+/// `$SLIP_TEST_ROOT/transform/<checkout>/<area>/<name>` (absolute, no `.`
+/// or `..` component, its last two components `area` and `name` and the
+/// third or fourth from the end `transform`; [`crate::transform::work_base`]),
+/// and that it neither holds nor lies inside `test_dir`. The work directory
+/// is removed by this path, so nothing else may pass.
 pub fn check_work_dir(work: &Path, area: &str, name: &str, test_dir: &Path) -> Result<(), String> {
     let shown = work.display();
     if !work.is_absolute() {
@@ -206,10 +208,15 @@ pub fn check_work_dir(work: &Path, area: &str, name: &str, test_dir: &Path) -> R
         .iter()
         .filter_map(|c| if let Component::Normal(n) = c { Some(*n) } else { None })
         .collect();
-    let tail = names.len().checked_sub(3).map(|i| &names[i..]);
-    if tail != Some(&["transform".as_ref(), area.as_ref(), name.as_ref()][..]) || names.len() < 4 {
+    let n = names.len();
+    let ours = n >= 4
+        && names[n - 2] == std::ffi::OsStr::new(area)
+        && names[n - 1] == std::ffi::OsStr::new(name)
+        && (names[n - 3] == "transform" || (n >= 5 && names[n - 4] == "transform"));
+    if !ours {
         return Err(format!(
-            "the work directory {shown} is not under <target>/transform/{area}/{name}"
+            "the work directory {shown} is not under <target>/transform/{area}/{name} \
+             or $SLIP_TEST_ROOT/transform/<checkout>/{area}/{name}"
         ));
     }
     let test_abs = std::path::absolute(test_dir).unwrap_or_else(|_| test_dir.to_owned());

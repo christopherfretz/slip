@@ -2,13 +2,15 @@
 //! `spec/landed/edits/WP-068.md`): where a name token is written and why
 //! it cannot be edited (`spec/edits.md` §2.2, §2.3, §4.2).
 //!
-//! Every unit is a [`Tree`] under the target directory, parsed by the
+//! Every unit is a [`Tree`] under the work root (`common::work_root()`), parsed by the
 //! production parse with Kiln's written-reference and declaration-extent
 //! tables on, and owned but for `dep/` (`spec/harness.md` §6.2). Names are
 //! found by where their first character is spelled; every answer is
 //! rendered with the bytes of its ranges, and every `At` is checked
 //! against `ranges::file_range_of_span` (the package's last test
 //! obligation) in [`describe`].
+
+mod common;
 
 use slip_kiln::kiln::ast::expr::ExprKind;
 use slip_kiln::kiln::ast::ids::ExprId;
@@ -170,7 +172,7 @@ fn with_tree<R: Send>(
     args: &[&str],
     f: impl FnOnce(&Unit<'_>, &Sites<'_, '_>, &str) -> R + Send,
 ) -> R {
-    let tree = Tree::new(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
+    let tree = Tree::new(&common::work_root(), name, files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let ownership = Ownership {
         owned: vec![root.clone().into_bytes()],
@@ -860,7 +862,7 @@ fn file_ref_is_the_shard_input() {
     let h = "int foo = 0;\n";
     let src = "#include \"dep/h.h\"\nint bar = foo;\n";
     let tree = Tree::new(
-        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        &common::work_root(),
         "fileref",
         &[("main.cpp", src.as_bytes()), ("dep/h.h", h.as_bytes())],
     )
@@ -906,7 +908,7 @@ fn file_ref_is_the_shard_input() {
 
 #[test]
 fn tree_directories_are_fresh_and_removed_on_drop() {
-    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("trees");
+    let base = common::work_root().join("trees");
     let a =
         Tree::new(&base, "same", &[("a/b/c.h", b"x"), ("a/d.h", b"y"), ("m.cpp", b"")]).unwrap();
     let b = Tree::new(&base, "same", &[("m.cpp", b"")]).unwrap();
@@ -922,7 +924,7 @@ fn tree_directories_are_fresh_and_removed_on_drop() {
 
 #[test]
 fn tree_refuses_paths_outside_it() {
-    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("trees");
+    let base = common::work_root().join("trees");
     for bad in ["/abs.h", "../up.h", "a/../b.h", "./a.h", ""] {
         let e = Tree::new(&base, "bad", &[(bad, b"")]).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
@@ -934,7 +936,7 @@ fn tree_refuses_paths_outside_it() {
 // Review finding F7: a tree's name is one normal path component.
 #[test]
 fn tree_refuses_names_that_are_not_one_component() {
-    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("trees");
+    let base = common::work_root().join("trees");
     for bad in ["", ".", "..", "a/b", "/abs", "a/", "../x", "./a"] {
         let e = Tree::new(&base, bad, &[("m.cpp", b"")]).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
@@ -944,12 +946,7 @@ fn tree_refuses_names_that_are_not_one_component() {
 
 #[test]
 fn tree_observer_is_the_default_command() {
-    let tree = Tree::new(
-        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
-        "cmd",
-        &[("m.cpp", b"int x;")],
-    )
-    .unwrap();
+    let tree = Tree::new(&common::work_root(), "cmd", &[("m.cpp", b"int x;")]).unwrap();
     let root = tree.root().to_str().unwrap();
     let o = tree.observer("m.cpp", "c++23", &["-DX=1"]);
     let argv: Vec<String> =
@@ -1065,4 +1062,10 @@ fn s2_2_kf3_edge_rows() {
             Some((off(src, "SS(foo)", "SS"), "SS"))
         )
     );
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }
