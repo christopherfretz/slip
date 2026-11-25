@@ -33,3 +33,10 @@ Wr<decltype(make(x))> wr;
 long e_scast = static_cast<decltype(make(x))>(0L);
 unsigned long e_sizeof = sizeof(decltype(make(x)));
 int e_carr() { return ((Q<sizeof(make(x))>[]){{}})[0].v; }
+// A cast to a reference alias: the written type is the alias (no
+// operand: the alias's own unit holds it), not the node's type.
+using Rr = decltype(make(x)) &;
+int e_rcast(int &i) { return static_cast<Rr>(i); }
+// Explicit template arguments of an overloaded member.
+struct C2 { template <int M> int m() { return M; } int m(long) { return 0; } };
+int e_movl(C2 c) { return c.m<sizeof(make(x))>(); }

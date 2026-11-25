@@ -1,8 +1,11 @@
 # WP-156 (B2): every declaration of the entity is read, the definition
-# that has no operand included: f, S::m, S::sv.
+# that has no operand included: f, S::m, S::sv; and the operand in a
+# later declaration only: g, S2::sv.
 exact derived
 removed lib::make(lib::X)
+derived-changed S2::sv::<operands>
 derived-changed S::m()::<operands>
 derived-changed S::sv::<operands>
 derived-changed f()::<operands>
+derived-changed g()::<operands>
 derived-added make<lib::X>(lib::X)

@@ -2,11 +2,13 @@
 exact derived
 removed lib::make(lib::X)
 derived-changed Fr2::<friend arr<char, 4>>::<operands>
+derived-changed Rr::<operands>
 derived-changed e_alignof::<operands>
 derived-changed e_carr()::<operands>
 derived-changed e_compound::<operands>
 derived-changed e_fcast::<operands>
 derived-changed e_member(C)::<operands>
+derived-changed e_movl(C2)::<operands>
 derived-changed e_new::<operands>
 derived-changed e_qual::<operands>
 derived-changed e_qual_t::<operands>

@@ -1,5 +1,5 @@
 # N47: a name in an operand only a type or a value holds (decltype; an expression template argument) binds otherwise after the move (WP-156).
 good:   verified
-bad:    mismatch derived_changed legacy::v::<operands>
+bad:    mismatch derived_changed legacy::v::<operands> @ main.cpp:6
 good-2: verified
-bad-2:  mismatch derived_changed legacy::a::<operands>
+bad-2:  mismatch derived_changed legacy::a::<operands> @ main.cpp:7
