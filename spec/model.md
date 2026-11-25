@@ -664,7 +664,7 @@ A unit's key is `digest.md` §3's, with the kinds and name forms of
 form by its number and refuses one the table does not list, a
 `reserved` row included (`KeyKind` 34, `Name` 16). WP-156 added
 `KeyKind` 35 and `Name` 17 (`operands`, the operand unit) under the
-same `scheme` (its question is the handback's, `docs/wp/WP-156.md`).
+same `scheme`, as ruled in its fix round 1 (`digest.md` §11).
 
 **Invariants.** The section's payload starts at offset `P` (the `scheme`
 field).

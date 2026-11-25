@@ -210,6 +210,14 @@ fn collecting(w: &Walk<'_>) -> bool {
             w.unit_level()
                 && w.unit.expr.profile.is_none()
                 && !w.unit.local.detached
+                // A guard: a stream walked and dropped
+                // (`demand::immediates`, a tied candidate in
+                // `units::read_decl`) starts from a fresh unit state
+                // (`Walk::take_unit`), whose operand state is off, so no
+                // fixture reaches this test with `dropped` above 0 and
+                // the state on. Removing it (mutation R11, WP-156 fix
+                // round 1) changes no unit of the digest suites
+                // (`differ/_/operands-dropped-walk` is the shape).
                 && w.dropped == 0
         } else {
             w.in_own_stream()
@@ -1067,7 +1075,10 @@ fn args(w: &mut Walk<'_>, l: ArgListId, out: &mut Vec<Op>, depth: u32) {
             ArgView::Expr { expr, .. } => push(w, Op::Expr(EXPR_ARG, expr), out),
             // R21: a written list holds no pack (Kiln groups a pack's
             // arguments in a converted list only); kept for a list that
-            // would.
+            // would. Unreachable at the pin: emptying this arm changes
+            // no unit of `differ/_/operands-scan-arms`, whose `vp`
+            // (`VT<int, Q<…>>`, an alias pack) and `tt` (`Tup<Ts...>`
+            // substituted) are the shapes that could make one.
             ArgView::Pack(p) => args(w, p, out, depth + 1),
             // A converted value, a template's name, a dependent
             // expression's canonical form: nothing written.
