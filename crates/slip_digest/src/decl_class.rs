@@ -414,8 +414,6 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     // without making it non-dependent is in its key alone; listing the
     // key here makes a moved binding a change of this unit.
     let instantiated = !local && crate::templ::made_by_instantiation(w, d);
-    #[cfg(test)]
-    let instantiated = instantiated && !crate::zz_probe156::OFF.with(std::cell::Cell::get);
     let mut seen: HashSet<DeclId> = HashSet::new();
     let (mut fields, mut virtuals, mut others) = (Vec::new(), Vec::new(), Vec::new());
     for m in members_of(w, s, d) {

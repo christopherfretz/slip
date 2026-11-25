@@ -999,6 +999,22 @@ the difference the unit is on both sides and differs
 This argument assumes the front end's demand is a function of the program.
 The demand-independence test of `digest.md` §14 is what checks it.
 
+An operand unit (`digest.md` §2.4, WP-156) exists without a demand
+too: it is derived because an operand is written in its parent's
+holders, whatever the parent's class. On one side only, with a parent
+both images have, it is no finding, and needs no argument from
+demand: the parent's own stream does not hold the operands, so it is
+unchanged by construction, and the operand unit is on one side only
+because the operand was removed with the names it held (`decltype(make(x))`
+replaced by `int`), or no longer refers to anything (`void_t<int>`
+against `void`), or the declaration that wrote it was removed (the
+parent's other declarations are then what is compared). Where the
+operand is on both sides and a name in it binds another entity, the
+operand unit is on both sides and differs: `derived_changed` of the
+operand unit, whose detail (§6) shows each side's operands. An
+operand unit with a one-sided parent goes with its parent: what step 2
+or step 3 says of the parent is the finding.
+
 ### 4.1 Through groups
 
 Unit lists are not normally in a shard. The comparison is carried out on
@@ -1975,6 +1991,7 @@ form the walk makes (`crates/slip_digest/src/names.rs`):
 | a template parameter object | its scope and `<template_param_object>` |
 | a `default_argument` unit (digest-kinds §11.4) | its function's or field's name and `::<default_argument n>`, `n` the parameter's index: `X<int>::f(int)::<default_argument 0>` |
 | a resolved unit (digest-kinds §11.1) | its owner's name and `::<` the property `>`, with its discriminator after a space: `S::<key_function>`, `f(int)::<default_immediates 0>`, `X<int>::f(int)::<default_argument 0>::<default_immediates>` |
+| an operand unit (`digest.md` §2.4) | its parent's name, as its parent's unit is named, and `::<operands>`: `v::<operands>`, `S<N::A>::<definition>::<operands>`, `M::<friend It<type-parameter-0-0, 0>>::<operands>` |
 | the order unit | `<order>` |
 
 The plain name of an entity a unit refers to (a shadow's target, what a
@@ -2053,6 +2070,14 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
   trace and their findings no `where` (counted:
   `verify.traces.panicked`, §7.2, and not in `verify.traces.unstable`).
 - A content-keyed unit and the order unit have the first mark only.
+- An operand unit (`digest.md` §2.4) is traced as its parent's stream
+  is, with the parent's numbering: its first mark at its parent's
+  place, then a mark at each operand's expression where the operand
+  begins, so the site of a `derived_changed` of an operand unit is the
+  operand that differs, in each image, with `what` naming the entity
+  each side's operand refers to (`DeclRefExpr … refers to lib::make(lib::X)`
+  and `… refers to make<lib::X>(lib::X)`). That is the report's detail
+  of an operand unit: which operand is gone or binds another entity.
 - The location of a node inside a macro expansion is that of the outermost
   expansion (as for a group's file, `digest.md` §11).
 - Tracing changes no byte of any stream: with and without it, `digests` are

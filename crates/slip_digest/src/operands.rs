@@ -160,11 +160,6 @@ fn counting(w: &Walk<'_>) -> bool {
 /// `e` ([`signature`]); `None` for a part, whose one group is what its
 /// stream meets.
 pub(crate) fn begin(w: &mut Walk<'_>, e: DeclId, from: Option<DeclId>) {
-    #[cfg(test)]
-    if crate::zz_probe156::OFF.with(std::cell::Cell::get) {
-        w.unit.operands = State::default();
-        return;
-    }
     let ast = w.ast;
     let mut decls = w.redecls(e);
     decls.reverse();

@@ -379,9 +379,33 @@ marked emitted unreferenced, and that one image only has, is a finding
 `spec/landed/digest/WP-153.md` §1 has the programs and what closes
 each; `spec/landed/verify/WP-155.md` has the mark and the rule.
 
-The limit of names is the same, outside any template, for a name in
-an operand that is not dependent and that only a type or a value holds
-(`decltype(n::S::s()) v;`): by §1 rule 2 the operand is spelling.
+**What the operand units close (WP-156).** A name in an operand that
+only a type or a value holds, inside a written type (`decltype`,
+`typeof`, an expression template argument, a `noexcept` operand, the
+written argument list of an alias template specialisation), is written
+in the operand unit of the unit that holds the type (§2.4): outside any
+template (`decltype(n::S::s()) v;`, which §1 rule 2 alone would make
+spelling) and in a declaration an instantiation made (a specialisation's
+substituted return type, parameter types and `noexcept`, a member of an
+instantiated class). Of the shapes above, these are closed where such
+an operand is written: the substituted signature of a specialisation
+that exists, a `noexcept` operand substituted at instantiation (in the
+operand unit of the resolved `exception_spec` unit), and an operand in
+a written type of an instantiated declaration. What stays a limit, by
+name, each pinned by an equal pair whose comment names it
+(`tests/equal/_/limit-operands-*`):
+
+| Limit | Why | Asked of Kiln |
+|---|---|---|
+| an array bound (`int buf[sizeof(make(x))]`) | Kiln keeps a constant bound as a value only, for every declarator; the site (3) is reserved | the bound as written (KR9 §5.11) |
+| an adjusted parameter of an instantiated function (`decltype(T::s()) q[2]` is `int *`) | the parameter has no written type after substitution | the written type (asked) |
+| a pack index after substitution (`T...[sizeof(make(x)) - 4]`) | absent after substitution; site 5 is reserved | (asked, low) |
+| `explicit(e)` of a function template specialisation | the stored value only; the pattern's own stream walks the written operand | |
+| a template candidate that lost to a non-template | no declaration in the parse: Kiln did not instantiate it (the compatibility level of `docs/wp/WP-155.md`) | whether it deduces there |
+
+An operand that writes no reference (`noexcept(true)`, `array<char, 4>`)
+and an instantiation-dependent one (a pattern's own spellings hold it,
+`digest-kinds.md` §4.4) are not written; neither is a deduced type.
 
 Nothing is counted for this limit. The AST holds no fact that says a
 satisfaction check or an alias template-id was substituted, and what
@@ -432,6 +456,121 @@ review sketched would read the same missing definition). The rules
 pairs `rules/wp158/friend-two-classes-rev` (equal today: the limit) and
 `friend-twice-one-class-rev` (the collision) and the pitfall row R26
 pin it; each changes when Kiln instantiates the definition.
+
+### 2.4 Operand units
+
+The digest writes a type by its canonical form and a constant by its
+value (§4.2, §7). A name inside an expression that only such a type or
+value holds is then written nowhere:
+
+```cpp
+namespace lib { struct X {}; int make(X); }   // a migration leaves make behind
+template <class T> int make(T);
+lib::X x;
+decltype(make(x)) y;                           // lib::make, or ::make<lib::X>: `int` both times
+template <class T, unsigned long N> struct array {};
+array<char, sizeof(make(x))> a;
+```
+
+Every unit that has such an expression has an **operand unit**
+(WP-156; the design is `spec/landed/digest/WP-153.md` §3.7 as ruled in
+its §13.2): key kind `operands`, parent the unit's key (`Parent::Unit`),
+name `operands`, no discriminator. It is a derived unit, in the derived
+group of its parent's file (none for a parent in the translation unit's
+group), whatever its parent is: a declared or derived entity, a
+specialisation, a content-keyed unit, a resolved unit (`definition`,
+`exception_spec`), a `default_argument` unit. An operand unit has no
+operand unit. Its cause is its parent's (§10), and its own.
+
+**Where the operands are read: the holders of a written type.** A
+declaration's written type (the return type, each parameter's type
+before adjustment, a variable's, a field's, a typedef's and an alias's
+type, a base specifier, a friend's type); a default type template
+argument; the argument list as written of an explicit or partial
+specialisation and of an explicit instantiation; in an expression, the
+template arguments and the qualifier of a reference to a declaration,
+of a member expression and of a concept-id, and the written type of a
+cast, `sizeof`, `alignof`, `typeid`, a type trait, `new`, a compound
+literal; a nested-name-specifier that names a type. Inside a written
+type the **operands** are, by site:
+
+| Site | Operand |
+|---|---|
+| 1 | `decltype(e)` |
+| 2 | `typeof(e)` (`__typeof__`) |
+| 3 | reserved: an array bound (a value only at the pin; the limit of §2.3) |
+| 4 | an expression template argument |
+| 5 | reserved: a pack index (absent after substitution at the pin; §2.3) |
+| 6 | `noexcept(e)` of a function type |
+| 7 | reserved: `explicit(e)`, which the unit's own stream walks |
+| 8 | the written argument list of an alias template specialisation |
+
+The walk of a written type reads only what is written: it stops at what
+a name denotes (a typedef's or alias's underlying type, a class), at a
+substituted parameter's replacement (type or non-type), and never reads
+the type of an expression or a type a placeholder deduced (a variable
+declared with `auto` or `decltype(auto)` has no written type: its
+initialiser is in its own stream). A holder met inside an operand gives
+its operands as entries of their own, right after the entry that holds
+them (`decltype(sizeof(decltype(make(x))))` is two entries). Where a
+function has parameter declarations, its parameters' operands are read
+from them and not again from its type.
+
+**What is written.** An operand of sites 1, 2, 4 and 6 is written only if
+its walk writes a reference to a declared entity or a selection (a
+callee, a constructor, a conversion, an operator function, a local
+object), or is indeterminate: `noexcept(true)`, `array<char, 4>` and
+`decltype(0)` add nothing. A site-8 list is always written: the name
+that moved shows only in its canonical arguments (`void_t<typename
+T::t>`). An instantiation-dependent operand is not written: a pattern's
+own spellings hold it (`digest-kinds.md` §4.4). A unit with no written
+operand has no operand unit.
+
+**The stream.** Per declaration of the entity, in declaration order (the
+operand unit of a part, and of a unit of no entity's declarations, has
+one group): if the declaration has written operands, their `count` and
+then each; a declaration with none writes nothing. The declaration the
+parent's stream is read from also holds, after its signature's
+operands, those the parent's stream met in what it writes in place (its
+body, its initialiser, its locals, the members of a local class, a
+lambda's parameters), in the walk's order. An entry is `uv` its site,
+then the ordinary walk of the expression (§6), or for site 8 the
+canonical form of each argument. After the entries, the operand unit's
+own-spelling list (`digest-kinds.md` §4.4 "Spellings"). So a transform
+that adds or removes a declaration with a written operand changes the
+operand unit.
+
+**The parent's state.** An operand is written in its parent's state:
+the parent's parameters, locals and local types have the numbers the
+parent's numbering gives them (§4.3: the owner's numbering walks its
+operand entries after its own stream and before its parts), `this` is
+the parent's. A parameter of a function type that no function
+declaration holds (`void (*fp)(int a) noexcept(noexcept(f(a)))`) is
+written by its depth and index (`Ref::param`). The names digest (§9) of
+the entity is fed by the written entries only.
+
+**`noexcept` of a specialisation** (a function whose exception
+specification can be deferred, `digest-kinds.md` §11.2): its operand
+belongs to the operand unit of its resolved unit `exception_spec` only,
+never to the specialisation's own, so a use that resolves the
+specification changes no unit both images have.
+
+**A member template of a class made by instantiation.** Its partly
+substituted signature is in its own key, so a name that moved in it
+would give a unit on each side only. The class's lists write the keys
+of its member templates that are derived units, sorted
+(`digest-kinds.md` §5.5 `members-other`): for a class whose definition
+is its resolved unit `definition` (§2.2), that unit.
+
+**Comparing.** An operand unit is compared as any derived unit: on both
+sides, unequal is a `derived_changed` finding of the operand unit (the
+report shows each side's operands). On one side only, with a parent
+both images have, it is no finding (`spec/verify.md` §4 step 3): the
+parent's stream is unchanged by construction, and the operand was
+removed with its names or no longer refers to anything.
+
+The counters are in §12; the key in `digest-kinds.md` §3.1 and §3.2;
+the sites as a class in `digest-kinds.md` §11.11.
 
 ## 3. Keys
 

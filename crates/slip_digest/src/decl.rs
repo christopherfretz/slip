@@ -55,10 +55,6 @@ impl Walk<'_> {
             };
         }
         let aborts = self.aborts;
-        #[cfg(test)]
-        if crate::zz_probe156::TRACE.with(std::cell::Cell::get) {
-            eprintln!("PROBE4 content_hash {e:?} start numbering={} {}", crate::local::numbering_mode(self), std::backtrace::Backtrace::force_capture());
-        }
         let read = crate::units::read_decl(self, e);
         // A unit digest of its own: a fresh unit state, and not inside the
         // key computation that may have asked for it.
@@ -90,10 +86,6 @@ impl Walk<'_> {
         self.unit = saved;
         let h = self.hashed(h);
         self.content_in_progress.remove(&e);
-        #[cfg(test)]
-        if crate::zz_probe156::TRACE.with(std::cell::Cell::get) {
-            eprintln!("PROBE4 content_hash {e:?} end memo={} digest={}", self.aborts == aborts, h.digest);
-        }
         if self.aborts == aborts {
             self.content.insert(e, h);
         }
