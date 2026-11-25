@@ -490,7 +490,8 @@ pub fn walk_units(
             .iter()
             .filter_map(|u| {
                 let entity = u.entity?;
-                let part = u.resolved.is_some() || u.default_argument.is_some() || u.operands.is_some();
+                let part =
+                    u.resolved.is_some() || u.default_argument.is_some() || u.operands.is_some();
                 let key_cause = match (part, w.key(entity)) {
                     (false, KeyRes::Key { cause, .. }) => cause,
                     _ => None,

@@ -127,7 +127,12 @@ impl Walk<'_> {
             return t;
         }
         if !self.enter() {
-            return TypeRef { digest: Digest([0; 32]), cause: Some(TOO_DEEP), spelling: false, refs: false };
+            return TypeRef {
+                digest: Digest([0; 32]),
+                cause: Some(TOO_DEEP),
+                spelling: false,
+                refs: false,
+            };
         }
         let aborts = self.aborts;
         let uses = self.unit.local_uses;

@@ -823,7 +823,11 @@ pub(crate) fn notes(w: &mut Walk<'_>, written: &[crate::units::Written]) -> Vec<
     let mut out = Vec::new();
     for u in written {
         let Some(d) = u.entity else { continue };
-        if u.view.is_some() || u.resolved.is_some() || u.default_argument.is_some() || u.operands.is_some() {
+        if u.view.is_some()
+            || u.resolved.is_some()
+            || u.default_argument.is_some()
+            || u.operands.is_some()
+        {
             continue;
         }
         let kind = ast.decls.get(d).kind();

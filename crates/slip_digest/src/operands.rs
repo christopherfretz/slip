@@ -266,7 +266,8 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
             }
         }
         DeclKind::Friend => {
-            if let FriendTarget::Type { ty, owned_tag: _ } = slip_kiln::written::friend_target(ast, d)
+            if let FriendTarget::Type { ty, owned_tag: _ } =
+                slip_kiln::written::friend_target(ast, d)
             {
                 scan(w, ty, out, 0);
             }
@@ -646,8 +647,11 @@ pub(crate) fn member(w: &mut Walk<'_>, e: DeclId) {
     }
     for x in decls {
         decl(w, x);
-        let ps: Vec<DeclId> =
-            ast.decls.function(x).map(|f| ast.lists.iter::<DeclId>(f.params).collect()).unwrap_or_default();
+        let ps: Vec<DeclId> = ast
+            .decls
+            .function(x)
+            .map(|f| ast.lists.iter::<DeclId>(f.params).collect())
+            .unwrap_or_default();
         for p in ps {
             decl(w, p);
         }
@@ -746,9 +750,7 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
     let nested = std::mem::replace(&mut w.unit.operands.nested, saved).unwrap_or_default();
     let written = site == ALIAS_ARGS || w.op_refs != refs || es.cause().is_some();
     let mine = std::mem::replace(&mut w.names, outer_names);
-    if written
-        && let (Some(outer), Some(mine)) = (w.names.as_mut(), mine)
-    {
+    if written && let (Some(outer), Some(mine)) = (w.names.as_mut(), mine) {
         for &b in mine.as_bytes() {
             outer.u8(b);
         }

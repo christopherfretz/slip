@@ -229,9 +229,9 @@ mod local;
 pub mod map;
 mod names;
 mod ns_refs;
+mod operands;
 mod order;
 mod other;
-mod operands;
 mod own_lists;
 mod own_spelling;
 mod owned;
@@ -468,5 +468,3 @@ pub fn digest(input: &Input<'_>, options: &Options<'_>) -> Output {
 pub fn digest_kept(input: &Input<'_>, options: &Options<'_>, kept: &[Digest]) -> Output {
     walk::run_kept(input, options, kept, |_, _, o| o)
 }
-
-
