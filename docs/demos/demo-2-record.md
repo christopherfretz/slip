@@ -7,9 +7,9 @@ states what that file does not (the host, the front-end configuration,
 the comparison with demo-2.md §2) and quotes what is read from it.
 
 Every value marked "to be filled by the run" waits for a run that meets
-demo-2.md §1. One attempt has been made (run 1, attempt a, below): it
-ended `not_verified`, for two reasons that are both recorded under
-"Findings", and no run has been accepted yet.
+demo-2.md §1. Run 1's attempt a ended `not_verified`, for two reasons
+recorded under "Findings"; run 3 (attempt 3c) is accepted; runs 2 and 4
+have not been made.
 
 ## Common to the four runs
 
@@ -186,46 +186,60 @@ filled by the run.
 
 ## Run 3 — §2.3, a rename that must be refused
 
-`llvm::callDefaultCtor` to `makeDefaultPass`.
+`llvm::callDefaultCtor` to `makeDefaultPass`. Run 3c, accepted. (Run 3b,
+08:44–08:55 EST the same day, is void: the corpus copy lacked the build
+directories the database's entries enter, and 3,441 observers failed
+with `cannot enter`; the harness still said `ok`, which is WP-169.)
 
 | Field | Value |
 |---|---|
-| Date (UTC, start and end) | to be filled by the run |
-| Slip: version (`tool_slip`) and commit | to be filled by the run |
-| Kiln: version (`tool_kiln`) and the pin's commit | to be filled by the run |
-| Front-end configuration: the written-reference table by Kiln's dump flag or by the recording option (Kiln WP-2320) | to be filled by the run |
-| Command, exactly as run | to be filled by the run |
-| Exit status | to be filled by the run |
-| Wall time of the whole command | to be filled by the run |
+| Date (UTC, start and end) | 2026-11-25 13:58:16 to 14:44:50 |
+| Slip: version (`tool_slip`) and commit | 0.0.0; the binaries built from `3ae796f1` (no code change on `main` through `95986385`) |
+| Kiln: version (`tool_kiln`) and the pin's commit | 1.3.0; `60fb5ab9d` |
+| Front-end configuration: the written-reference table by Kiln's dump flag or by the recording option (Kiln WP-2320) | not recorded for this run |
+| Command, exactly as run | `xtask corpus rename llvm --from llvm::callDefaultCtor --to makeDefaultPass --expect refused -j 8 --slip <target>/release/slip`, `SLIP_CORPUS_DIR=/tmp/slip-helper/corpus` |
+| Exit status | 0 (`corpus rename: ok`); `slip rename` 1 |
+| Wall time of the whole command | 2,794 s (46 min 34 s) |
+
+Host for this run: 24 cores, memory budget 27,058,293,965 bytes (the
+container's limit 28 GB), 16 jobserver tokens, `-j 8`; the corpus a
+read-only copy on the container's disk (does not fold case).
 
 ### Summary lines
 
-The refusal lines of the report are quoted too.
+```
+map: selected 4061, ok 4055, not ok 6, failed runs 0
+state refused
+edit 0 in 0 file(s); shared 0; most observers 0; nested 0
+kept 0; unresolved 1
+refused site_refused 2
+refusal site_refused macro_body: llvm/include/llvm/PassSupport.h:42:32: llvm::callDefaultCtor (138 observer(s), first llvm/lib/IR/Verifier.cpp)
+refusal site_refused macro_body: llvm/include/llvm/PassSupport.h:62:30: llvm::callDefaultCtor (178 observer(s), first llvm/lib/Analysis/ScalarEvolution.cpp)
+```
 
-```
-to be filled by the run
-```
+The six not `ok` are `diagnosed`: the two of `spec/harness.md` §8.7
+(`ClangFuzzer.cpp`, `ClangObjectiveCFuzzer.cpp`, `uint8_t`) and four that
+clang accepts, a regression of Kiln at this pin (Findings, F-3).
 
 ### Measurements (demo-2.md §4)
 
 | Quantity | Value |
 |---|---|
-| Wall time per step (the steps its transform run record has) | to be filled by the run |
-| Coordinator's peak resident size per step | to be filled by the run |
-| Map: `peak_rss_max`, `peak_rss_sum`, workers at once, cores | to be filled by the run |
-| `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.files`, `reduce.runs` | to be filled by the run |
-| Determinism: `slip reduce` again (check 2) | to be filled by the run |
+| Wall time per step (the steps its transform run record has) | plan 0.55 s; map 2,762.6 s; reduce 12.5 s; conclude 0.0002 s; write 0.0001 s |
+| Coordinator's peak resident size per step | 47.3 MB at every step |
+| Map: `peak_rss_max`, `peak_rss_sum`, workers at once, cores | 838,889,472; 2,950,103,040; 8; 24 |
+| `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.files`, `reduce.runs` | 3,418 (refuse 316, replace 2,072, unresolved 1,030); 9 (live 6, rejected 2, unresolved 1); 0; 0; shards 4,055, unparsed 6 |
+| Determinism: `slip reduce` again (check 2) | ok, the same edit set `299e9b67…`, 13.6 s |
 
 ### Comparison with demo-2.md §2.3
 
 | Expected | Found |
 |---|---|
-| Five `site_refused` refusals with reason `macro_body`, each with its macro and its count of observers | to be filled by the run |
-| The edit set `refused`; no overlay; no verify phase | to be filled by the run |
-| State `refused`, exit status of `slip rename` 1, no patch | to be filled by the run |
+| Five `site_refused` refusals with reason `macro_body`, each with its macro and its count of observers | Two, and two is right: demo-2.md's five was wrong (corrected there). `:42` (`INITIALIZE_PASS`, 138 observers) and `:62` (`INITIALIZE_PASS_END`, 178) are the macros LLVM expands; `:174` and `:196` are `INITIALIZE_AG_PASS` and `INITIALIZE_AG_PASS_END`, which nothing in 19.1.7 invokes, so no observer claims their bodies; `:114` is no macro body but `RegisterPass`'s constructor in a class template, whose reference names the overload set through a dependent argument: the one `unresolved` site |
+| The edit set `refused`; no overlay; no verify phase | Yes: `state refused`, `overlay` null, no verify step |
+| State `refused`, exit status of `slip rename` 1, no patch | Yes: status 1, "nothing was written" |
 
-`not_plain` refusals at a macro invocation (`not_plain_at_macro`): to be
-filled by the run.
+`not_plain` refusals at a macro invocation (`not_plain_at_macro`): 0.
 
 ## Run 4 — §2.4, a rename that verification must reject
 
@@ -328,3 +342,26 @@ and the residue are as demo-2.md §2.1 predicts. The state is
 
 Not a prediction of §2 but found by the attempt: at `-j 4` the verify
 phase took 4.4 hours against 67 minutes for the map phase.
+
+**Run 3.** The refusal, its reason and its state are as predicted; the
+count of refusals is not, and the prediction was wrong:
+
+- **F-1, demo-2.md §2.3 said five refusals.** Two of the five lines it
+  named are in macros LLVM 19.1.7 never invokes (`INITIALIZE_AG_PASS`,
+  `INITIALIZE_AG_PASS_END`), and one (`:114`) is not in a macro at all
+  (`RegisterPass`'s constructor). Two is right. demo-2.md §2.3 is
+  corrected.
+- **F-2, a void attempt (3b) passed the harness.** With 3,441 observers
+  unable to enter their directory, `corpus rename` said `ok`: it passes
+  `--allow-unparsed` and checks nothing of the map's outcomes. The
+  package is `docs/wp/WP-169.md` (a `coverage` check, and a check of the
+  database's directories before `slip` runs).
+- **F-3, Kiln at `60fb5ab9d` rejects four units clang accepts**, with
+  "default member initializer for '…' needed within definition of
+  enclosing class '…' outside of member functions":
+  `clang/lib/Sema/SemaOpenMP.cpp:109:10`,
+  `llvm/lib/Bitcode/Writer/ValueEnumerator.h:101:5` (two units) and
+  `llvm/lib/Transforms/Utils/ValueMapper.cpp:194:10`. With Kiln at
+  `4a83f6e3c` (run 1a) they parsed. Reported to Kiln in the supervisor's
+  held batch. The rename here is refused either way; runs 1 and 2 cannot
+  be `verified` over the whole corpus until those units parse.
