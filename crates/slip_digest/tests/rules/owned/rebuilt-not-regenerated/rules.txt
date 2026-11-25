@@ -1,2 +1,2 @@
 relocate legacy => :: acme
-# WP-118 R6.1, the first failure: gen.h is declared rebuilt but the post-image holds it unchanged. G is an owned-like member left in legacy: direct, so the observer is stale for the rule, and the row says the file still declares an entity under the name the rule says was left.
+# WP-118 R6.1, the first failure: gen.h is declared rebuilt but the post-image holds it unchanged. G is an owned-like member left in legacy: direct, so the observer is stale for the rule, and the row says the file still declares an entity under the name the rule says was left. The opening of legacy is the row's left_kept (a namespace is never left, ruling on R6.4).

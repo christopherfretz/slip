@@ -375,7 +375,7 @@ struct Ways {
     /// The rules that produce the key it kept, its key not in
     /// `Declared.kept`.
     left: BTreeSet<usize>,
-    /// The same, its key in `Declared.kept`.
+    /// The same, its key in `Declared.kept` or of kind `namespace`.
     left_kept: BTreeSet<usize>,
 }
 
@@ -406,7 +406,10 @@ fn ways(c: &Counting, e: DeclId, entry: &Entry) -> Ways {
     {
         w.mapped.insert(*r);
     }
-    if entry.kept.is_some() {
+    // A namespace is never `left` (ruling on R6.4, merge review): its own
+    // `Direct` rows are accounting, in `left_kept`; its members count by
+    // their own rows.
+    if entry.kept.is_some() || entry.namespace {
         w.left_kept = produced;
     } else {
         w.left = produced;

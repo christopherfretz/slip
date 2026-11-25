@@ -435,7 +435,9 @@ fn t_cli_2_not_regenerated_and_regenerated_differently() {
 /// T-cli-3 (b), A8: the overlay form, a frozen rebuilt file that still
 /// declares `old::G` after the run's members of `old` moved: `unverifiable`
 /// with RB's first reason. Undeclared, the same run is a `mismatch`
-/// (never `verified` either way).
+/// (never `verified` either way). Under the ruling on R6.4 (a namespace is
+/// never `left`), RB fires through the member `G`'s row: `left 1`, and
+/// the opening `namespace old {` is the `left_kept 1` of accounting.
 #[test]
 fn t_cli_3b_overlay_frozen_rebuilt_file_still_declares() {
     let pre = [("s/lib.h", LIB_PRE), ("s/main.cpp", MAIN_PRE), ("b/gen.h", GEN_PRE)];
@@ -454,6 +456,7 @@ fn t_cli_3b_overlay_frozen_rebuilt_file_still_declares() {
              verify --root … --post …)"
         )
     );
+    assert!(ran.json.contains("\"left\":1,\"left_kept\":1}"), "{}", ran.json);
 }
 
 /// T-cli-3 (c): the tree form with the build directory under no root: the
@@ -498,13 +501,11 @@ fn t_cli_3d_fragment_in_a_moved_block() {
     assert!(ran.json.contains("\"mapped\":1,\"left\":0"), "{}", ran.json);
 }
 
-/// T-cli-3 (e): a kept entity in a frozen rebuilt file. The design's
-/// answer is "not `unverifiable` for it" (`left_kept` is not `left`).
-/// This build counts, by R6.4's letter, a namespace's own opening in the
-/// rule's `direct` trace: the rebuilt file's `namespace old {` is then
-/// `left 1` and RB fires (the conservative reading, recorded in the
-/// handback as a deviation; one line in `rule_use::ways` turns it). The
-/// kept entity itself is `left_kept 1`, not `left`.
+/// T-cli-3 (e): a kept entity in a frozen rebuilt file: not `unverifiable`
+/// for it (`left_kept` is not `left`). By the ruling on R6.4 (merge
+/// review) the rebuilt file's own `namespace old {` is never `left`
+/// either: the row is `left 0 left_kept 2` (the namespace and `K`), RB
+/// does not fire, and the observer verifies.
 #[test]
 fn t_cli_3e_kept_entity_in_a_frozen_rebuilt_file() {
     let genp = "#pragma once\nnamespace old { struct K {}; }\n";
@@ -521,8 +522,8 @@ fn t_cli_3e_kept_entity_in_a_frozen_rebuilt_file() {
     let t = Tree::new("t3e", &pre, &post);
     let form = Form::Overlay(&["s/lib.h", "s/main.cpp"]);
     let ran = run(&t, declared, t.files(&[], &["b/gen.h"]), &form, observers);
-    assert!(ran.json.contains("\"left_kept\":1"), "{}", ran.json);
-    assert_eq!(ran.kinds[0].0, VerdictKind::Unverifiable, "{:?}\n{}", ran.kinds, ran.text);
+    assert!(ran.json.contains("\"left\":0,\"left_kept\":2}"), "{}", ran.json);
+    assert_eq!(ran.kinds[0].0, VerdictKind::Verified, "{:?}\n{}", ran.kinds, ran.text);
 }
 
 /// T-cli-3 (f), A13: an overlay made by hand whose `files` name a rebuilt

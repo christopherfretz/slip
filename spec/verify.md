@@ -2722,7 +2722,8 @@ reference to a namespace written in a rebuilt file that a rule
 mapped; `declares` has a row per rebuilt file and rule with the
 number of entities a rule gave their key (`mapped`), that kept the
 key it produces (`left`), and of those the ones in `Declared.kept`
-(`left_kept`, not counted in `left`). `hints` are the files of §9.4's
+and the namespaces (`left_kept`, not counted in `left`: a namespace is
+never `left`, its members count by their own rows; WP-118 R6.4). `hints` are the files of §9.4's
 hint. The reader's rows are `spec/landed/verify/WP-118.md` §4.4; an
 index out of range for the run's `Declared` makes the run
 `incomplete`.
