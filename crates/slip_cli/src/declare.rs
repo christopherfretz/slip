@@ -493,6 +493,16 @@ fn relocated_name(
     k: &Key,
     facts: &Facts,
 ) -> Result<Name, LineError> {
+    if k.kind != KeyKind::Namespace && facts.c_linkage_rebuilt.contains(&id) {
+        return Err(error(
+            n,
+            ErrorKind::DependencyEntity,
+            format!(
+                "`{}` is a dependency entity: it has C language linkage and is declared in a rebuilt file (a C-linkage declaration in a rebuilt file lies in a read-only file): no rule renames it",
+                entity.text
+            ),
+        ));
+    }
     if k.kind != KeyKind::Namespace && facts.dependency.contains(&id) {
         return Err(error(
             n,
@@ -955,6 +965,14 @@ fn warn_uncovered(files: &Ownership, read: &BTreeSet<Vec<u8>>, err: &mut dyn Wri
             let _ = write!(err, "slip: warning: declare: --owned ");
             let _ = err.write_all(entry);
             let _ = writeln!(err, " covers no file the selected observers' pre-images read");
+        }
+    }
+    // WP-118 R7.3: the same for a `--rebuilt` entry.
+    for entry in &files.rebuilt {
+        if !read.iter().any(|p| slip_model::transform::covers(entry, p)) {
+            let _ = write!(err, "slip: warning: declare: --rebuilt ");
+            let _ = err.write_all(entry);
+            let _ = writeln!(err, " covers no file of the selected observers");
         }
     }
 }

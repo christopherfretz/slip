@@ -2423,7 +2423,10 @@ fn s10_5_enumeration_names() {
 // WP-118: the third list, `rebuilt` (R5.2 to R5.5)
 
 fn three(owned: &[&[u8]], readonly: &[&[u8]], rebuilt: &[&[u8]]) -> Ownership {
-    Ownership { rebuilt: rebuilt.iter().map(|p| p.to_vec()).collect(), ..ownership(owned, readonly) }
+    Ownership {
+        rebuilt: rebuilt.iter().map(|p| p.to_vec()).collect(),
+        ..ownership(owned, readonly)
+    }
 }
 
 // R5.2: the class is the list of the longest covering entry; no entry is

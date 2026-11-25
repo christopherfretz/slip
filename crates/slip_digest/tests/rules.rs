@@ -254,11 +254,7 @@ fn rebuilt_names(own: &Own) -> &[String] {
 /// writes them: the entries by their names in `own`'s rebuilt list, the
 /// files by their names in the case, the rules by their lines in
 /// `rules.txt`.
-fn rebuilt_lines(
-    t: &Table,
-    own: &Own,
-    r: &RebuiltOutput,
-) -> Result<BTreeSet<String>, String> {
+fn rebuilt_lines(t: &Table, own: &Own, r: &RebuiltOutput) -> Result<BTreeSet<String>, String> {
     let names = rebuilt_names(own);
     let mut out = BTreeSet::new();
     if !r.relied.is_empty() {

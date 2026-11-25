@@ -314,6 +314,7 @@ fn verify(
             let map = verify_cmd::map_status(store, &input.plan_id, input.round, &o.id)
                 .map_err(command_error)?;
             report.add_at(position, &o.id, &o.main.path, shard.as_ref(), map);
+            report.directory_at(position, &o.command.directory);
         } else {
             match map_shard(store, &input.plan_id, input.round, &o.id)? {
                 Some(map) => report.add_unchanged_at(position, &o.id, &o.main.path, &map),

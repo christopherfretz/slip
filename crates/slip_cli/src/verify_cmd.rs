@@ -137,6 +137,7 @@ fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8
         };
         let position = positions[&o.id];
         report.add_at(position, &o.id, &o.main.path, verify.as_ref(), map);
+        report.directory_at(position, &o.command.directory);
     }
 
     if let Some(path) = &a.report {

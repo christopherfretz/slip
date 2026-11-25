@@ -1831,10 +1831,7 @@ fn wp118_rebuilt_file_is_not_editable() {
     use slip_kiln::snippet::{Extra, Snippet, parse_with_tables};
     use slip_model::transform::Ownership;
     use slip_script::kiln_subject::KilnSubject;
-    let files = [
-        ("main.cpp", "#include \"gen/x.h\"\nstruct M;\n"),
-        ("gen/x.h", "struct G;\n"),
-    ];
+    let files = [("main.cpp", "#include \"gen/x.h\"\nstruct M;\n"), ("gen/x.h", "struct G;\n")];
     for (rebuilt, editable) in [(vec![b"gen/x.h".to_vec()], 0), (Vec::new(), 1)] {
         let ownership = Ownership {
             owned: vec![b"gen".to_vec(), b"main.cpp".to_vec()],

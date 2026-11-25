@@ -275,7 +275,9 @@ impl<'t> Spelling<'t> {
     /// `Io` when a directory that must be listed cannot be, or a lookup
     /// fails. Before anything is checked against the ownership.
     fn entries(&mut self, o: &Ownership, journal_left: bool) -> Result<(), WriteError> {
-        for (list, name) in [(&o.owned, "owned"), (&o.readonly, "readonly"), (&o.rebuilt, "rebuilt")] {
+        for (list, name) in
+            [(&o.owned, "owned"), (&o.readonly, "readonly"), (&o.rebuilt, "rebuilt")]
+        {
             for e in list {
                 let bad = |what: String| {
                     Err(WriteError::Invalid(format!(
