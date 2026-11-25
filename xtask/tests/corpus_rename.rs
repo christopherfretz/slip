@@ -15,7 +15,12 @@
 //! have one link per file.
 
 #![cfg(target_os = "linux")]
-#![allow(clippy::too_many_lines, reason = "a test sets up a store and reads a transcript of lines")]
+#![allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::format_push_string,
+    reason = "a test sets up a store and reads a transcript of lines built as text"
+)]
 
 mod common;
 

@@ -53,7 +53,7 @@ usage: cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kin
 
 /// The clang runs of `--accept` that take longer than this are a failure
 /// of the check, not a wait without end.
-pub const CLANG_TIMEOUT: Duration = Duration::from_secs(3600);
+pub const CLANG_TIMEOUT: Duration = Duration::from_hours(1);
 
 /// At most this many lines of a failing check's differences are printed.
 pub const LISTED: usize = 20;
@@ -298,6 +298,10 @@ pub struct Records {
     pub phases: Vec<(&'static str, Measured)>,
 }
 
+fn is_run(name: &str) -> bool {
+    Path::new(name).extension().is_some_and(|e| e == "run")
+}
+
 fn names_in(dir: &Path) -> Result<Vec<String>, String> {
     let mut v = Vec::new();
     for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
@@ -319,7 +323,7 @@ pub fn read_records(store: &Path, result_id: &str) -> Result<Records, String> {
     let runs = store.join("runs").join(result.plan.to_string());
     let names = names_in(&runs)?;
     let mut found: Option<TransformRun> = None;
-    for n in names.iter().filter(|n| n.starts_with("transform.") && n.ends_with(".run")) {
+    for n in names.iter().filter(|n| n.starts_with("transform.") && is_run(n)) {
         let p = runs.join(n);
         let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         let r = TransformRun::from_bytes(&bytes).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -346,7 +350,7 @@ pub fn read_records(store: &Path, result_id: &str) -> Result<Records, String> {
             }
         };
         let mut record = None;
-        for n in names.iter().filter(|n| n.starts_with(prefix) && n.ends_with(".run")) {
+        for n in names.iter().filter(|n| n.starts_with(prefix) && is_run(n)) {
             let p = runs.join(n);
             let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
             if slip_model::formats::content_id(&bytes).ok() == Some(rid) {
@@ -666,7 +670,7 @@ fn listing(dir: &Path, skip: Option<&str>) -> Result<Vec<OsString>, String> {
     let mut v = Vec::new();
     for e in std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))? {
         let e = e.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-        if !skip.is_some_and(|s| e.file_name() == OsStr::new(s)) {
+        if skip.is_none_or(|s| e.file_name() != OsStr::new(s)) {
             v.push(e.file_name());
         }
     }
@@ -695,39 +699,45 @@ fn kind_of(p: &Path) -> Result<Kind, String> {
     })
 }
 
-fn same_bytes(a: &Path, b: &Path) -> Result<bool, String> {
+/// Reads into `buf` until it is full or the file ends; the bytes read.
+fn fill(f: &mut std::fs::File, buf: &mut [u8], path: &Path) -> Result<usize, String> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok(n)
+}
+
+fn same_bytes(left: &Path, right: &Path) -> Result<bool, String> {
     let open = |p: &Path| std::fs::File::open(p).map_err(|e| format!("{}: {e}", p.display()));
-    let (fa, fb) = (open(a)?, open(b)?);
+    let (mut fl, mut fr) = (open(left)?, open(right)?);
     let len = |f: &std::fs::File, p: &Path| {
         f.metadata().map(|m| m.len()).map_err(|e| format!("{}: {e}", p.display()))
     };
-    if len(&fa, a)? != len(&fb, b)? {
+    if len(&fl, left)? != len(&fr, right)? {
         return Ok(false);
     }
-    let (mut ra, mut rb) = (std::io::BufReader::new(fa), std::io::BufReader::new(fb));
+    let (mut bl, mut br) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
     loop {
-        let x = ra.fill_buf().map_err(|e| format!("{}: {e}", a.display()))?;
-        if x.is_empty() {
-            let y = rb.fill_buf().map_err(|e| format!("{}: {e}", b.display()))?;
-            return Ok(y.is_empty());
+        let nl = fill(&mut fl, &mut bl, left)?;
+        let nr = fill(&mut fr, &mut br, right)?;
+        if nl != nr || bl[..nl] != br[..nr] {
+            return Ok(false);
         }
-        let k = x.len();
-        let mut chunk = vec![0u8; k];
-        chunk.copy_from_slice(x);
-        ra.consume(k);
-        let mut other = vec![0u8; k];
-        match rb.read_exact(&mut other) {
-            Ok(()) if other == chunk => {}
-            Ok(()) => return Ok(false),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-            Err(e) => return Err(format!("{}: {e}", b.display())),
+        if nl == 0 {
+            return Ok(true);
         }
     }
 }
 
 fn diff_dir(
-    a: &Path,
-    b: &Path,
+    src: &Path,
+    copy: &Path,
     rel: &Path,
     skip_a: Option<&str>,
     limit: usize,
@@ -739,13 +749,13 @@ fn diff_dir(
             d.1.push(line);
         }
     };
-    let (la, lb) = (listing(a, skip_a)?, listing(b, None)?);
+    let (la, lb) = (listing(src, skip_a)?, listing(copy, None)?);
     let mut names: Vec<&OsString> = la.iter().chain(lb.iter()).collect();
     names.sort();
     names.dedup();
     for name in names {
         let r = rel.join(name);
-        let (pa, pb) = (a.join(name), b.join(name));
+        let (pa, pb) = (src.join(name), copy.join(name));
         match (la.contains(name), lb.contains(name)) {
             (true, false) => say(d, format!("{}: only in the source", r.display())),
             (false, true) => say(d, format!("{}: only in the copy", r.display())),
