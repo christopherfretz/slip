@@ -321,6 +321,7 @@ fn s8_5_cause_counters() {
         namespace_parts: Vec::new(),
         made: Vec::new(),
         fixed: Vec::new(),
+        rebuilt: Default::default(),
     };
     let got: Vec<(String, u64)> =
         counters(&output).into_iter().map(|c| (c.name, c.value)).collect();

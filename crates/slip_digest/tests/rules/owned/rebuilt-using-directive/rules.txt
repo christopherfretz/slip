@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R6.4 (S2): rebuilt gen.h declares nothing and says `using namespace legacy;`, regenerated as `using namespace acme; using namespace legacy;` (dep.h keeps a dependency member of legacy, so acme is not the whole of legacy's key). The references have their readings because gen.h is not read-only by its own path, so the entry is relied on though no entity is declared in it.

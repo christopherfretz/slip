@@ -90,6 +90,34 @@
 //! - Every case, under each of its ownerships: `key_agreement` holds (a
 //!   key the walk memoised for a reference is the key the entity gets
 //!   alone, in a fresh walk, in another order).
+//!
+//! # Rebuilt files (WP-118, `spec/verify.md` §2.1)
+//!
+//! - `rebuilt.txt`: the case's rebuilt files, in the form of
+//!   `readonly.txt` and with its refusals; a name in both files is
+//!   refused. Such a case is digested (1) with its `readonly.txt` files
+//!   read-only and its `rebuilt.txt` files rebuilt, judged by
+//!   `expect.txt`; (2) with the `rebuilt.txt` files read-only as well,
+//!   judged by `expect-undeclared.txt`; (3) with every file owned, judged
+//!   by `expect-owned.txt`. Both files are required.
+//! - P1: with the `rebuilt.txt` files owned and the rest as (1), the
+//!   digests and the rule use equal (1)'s, unless the case has
+//!   `expect-as-owned.txt`, which then judges that ownership (an entity
+//!   with C language linkage declared in a rebuilt file, R2.2).
+//! - `relied <file>…` (the entries relied on, in `rebuilt.txt`'s sorted
+//!   order, one line) and `declares <file> rule <n> mapped <m> left <l>
+//!   [left_kept <k>]` (`<n>` the rule's line in `rules.txt`, as in `use`)
+//!   are lines of `expect.txt`, checked in every case that has
+//!   `rebuilt.txt` against the walk's `Output::rebuilt`: no line means
+//!   none, and a line the walk does not give, or a row with no line, fails
+//!   the case. The other files of such a case, and every case without
+//!   `rebuilt.txt`, give none.
+//! - P2: every case that has `readonly.txt` and no `rebuilt.txt` is
+//!   digested once more with its `readonly.txt` files rebuilt: the
+//!   digests and the rule use equal the run with every file owned, unless
+//!   the case has `rebuilt-differs.txt`, whose first line is the reason
+//!   (it must name C language linkage) and whose other lines judge that
+//!   run in `expect.txt`'s form.
 
 mod common;
 
@@ -99,7 +127,7 @@ use std::path::Path;
 use common::rules::{Line, Table, read, table};
 use common::{Digested, Expect, Side};
 use slip_digest::records::{Record, records};
-use slip_digest::{Cause, Detail, Input, Options, Output, ReadOnly, ReadOnlyFiles};
+use slip_digest::{Cause, Detail, Input, Options, Output, ReadOnly, ReadOnlyFiles, RebuiltOutput};
 use slip_model::digests::GroupClass;
 use slip_model::keys::RuleTable;
 use slip_model::transform::Ownership;
@@ -111,16 +139,40 @@ enum Own {
     All,
     /// The files of `readonly.txt`.
     Listed(Vec<String>),
+    /// WP-118: the files of `readonly` read-only, those of `rebuilt`
+    /// rebuilt, the rest owned.
+    Rebuilt { readonly: Vec<String>, rebuilt: Vec<String> },
 }
 
 /// The files of a case that are the runner's, not the parse's sources.
-const CONTROL: &[&str] =
-    &["expect.txt", "expect-owned.txt", "rules.txt", "readonly.txt", "relocate.txt", "kept.txt"];
+const CONTROL: &[&str] = &[
+    "expect.txt",
+    "expect-owned.txt",
+    "rules.txt",
+    "readonly.txt",
+    "relocate.txt",
+    "kept.txt",
+    "rebuilt.txt",
+    "expect-undeclared.txt",
+    "expect-as-owned.txt",
+    "rebuilt-differs.txt",
+];
 
 /// `readonly.txt` (absent: `None`): each line a header of the case or
 /// `main.cpp` (the main file of both sides).
 fn readonly_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
-    let Ok(text) = std::fs::read_to_string(dir.join("readonly.txt")) else {
+    listed_of(dir, "readonly.txt")
+}
+
+/// `rebuilt.txt` (absent: `None`), in the form of `readonly.txt` (WP-118).
+fn rebuilt_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
+    listed_of(dir, "rebuilt.txt")
+}
+
+/// A list of the case's files, `file` (absent: `None`): each line a
+/// header of the case or `main.cpp` (the main file of both sides).
+fn listed_of(dir: &Path, file: &str) -> Result<Option<Vec<String>>, String> {
+    let Ok(text) = std::fs::read_to_string(dir.join(file)) else {
         return Ok(None);
     };
     let mut out = Vec::new();
@@ -135,19 +187,21 @@ fn readonly_of(dir: &Path) -> Result<Option<Vec<String>>, String> {
         // it would have no effect.
         if matches!(l, "a.cpp" | "b.cpp" | "t.cpp") {
             return Err(format!(
-                "readonly.txt:{}: `{l}` is parsed as `main.cpp`; name `main.cpp` for the main \
+                "{file}:{}: `{l}` is parsed as `main.cpp`; name `main.cpp` for the main \
                  file of both sides",
                 n + 1
             ));
         }
         if CONTROL.contains(&l) || (l != "main.cpp" && !dir.join(l).is_file()) {
-            return Err(format!("readonly.txt:{}: `{l}` is no file the case parses", n + 1));
+            return Err(format!("{file}:{}: `{l}` is no file the case parses", n + 1));
         }
         out.push(l.to_owned());
     }
     if out.is_empty() {
-        return Err("readonly.txt names no file".into());
+        return Err(format!("{file} names no file"));
     }
+    out.sort();
+    out.dedup();
     Ok(Some(out))
 }
 
@@ -158,11 +212,14 @@ const ROOT: &str = "/case";
 /// (`ReadOnlyFiles::new`): an `Ownership` in subject paths, the case's
 /// files under [`ROOT`], the listed ones read-only; a buffer that is no
 /// file has the empty path.
-fn listed_files(input: &Input<'_>, listed: &[String]) -> ReadOnlyFiles {
-    let mut readonly: Vec<Vec<u8>> =
-        listed.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
-    readonly.sort();
-    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly, rebuilt: Vec::new() };
+fn listed_files(input: &Input<'_>, listed: &[String], rebuilt: &[String]) -> ReadOnlyFiles {
+    let paths = |l: &[String]| {
+        let mut v: Vec<Vec<u8>> = l.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
+        v.sort();
+        v
+    };
+    let (readonly, rebuilt) = (paths(listed), paths(rebuilt));
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly, rebuilt };
     let subject = |f| {
         let p = (input.subject_path)(f);
         if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }
@@ -175,10 +232,67 @@ fn with_own<R>(input: &Input<'_>, own: &Own, f: impl FnOnce(ReadOnly<'_>) -> R) 
     match own {
         Own::All => f(ReadOnly::NO_FILE),
         Own::Listed(l) => {
-            let files = listed_files(input, l);
+            let files = listed_files(input, l, &[]);
+            f(ReadOnly::files(&files))
+        }
+        Own::Rebuilt { readonly, rebuilt } => {
+            let files = listed_files(input, readonly, rebuilt);
             f(ReadOnly::files(&files))
         }
     }
+}
+
+/// The rebuilt files of `own`, sorted (the order of `Ownership.rebuilt`).
+fn rebuilt_names(own: &Own) -> &[String] {
+    match own {
+        Own::Rebuilt { rebuilt, .. } => rebuilt,
+        Own::All | Own::Listed(_) => &[],
+    }
+}
+
+/// The `relied` and `declares` lines of `r` (WP-118), as `expect.txt`
+/// writes them: the entries by their names in `own`'s rebuilt list, the
+/// files by their names in the case, the rules by their lines in
+/// `rules.txt`.
+fn rebuilt_lines(
+    input: &Input<'_>,
+    t: &Table,
+    own: &Own,
+    r: &RebuiltOutput,
+) -> Result<BTreeSet<String>, String> {
+    let names = rebuilt_names(own);
+    let mut out = BTreeSet::new();
+    if !r.relied.is_empty() {
+        let mut words = Vec::new();
+        for &i in &r.relied {
+            let n = names.get(i as usize).ok_or_else(|| format!("relied: no entry {i}"))?;
+            words.push(n.clone());
+        }
+        out.insert(format!("relied {}", words.join(" ")));
+    }
+    if !r.declares.windows(2).all(|w| (w[0].file, w[0].rule) < (w[1].file, w[1].rule)) {
+        return Err(format!("declares is not strictly ascending: {:?}", r.declares));
+    }
+    for d in &r.declares {
+        if d.mapped == 0 && d.left == 0 && d.left_kept == 0 {
+            return Err(format!("a declares row counts nothing: {d:?}"));
+        }
+        let file = String::from_utf8_lossy(&(input.subject_path)(d.file)).into_owned();
+        let rule =
+            t.table.rules().get(d.rule).ok_or_else(|| format!("declares: no rule {}", d.rule))?;
+        let line = t
+            .rules
+            .iter()
+            .find(|(_, x)| x == rule)
+            .map(|(l, _)| *l)
+            .ok_or_else(|| format!("declares: rule {} is on no line", d.rule))?;
+        let mut l = format!("declares {file} rule {line} mapped {} left {}", d.mapped, d.left);
+        if d.left_kept > 0 {
+            l.push_str(&format!(" left_kept {}", d.left_kept));
+        }
+        out.insert(l);
+    }
+    Ok(out)
 }
 
 /// What a case's `expect.txt` says.
@@ -194,24 +308,59 @@ struct Expected {
     /// The `made` and `fixed` lines, in their order; `lists empty` is an
     /// empty list; `None` when there is no such line.
     lists: Option<Vec<String>>,
+    /// The `relied` and `declares` lines (WP-118), their words joined by
+    /// one space.
+    rebuilt: BTreeSet<String>,
 }
 
 fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
     let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
-    let (lines, exact, own) = common::expect_text(&text, |l| {
+    expected_text(&text, file)
+}
+
+fn expected_text(text: &str, file: &str) -> Result<Expected, String> {
+    let (lines, exact, own) = common::expect_text(text, |l| {
         l.starts_with("use ")
             || l.starts_with("collisions ")
             || l.starts_with("refused ")
             || l.starts_with("made ")
             || l.starts_with("fixed ")
             || l == "lists empty"
+            || l.starts_with("relied ")
+            || l.starts_with("declares ")
     })?;
+    let mut rebuilt = BTreeSet::new();
     let mut uses = Vec::new();
     let (mut collisions, mut refused) = (0, None);
     let mut lists: Option<Vec<String>> = None;
     for (n, l) in own {
         if l == "lists empty" {
             lists.get_or_insert_with(Vec::new);
+            continue;
+        }
+        if l.starts_with("relied ") || l.starts_with("declares ") {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let ok = match w.as_slice() {
+                ["relied", _, ..] => true,
+                ["declares", _, "rule", r, "mapped", m, "left", x, rest @ ..] => {
+                    [r, m, x].iter().all(|v| v.parse::<u64>().is_ok())
+                        && match rest {
+                            [] => true,
+                            ["left_kept", k] => k.parse::<u64>().is_ok_and(|k| k > 0),
+                            _ => false,
+                        }
+                }
+                _ => false,
+            };
+            if !ok {
+                return Err(format!(
+                    "{file}:{n}: `{l}` is not `relied <file>…` or `declares <file> rule <n> \
+                     mapped <n> left <n> [left_kept <n>]`"
+                ));
+            }
+            if !rebuilt.insert(w.join(" ")) {
+                return Err(format!("{file}:{n}: `{l}` is given twice"));
+            }
             continue;
         }
         if l.starts_with("made ") || l.starts_with("fixed ") {
@@ -255,7 +404,7 @@ fn expected(dir: &Path, file: &str) -> Result<Expected, String> {
             format!("expect.txt:{n}: `{l}` is not `use <line> via <n> direct <n> [kept_via <n>]`")
         })?);
     }
-    Ok(Expected { lines, exact, uses, collisions, refused, lists })
+    Ok(Expected { lines, exact, uses, collisions, refused, lists, rebuilt })
 }
 
 /// The lines of `rules.txt` (absent: none).
@@ -328,6 +477,8 @@ struct Post {
     uses: Vec<Count>,
     /// The post-image under no rule, when the table is not empty.
     unruled: Option<Output>,
+    /// The walk's `relied` and `declares` lines (WP-118).
+    rebuilt: BTreeSet<String>,
 }
 
 /// The counts of the rule of line `n` in the walk's `rule_use` (0 for a
@@ -450,12 +601,14 @@ fn post_side(
                 kept: Vec::new(),
                 made: Vec::new(),
                 fixed: Vec::new(),
+                rebuilt: RebuiltOutput::default(),
                 ..first.clone()
             };
             if !off.rule_use.is_empty()
                 || !off.kept.is_empty()
                 || !off.made.is_empty()
                 || !off.fixed.is_empty()
+                || off.rebuilt != RebuiltOutput::default()
                 || cleared != off
             {
                 return Err("the post-image under its table: rule_use on and off differ".into());
@@ -479,7 +632,8 @@ fn post_side(
                 slip_digest::records::key_agreement(input, &t.table, ReadOnly::EVERY_FILE)
                     .map_err(|e| format!("key agreement (every file read-only): {e}"))?;
             }
-            Ok(Post { table: t, digested: common::digested(first), uses: got, unruled })
+            let rebuilt = rebuilt_lines(input, &t, own, &first.rebuilt)?;
+            Ok(Post { table: t, digested: common::digested(first), uses: got, unruled, rebuilt })
         })
     })?
 }
@@ -596,13 +750,43 @@ fn case(dir: &Path) -> Result<(), String> {
     })?;
     let pre = pre.map_err(|x| format!("records of the pre-image: {x}"))?;
     let a = common::digested(a);
-    let runs: Vec<(Own, &str)> = match readonly_of(dir)? {
-        None => vec![(Own::All, "expect.txt")],
-        Some(l) => {
+    let (readonly, rebuilt) = (readonly_of(dir)?, rebuilt_of(dir)?);
+    for f in ["expect-undeclared.txt", "expect-as-owned.txt"] {
+        if rebuilt.is_none() && dir.join(f).is_file() {
+            return Err(format!("{f} in a case without rebuilt.txt"));
+        }
+    }
+    if (readonly.is_none() || rebuilt.is_some()) && dir.join("rebuilt-differs.txt").is_file() {
+        return Err(
+            "rebuilt-differs.txt in a case without readonly.txt, or with rebuilt.txt".into()
+        );
+    }
+    let runs: Vec<(Own, &str)> = match (&readonly, &rebuilt) {
+        (None, None) => vec![(Own::All, "expect.txt")],
+        (Some(l), None) => {
             if !dir.join("expect-owned.txt").is_file() {
                 return Err("a case with readonly.txt has an expect-owned.txt".into());
             }
-            vec![(Own::Listed(l), "expect.txt"), (Own::All, "expect-owned.txt")]
+            vec![(Own::Listed(l.clone()), "expect.txt"), (Own::All, "expect-owned.txt")]
+        }
+        (ro, Some(b)) => {
+            let ro = ro.clone().unwrap_or_default();
+            if let Some(n) = b.iter().find(|n| ro.contains(n)) {
+                return Err(format!("`{n}` is in readonly.txt and in rebuilt.txt"));
+            }
+            for f in ["expect-undeclared.txt", "expect-owned.txt"] {
+                if !dir.join(f).is_file() {
+                    return Err(format!("a case with rebuilt.txt has an {f}"));
+                }
+            }
+            let mut both = ro.clone();
+            both.extend(b.iter().cloned());
+            both.sort();
+            vec![
+                (Own::Rebuilt { readonly: ro, rebuilt: b.clone() }, "expect.txt"),
+                (Own::Listed(both), "expect-undeclared.txt"),
+                (Own::All, "expect-owned.txt"),
+            ]
         }
     };
     let mut problems = Vec::new();
@@ -615,7 +799,72 @@ fn case(dir: &Path) -> Result<(), String> {
             problems.push(format!("[{file}, {own:?}] {p}"));
         }
     }
+    if let Err(p) = rebuilt_properties(dir, &pre, &a, readonly, rebuilt) {
+        problems.push(p);
+    }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+}
+
+/// P1 and P2 of the head of this file (WP-118 R3.3): moving the rebuilt
+/// files to owned, or the read-only files to rebuilt, changes no digest
+/// and no rule use, unless the case says why it does.
+fn rebuilt_properties(
+    dir: &Path,
+    pre: &[Record],
+    a: &Digested,
+    readonly: Option<Vec<String>>,
+    rebuilt: Option<Vec<String>>,
+) -> Result<(), String> {
+    // The digests and the rule use of `own`'s run.
+    let run = |own: &Own| -> Result<Output, String> {
+        post_side(dir, pre, &[], own, false).map(|p| p.digested.output)
+    };
+    let same = |x: &Output, y: &Output| {
+        x.digests == y.digests && x.causes == y.causes && x.rule_use == y.rule_use
+    };
+    match (readonly, rebuilt) {
+        (ro, Some(b)) => {
+            let ro = ro.unwrap_or_default();
+            let declared = Own::Rebuilt { readonly: ro.clone(), rebuilt: b };
+            let as_owned = Own::Rebuilt { readonly: ro, rebuilt: Vec::new() };
+            if dir.join("expect-as-owned.txt").is_file() {
+                let e = expected(dir, "expect-as-owned.txt")?;
+                return one(dir, pre, a, &e, &as_owned, false)
+                    .map_err(|p| format!("[expect-as-owned.txt, {as_owned:?}] {p}"));
+            }
+            if !same(&run(&declared)?, &run(&as_owned)?) {
+                return Err(format!(
+                    "P1: the rebuilt files read as owned change the digests or the rule use \
+                     ({as_owned:?}); a case where that is right has expect-as-owned.txt"
+                ));
+            }
+            Ok(())
+        }
+        (Some(ro), None) => {
+            let as_rebuilt = Own::Rebuilt { readonly: Vec::new(), rebuilt: ro };
+            if let Ok(text) = std::fs::read_to_string(dir.join("rebuilt-differs.txt")) {
+                let (reason, rest) = text.split_once('\n').unwrap_or((&text, ""));
+                if !reason.contains("C language linkage") {
+                    return Err(format!(
+                        "rebuilt-differs.txt: the first line names no C language linkage: \
+                         `{reason}`"
+                    ));
+                }
+                let e = expected_text(rest, "rebuilt-differs.txt")?;
+                return one(dir, pre, a, &e, &as_rebuilt, false)
+                    .map_err(|p| format!("[rebuilt-differs.txt, {as_rebuilt:?}] {p}"));
+            }
+            if !same(&run(&as_rebuilt)?, &run(&Own::All)?) {
+                return Err(format!(
+                    "P2: the read-only files read as rebuilt do not give the digests or the \
+                     rule use of every file owned ({as_rebuilt:?}); a case where that is right \
+                     has rebuilt-differs.txt"
+                ));
+            }
+            Ok(())
+        }
+        (None, None) => Ok(()),
+    }
 }
 
 /// One ownership of a case, judged by `e`.
@@ -651,6 +900,15 @@ fn one(
         && post.unruled.as_ref().is_some_and(|u| u.digests == a.output.digests)
     {
         problems.push("vacuous: the post-image without its rules is equal already".into());
+    }
+    // WP-118: the `relied` and `declares` lines, in every run (no line
+    // means none).
+    if post.rebuilt != e.rebuilt {
+        let missing: Vec<&String> = e.rebuilt.difference(&post.rebuilt).collect();
+        let extra: Vec<&String> = post.rebuilt.difference(&e.rebuilt).collect();
+        problems.push(format!(
+            "rebuilt lines: expected but not given: {missing:?}; given but not expected: {extra:?}"
+        ));
     }
     for (w, g) in e.uses.iter().zip(&post.uses) {
         if w != g {

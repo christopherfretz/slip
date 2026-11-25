@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R6.3: rebuilt gen.h, not regenerated, declares legacy::K, whose key the user said stays (kept.txt). The row counts it left_kept, not left: an entity the user said stays is no reason for guard RB.

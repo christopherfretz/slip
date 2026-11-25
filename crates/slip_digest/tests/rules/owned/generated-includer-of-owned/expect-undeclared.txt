@@ -1,0 +1,13 @@
+# pch.h is read-only and includes src.h: src.h is read-only by the include
+# chain, Mine and f keep their keys, and the correct migration differs (a
+# false difference, the safe direction; WP-118's `rebuilt` class answers it).
+added acme
+added acme::Mine
+added acme::Mine::v
+added acme::f(acme::Mine *)
+added user(acme::Mine *)
+removed legacy
+removed legacy::Mine
+removed legacy::Mine::v
+removed legacy::f(legacy::Mine *)
+removed user(legacy::Mine *)

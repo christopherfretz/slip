@@ -17,22 +17,46 @@
 //!
 //! Under an empty table nothing here is read: [`Walk::rule_applies`] is
 //! `false` before it asks, and `namespace_parent` is `unit_parent`.
+//!
+//! **Rebuilt files** (WP-118, `spec/verify.md` §2.1). A file has one of
+//! three classes ([`Class`]): owned, rebuilt (a file the build writes
+//! again from source in the run), or read-only. For every question asked
+//! here a rebuilt file answers as an owned one does, on its own path and
+//! on an include chain, with one exception (R2.2): a declaration of an
+//! entity with C language linkage that lies in a rebuilt file lies in a
+//! read-only file. The chain of an inclusion has three answers
+//! ([`Chain`]): read-only, or clear with the set of the `rebuilt` entries
+//! on it; the set is accounting only (`rule_use.rs`, R6.4), so the
+//! decisions read two states as before.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::source::{FileId, Loc, SourceManager};
-use slip_model::transform::Ownership;
+use slip_model::transform::{FileClass, Ownership};
 
-use crate::keys::KeyRes;
+use crate::keys::{KeyRes, info};
 use crate::units::REDECL_LIMIT;
 use crate::walk::Walk;
 
+/// The class of one file of the image (`spec/verify.md` §2.1, WP-118):
+/// what the walk is told of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Class {
+    /// The run owns it.
+    Owned,
+    /// The build writes it again from source in the run; the index of the
+    /// longest entry that covers it in `Ownership.rebuilt`.
+    Rebuilt(u32),
+    /// Read-only: a dependency's.
+    ReadOnly,
+}
+
 /// Which files of the image are read-only (`spec/edits.md` §2.1), for the
 /// walk under a non-empty rule table: `true` for a file the run may not
-/// edit.
+/// edit. With [`ReadOnlyFiles`], each file's [`Class`] (WP-118).
 ///
 /// A predicate over Kiln's file ids, made by the caller: the walk knows
 /// neither the run's `Ownership` (in subject paths) nor how the image's
@@ -75,14 +99,22 @@ impl<'a> ReadOnly<'a> {
         ReadOnly(Inner::Fn(f))
     }
 
-    /// Whether `file` is read-only.
-    pub fn read_only(&self, file: FileId) -> bool {
+    /// The class of `file`: [`Self::EVERY_FILE`] answers read-only,
+    /// [`Self::NO_FILE`] owned, a predicate owned or read-only; only
+    /// [`ReadOnlyFiles`] answers rebuilt.
+    pub fn class(&self, file: FileId) -> Class {
         match self.0 {
-            Inner::Every => true,
-            Inner::NoFile => false,
-            Inner::Files(f) => f.read_only(file),
-            Inner::Fn(f) => f(file),
+            Inner::Every => Class::ReadOnly,
+            Inner::NoFile => Class::Owned,
+            Inner::Files(f) => f.class(file),
+            Inner::Fn(f) if f(file) => Class::ReadOnly,
+            Inner::Fn(_) => Class::Owned,
         }
+    }
+
+    /// Whether `file` is read-only (its class is [`Class::ReadOnly`]).
+    pub fn read_only(&self, file: FileId) -> bool {
+        self.class(file) == Class::ReadOnly
     }
 }
 
@@ -105,36 +137,135 @@ impl std::fmt::Debug for ReadOnly<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadOnlyFiles {
     /// By `FileId::index`.
-    read_only: Vec<bool>,
+    classes: Vec<Class>,
 }
 
 impl ReadOnlyFiles {
     /// A buffer is read-only unless `files` is given, the image maps it to
     /// a subject path (`subject_path`, the walk's `Input::subject_path`:
-    /// empty for a buffer that is no file), and the path is owned
-    /// (`Ownership::is_owned`: some entry covers it and the longest is in
-    /// `owned`; a path that is not absolute is covered by none).
+    /// empty for a buffer that is no file), and an entry covers the path
+    /// (`Ownership::class_of`: the longest covering entry decides; a path
+    /// that is not absolute is covered by none). Owned or rebuilt by the
+    /// list of that entry (WP-118).
     pub fn new(
         files: Option<&Ownership>,
         sm: &SourceManager,
         subject_path: &dyn Fn(FileId) -> Vec<u8>,
     ) -> ReadOnlyFiles {
-        let read_only = sm
+        let classes = sm
             .file_ids()
             .map(|f| match files {
-                None => true,
+                None => Class::ReadOnly,
                 Some(o) => {
                     let path = subject_path(f);
-                    path.is_empty() || !o.is_owned(&path)
+                    if path.is_empty() {
+                        return Class::ReadOnly;
+                    }
+                    match o.class_of(&path) {
+                        (FileClass::Owned, _) => Class::Owned,
+                        (FileClass::Rebuilt, Some(i)) => match u32::try_from(i) {
+                            Ok(i) => Class::Rebuilt(i),
+                            Err(_) => Class::ReadOnly,
+                        },
+                        (FileClass::Rebuilt | FileClass::ReadOnly, _) => Class::ReadOnly,
+                    }
                 }
             })
             .collect();
-        ReadOnlyFiles { read_only }
+        ReadOnlyFiles { classes }
+    }
+
+    /// The class of `file`; a buffer made after [`Self::new`] is read-only.
+    pub fn class(&self, file: FileId) -> Class {
+        self.classes.get(file.index()).copied().unwrap_or(Class::ReadOnly)
     }
 
     /// Whether `file` is read-only; a buffer made after [`Self::new`] is.
     pub fn read_only(&self, file: FileId) -> bool {
-        self.read_only.get(file.index()).copied().unwrap_or(true)
+        self.class(file) == Class::ReadOnly
+    }
+}
+
+/// The include chain of one inclusion (`spec/verify.md` §2.1, WP-118
+/// R3.1): a file on it is read-only by its own path (or it is longer than
+/// `INCLUDE_CHAIN_LIMIT`), or none is, with the set of the `rebuilt`
+/// entries that cover a file on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Chain {
+    ReadOnly,
+    Clear(SetId),
+}
+
+/// Where a file location is (WP-118): read-only (its file by its own path,
+/// or its chain), or clear, with the set of the `rebuilt` entries of its
+/// chain and of its own file, and its own file when that is rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum At {
+    ReadOnly,
+    Clear { set: SetId, own: Option<FileId> },
+}
+
+/// A set of indices into `Ownership.rebuilt`, interned
+/// ([`Sets`]); `SetId(0)` is the empty set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct SetId(u32);
+
+impl SetId {
+    pub(crate) const EMPTY: SetId = SetId(0);
+}
+
+/// The sets of `rebuilt` entries the walk met, interned. With no rebuilt
+/// file only the empty set exists.
+pub(crate) struct Sets {
+    list: Vec<Vec<u32>>,
+    ids: HashMap<Vec<u32>, SetId>,
+}
+
+impl Default for Sets {
+    fn default() -> Sets {
+        Sets { list: vec![Vec::new()], ids: HashMap::from([(Vec::new(), SetId::EMPTY)]) }
+    }
+}
+
+impl Sets {
+    /// The entries of `s`, ascending.
+    pub(crate) fn get(&self, s: SetId) -> &[u32] {
+        self.list.get(s.0 as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// `s` with `i` added.
+    fn with(&mut self, s: SetId, i: u32) -> SetId {
+        let mut v = self.get(s).to_vec();
+        match v.binary_search(&i) {
+            Ok(_) => return s,
+            Err(at) => v.insert(at, i),
+        }
+        self.intern(v)
+    }
+
+    /// The union of `a` and `b`.
+    fn union(&mut self, a: SetId, b: SetId) -> SetId {
+        if a == b || b == SetId::EMPTY {
+            return a;
+        }
+        if a == SetId::EMPTY {
+            return b;
+        }
+        let mut v: Vec<u32> = self.get(a).to_vec();
+        v.extend_from_slice(self.get(b));
+        v.sort_unstable();
+        v.dedup();
+        self.intern(v)
+    }
+
+    fn intern(&mut self, v: Vec<u32>) -> SetId {
+        if let Some(&id) = self.ids.get(&v) {
+            return id;
+        }
+        let id = SetId(u32::try_from(self.list.len()).unwrap_or(u32::MAX));
+        self.list.push(v.clone());
+        self.ids.insert(v, id);
+        id
     }
 }
 
@@ -144,11 +275,17 @@ impl ReadOnlyFiles {
 pub(crate) struct OwnedState {
     memo: HashMap<DeclId, bool>,
     in_progress: HashSet<DeclId>,
-    /// Files by whether they are read-only, as `ReadOnly` answered.
-    files: HashMap<FileId, bool>,
-    /// Inclusions, by the location of the `#include` that entered them,
-    /// by whether a file of their include chain is read-only.
-    inclusions: HashMap<Loc, bool>,
+    /// Files by class, as `ReadOnly` answered.
+    files: HashMap<FileId, Class>,
+    /// Inclusions, by the location of the `#include` that entered them:
+    /// their include chain (WP-118: read-only, or clear with its set).
+    inclusions: HashMap<Loc, Chain>,
+    /// The sets of `rebuilt` entries of the chains (WP-118).
+    pub(crate) sets: Sets,
+    /// The read-only files that cut a chain (WP-118 R1.3 rule 3): the
+    /// first read-only file met above an inclusion of a file that is not
+    /// read-only by its own path. For the hints.
+    pub(crate) cutters: BTreeSet<FileId>,
     /// Cycles met (an entity asked again while its ownership is being
     /// decided): what is decided while one is met is not memoised.
     cycles: u64,
@@ -221,9 +358,23 @@ impl Walk<'_> {
         if chain.len() > REDECL_LIMIT {
             return false;
         }
+        // WP-118 R6.4, with the accounting on: R(e), the `rebuilt` entries
+        // on the declarations' chains and of their own files; D(e), the
+        // rebuilt files a declaration lies in.
+        let counting = self.rule_use.is_some();
+        let mut through = SetId::EMPTY;
+        let mut lies: Vec<FileId> = Vec::new();
         for d in chain {
             if !self.in_owned_file(d) {
                 return false;
+            }
+            if counting {
+                for at in self.ats_of(d).into_iter().flatten() {
+                    if let At::Clear { set, own } = at {
+                        through = self.owned_state.sets.union(through, set);
+                        lies.extend(own);
+                    }
+                }
             }
         }
         // Bullet 2: a specialisation (explicit, partial or implicit) of a
@@ -256,6 +407,12 @@ impl Walk<'_> {
             && !self.owned(class)
         {
             return false;
+        }
+        if through != SetId::EMPTY || !lies.is_empty() {
+            lies.sort_unstable();
+            lies.dedup();
+            let set = self.owned_state.sets.get(through).to_vec();
+            crate::rule_use::through(self, e, set, lies);
         }
         true
     }
@@ -321,6 +478,11 @@ impl Walk<'_> {
             {
                 return false;
             }
+            // WP-118 R2.2: a C-linkage declaration lying in a rebuilt file
+            // is read-only by its own path.
+            if self.c_linkage_in_rebuilt(d) {
+                return false;
+            }
         }
         true
     }
@@ -332,15 +494,55 @@ impl Walk<'_> {
     /// read-only file (a dependency macro's body that spells the name). A
     /// name spelled in no file (made by `##`, in scratch space) is decided
     /// by the expansion location alone.
+    ///
+    /// A rebuilt file answers as an owned one (WP-118), except that a
+    /// declaration of an entity with C language linkage that lies in a
+    /// rebuilt file (its expansion location's file, or its name token's
+    /// spelling file, is rebuilt by its own path) lies in a read-only
+    /// file (R2.2, per declaration).
     pub(crate) fn in_owned_file(&mut self, d: DeclId) -> bool {
+        let [expansion, spelling] = self.ats_of(d);
+        if !matches!(expansion, Some(At::Clear { .. })) || spelling == Some(At::ReadOnly) {
+            return false;
+        }
+        let lies =
+            [expansion, spelling].iter().any(|a| matches!(a, Some(At::Clear { own: Some(_), .. })));
+        !(lies && self.c_linkage_entity(d))
+    }
+
+    /// Where `d` is: its expansion location, and its name token's
+    /// spelling location when it has a name token (`None` when it has
+    /// none, or the location is in no file).
+    pub(crate) fn ats_of(&mut self, d: DeclId) -> [Option<At>; 2] {
         let loc = self.ast.decls.get(d).loc();
-        if self.read_only_at(self.sm.expansion_loc(loc)) != Some(false) {
-            return false;
+        let expansion = self.read_only_at(self.sm.expansion_loc(loc));
+        let spelling = if self.has_name_token(d) {
+            self.read_only_at(self.sm.spelling_loc(loc))
+        } else {
+            None
+        };
+        [expansion, spelling]
+    }
+
+    /// `d`'s entity has C language linkage (`Walk::in_c_linkage`, gated
+    /// by the kind's `c_linkage`, as the key's parent is decided).
+    fn c_linkage_entity(&self, d: DeclId) -> bool {
+        let e = self.entity(d);
+        info(self.ast.decls.get(e).kind()).c_linkage && self.in_c_linkage(e)
+    }
+
+    /// WP-118 R2.2: `d` declares an entity with C language linkage and
+    /// lies in a rebuilt file by its own path (its expansion location's
+    /// file, or its name token's spelling file).
+    pub(crate) fn c_linkage_in_rebuilt(&mut self, d: DeclId) -> bool {
+        let loc = self.ast.decls.get(d).loc();
+        let mut files = vec![self.buffer_of(self.sm.expansion_loc(loc))];
+        if self.has_name_token(d) {
+            files.push(self.buffer_of(self.sm.spelling_loc(loc)));
         }
-        if self.has_name_token(d) && self.read_only_at(self.sm.spelling_loc(loc)) == Some(true) {
-            return false;
-        }
-        true
+        let lies =
+            files.into_iter().flatten().any(|f| matches!(self.file_class(f), Class::Rebuilt(_)));
+        lies && self.c_linkage_entity(d)
     }
 
     /// Whether `d` has a name token of its own: not an implicit
@@ -363,17 +565,29 @@ impl Walk<'_> {
     }
 
     /// For a file location: `None` if it is in no file (invalid, scratch
-    /// space, a buffer whose name begins with `<`); else whether its file
-    /// is read-only or it was entered through an include chain that
-    /// passes through a read-only file. Kiln has one buffer per file but
-    /// one location range per inclusion (`SourceManager::add_inclusion`,
-    /// `include_loc`), so this is decided per inclusion.
-    fn read_only_at(&mut self, loc: Loc) -> Option<bool> {
+    /// space, a buffer whose name begins with `<`); else read-only if its
+    /// file is read-only or it was entered through an include chain that
+    /// passes through a read-only file, and clear otherwise, with the set
+    /// of the `rebuilt` entries of its chain and of its own file, and its
+    /// own file when that is rebuilt (WP-118 R3.1). Kiln has one buffer
+    /// per file but one location range per inclusion
+    /// (`SourceManager::add_inclusion`, `include_loc`), so this is decided
+    /// per inclusion.
+    pub(crate) fn read_only_at(&mut self, loc: Loc) -> Option<At> {
         let file = self.buffer_of(loc)?;
-        if self.file_read_only(file) {
-            return Some(true);
+        let class = self.file_class(file);
+        if class == Class::ReadOnly {
+            return Some(At::ReadOnly);
         }
-        Some(self.chain_read_only(self.sm.include_loc(loc)))
+        match self.include_chain(self.sm.include_loc(loc)) {
+            Chain::ReadOnly => Some(At::ReadOnly),
+            Chain::Clear(set) => Some(match class {
+                Class::Rebuilt(i) => {
+                    At::Clear { set: self.owned_state.sets.with(set, i), own: Some(file) }
+                }
+                Class::Owned | Class::ReadOnly => At::Clear { set, own: None },
+            }),
+        }
     }
 
     /// The buffer of file location `loc`, if it is a file.
@@ -388,46 +602,74 @@ impl Walk<'_> {
         Some(file)
     }
 
-    /// Whether `file` is read-only, as `ReadOnly` answers, once per file.
+    /// Whether `file` is read-only by its own path (its class is
+    /// [`Class::ReadOnly`]; a rebuilt file is not, WP-118).
     pub(crate) fn file_read_only(&mut self, file: FileId) -> bool {
-        if let Some(&r) = self.owned_state.files.get(&file) {
-            return r;
-        }
-        let r = self.read_only.read_only(file);
-        self.owned_state.files.insert(file, r);
-        r
+        self.file_class(file) == Class::ReadOnly
     }
 
-    /// Whether the inclusion entered by the `#include` at `inc` has a
-    /// read-only file on its include chain: the file holding `inc`, or
-    /// one further up. An includer that is no file (the command line)
-    /// does not make it read-only. Memoised per inclusion.
-    fn chain_read_only(&mut self, inc: Loc) -> bool {
-        let mut path = Vec::new();
+    /// The class of `file`, as `ReadOnly` answers, once per file.
+    pub(crate) fn file_class(&mut self, file: FileId) -> Class {
+        if let Some(&c) = self.owned_state.files.get(&file) {
+            return c;
+        }
+        let c = self.read_only.class(file);
+        self.owned_state.files.insert(file, c);
+        c
+    }
+
+    /// The include chain of the inclusion entered by the `#include` at
+    /// `inc` (WP-118 R3.1): read-only if a file on it (the file holding
+    /// `inc`, or one further up) is read-only by its own path, else clear
+    /// with the set of the `rebuilt` entries covering a file on it. An
+    /// includer that is no file (the command line) decides nothing. The
+    /// first read-only file met is recorded as a cutter (R1.3). Memoised
+    /// per inclusion: each element of the path walked gets the union of
+    /// the entries from itself upwards, or read-only for all when the walk
+    /// ended read-only.
+    fn include_chain(&mut self, inc: Loc) -> Chain {
+        // Each `#include` location walked, with the entry of its file
+        // when that is rebuilt.
+        let mut path: Vec<(Loc, Option<u32>)> = Vec::new();
         let mut at = inc;
-        let mut found = false;
+        let mut end = Chain::Clear(SetId::EMPTY);
         while at.is_valid() {
-            if let Some(&r) = self.owned_state.inclusions.get(&at) {
-                found = r;
+            if let Some(&c) = self.owned_state.inclusions.get(&at) {
+                end = c;
                 break;
             }
-            path.push(at);
-            if self.buffer_of(at).is_some_and(|f| self.file_read_only(f)) {
-                found = true;
-                break;
+            let class = self.buffer_of(at).map(|f| (f, self.file_class(f)));
+            match class {
+                Some((f, Class::ReadOnly)) => {
+                    path.push((at, None));
+                    self.owned_state.cutters.insert(f);
+                    end = Chain::ReadOnly;
+                    break;
+                }
+                Some((_, Class::Rebuilt(i))) => path.push((at, Some(i))),
+                Some((_, Class::Owned)) | None => path.push((at, None)),
             }
             // A chain longer than any the preprocessor allows is taken as
             // passing through a read-only file.
             if path.len() > INCLUDE_CHAIN_LIMIT {
-                found = true;
+                end = Chain::ReadOnly;
                 break;
             }
             at = self.sm.include_loc(at);
         }
-        for p in path {
-            self.owned_state.inclusions.insert(p, found);
+        let Chain::Clear(mut set) = end else {
+            for (p, _) in path {
+                self.owned_state.inclusions.insert(p, Chain::ReadOnly);
+            }
+            return Chain::ReadOnly;
+        };
+        for &(p, entry) in path.iter().rev() {
+            if let Some(i) = entry {
+                set = self.owned_state.sets.with(set, i);
+            }
+            self.owned_state.inclusions.insert(p, Chain::Clear(set));
         }
-        found
+        Chain::Clear(set)
     }
 }
 
@@ -441,7 +683,7 @@ mod tests {
     use slip_kiln::kiln::source::{FileId, SourceManager};
     use slip_model::transform::Ownership;
 
-    use super::{ReadOnly, ReadOnlyFiles};
+    use super::{Class, ReadOnly, ReadOnlyFiles};
 
     fn p(s: &str) -> Vec<u8> {
         s.as_bytes().to_vec()
@@ -534,6 +776,55 @@ mod tests {
         );
     }
 
+    /// WP-118 (`spec/verify.md` §2.1, A1, A1c, A2, A9): the class of each
+    /// buffer over three lists, by the longest covering entry and the real
+    /// path; a rebuilt file carries its entry's index; a buffer that is no
+    /// file or made later is read-only.
+    #[test]
+    fn read_only_files_three_classes() {
+        let files = Ownership {
+            owned: vec![p("/s/src")],
+            readonly: vec![p("/b"), p("/b/gen/_deps")],
+            rebuilt: vec![p("/b/gen"), p("/s")],
+        };
+        let names = [
+            "/post/s/src/a.h",      // owned (under the rebuilt /s: the longer owned entry, A9)
+            "/post/s/gen/g.h",      // rebuilt, entry 1 (/s)
+            "/b/gen/x.inc",         // rebuilt, entry 0 (under the read-only /b: A1c)
+            "/b/gen/_deps/inc/d.h", // read-only (the longer read-only entry: A1)
+            "/b/generated/y.h",     // read-only (/b/gen does not cover /b/generated)
+            "/b/gen/link.h",        // a link to /opt/dep/d.h: read-only by its real path (A2)
+            "/opt/dep/d.h",         // read-only (no entry)
+            "<built-in>",           // no file
+        ];
+        let (sm, ids) = buffers(&names);
+        let subject = |f: FileId| -> Vec<u8> {
+            let name = sm.file_name(f);
+            if name.starts_with('<') {
+                return Vec::new();
+            }
+            let real = name.replacen("/b/gen/link.h", "/opt/dep/d.h", 1);
+            p(real.strip_prefix("/post").unwrap_or(&real))
+        };
+        let ro = ReadOnlyFiles::new(Some(&files), &sm, &subject);
+        let got: Vec<Class> = ids.iter().map(|&f| ro.class(f)).collect();
+        use Class::{Owned, ReadOnly as R, Rebuilt};
+        assert_eq!(got, [Owned, Rebuilt(1), Rebuilt(0), R, R, R, R, R]);
+        let r = ReadOnly::files(&ro);
+        assert_eq!(ids.iter().map(|&f| r.class(f)).collect::<Vec<_>>(), got);
+        // read_only is the class ReadOnly: a rebuilt file is not.
+        assert_eq!(
+            ids.iter().map(|&f| ro.read_only(f)).collect::<Vec<_>>(),
+            [false, false, false, true, true, true, true, true]
+        );
+        let later = sm.add_virtual("/post/s/gen/h.h", String::new()).unwrap();
+        assert_eq!(ro.class(later), R);
+        // The spelling as the subject path would make the link rebuilt (M14).
+        let spelled = |f: FileId| -> Vec<u8> { p(sm.file_name(f)) };
+        let by_spelling = ReadOnlyFiles::new(Some(&files), &sm, &spelled);
+        assert_eq!(by_spelling.class(ids[5]), Rebuilt(0));
+    }
+
     #[test]
     fn the_two_constants_and_a_predicate() {
         let (_sm, ids) = buffers(&["a", "b"]);
@@ -544,5 +835,9 @@ mod tests {
         let r = ReadOnly::new(&f);
         assert!(!r.read_only(ids[0]) && r.read_only(ids[1]));
         assert_eq!(format!("{:?}", ReadOnly::EVERY_FILE), "ReadOnly(EVERY_FILE)");
+        // WP-118: the constants and a predicate answer two classes only.
+        assert_eq!(ReadOnly::EVERY_FILE.class(ids[0]), Class::ReadOnly);
+        assert_eq!(ReadOnly::NO_FILE.class(ids[0]), Class::Owned);
+        assert_eq!((r.class(ids[0]), r.class(ids[1])), (Class::Owned, Class::ReadOnly));
     }
 }

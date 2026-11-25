@@ -761,11 +761,12 @@ fn rejects_wrong_kind() {
     assert_eq!(Declared::from_json(&v).unwrap_err().path, "kind");
 }
 
-// model §5.3: a wrong version is UnsupportedVersion at byte 12.
+// model §5.3: a wrong version is UnsupportedVersion at byte 12. Version 3
+// is read since WP-118 (`declared_v3_*`); 4 is the first unknown one.
 #[test]
 fn rejects_wrong_version() {
     let payload = raw_payload(&[], [&[], &[], &[]]);
-    for version in [0u32, 3] {
+    for version in [0u32, 4] {
         let mut bytes = file(*b"DECL", 1, &[(1, &payload)]);
         bytes[12..16].copy_from_slice(&version.to_le_bytes());
         let e = Declared::from_bytes(&bytes).unwrap_err();

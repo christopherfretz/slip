@@ -21,7 +21,7 @@
 
 use slip_model::FileRef;
 use slip_model::edits::{MacroSite, Reason as WireReason, tiers};
-use slip_model::transform::Ownership;
+use slip_model::transform::{FileClass, Ownership};
 
 use crate::Unit;
 use crate::kiln::source::{ExpansionKind, FileId, FileOrigin, Loc, Span};
@@ -47,6 +47,9 @@ pub enum Reason {
     Directive,
     /// The file is read-only.
     NotOwned,
+    /// The file is rebuilt: the build writes its bytes (WP-118,
+    /// `spec/edits.md` §2.1).
+    Rebuilt,
     /// Kiln's text of the file is not its bytes (invalid UTF-8 replaced).
     FileRecoded,
     /// The bytes of the range are not the name's spelling.
@@ -63,6 +66,7 @@ impl Reason {
             Reason::NotAFile => WireReason::NotAFile,
             Reason::Directive => WireReason::Directive,
             Reason::NotOwned => WireReason::NotOwned,
+            Reason::Rebuilt => WireReason::Rebuilt,
             Reason::FileRecoded => WireReason::FileRecoded,
             Reason::NotPlain => WireReason::NotPlain,
         }
@@ -187,7 +191,12 @@ impl<'u, 'r> Sites<'u, 'r> {
             return refused(Reason::NotAFile, tiers::X, invocation);
         }
         if !self.is_owned(r.file) {
-            return refused(Reason::NotOwned, tier, range);
+            // WP-118 R7.1: a rebuilt file's bytes are the build's.
+            let reason = match self.class(r.file) {
+                FileClass::Rebuilt => Reason::Rebuilt,
+                FileClass::Owned | FileClass::ReadOnly => Reason::NotOwned,
+            };
+            return refused(reason, tier, range);
         }
         if !self.is_clean(r.file) {
             return refused(Reason::FileRecoded, tier, invocation);
@@ -222,6 +231,18 @@ impl<'u, 'r> Sites<'u, 'r> {
     /// §2.1): a file whose real path the ownership owns.
     pub fn is_owned(&self, file: FileId) -> bool {
         self.is_file(file) && self.unit.real_path(file).is_some_and(|p| self.ownership.is_owned(p))
+    }
+
+    /// The class of `file` (`spec/edits.md` §2.1, WP-118): by its real
+    /// path; a buffer that is no file, or has no real path, is read-only.
+    pub fn class(&self, file: FileId) -> FileClass {
+        if !self.is_file(file) {
+            return FileClass::ReadOnly;
+        }
+        match self.unit.real_path(file) {
+            Some(p) => self.ownership.class(p),
+            None => FileClass::ReadOnly,
+        }
     }
 
     /// Rule 1 (`name_token`).

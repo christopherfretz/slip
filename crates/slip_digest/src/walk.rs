@@ -862,6 +862,7 @@ pub(crate) fn run_kept<R>(
     let name_strings = name_strings(&w, &written, &fed);
     // Last: the lists form keys of their own (`own_lists.rs`, inert).
     let (made, fixed) = crate::own_lists::lists(&mut w, counting.as_ref());
+    let rebuilt = crate::rule_use::rebuilt(counting.as_ref(), &w.owned_state.cutters);
     let (rule_use, kept) = crate::rule_use::finish(counting);
     let output = Output {
         digests,
@@ -874,6 +875,7 @@ pub(crate) fn run_kept<R>(
         namespace_parts,
         made,
         fixed,
+        rebuilt,
     };
     f(&mut w, &written, output)
 }

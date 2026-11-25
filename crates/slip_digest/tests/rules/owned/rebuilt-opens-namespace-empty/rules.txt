@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 row 18: rebuilt gen.h, not regenerated, holds an empty opening of legacy. An empty opening in a rebuilt file is an owned one, which is nothing; read-only, it holds the dependency view of legacy.

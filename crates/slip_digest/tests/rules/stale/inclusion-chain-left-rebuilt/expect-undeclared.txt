@@ -1,0 +1,2 @@
+# gen.h read-only by its own path: f is the dependency's own, counted for nothing.
+use 1 via 1 direct 0

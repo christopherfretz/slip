@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 R6.1: gen.h is generated in the build directory and declared rebuilt; it is regenerated with the new namespace. G is owned-like and its key maps: equal, and the row says the rule gave it its key.

@@ -1,0 +1,2 @@
+rule function | c_linkage | id gen_init | disc-of pre gen_start() | c_linkage | id gen_start
+# WP-118 R2.2: an owned header with an extern "C" function, entered through rebuilt gen.h: the declaration lies in an owned file, so it stays renamable by its c_linkage rule, and the entry is relied on.

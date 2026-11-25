@@ -148,6 +148,7 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
         kept: Vec::new(),
         made: Vec::new(),
         fixed: Vec::new(),
+        rebuilt: Default::default(),
         ..on.clone()
     };
     if cleared != *off {
