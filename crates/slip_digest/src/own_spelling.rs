@@ -682,20 +682,21 @@ fn converted_args(
     }
 }
 
-/// One position of `converted_args`: written argument `x` over canonical
-/// argument `c`, read as rule 12 reads it where `x` is an expression and
-/// `c` a converted value; otherwise `a`, the argument the unit holds.
+/// One position of `converted_args`: argument `written` over canonical
+/// argument `canonical`, read as rule 12 reads it where `written` is an
+/// expression and `canonical` a converted value; otherwise `held`, the
+/// argument the unit holds.
 fn one_converted(
     w: &mut Walk<'_>,
     s: &mut Stream,
-    a: TemplateArg,
-    x: TemplateArg,
-    c: ArgView,
+    held: TemplateArg,
+    written: TemplateArg,
+    canonical: ArgView,
     here: Ctx,
 ) {
-    match (x.view(), c) {
-        (ArgView::Expr { expr: e, profile: _ }, ArgView::Value { .. }) => profiled_expr(w, s, e),
-        _ => arg(w, s, a, here),
+    match (written.view(), canonical) {
+        (ArgView::Expr { expr, profile: _ }, ArgView::Value { .. }) => profiled_expr(w, s, expr),
+        _ => arg(w, s, held, here),
     }
 }
 
