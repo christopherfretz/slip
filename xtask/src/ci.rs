@@ -157,7 +157,8 @@ fn run_step(name: &str, root: &Path, cargo: &OsStr, out: &mut dyn Write) -> bool
         },
         "fmt" => cargo_ok(cargo, root, &["fmt", "--all", "--check"], out),
         // Without `-p`, cargo uses the workspace's default members: the
-        // crates that do not link Kiln.
+        // crates that do not link Kiln. The `kiln` step runs the same clippy
+        // over `KILN_CRATES` (including `slip_cli`).
         "clippy" => cargo_ok(cargo, root, &[&["clippy"][..], &clippy_tail].concat(), out),
         "test" => cargo_ok(cargo, root, &["test"], out),
         "kiln" => {

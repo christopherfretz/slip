@@ -71,9 +71,12 @@ pub fn appeared<'a>(resolver: &mut Resolver<'_>, negatives: &'a [Vec<u8>]) -> Op
     negatives
         .iter()
         .find(|p| {
-            exists(p)
-                && !std::fs::canonicalize(Path::new(OsStr::from_bytes(p)))
-                    .is_ok_and(|real| resolver.under_subject(real.as_os_str().as_bytes()))
+            if !exists(p) {
+                return false;
+            }
+            // canonicalize: Resolver::under_subject checks by identity (spec/verify.md §5.3)
+            !std::fs::canonicalize(Path::new(OsStr::from_bytes(p)))
+                .is_ok_and(|real| resolver.under_subject(real.as_os_str().as_bytes()))
         })
         .map(Vec::as_slice)
 }
@@ -137,7 +140,7 @@ pub fn record(places: Vec<Vec<u8>>, inputs: &[FileRef]) -> Result<Found, String>
     }
     let mut out = Found::default();
     for path in places {
-        let real = std::fs::canonicalize(Path::new(OsStr::from_bytes(&path)))
+        let real = slip_spelling::real_path(Path::new(OsStr::from_bytes(&path)))
             .ok()
             .map(PathBuf::into_os_string);
         let by_path = real
@@ -166,13 +169,13 @@ pub fn record(places: Vec<Vec<u8>>, inputs: &[FileRef]) -> Result<Found, String>
 /// (the place a file would be at, with every link on the way resolved).
 fn walk(path: &[u8]) -> Vec<u8> {
     let path = Path::new(OsStr::from_bytes(path));
-    if let Ok(real) = std::fs::canonicalize(path) {
+    if let Ok(real) = slip_spelling::real_path(path) {
         return real.into_os_string().into_vec();
     }
     let parts: Vec<Component<'_>> = path.components().collect();
     for k in (1..parts.len()).rev() {
         let prefix: PathBuf = parts[..k].iter().collect();
-        if let Ok(mut real) = std::fs::canonicalize(&prefix) {
+        if let Ok(mut real) = slip_spelling::real_path(&prefix) {
             for c in &parts[k..] {
                 real.push(c);
             }

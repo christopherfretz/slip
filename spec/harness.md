@@ -119,6 +119,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `local-paths` | No committed text file contains an absolute path into a home directory or this host's workspace (`/home/`, `/Users/`, `/root/`, `/Volumes/`). |
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
 | `api-tests` | Every directory under `crates/slip_script/tests/api/` with a `transform.cpp` has `t.cpp` and `expect.txt`, lies in no other, and its `// spec:` line names a heading of `spec/api.md`; no other file lies there (`spec/api.md` §11). |
+| `real-path` | Outside `crates/slip_spelling/`, non-test code under `crates/*/src/` does not name `canonicalize` unless the line directly above carries `// canonicalize: ` with a non-empty reason (`spec/edits.md` §2.1). |
 
 Lints read the files tracked by git, so build output and worktrees are
 never scanned. If the root holds `.git` (a directory, or a file as in a
@@ -211,6 +212,17 @@ in both places.
   listed files, or a path inside a submodule that exists on disk. A target
   above the root fails. Anchors are not checked. Message:
   ``link `<target>` points at no file``.
+- **`real-path`.** Every listed `.rs` file under `crates/<crate>/src/`
+  except `crates/slip_spelling/` is lexed (comments and string literals
+  skipped). An outer `#[cfg(test)]` skips its stacked outer attributes
+  and the following item, ending at a balanced `{ ... }` body, at `;` or
+  `,` at depth 0, or before an enclosing `}` at depth 0 (so a
+  `#[cfg(test)]` field, enum variant or match arm never skips past its
+  enclosing block). Any remaining `canonicalize` identifier token (call,
+  function value, or `use` import) requires the line directly above to
+  begin, after leading whitespace, with `// canonicalize: ` followed by
+  a non-empty reason. Message:
+  ``names `canonicalize`; use `slip_spelling::real_path`, or justify on the line above with `// canonicalize: <reason>` (spec/edits.md §2.1)``.
 
 ## 4. Work packages
 
