@@ -1,0 +1,1 @@
+marked-a A<int>::x::<default_argument 0>
