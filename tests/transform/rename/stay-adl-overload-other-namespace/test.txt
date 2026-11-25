@@ -1,0 +1,5 @@
+# An overload of the name in another namespace, selected by argument-dependent lookup at one call, is kept; the call that selects the subject is renamed.
+spec: edits §4.2
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

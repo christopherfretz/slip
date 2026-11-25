@@ -1,0 +1,21 @@
+plan <id>
+observers 1
+excluded not_a_compile 0
+excluded unsupported_language 0
+excluded unsupported_flag 0
+excluded missing_file 0
+excluded malformed_entry 0
+excluded unsupported_compiler 0
+transform <id>
+round 1
+map: selected 1, ok 1, not ok 0, failed runs 0
+edits <id>
+state refused
+edit 0 in 0 file(s); shared 0; most observers 0; nested 0
+kept 0; unresolved 0
+refused no_subject 1
+refused no_edit 1
+result <id>
+state refused
+refusal no_subject (0 observer(s))
+refusal no_edit (0 observer(s))

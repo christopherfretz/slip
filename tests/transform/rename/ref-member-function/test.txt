@@ -1,0 +1,4 @@
+# Class member access `c.m`, `p->m`, `c.C::m`, an out-of-line definition and a call inside the class.
+spec: edits §9.3
+run: rename --from a::C::m --to n
+state: verified

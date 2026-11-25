@@ -1,0 +1,4 @@
+# A function template's explicit specialisation and explicit instantiation (edits §9.3 row 1; not a WP-073 case).
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

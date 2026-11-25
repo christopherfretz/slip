@@ -1,0 +1,5 @@
+# A namespace-scope using-declaration of the function, and calls through it.
+spec: edits §9.2
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

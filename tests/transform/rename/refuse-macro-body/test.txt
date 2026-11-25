@@ -1,0 +1,6 @@
+# Every reference to the function is in the replacement list of a macro (the shape of `llvm::callDefaultCtor`, docs/demos/demo-2.md §2.3): `refuse` `macro_body` at each body token, `site_refused`, nothing written.
+spec: edits §2.2
+spec: edits §9.3
+spec: edits §5.4
+run: rename --from a::f --to g
+state: refused

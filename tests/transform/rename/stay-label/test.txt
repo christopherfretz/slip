@@ -1,0 +1,5 @@
+# A label named like the old name, and the goto to it, are kept (edits §4.2: a name token that denotes something that is not a subject is `keep`).
+spec: edits §4.2
+run: rename --from a::f --to g
+state: verified
+xfail: the label in `goto f` is not claimed `keep` and is listed as residue `not_compiled` (edits §8.4), so the run ends verified_with_residue and writes nothing

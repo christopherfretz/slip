@@ -1,0 +1,4 @@
+# A class derived from the member's class declares the new name, which the renamed member would be hidden by: `name_taken`.
+spec: edits §9.5
+run: rename --from a::B::f --to g
+state: refused

@@ -1,0 +1,5 @@
+# A header whose meaning depends on a macro that the two commands define differently: the same bytes `f(1)` name the subject in one observer and `b::f` in the other. `replace` and `keep` at one site: contested, refused, nothing written.
+spec: edits §5.4
+spec: edits §2.2
+run: rename --from a::f --to g
+state: refused

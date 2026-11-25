@@ -1,0 +1,4 @@
+# `&C::m`, `&a::C::m`, and a call through the member pointer.
+spec: edits §9.3
+run: rename --from a::C::m --to n
+state: verified

@@ -1,0 +1,5 @@
+# A virtual family over three headers that no single observer sees whole: `B` in b.h, `D : B` in d.h, `E : B` in e.h; x.cpp sees B and D, y.cpp B and E. The seed `D::f` links to `B::f`, `E::f` links to `B::f` in the other observer, and reduce closes the family: all three are renamed.
+spec: edits §9.2
+spec: edits §5.2
+run: rename --from n::D::f --to g
+state: verified

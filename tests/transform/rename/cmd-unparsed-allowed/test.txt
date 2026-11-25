@@ -1,0 +1,7 @@
+# The same with `allow: unparsed`: the unparsed observer's main file is scanned as a file no observer read (it does not name `f`); verified, written.
+spec: edits §8.5
+spec: edits §10.5
+run: rename --from a::f --to g
+state: verified
+allow: unparsed
+oracle: no-clang harness §6.4: the pre-image holds a file that does not parse, which is the case under test

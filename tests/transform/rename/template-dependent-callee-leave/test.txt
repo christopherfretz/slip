@@ -1,0 +1,5 @@
+# The unqualified callee of a dependent call, under `--dependent leave` (the default): the name is `unresolved` (residue `dependent`) and left; every instantiation of the post-image fails to find `f`. Not verified.
+spec: edits §9.4
+spec: edits §8.4
+run: rename --from a::f --to g
+state: not_verified

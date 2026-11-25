@@ -1,0 +1,5 @@
+# Two commands reach different files through one include line (`-I` orders): the owned `inc/h.h` for one, the read-only `dep/h.h` for the other, which declares the same function. The subject has a read-only declaration: refused (`subject_read_only`), nothing written.
+spec: edits §9.5
+spec: edits §2.1
+run: rename --from a::f --to g
+state: refused

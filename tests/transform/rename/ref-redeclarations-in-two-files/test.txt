@@ -1,0 +1,5 @@
+# Redeclarations in two headers and a source file; each header included by a different source file.
+spec: edits §9.3
+spec: edits §5.3
+run: rename --from a::f --to g
+state: verified

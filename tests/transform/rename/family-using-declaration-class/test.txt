@@ -1,0 +1,6 @@
+# `using B::f;` in a derived class follows the base's function and is renamed with it; the derived class's own `f(int)` is not a subject and keeps its name.
+spec: edits §9.2
+spec: edits §9.3
+run: rename --from n::B::f --to g
+state: verified
+oracle: no-back edits §9.5: the inverse rename is refused name_taken, since a class derived from (or a base of) the class of the renamed member declares the old name; the rule is not symmetric

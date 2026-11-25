@@ -1,0 +1,5 @@
+# `ID(f)` with `#define ID(x) x`: the token is tier 1 and Kiln's range is the invocation, which is not the name: `refuse(not_plain)`, refused.
+spec: edits §2.2
+spec: edits §2.3
+run: rename --from a::f --to g
+state: refused

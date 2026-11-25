@@ -1,0 +1,4 @@
+# `--to` a keyword of C++: a usage error, status 2.
+spec: edits §10.5
+run: rename --from a::f --to int
+state: usage

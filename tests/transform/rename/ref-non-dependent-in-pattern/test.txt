@@ -1,0 +1,4 @@
+# A non-dependent call in a function template's pattern, resolved at the definition, and the template instantiated twice.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R01. The new name joins an overload set reached by argument-dependent lookup through an associated namespace and wins at one call: `g(s, t)` chose `b::g(S, const T &)`, then `a::g(S, T &)`. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

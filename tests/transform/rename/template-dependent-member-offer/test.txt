@@ -1,0 +1,4 @@
+# `t.f()` in a function template, instantiated with the subject's class: edited on the instance (`instances:` lines); the holder differs, not verified until docs/wp/WP-154.md.
+spec: edits §9.4
+run: rename --from a::S::f --to g --dependent offer
+state: not_verified

@@ -1,0 +1,5 @@
+# The only observer that reads the edited reference cannot parse the post-image (a local `int g` hides the new name: `g(g)`): no observer sees the obligation, which fails `unseen`, besides `not_parsed`. A reference that no observer reads after the edit with the observer still parsing cannot be made from a rename's edits (they change no directive).
+spec: verify §10.3
+spec: edits §8.5
+run: rename --from a::f --to g
+state: not_verified

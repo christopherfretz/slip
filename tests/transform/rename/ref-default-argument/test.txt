@@ -1,0 +1,4 @@
+# A default argument and a default member initialiser that call the name; a call that uses the default.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

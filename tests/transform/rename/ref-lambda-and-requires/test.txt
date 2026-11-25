@@ -1,0 +1,4 @@
+# Uses in a lambda body, a requires-expression and a static_assert.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

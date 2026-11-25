@@ -1,0 +1,5 @@
+# A function with C language linkage declared in the target's scope: `unsupported` (its key has the parent `c_linkage`).
+spec: edits §9.1
+spec: edits §9.5
+run: rename --from a::f --to g
+state: refused

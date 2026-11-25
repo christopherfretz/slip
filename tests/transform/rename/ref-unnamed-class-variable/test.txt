@@ -1,0 +1,5 @@
+# A variable whose type is an unnamed class: the class follows the variable (`unnamed_by`).
+spec: edits §9.3
+spec: edits §9.2
+run: rename --from a::v --to w --kind variable
+state: verified

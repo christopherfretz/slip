@@ -1,0 +1,22 @@
+plan <id>
+observers 1
+excluded not_a_compile 0
+excluded unsupported_language 0
+excluded unsupported_flag 0
+excluded missing_file 0
+excluded malformed_entry 0
+excluded unsupported_compiler 0
+transform <id>
+round 1
+map: selected 1, ok 1, not ok 0, failed runs 0
+edits <id>
+state refused
+edit 0 in 0 file(s); shared 0; most observers 0; nested 0
+kept 1; unresolved 0
+refused site_refused 1
+result <id>
+state refused
+refusal site_refused mixed_instances: a.cpp:4:43: a::f(int) (1 observer(s), first a.cpp)
+instances: 0 edited, 1 refused; a specialisation made only outside the run is not checked
+instance refused a.cpp:4:43: a::call<b::S>(b::S): another declaration (1 observer(s), first a.cpp)
+instance refused a.cpp:4:43: a::call<int>(int): a::f(int) (1 observer(s), first a.cpp)

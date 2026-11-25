@@ -1,0 +1,4 @@
+# A paste whose other operand is empty makes nothing: `CAT(f, )` is the argument's token, tier 1, and is edited.
+spec: edits §2.2
+run: rename --from a::f --to g
+state: verified

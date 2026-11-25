@@ -1,0 +1,25 @@
+[
+ {
+  "directory": "@ROOT@",
+  "file": "@ROOT@/a.cpp",
+  "arguments": [
+   "kiln",
+   "-std=c++20",
+   "-DHAVE_F",
+   "-I@ROOT@",
+   "-c",
+   "@ROOT@/a.cpp"
+  ]
+ },
+ {
+  "directory": "@ROOT@",
+  "file": "@ROOT@/a.cpp",
+  "arguments": [
+   "kiln",
+   "-std=c++20",
+   "-I@ROOT@",
+   "-c",
+   "@ROOT@/a.cpp"
+  ]
+ }
+]

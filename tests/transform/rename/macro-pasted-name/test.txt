@@ -1,0 +1,5 @@
+# A name pasted from two halves (`CAT(fo, o)`): tier 3, `refuse(pasted)`. The halves are no residue (edits §8.4: a name formed by `##` is never found).
+spec: edits §2.2
+spec: edits §8.4
+run: rename --from a::foo --to bar
+state: refused

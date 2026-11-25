@@ -1,0 +1,5 @@
+# `#define NAME f`: the token is written in a replacement list, `refuse(macro_body)`.
+spec: edits §2.2
+spec: edits §2.3
+run: rename --from a::f --to g
+state: refused

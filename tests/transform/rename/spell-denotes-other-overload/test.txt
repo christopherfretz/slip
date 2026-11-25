@@ -1,0 +1,5 @@
+# The replacement at one use names, in the post-image, another entity of the new name: `a::in::g` hides `a::g` inside `a::in`. The spelled piece fails (`denotes_other`, with what was found); not verified, nothing written.
+spec: verify §10.3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

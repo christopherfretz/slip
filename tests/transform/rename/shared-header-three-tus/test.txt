@@ -1,0 +1,6 @@
+# A function declared in a header that three source files include; one of them also declares it itself (as `TimePassesIsEnabled` in LLVM's IRReader.cpp). The header's site is claimed by three observers and is one edit.
+spec: edits §5.3
+spec: verify §9
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R07: the member is renamed to the name a requires-expression probes for, which makes a constrained overload viable for the class: the caller selects another `pick`. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::S::f --to g
+state: not_verified

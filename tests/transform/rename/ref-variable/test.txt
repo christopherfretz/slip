@@ -1,0 +1,5 @@
+# A variable declared `extern` in a header, defined in one file, assigned and read in another (the shape of `TimePassesIsEnabled`).
+spec: edits §9.3
+spec: edits §9.1
+run: rename --from a::v --to w --kind variable
+state: verified

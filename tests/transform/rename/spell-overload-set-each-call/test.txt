@@ -1,0 +1,5 @@
+# An overload set of which each call selects a different member: each spelled piece carries its own key, and every obligation holds.
+spec: verify §10.2
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

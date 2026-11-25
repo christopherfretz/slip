@@ -1,0 +1,4 @@
+# A function pointer initialised from the name (no `&`), then called; a reference to function.
+spec: edits §9.3
+run: rename --from a::f --to g
+state: verified

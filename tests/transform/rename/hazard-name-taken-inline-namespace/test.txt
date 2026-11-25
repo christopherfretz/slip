@@ -1,0 +1,4 @@
+# The new name is declared in an inline namespace of the target's namespace, which its name enters: `name_taken`.
+spec: edits §9.5
+run: rename --from a::f --to g
+state: refused

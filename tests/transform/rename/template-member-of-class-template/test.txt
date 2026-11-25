@@ -1,0 +1,5 @@
+# A member of a class template: the members of the instantiated specialisations follow it; its out-of-line definition, an explicit specialisation of the member and the calls are renamed.
+spec: edits §9.2
+spec: edits §9.3
+run: rename --from a::S::f --to g
+state: verified

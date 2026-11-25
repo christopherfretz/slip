@@ -1,0 +1,5 @@
+# Every overload of the name in the scope is a seed: both overloads and the calls that select each are renamed.
+spec: edits §9.3
+spec: edits §9.1
+run: rename --from a::f --to g
+state: verified

@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R13. A rename that would make two using-declarations name functions of one signature (`using a::f; using b::g;` in `c`): the using-declaration follows the subject and its name enters `c`, which declares the new name: `name_taken` (once for the using-declaration, once for its shadow), refused before verification.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: refused

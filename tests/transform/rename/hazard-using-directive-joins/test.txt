@@ -1,0 +1,5 @@
+# spec/pitfalls.md row R01 through a using-directive at global scope: `g(1)` chose `::g(long)`; after the rename the directive brings `a::g(int)`, a better match. No scope the name enters declares `g`. Not verified.
+spec: pitfalls §3
+spec: edits §9.5
+run: rename --from a::f --to g
+state: not_verified

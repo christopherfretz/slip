@@ -1,0 +1,5 @@
+# An unrelated class with a virtual function of the same name (a candidate with no link to the family) keeps its name.
+spec: edits §9.2
+spec: edits §4.2
+run: rename --from n::B::f --to g
+state: verified
