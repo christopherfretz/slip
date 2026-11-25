@@ -1,3 +1,8 @@
+# pending
+# needs: WP-163 ruling: since Kiln WP-3321 (`ea9a8e141`) a dependent template-id's canonical type holds
+# converted values ([temp.type]/1), so the befriended It<T, n::k> is It<T, 0>; the old key and
+# stream read the argument as written, which only the friend's FriendForm `args` keep now
+# (reading them in keys and streams is WP-126's design). Expectations kept, not re-blessed.
 changed M
 removed M::<friend It<type-parameter-0-0, n::k>>
 added M::<friend It<type-parameter-0-0, n::j>>

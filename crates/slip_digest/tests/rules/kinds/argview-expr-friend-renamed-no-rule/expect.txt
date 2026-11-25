@@ -1,3 +1,8 @@
+# pending
+# needs: WP-163 ruling: since Kiln WP-3321 (`ea9a8e141`) a dependent template-id's canonical type holds
+# converted values ([temp.type]/1), so the befriended It<T, n::k> is It<T, 0>; the old key and
+# stream read the argument as written, which only the friend's FriendForm `args` keep now
+# (reading them in keys and streams is WP-126's design). Expectations kept, not re-blessed.
 # digest-kinds §4.6 ArgView `Expr` (WP-123): the sides of the case beside this one, without its rule: the constant the argument names is another entity.
 removed n::k
 added n::u

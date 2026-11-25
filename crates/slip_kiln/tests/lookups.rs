@@ -226,17 +226,28 @@ fn dash_include() {
     assert!(tried(&l, ".", "pre.h") && tried(&l, &inc, "pre.h"), "{l:?}");
 }
 
-// `-imacros`: Kiln's driver does not accept it, so the unit is not parsed
-// and nothing is looked up (no `verified` can come of it: the post-image
-// is `not_parsed`).
+// `-imacros`, `-iprefix`, `-iwithprefix`: Kiln's driver accepts them since
+// Kiln WP-2822 (`c52c27ba8`), Slip does not pass them (WP-163,
+// `slip_kiln::check::not_modelled`): the unit is `rejected` and nothing is
+// looked up, as before (no `verified` can come of it: the post-image is
+// `not_parsed`). A file read by a flag Slip does not model would be a hole
+// in the guards.
 #[test]
-fn dash_imacros_is_not_accepted() {
+fn dash_imacros_kiln_accepts_slip_does_not_pass() {
     let d = Dir::new("imacros");
     d.write("a.cpp", "int x;\n");
     d.write("m.h", "#define M 1\n");
-    let m = d.at("m.h");
-    let (status, l) = d.parse("", &["-imacros", &m]);
-    assert_eq!((status, l), (Status::Rejected, None));
+    d.write("inc/i.h", "");
+    let (m, inc) = (d.at("m.h"), d.at("inc"));
+    let prefix = format!("{}/", d.at(""));
+    for flags in [
+        vec!["-imacros", &m],
+        vec!["-iprefix", &prefix, "-iwithprefix", "inc"],
+        vec!["-iwithprefixbefore", &inc],
+    ] {
+        let (status, l) = d.parse("", &flags);
+        assert_eq!((status, l), (Status::Rejected, None), "{flags:?}");
+    }
 }
 
 // An absolute name is recorded since Kiln WP-2620 (`Found::Absolute`,

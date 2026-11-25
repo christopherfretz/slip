@@ -48,7 +48,7 @@ pub(crate) fn friend_target(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         s.uv(0).indeterminate(Cause::Unaccounted("FriendTarget/kind"));
         return;
     }
-    let target = ast.decls.friend_target(d);
+    let target = slip_kiln::written::friend_target(ast, d);
     s.tag(friend_target::row(&target));
     match target {
         FriendTarget::Decl(x) => w.write_ref(s, x),

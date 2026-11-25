@@ -32,9 +32,12 @@
 //!   whose extent holds the name's first token, as claimed). A namespace,
 //!   the translation unit, a linkage specification or an enumeration is
 //!   no answer: Kiln gives the lexical context there for the names of the
-//!   declarations that claim none (an alias, an enumerator, a
-//!   `static_assert`, a template head), so the declaration that holds the
-//!   name is not known. A class is the answer only for a name in its
+//!   declarations that claim none, so the declaration that holds the name
+//!   is not known. Until Kiln WP-3143 (`9c947d049`, in the pin since
+//!   WP-163) these were an alias, an enumerator, a `static_assert` and a
+//!   template head; Kiln now names the alias, the enumerator and the
+//!   template as enclosing (`subject_keys.rs`
+//!   `s7_5_rule2_test3_holder_named_by_kiln`). A class is the answer only for a name in its
 //!   head (before its body: a base specifier, the arguments of a
 //!   specialisation), for the same reason. A name in the decl-specifiers
 //!   shared by a declarator group of two declarators or more (`S a, b;`)

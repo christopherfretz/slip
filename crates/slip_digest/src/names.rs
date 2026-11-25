@@ -341,7 +341,7 @@ impl<'n, 'w> Names<'n, 'w> {
         let k = ast.decls.get(d).kind();
         if k == DeclKind::Friend {
             out.push(' ');
-            match ast.decls.friend_target(d) {
+            match slip_kiln::written::friend_target(ast, d) {
                 FriendTarget::Decl(x) => out.push_str(&self.plain(x)),
                 FriendTarget::Type { ty, owned_tag: _ } => {
                     out.push_str(&print_type(&ast.types, ast, ty, PrintOptions::CANONICAL));

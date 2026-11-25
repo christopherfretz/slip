@@ -194,7 +194,14 @@ fn a_list_changes_only_the_units_that_write_one() {
             .count();
         // A content-keyed unit's key is its digest (`spec/digest.md`
         // §3.3): its list moves it, and the units that hold the key
-        // change with it. No other key moves.
+        // change with it. No other key moves. A friend is content-keyed
+        // too; since Kiln WP-3321 (`ea9a8e141`, in the pin since WP-163)
+        // a befriended template-id's canonical type holds a converted
+        // value where it held the instantiation-dependent argument, so
+        // that argument is now a spelling and the friend writes a list
+        // (`differ/_/spelling-decl-friend-{type,class-template-id}`).
+        // WP-163 stopped on friend keys: this allowance is the
+        // coordinator's to rule on.
         let moved: Vec<&String> = with
             .iter()
             .filter(|(name, u)| without.get(*name).is_none_or(|v| v.key != u.key))
@@ -202,7 +209,7 @@ fn a_list_changes_only_the_units_that_write_one() {
             .collect();
         assert_eq!(with.len(), without.len(), "{}", dir.display());
         assert!(
-            moved.iter().all(|m| m.contains("<static_assert>")),
+            moved.iter().all(|m| m.contains("<static_assert>") || m.contains("::<friend ")),
             "{}: a key moved: {moved:?}",
             dir.display()
         );
@@ -379,7 +386,7 @@ fn an_alias_whose_spelling_is_indeterminate_is_listed() {
 #[test]
 fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
     let src = format!(
-        "{PRELUDE}template<class T> using R = void (*)(decltype(f(T())) [2]);\n\
+        "{PRELUDE}template<class T> using R = _BitInt(sizeof(f(T())) * 8);\n\
          template<class T> void u(T, R<T> r);\n"
     );
     crate::decl_func::tests::with_walk(&src, |w| {
@@ -389,7 +396,10 @@ fn an_alias_whose_only_spelling_is_a_cause_is_listed() {
         w.unit = crate::walk::UnitState::default();
         let mut s = Stream::new();
         super::left_out_of_type(w, &mut s, under, None);
-        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/decltype")));
+        // A dependent `_BitInt` is held canonical (rule 5). Until WP-163 the
+        // alias was `void (*)(decltype(f(T())) [2])`, whose adjusted array
+        // parameter Kiln keeps as declared since WP-2720.
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/bit-int")));
         assert!(!w.unit.facts_due, "{:?}", w.unit.facts);
         let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
         let q = w.ast.decls.get(d).ty().expect("a type");
@@ -427,12 +437,13 @@ fn an_alias_holds_its_set_and_its_user_the_ref() {
 /// file names the test of each.
 const REACHED: &[&str] = &[
     "spelling/decltype",
-    "spelling/array-bound",
-    "spelling/noexcept",
-    "spelling/arg",
-    "spelling/vector-size",
-    "spelling/addr-space",
-    "spelling/pack-index",
+    // Not `spelling/array-bound`, `noexcept`, `arg`, `vector-size`,
+    // `addr-space` or `pack-index`: their pair tests (`spelling-site-*`)
+    // are `differ` pairs since WP-163. Kiln WP-2720 keeps a parameter's
+    // declared array type (`TypeView::Decayed`), whose written operand
+    // rule 2 reads, so these sites are no longer reached through the
+    // adjusted pointer. `a_marked_canonical_operand_is_unaccounted` still
+    // meets the first three through a canonical type.
     "spelling/bit-int",
     "spelling/profile",
     "spelling/conversion-name",
@@ -500,10 +511,10 @@ const RULE_5_TRIED: &[(&str, &[&str])] = &[
     ("template<class T> auto k(T t) { auto x = f(t); return x; }\n", &[]),
     ("template<class T> void k(T t) { auto (*p)(T) = &k<T>; decltype(auto) y = f(t); }\n", &[]),
     ("template<class... T> void k(void (*)(T...[0] [2]), T...);\n", &[]),
-    (
-        "template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n",
-        &["spelling/decltype"],
-    ),
+    // An adjusted array parameter of a function type keeps its declared
+    // type since Kiln WP-2720 (`dc5a7989e`, `TypeView::Decayed`), which
+    // rule 2 reads (WP-163): no longer a canonical operand.
+    ("template<class T> void k(T, void (*)(__underlying_type(decltype(f(T()))) [2]));\n", &[]),
     // subst-pack
     (
         "template<class... T> struct P { template<class U> void m(U, void (*)(decltype(f(U()) + T())...)); };\n\
@@ -516,7 +527,8 @@ const RULE_5_TRIED: &[(&str, &[&str])] = &[
         &[],
     ),
     // full
-    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &["spelling/arg"]),
+    // As the `__underlying_type` source above (Kiln WP-2720, WP-163).
+    ("template<class T> void k(T, void (*)(Z<sizeof(f(T()) + 1_x)> [2]));\n", &[]),
     ("template<class T> void k(T, void (*)(Z<sizeof([] { return 0; }, f(T()))> [2]));\n", &[]),
 ];
 

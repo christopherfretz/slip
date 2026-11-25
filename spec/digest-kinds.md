@@ -4837,7 +4837,8 @@ says. The offset into the string is written by value (`Pointer.offset`).
   local scope names around that function (below).
 - `StringLit.lit` of a function name of the source-location builtins
   (`SourceLocValues` `function`, the plain name, or the function name an
-  `__impl` object points to, the pretty name; one object per content):
+  `__impl` object points to, the pretty name; its uses taken by content,
+  `spec/digest.md` §9):
   `bytes` empty, `uv 0`, `uv 2`, `uv 0` (plain) or `uv 1` (pretty), then
   `ref` of the context of the first use (by `ExprId`) that points to it,
   if the bytes are that context's name of that kind, then the local
@@ -5434,7 +5435,13 @@ The encoding `attrs` writes an attribute list: a count, then each node as
   is the count and the nodes of its `AttrArena` `decl_attrs` in stored
   order, leaving out each node whose `inherited` flag is set: it is a
   copy from an earlier declaration and says nothing new (Kiln makes such
-  a copy for an `ASM_LABEL` only). The entity's **defining declaration**
+  a copy for an `ASM_LABEL` and for a parameter's attribute). One
+  exception: a parameter of a declaration made by instantiation
+  (`templ::made_by_instantiation`) keeps its `inherited` nodes, since
+  Kiln WP-3407 (`14b25bd70`, in the pin since WP-163) gives it the
+  attributes of the template's latest declaration, where the first
+  declaration's are such copies, and nothing else in its chain holds
+  them (`attrs::param_nodes`). The entity's **defining declaration**
   is its definition (for a template, the template its pattern's
   definition describes) when the chain holds it and the entity is not of
   the definition class (§11.9); otherwise there is none. For an entity

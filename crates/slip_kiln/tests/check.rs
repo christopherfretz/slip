@@ -216,6 +216,19 @@ fn s6_unknown_flag_refused() {
         check(&["clang++", "--language=c", "a.cpp"]),
         Err(Rejection::UnsupportedFlag("--language=c".into()))
     );
+    // WP-163: a flag that reads a file or names a search directory Slip
+    // does not model is refused as written, as Kiln's driver refused it
+    // before Kiln WP-2822 (`c52c27ba8`), though Kiln accepts it now
+    // (`slip_kiln::check::not_modelled`).
+    for (argv, flag) in [
+        (&["clang++", "-imacros", "m.h", "a.cpp"][..], "-imacros"),
+        (&["clang++", "--imacros=m.h", "a.cpp"][..], "--imacros=m.h"),
+        (&["clang++", "-iprefix", "p/", "a.cpp"][..], "-iprefix"),
+        (&["clang++", "-iwithprefix", "inc", "a.cpp"][..], "-iwithprefix"),
+        (&["clang++", "-iwithprefixbefore", "inc", "a.cpp"][..], "-iwithprefixbefore"),
+    ] {
+        assert_eq!(check(argv), Err(Rejection::UnsupportedFlag(flag.into())), "{argv:?}");
+    }
     // A separate-value option left without one at the end (rejection 2).
     assert_eq!(
         check(&["clang++", "a.cpp", "-dumpdir"]),

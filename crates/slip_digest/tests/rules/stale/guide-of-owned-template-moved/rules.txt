@@ -1,2 +1,2 @@
-# WP-111 review F4: guide-of-owned-template-left with the guide moved with its template: via.
+# WP-111 review F4: a guide of an owned template moved with its template: via (its pair, the guide left in legacy, is not valid C++ and went with WP-163).
 relocate legacy => :: acme

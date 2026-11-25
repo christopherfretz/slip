@@ -36,6 +36,15 @@
 //! (`kiln_ast/src/written_refs.rs:270-277`). The rule is kept for when
 //! Kiln records one.
 //!
+//! **Roles left out.** Kiln WP-2820 F1 (`20794f7ed`, in the pin since
+//! WP-163) records an overloaded operator used as an operator
+//! (`RefRole::Operator`) and a user-defined literal's suffix
+//! (`RefRole::UdSuffix`). Kiln recorded neither at `4a83f6e3c`, and their
+//! reading is a later package's (`docs/wp/WP-096.md` "For Kiln" 4,
+//! `spec/api.md` §6.7). [`left_out`] is the one place that drops them:
+//! every list here leaves them out, so every caller sees what it saw at
+//! the old pin.
+//!
 //! **Destructors** are declaration names (the identifier after `~`); the
 //! **origin** of a template's pattern is the template ([`origin`]).
 
@@ -43,7 +52,8 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::Unit;
-use crate::kiln::ast::decl::{DeclKind, FriendKind};
+use crate::kiln::ast::decl::{DeclKind, FriendKind, FriendTarget};
+use crate::kiln::ast::friend_form::{FriendFormFlags, FriendFormKind};
 use crate::kiln::ast::ids::TemplateNameId;
 use crate::kiln::ast::names::{DeclNameKind as NameKind, DeclNameView};
 use crate::kiln::ast::templates::SpecKind;
@@ -57,6 +67,14 @@ use crate::kiln::source::{Loc, Span};
 /// The syntactic role of a written name: Kiln's `RefRole`
 /// (`kiln_ast/src/written_refs.rs:43`, Kiln `spec/ast.md` §18.4).
 pub use crate::kiln::ast::written_refs::RefRole as Role;
+
+/// Whether entries of role `role` are left out of everything this module
+/// gives (module documentation, "Roles left out"): `Operator` and
+/// `UdSuffix`, which Kiln records since WP-2820 F1 and Slip does not read
+/// yet. A caller that reads Kiln's table itself asks this first.
+pub fn left_out(role: Role) -> bool {
+    matches!(role, Role::Operator | Role::UdSuffix)
+}
 
 /// A written reference that has a referent (Kiln's entry with an `entity`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,14 +167,37 @@ pub struct Instance {
 /// instantiation this unit made resolved it, or the table has no row for
 /// its shape. Empty when the unit was parsed without `written`.
 pub fn instances(unit: &Unit<'_>) -> std::collections::HashMap<Span, Vec<Instance>> {
-    instances_of(&unit.ast().written_refs)
+    let ast = unit.ast();
+    instances_of(&ast.written_refs, |spec, at| in_template_head(ast, spec, at))
 }
 
-fn instances_of(table: &WrittenRefs) -> std::collections::HashMap<Span, Vec<Instance>> {
+/// Whether `at` lies in the template parameter list of the function
+/// template whose specialisation `spec` is: a default template argument
+/// (or a parameter's type) that a deduction substituted. Kiln records rows for
+/// such a name since Kiln WP-3520 (`4401d1644`, in the pin since WP-163);
+/// before, the deduction's frame dropped them. [`instances`] leaves them
+/// out, the one place, so that such a name stays `unresolved` as it was
+/// (parity): what an edit of one changes is not verified (the digest sees
+/// a default template argument by its value), and reading these rows is
+/// WP-154's.
+pub fn in_template_head(ast: &Ast, spec: DeclId, at: Span) -> bool {
+    let Some((_, info)) = ast.spec_info(spec) else { return false };
+    if ast.decls.get(info.template).kind() != DeclKind::FunctionTemplate {
+        return false;
+    }
+    let Some(t) = ast.template_info(info.template) else { return false };
+    let list = ast.templates.param_list(t.params);
+    list.l_angle <= at.lo && at.hi <= list.r_angle
+}
+
+fn instances_of(
+    table: &WrittenRefs,
+    head: impl Fn(DeclId, Span) -> bool,
+) -> std::collections::HashMap<Span, Vec<Instance>> {
     let mut out: std::collections::HashMap<Span, Vec<Instance>> = std::collections::HashMap::new();
     for (_, r) in table.specs() {
         let e = table.get(r.entry);
-        if e.entity.is_some() {
+        if e.entity.is_some() || left_out(e.role) || head(r.spec, e.range) {
             // A row's entry is a dependent one (Kiln §18.9.1); an entry
             // that has an entity is a written reference, not read here.
             continue;
@@ -266,6 +307,9 @@ fn refs_of(table: &WrittenRefs, shadow: impl Fn(DeclId) -> bool) -> Vec<WrittenR
     let mut out = Vec::new();
     for (id, e) in table.iter() {
         let Some(referent) = e.entity else { continue };
+        if left_out(e.role) {
+            continue;
+        }
         if !seen.insert((e.role, span_key(e.range), referent)) {
             continue;
         }
@@ -294,7 +338,7 @@ fn dependents_of(table: &WrittenRefs) -> Vec<DependentName> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (_, e) in table.iter() {
-        if e.entity.is_some() {
+        if e.entity.is_some() || left_out(e.role) {
             continue;
         }
         let unresolved = e.flags & REF_UNRESOLVED != 0;
@@ -545,6 +589,36 @@ fn decl_name_kind(ast: &Ast, d: DeclId, kind: DeclKind) -> DeclNameKind {
     }
 }
 
+/// The target of `Friend` `fd` as Kiln gave it at `4a83f6e3c`. Since Kiln
+/// WP-3164 (`2af5deebd`, `kiln_sema/src/class/friend.rs`, the branch of a
+/// special member friend matched per specialisation) a friend naming a
+/// constructor, destructor or conversion function of a dependent class
+/// (`friend A<T>::X::X();`) has the function type as its target and the
+/// member it names as its `FriendForm` row's candidate; before, the member
+/// was the target (`FriendTarget::Decl`). This gives the member again, so
+/// that the digest's stream, key and name of the friend and every other
+/// reader see what they saw at the old pin (WP-163, parity). Nothing else
+/// of the row is read here; reading the form is WP-126's. Every reader of
+/// a friend's target asks this, not `DeclArena::friend_target`.
+///
+/// # Panics
+/// If `fd` is not a `Friend` (as `DeclArena::friend_target`).
+pub fn friend_target(ast: &Ast, fd: DeclId) -> FriendTarget {
+    let target = ast.decls.friend_target(fd);
+    if let FriendTarget::Type { .. } = target
+        && let Some(row) = ast.friend_form(fd).row()
+        && matches!(
+            row.kind(),
+            FriendFormKind::Constructor | FriendFormKind::Destructor | FriendFormKind::Conversion
+        )
+        && row.has(FriendFormFlags::DEPENDENT)
+        && let Some(member) = row.form().entity
+    {
+        return FriendTarget::Decl(member);
+    }
+    target
+}
+
 /// The origin of a referent (`spec/api.md` §5.5): for a specialisation of
 /// a template (implicit, explicit, or explicitly instantiated) the
 /// template; for a member of an instantiated class (a member function, a
@@ -657,6 +731,28 @@ mod tests {
     }
 
     // WP-067 scope 2: entries equal in role, range and referent are one,
+    // WP-163: the roles Kiln records since WP-2820 F1 are left out of
+    // every list, with a referent or without one, so a caller sees what it
+    // saw at `4a83f6e3c`; every other role is kept.
+    #[test]
+    fn wp163_operator_and_ud_suffix_are_left_out() {
+        let n = RefQualifier::NONE;
+        let t = table(&[
+            entry(10, Some(5), Role::Operator, n),
+            entry(12, Some(6), Role::UdSuffix, n),
+            entry(14, None, Role::Operator, n),
+            entry(16, None, Role::UdSuffix, n),
+            entry(18, Some(7), Role::Expr, n),
+            entry(20, None, Role::Expr, n),
+        ]);
+        let refs: Vec<Role> = refs_of(&t, |_| false).iter().map(|r| r.role).collect();
+        assert_eq!(refs, [Role::Expr]);
+        let deps: Vec<Role> = dependents_of(&t).iter().map(|d| d.role).collect();
+        assert_eq!(deps, [Role::Expr]);
+        assert!(left_out(Role::Operator) && left_out(Role::UdSuffix));
+        assert!(!left_out(Role::Expr) && !left_out(Role::Redecl) && !left_out(Role::Concept));
+    }
+
     // the first kept; a different referent, role or range is another.
     #[test]
     fn wp067_equal_entries_are_one_reference() {

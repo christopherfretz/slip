@@ -1979,11 +1979,13 @@ seed of either kind: it is the §9.2 follower of what it names
     the same way.
 
     **What a using-declaration names** (`docs/wp/WP-127.md` item 1) is
-    read from its declarator, not from its shadows alone: when a member
-    of the class declared **before** the using-declaration hides or
-    overrides a declaration the declarator names, the front end makes no
-    shadow for it at all (one marked hidden when the member comes after),
-    so the shadows depend on the order of the members. The named set is
+    read from its declarator, not from its shadows alone: until Kiln
+    WP-3145 (`690711450`, in Slip's pin since WP-163), when a member of
+    the class declared **before** the using-declaration hid or overrode
+    a declaration the declarator names, the front end made no shadow for
+    it at all (one marked hidden when the member came after), so the
+    shadows depended on the order of the members; Kiln now makes the
+    hidden shadow in either order, and the rule stands. The named set is
     the members of the nominated class named like the declarator (the
     class's own lookup table: what it declares, a using-shadow of it
     taken to its target, one it hides left out), or, when it declares

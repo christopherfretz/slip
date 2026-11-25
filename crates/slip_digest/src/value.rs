@@ -358,9 +358,18 @@ fn write_base(w: &mut Walk<'_>, s: &mut Stream, base: PtrBase, cx: &mut Ctx) -> 
 /// bodies a `PredefinedExpr`'s string is looked up in.
 #[derive(Debug, Default)]
 pub(crate) struct NameValues {
-    /// The `ExprId`s (index) of the source-location strings' literals:
-    /// each use that points to one, as `(role, context, use)`.
-    origins: HashMap<u32, Vec<(Role, DeclId, ExprId)>>,
+    /// The contents of the source-location strings: each use that points
+    /// to a string of these bytes, as `(role, context, use)`. By content,
+    /// not by object: Kiln made one object per content until Kiln WP-3000
+    /// (`50ee80489`, in the pin since WP-163), and makes one per (content,
+    /// role, declaration) since; the uses that share the bytes are what
+    /// [`sourced`] asks about, as before (parity).
+    origins: HashMap<Vec<u8>, Vec<(Role, DeclId, ExprId)>>,
+    /// The string objects (origin `ExprId` index) a source-location use
+    /// points to: only these are looked up in `origins`, so a string the
+    /// user wrote with the same bytes is never taken for one (WP-115 item
+    /// 1, `equal/_/name-value-user-literal-not-shared`).
+    sourced_objects: HashSet<u32>,
     /// The `ConstValueId`s (index) of the `__impl` objects, each claimed
     /// by its first use (`ExprId` order; Kiln shares one object between
     /// uses of equal values).
@@ -459,7 +468,6 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
             }) => Some((lit, origin)),
             _ => None,
         };
-        let origin_of = |c: ConstValueId| string(c).map(|(_, o)| o);
         let lit_of = |c: ConstValueId| string(c).map(|(l, _)| l);
         let mut uses: Vec<(ExprId, slip_kiln::kiln::ast::expr::SourceLocValues)> =
             ast.exprs.cold.source_loc.iter().map(|(e, v)| (e, *v)).collect();
@@ -478,8 +486,10 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 ctx,
             } = v;
             let add = |nv: &mut NameValues, c: ConstValueId, role: Role| {
-                if let Some(o) = origin_of(c) {
-                    nv.origins.entry(o.index()).or_default().push((role, ctx, e));
+                if let Some((l, o)) = string(c) {
+                    let (_, bytes) = ast.strings.get(l);
+                    nv.origins.entry(bytes.to_vec()).or_default().push((role, ctx, e));
+                    nv.sourced_objects.insert(o.index());
                 }
             };
             add(&mut nv, file, Role::File);
@@ -514,9 +524,9 @@ fn name_values<'w>(w: &'w mut Walk<'_>) -> &'w mut NameValues {
                 let this = *n;
                 *n += 1;
                 // The two strings are told apart by the field that
-                // points to each, never by their objects: Kiln makes one
-                // string object per content, so a file named as the
-                // function's pretty name is one object with it
+                // points to each, never by their objects: Kiln made one
+                // string object per content until WP-3000, so a file named
+                // as the function's pretty name was one object with it
                 // (WP-145 item 1).
                 let name_at = impl_field_offset(ast, ty, FUNCTION_NAME_FIELD);
                 let file_at = impl_field_offset(ast, ty, FILE_NAME_FIELD);
@@ -746,9 +756,9 @@ fn is_kiln_name(w: &Walk<'_>, f: DeclId, pretty: bool, bytes: &[u8]) -> bool {
 /// and reads it so, `kiln_sema/src/templ/args.rs:2022`; the
 /// `PredefinedExpr`'s `a` names it, which is checked), in the innermost
 /// function whose body holds the expression and whose name the bytes
-/// are; or a source-location function name (Kiln makes one object per
-/// content, shared by every use that has these bytes): of the one entity
-/// every use of the object in the translation unit is in, whose name the
+/// are; or a source-location function name: of the one entity every use
+/// of a source-location string of these bytes in the translation unit is
+/// in (Kiln made one object per content until WP-3000), whose name the
 /// bytes are (WP-115 item 1). `None` (the bytes are written) for a file
 /// name, where the uses are in several entities, and wherever no such
 /// entity is found.
@@ -815,7 +825,8 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
 }
 
 /// [`name_string`] for a source-location string object `origin` holding
-/// `bytes`: the context of its uses where every use of the object in the
+/// `bytes`: the context of its uses where every use of a source-location
+/// string of these bytes (of any object, [`NameValues`] `origins`) in the
 /// translation unit is of one role and one entity (the function itself:
 /// a use in a lambda or a local class of it is another entity's) and the
 /// bytes are that entity's name of the role; else `None`, the bytes. A
@@ -825,7 +836,10 @@ fn name_string(w: &mut Walk<'_>, lit: StringLitId, origin: ExprId) -> Option<Nam
 /// certainly that entity's name.
 fn sourced(w: &mut Walk<'_>, bytes: &[u8], origin: ExprId) -> Option<NameString> {
     let nv = name_values(w);
-    let uses = nv.origins.get(&origin.index())?;
+    if !nv.sourced_objects.contains(&origin.index()) {
+        return None;
+    }
+    let uses = nv.origins.get(bytes)?;
     let &(role, ctx, _) = uses.iter().min_by_key(|&&(_, _, e)| e.index())?;
     if role == Role::File {
         return None;

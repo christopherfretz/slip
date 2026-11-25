@@ -16,6 +16,10 @@
 # TypeView/Decayed{,.original,.adjusted}: a parameter's adjusted type follows
 # from its declared type, which the parameter's own rows read; the node is sugar
 # no pair changes alone (WP-163; read by differ/_/spelling-decayed-parameter).
+# ColdDeclData/subst_failed: Kiln sets it only on a declaration a use of which is an
+# error (an ambiguous partial specialisation, a failed substitution, Kiln WP-3281), and
+# no unit of a valid source writes that declaration's record, so no pair flags it
+# (WP-163).
 AddrSpace/0
 ArgView/Null
 ArgView/Pack
@@ -54,6 +58,7 @@ ColdDeclData/alignment
 ColdDeclData/conversion_spec_target
 ColdDeclData/deprecation
 ColdDeclData/gnu_lib_twin
+ColdDeclData/subst_failed
 ColdExprData/member_extra-record
 ConstArray/size_expr
 DeclNode/ConstevalBlock.data

@@ -911,14 +911,12 @@ impl Walk<'_> {
 /// layout reads in it is not known.
 const ALIGNED_SUGAR_BOUND: Cause = Cause::Unsupported("TypeView/Typedef-aligned-bound");
 
-/// A typedef met by rule 9 whose declarations do not all carry the same
-/// alignment (digest-kinds §4.2 rule 9, digest §10). Kiln's `alignof`
-/// reads only the declaration the sugar node names
-/// (`Ast::layout_attributed_typedef`), and its layout every declaration
-/// present when the class is first laid out, then caches it; so the
-/// answer depends on which declaration a use names and where a layout
-/// is first asked for, facts no unit holds. Goes when Kiln fixes both
-/// (`spec/landed/digest/WP-107.md`, "For Kiln" items 2 and 4).
+/// A typedef met by rule 9 whose declarations do not all carry the
+/// alignment of the first (digest-kinds §4.2 rule 9, digest §10). Kiln
+/// (WP-2830) gives a declaration its own requests and those of the
+/// declarations before it, for `alignof` and layout alike; so when a
+/// later declaration adds one, the answer depends on which declaration a
+/// use names, a fact no unit holds.
 pub(crate) const ALIGNMENT_BY_DECLARATION: Cause =
     Cause::Unsupported("typedef/alignment-by-declaration");
 
@@ -993,21 +991,23 @@ fn carries_alignment(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
     ast.redecls_of(d).any(|r| declaration_aligned(ast, r))
 }
 
-/// Whether the declarations of typedef `d` do not all carry the same
-/// alignment ([`ALIGNMENT_BY_DECLARATION`]): one has none and another
-/// some, or their requests differ, or a request has a value that cannot
-/// be compared (then they disagree). A single declaration agrees.
+/// Whether the declarations of typedef `d` do not all carry the
+/// alignment of its first one ([`ALIGNMENT_BY_DECLARATION`]): a
+/// declaration has a request the first lacks, or a request has a value
+/// that cannot be compared (then they disagree). Since Kiln WP-2830 a
+/// declaration's alignment is its own requests and those before it
+/// (`Ast::self_and_prev`), so when every request is among the first's,
+/// every declaration has the first's alignment. A later request no
+/// stricter than the first's but not among them still disagrees. A
+/// single declaration agrees.
 pub(crate) fn alignment_by_declaration(ast: &slip_kiln::kiln::ast::Ast, d: DeclId) -> bool {
-    let mut first: Option<Option<Vec<AlignRequest>>> = None;
+    let Some(first) = alignment_requests(ast, ast.first(d)) else {
+        return true;
+    };
     for r in ast.redecls_of(d) {
-        let mine = alignment_requests(ast, r);
-        match &first {
-            None => first = Some(mine),
-            Some(f) => {
-                if f.is_none() || mine.is_none() || *f != mine {
-                    return true;
-                }
-            }
+        match alignment_requests(ast, r) {
+            Some(mine) if mine.iter().all(|q| first.contains(q)) => {}
+            _ => return true,
         }
     }
     false

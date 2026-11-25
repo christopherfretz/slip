@@ -1,4 +1,4 @@
-# edits §9.2's example: `struct A { void f(int); }; struct B : A { virtual void f(); }; struct D : B { void f() override; using B::f; };` from `n::B::f`: target and hider renamed together, the using-declaration rewritten to `using B::g;`. Verifies.
+# edits §9.2's example: `struct A { void f(int); }; struct B : A { virtual void f(); }; struct D : B { void f() override; using B::f; };` from `n::B::f`: target and hider renamed together, the using-declaration rewritten to `using B::g;`. Verifies. Since WP-163 (Kiln WP-3145) Kiln makes the hidden shadow of `B::f()` in this member order too: a fourth rule, for that shadow, which is no unit (digest §2.1) and so is the one unused rule; the edits are as before.
 spec: edits §9.2
 run: rename --from n::B::f --to g
 state: verified

@@ -150,7 +150,7 @@ pub(crate) fn collect(ctx: &mut Ctx<'_, '_, '_>) {
 /// otherwise.
 fn friend_of_dependent_member(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
     let ast = ctx.unit.ast();
-    let FriendTarget::Type { ty, owned_tag: None } = ast.decls.friend_target(d) else {
+    let FriendTarget::Type { ty, owned_tag: None } = written::friend_target(ast, d) else {
         return false;
     };
     if !ast.types.is_function(ty) {

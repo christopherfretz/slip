@@ -347,7 +347,7 @@ impl KilnSubject<'_> {
             }
         }
         if kind == DeclKind::Friend {
-            match decls.friend_target(d) {
+            match slip_kiln::written::friend_target(ast, d) {
                 FriendTarget::Decl(x) | FriendTarget::Type { owned_tag: Some(x), .. } => {
                     stack.push(Item::Decl(x, holder));
                 }

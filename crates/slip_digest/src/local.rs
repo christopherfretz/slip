@@ -2224,7 +2224,7 @@ mod tests {
     fn befriended_type(w: &Walk<'_>) -> QualType {
         let ast = w.ast;
         let f = of_kind(w, DeclKind::Friend)[0];
-        match ast.decls.friend_target(f) {
+        match slip_kiln::written::friend_target(ast, f) {
             FriendTarget::Type { ty, owned_tag: _ } => ty,
             FriendTarget::Decl(d) => panic!("a declaration: {}", describe(w, d)),
         }

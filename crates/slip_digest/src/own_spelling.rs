@@ -35,8 +35,8 @@ use slip_kiln::kiln::ast::expr::{Designator, ExprDeps, ExprFlags, ExprKind as K,
 use slip_kiln::kiln::ast::fp::FpRound;
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{
-    ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TemplateArg, TemplateName, TypeFlags,
-    TypeOfOperand, TypeView,
+    ArgView, ExcSpec, ExprOperand, Nns, NoexceptValue, TagKeyword, TemplateArg, TemplateName,
+    TypeFlags, TypeOfOperand, TypeView,
 };
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, ListId, NnsId, QualType, TemplateNameId};
 
@@ -825,10 +825,24 @@ pub(crate) fn friend_name(w: &mut Walk<'_>, s: &mut Stream, d: DeclId, target: F
     let lost = match target {
         FriendTarget::Decl(x) => named(x),
         FriendTarget::Type { ty, owned_tag: _ } => {
-            // An elaborated-type-specifier Kiln built without its
-            // qualifier (`friend struct Bq<..>::Y;`) is the class itself.
+            // An elaborated-type-specifier with a class-key (`friend
+            // struct Bq<..>::Y;`) is the class itself. At `4a83f6e3c` Kiln
+            // built it without its qualifier; since WP-3164 (`2af5deebd`)
+            // the type keeps the written qualifier, which this rule does
+            // not read (parity, WP-163: reading a friend's written form is
+            // WP-126's). A `typename` one (`friend typename Bq<..>::Y;`)
+            // kept its qualifier at both pins and is sugar, read as written.
             let mut view = ast.types.view(ty.ty());
-            if let TypeView::Elaborated { nns: None, named, .. } = view {
+            if let TypeView::Elaborated { keyword, nns, named } = view
+                && (nns.is_none()
+                    || matches!(
+                        keyword,
+                        TagKeyword::Struct
+                            | TagKeyword::Class
+                            | TagKeyword::Union
+                            | TagKeyword::Enum
+                    ))
+            {
                 view = ast.types.view(named.ty());
             }
             match view {

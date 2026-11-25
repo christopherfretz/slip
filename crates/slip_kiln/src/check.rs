@@ -45,6 +45,29 @@ fn refused(args: &Args, whole: bool) -> bool {
         || module_header
         || args.verify.is_some()
         || args.pch.include.is_some()
+        || not_modelled(args).is_some()
+}
+
+/// The first flag of `args` that reads a file or names a search directory
+/// Slip does not model (`Args::imacros`, `Args::prefixed_dirs`,
+/// `Args::iprefix`). Kiln's driver refused every one of them as an unknown
+/// argument until Kiln WP-2822 (`c52c27ba8`, in the pin since WP-163);
+/// Slip keeps refusing them, here (the check, `spec/cdb.md` §6.2 rejection
+/// 3) and before the parse (`parse_observer_with`), so that a command is
+/// refused as it was (parity): the lookup guards (`spec/verify.md` §5.3)
+/// do not know the files and directories they bring in (`Driver::of`
+/// reads neither), and a file read by a flag Slip does not model would be
+/// a hole in them.
+pub(crate) fn not_modelled(args: &Args) -> Option<&'static str> {
+    if !args.imacros.is_empty() {
+        Some("-imacros")
+    } else if !args.prefixed_dirs.is_empty() {
+        Some("-iwithprefix")
+    } else if !args.iprefix.is_empty() {
+        Some("-iprefix")
+    } else {
+        None
+    }
 }
 
 /// The argument of `rest` that makes the front end refuse it: the last of
