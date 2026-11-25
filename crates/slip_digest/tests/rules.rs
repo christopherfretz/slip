@@ -281,11 +281,12 @@ fn rebuilt_lines(t: &Table, own: &Own, r: &RebuiltOutput) -> Result<BTreeSet<Str
             .find(|(_, x)| x == rule)
             .map(|(l, _)| *l)
             .ok_or_else(|| format!("declares: rule {} is on no line", d.rule))?;
-        let mut l = format!("declares {file} rule {line} mapped {} left {}", d.mapped, d.left);
-        if d.left_kept > 0 {
-            l.push_str(&format!(" left_kept {}", d.left_kept));
-        }
-        out.insert(l);
+        let kept =
+            if d.left_kept > 0 { format!(" left_kept {}", d.left_kept) } else { String::new() };
+        out.insert(format!(
+            "declares {file} rule {line} mapped {} left {}{kept}",
+            d.mapped, d.left
+        ));
     }
     Ok(out)
 }
@@ -337,11 +338,11 @@ fn expected_text(text: &str, file: &str) -> Result<Expected, String> {
             let w: Vec<&str> = l.split_whitespace().collect();
             let ok = match w.as_slice() {
                 ["relied", _, ..] => true,
-                ["declares", _, "rule", r, "mapped", m, "left", x, rest @ ..] => {
-                    [r, m, x].iter().all(|v| v.parse::<u64>().is_ok())
+                ["declares", _, "rule", rule, "mapped", mapped, "left", left, rest @ ..] => {
+                    [rule, mapped, left].iter().all(|v| v.parse::<u64>().is_ok())
                         && match rest {
                             [] => true,
-                            ["left_kept", k] => k.parse::<u64>().is_ok_and(|k| k > 0),
+                            ["left_kept", kept] => kept.parse::<u64>().is_ok_and(|k| k > 0),
                             _ => false,
                         }
                 }

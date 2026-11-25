@@ -403,7 +403,7 @@ mod tests {
             namespace_parts: Vec::new(),
             made: Vec::new(),
             fixed: Vec::new(),
-            rebuilt: Default::default(),
+            rebuilt: crate::RebuiltOutput::default(),
         }
     }
 
@@ -472,7 +472,7 @@ mod tests {
                 namespace_parts: Vec::new(),
                 made: Vec::new(),
                 fixed: Vec::new(),
-                rebuilt: Default::default(),
+                rebuilt: crate::RebuiltOutput::default(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

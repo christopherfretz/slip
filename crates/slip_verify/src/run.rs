@@ -54,6 +54,10 @@ const REBUILT_FILE_MAX: usize = 100;
 /// How many `hint:` lines the text shows (WP-118 R1.3).
 const HINT_MAX: usize = 20;
 
+/// Each hinted file with its positions (and their main files) that did
+/// not verify.
+type Shown<'a> = Vec<(&'a Vec<u8>, Vec<(&'a u64, &'a Vec<u8>)>)>;
+
 /// The fold of section 33 (`rebuilt_use`, WP-118 R7.3) over every `ok`
 /// verify shard the state table accepts with a verdict, whatever the
 /// verdict (an entry only `unverifiable` observers relied on is not
@@ -1603,7 +1607,7 @@ impl Report {
             );
         }
         let stale: BTreeSet<u64> = self.stale.keys().map(|&(_, p)| p).collect();
-        let shown: Vec<(&Vec<u8>, Vec<(&u64, &Vec<u8>)>)> = f
+        let shown: Shown<'_> = f
             .hints
             .iter()
             .map(|(file, at)| {

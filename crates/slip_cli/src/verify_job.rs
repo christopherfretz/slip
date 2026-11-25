@@ -98,6 +98,7 @@ type Compared = (Result<Comparison, CompareError>, Option<locate::Side>);
 /// that is there but is not a valid shard of this observer, phase `map`
 /// and round `params.pre`; a parse that fails (`Image::parse`); a
 /// `CompareError` (step 5), with the observer's main file.
+#[allow(clippy::too_many_lines, reason = "the steps of §5.2 in their order, one guard each")]
 pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String> {
     if job.phase != Phase::Verify {
         return Err("the verify task runs phase verify only; the job is of phase map".to_owned());

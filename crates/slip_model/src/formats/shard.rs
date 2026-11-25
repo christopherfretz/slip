@@ -197,6 +197,15 @@ pub(super) fn check(s: &Shard) -> std::result::Result<(), (String, &'static str)
 // ---------------------------------------------------------------------------
 // Binary
 
+/// The bytes of an optional section, encoded by `f` when present.
+fn section<T>(x: Option<&T>, f: impl Fn(&mut Encoder, &T)) -> Option<Vec<u8>> {
+    x.map(|x| {
+        let mut e = Encoder::new();
+        f(&mut e, x);
+        e.into_bytes()
+    })
+}
+
 pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     let mut header = Encoder::new();
     header.digest(&s.observer);
@@ -223,87 +232,25 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         sections.push((INPUTS, inputs));
     }
     sections.push((COUNTERS, counters.as_bytes()));
-    let digests = s.digests.as_ref().map(|d| {
-        let mut e = Encoder::new();
-        digests::encode(&mut e, d);
-        e.into_bytes()
-    });
-    if let Some(digests) = &digests {
-        sections.push((DIGESTS, digests));
-    }
-    let verdict = s.verdict.as_ref().map(|v| {
-        let mut e = Encoder::new();
-        verdict::encode(&mut e, v);
-        e.into_bytes()
-    });
-    if let Some(verdict) = &verdict {
-        sections.push((VERDICT, verdict));
-    }
-    let binding = s.binding.as_ref().map(|b| {
-        let mut e = Encoder::new();
-        agreement::encode_binding(&mut e, b);
-        e.into_bytes()
-    });
-    if let Some(binding) = &binding {
-        sections.push((BINDING, binding));
-    }
-    let spellings = s.spellings.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        spellings::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(spellings) = &spellings {
-        sections.push((SPELLINGS, spellings));
-    }
-    let names = s.names.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        names::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(names) = &names {
-        sections.push((NAMES, names));
-    }
-    let negatives = s.negatives.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        negatives::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(negatives) = &negatives {
-        sections.push((NEGATIVES, negatives));
-    }
-    let rule_use = s.rule_use.as_ref().map(|r| {
-        let mut e = Encoder::new();
-        agreement::encode_rule_use(&mut e, r);
-        e.into_bytes()
-    });
-    if let Some(rule_use) = &rule_use {
-        sections.push((RULE_USE, rule_use));
-    }
-    let found = s.found.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        found::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(found) = &found {
-        sections.push((FOUND, found));
-    }
-    // Id 32 since WP-139 (17 retired), so after `found`.
-    let edits = s.edits.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        edits::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(edits) = &edits {
-        sections.push((EDITS, edits));
-    }
-    // Id 33 (WP-118), after `edits`.
-    let rebuilt = s.rebuilt_use.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        rebuilt_use::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(rebuilt) = &rebuilt {
-        sections.push((REBUILT_USE, rebuilt));
+    // The optional sections, in the order of their ids: `edits` is id 32
+    // since WP-139 (17 retired), so after `found`; `rebuilt_use` is id 33
+    // (WP-118), after `edits`.
+    let optional = [
+        (DIGESTS, section(s.digests.as_ref(), digests::encode)),
+        (VERDICT, section(s.verdict.as_ref(), verdict::encode)),
+        (BINDING, section(s.binding.as_ref(), agreement::encode_binding)),
+        (SPELLINGS, section(s.spellings.as_ref(), spellings::encode)),
+        (NAMES, section(s.names.as_ref(), names::encode)),
+        (NEGATIVES, section(s.negatives.as_ref(), |e, x| negatives::encode(e, x))),
+        (RULE_USE, section(s.rule_use.as_ref(), agreement::encode_rule_use)),
+        (FOUND, section(s.found.as_ref(), found::encode)),
+        (EDITS, section(s.edits.as_ref(), edits::encode)),
+        (REBUILT_USE, section(s.rebuilt_use.as_ref(), rebuilt_use::encode)),
+    ];
+    for (id, bytes) in &optional {
+        if let Some(bytes) = bytes {
+            sections.push((*id, bytes));
+        }
     }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }

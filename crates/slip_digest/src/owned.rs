@@ -104,11 +104,10 @@ impl<'a> ReadOnly<'a> {
     /// [`ReadOnlyFiles`] answers rebuilt.
     pub fn class(&self, file: FileId) -> Class {
         match self.0 {
-            Inner::Every => Class::ReadOnly,
-            Inner::NoFile => Class::Owned,
             Inner::Files(f) => f.class(file),
+            Inner::Every => Class::ReadOnly,
             Inner::Fn(f) if f(file) => Class::ReadOnly,
-            Inner::Fn(_) => Class::Owned,
+            Inner::NoFile | Inner::Fn(_) => Class::Owned,
         }
     }
 
@@ -808,8 +807,19 @@ mod tests {
         };
         let ro = ReadOnlyFiles::new(Some(&files), &sm, &subject);
         let got: Vec<Class> = ids.iter().map(|&f| ro.class(f)).collect();
-        use Class::{Owned, ReadOnly as R, Rebuilt};
-        assert_eq!(got, [Owned, Rebuilt(1), Rebuilt(0), R, R, R, R, R]);
+        assert_eq!(
+            got,
+            [
+                Class::Owned,
+                Class::Rebuilt(1),
+                Class::Rebuilt(0),
+                Class::ReadOnly,
+                Class::ReadOnly,
+                Class::ReadOnly,
+                Class::ReadOnly,
+                Class::ReadOnly
+            ]
+        );
         let r = ReadOnly::files(&ro);
         assert_eq!(ids.iter().map(|&f| r.class(f)).collect::<Vec<_>>(), got);
         // read_only is the class ReadOnly: a rebuilt file is not.
@@ -818,11 +828,11 @@ mod tests {
             [false, false, false, true, true, true, true, true]
         );
         let later = sm.add_virtual("/post/s/gen/h.h", String::new()).unwrap();
-        assert_eq!(ro.class(later), R);
+        assert_eq!(ro.class(later), Class::ReadOnly);
         // The spelling as the subject path would make the link rebuilt (M14).
         let spelled = |f: FileId| -> Vec<u8> { p(sm.file_name(f)) };
         let by_spelling = ReadOnlyFiles::new(Some(&files), &sm, &spelled);
-        assert_eq!(by_spelling.class(ids[5]), Rebuilt(0));
+        assert_eq!(by_spelling.class(ids[5]), Class::Rebuilt(0));
     }
 
     #[test]
