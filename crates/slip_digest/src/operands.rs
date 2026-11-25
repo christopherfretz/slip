@@ -56,7 +56,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use slip_kiln::kiln::ast::decl::{DeclKind, FriendTarget, VarPlaceholder};
 use slip_kiln::kiln::ast::expr::{ExprDeps, ExprFlags, ExprKind as K, TypeidOperand};
-use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TypeOfOperand, TypeView};
+use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TemplateArg, TypeOfOperand, TypeView};
 use slip_kiln::kiln::ast::{ArgListId, DeclId, ExprId, NnsId, QualType};
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
@@ -479,7 +479,7 @@ fn args(w: &mut Walk<'_>, l: ArgListId, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
     }
-    let views: Vec<ArgView> = w.ast.types.args(l).iter().map(|a| a.view()).collect();
+    let views: Vec<ArgView> = w.ast.types.args(l).iter().map(TemplateArg::view).collect();
     for v in views {
         match v {
             ArgView::Type(t) => scan(w, t, out, depth + 1),
@@ -562,8 +562,8 @@ pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
         | K::BuiltinBitCastExpr => {
             // The node's type is the type as written but where Kiln keeps
             // that apart (`cast_written`).
-            let q = x.cast_written_type(e).unwrap_or(n.ty());
-            scan(w, q, &mut out, 0);
+            let written = x.cast_written_type(e).unwrap_or(n.ty());
+            scan(w, written, &mut out, 0);
         }
         // `T(...)`, `T{...}` and `T()`: an explicit type conversion in
         // functional notation, whose node type is the type as written.

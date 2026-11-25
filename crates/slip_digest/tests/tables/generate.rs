@@ -196,18 +196,15 @@ fn numbers(o: &mut String, m: &str, title: &str, list: &[Number], errors: &mut V
     let _ = write!(o, "\n/// {title}.\npub(crate) mod {m} {{\n");
     let mut seen = BTreeSet::new();
     for n in list {
-        match &n.name {
-            Some(name) => {
-                let c = screaming(name);
-                if !seen.insert(c.clone()) {
-                    errors.push(format!("digest-kinds.md:{}: constant `{m}::{c}` twice", n.line));
-                }
-                let _ = writeln!(o, "    pub(crate) const {c}: u32 = {};", n.value);
+        if let Some(name) = &n.name {
+            let c = screaming(name);
+            if !seen.insert(c.clone()) {
+                errors.push(format!("digest-kinds.md:{}: constant `{m}::{c}` twice", n.line));
             }
-            None => {
-                let word = if n.reserved { "reserved" } else { "retired" };
-                let _ = writeln!(o, "    // {}: {word}.", n.value);
-            }
+            let _ = writeln!(o, "    pub(crate) const {c}: u32 = {};", n.value);
+        } else {
+            let word = if n.reserved { "reserved" } else { "retired" };
+            let _ = writeln!(o, "    // {}: {word}.", n.value);
         }
     }
     o.push_str("}\n");

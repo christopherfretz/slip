@@ -255,8 +255,8 @@ fn write_part(
     // The part's operand unit, which the arm's caller takes
     // (`Walk::part_operands`).
     if let Some(h) = operands {
-        let o = crate::operands::unit(w, e, &u, h);
-        w.part_operands.push(o);
+        let unit = crate::operands::unit(w, e, &u, h);
+        w.part_operands.push(unit);
     }
     u
 }
