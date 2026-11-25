@@ -2,10 +2,12 @@
 //! (`spec/edits.md` §8, §10; `spec/exec.md` §8.11, §8.13), over small
 //! trees written by the tests. Work package WP-076, "Tests".
 //!
-//! Every tree is under the target's temporary directory; paths are spelled
+//! Every tree is under the work root (`common::work_root()`); paths are spelled
 //! as the directory entries are.
 
 #![cfg(target_os = "linux")]
+
+mod common;
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -35,8 +37,7 @@ impl Tree {
     fn new(name: &str) -> Tree {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp076-{}-{n}-{name}", std::process::id()));
+        let root = common::work_root().join(format!("wp076-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         Tree { root: std::fs::canonicalize(&root).unwrap() }

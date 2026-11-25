@@ -10,6 +10,8 @@
 //! that undo the rename (`Keys::rename_rule`), as the native rename's run
 //! has (`spec/edits.md` §9.3).
 
+mod common;
+
 use slip_digest::query::Keys;
 use slip_digest::spelling::{
     Obligation, Spelling, UNRESOLVED_DEPENDENT, UNRESOLVED_FAILED, check_spellings,
@@ -1258,8 +1260,7 @@ fn f3_a_recoded_file_on_disk_is_not_seen() {
     use slip_kiln::{ParseOptions, parse_observer_with};
     use slip_model::{Command, FileRef, Language, Observer, Origin, Phase, Status};
     let bytes = b"// \xff\nint g(int);\nint f;\nint u() { return g(f); }\n";
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("wp096-recoded-{}", std::process::id()));
+    let dir = common::work_root().join(format!("wp096-recoded-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();
     std::fs::write(dir.join("main.cpp"), bytes).unwrap();

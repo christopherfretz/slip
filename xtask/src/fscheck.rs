@@ -11,12 +11,18 @@
 //! the start of the next, and the row goes on. A row the harness or
 //! the store relies on must have none; the others are the patterns the
 //! harness and the store do not use, run to show why.
+//!
+//! The row `inode-stable` is of another kind (§11.5): it creates files,
+//! reads their device and inode numbers, waits and reads them again. A
+//! file whose numbers changed is its **wrong read**: the front end
+//! identifies a file by them, so an overlay entry keyed at one moment
+//! misses the file loaded at the next.
 
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A row of the probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +73,19 @@ pub const ROWS: &[Row] = &[
         relied: true,
         what: "T linked to L and unlinked; T's name never used again",
     },
+    Row {
+        name: "inode-stable",
+        relied: true,
+        what: "a file created fresh keeps its device and inode numbers for 2 s",
+    },
 ];
+
+/// The files of `inode-stable` created before its wait.
+pub const INODE_BATCH: u64 = 1_000;
+
+/// How long `inode-stable` waits after a batch before it reads the
+/// numbers again: the probes of WP-162 saw them change within 2 s.
+pub const INODE_WAIT: Duration = Duration::from_secs(2);
 
 /// What one row gave.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +102,17 @@ pub struct Outcome {
 /// difference.
 pub type Reader<'a> = &'a dyn Fn(&Path) -> io::Result<Vec<u8>>;
 
+/// How a name's device and inode numbers are read: [`identity`], or a
+/// test's reader that plants a change.
+pub type Identity<'a> = &'a dyn Fn(&Path) -> io::Result<(u64, u64)>;
+
+/// The device and inode numbers of the file `path` names (`stat`, as the
+/// front end's `SourceManager` identifies a file).
+pub fn identity(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).map(|m| (m.dev(), m.ino()))
+}
+
 /// The parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -98,7 +127,7 @@ pub const DEFAULT_ROUNDS: u64 = 20_000;
 const USAGE: &str = "usage: cargo xtask fscheck <dir> [--rounds <n>] [--row <name>]…\n\
 rows: link-unlink-create link-rename-over copy-unlink-create copy-rename-over\n      \
 fresh-beside-links link-read-both tmp-again-after-link tmp-again-after-rename\n      \
-unique-tmp-link";
+unique-tmp-link inode-stable";
 
 /// Parses the arguments after `fscheck`; `Err` is a usage error's message.
 pub fn parse(args: &[String]) -> Result<Request, String> {
@@ -171,6 +200,16 @@ pub fn main(args: &[String]) -> ExitCode {
 /// Runs the request's rows, printing through `print` as each ends, and
 /// returns the exit status.
 pub fn run(request: &Request, read: Reader<'_>, print: &mut dyn FnMut(&str)) -> u8 {
+    run_with(request, read, &identity, print)
+}
+
+/// [`run`] with the numbers of a file read by `ident`.
+pub fn run_with(
+    request: &Request,
+    read: Reader<'_>,
+    ident: Identity<'_>,
+    print: &mut dyn FnMut(&str),
+) -> u8 {
     match fs::metadata(&request.dir) {
         Ok(m) if m.is_dir() => {}
         Ok(_) => {
@@ -185,7 +224,7 @@ pub fn run(request: &Request, read: Reader<'_>, print: &mut dyn FnMut(&str)) -> 
     print(&format!("fscheck: {}: {} rounds per row", request.dir.display(), request.rounds));
     let mut failed = Vec::new();
     for row in &request.rows {
-        match run_row(&request.dir, *row, request.rounds, read) {
+        match run_row_with(&request.dir, *row, request.rounds, read, ident) {
             Ok(o) => {
                 print(&line(&o));
                 if let Some(first) = &o.first {
@@ -227,6 +266,17 @@ pub fn line(o: &Outcome) -> String {
 /// the end. A step of a round that fails is a wrong read of that round;
 /// only failing to make or remove the row's directory is `Err`.
 pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Outcome, String> {
+    run_row_with(dir, row, rounds, read, &identity)
+}
+
+/// [`run_row`] with the numbers of a file read by `ident`.
+pub fn run_row_with(
+    dir: &Path,
+    row: Row,
+    rounds: u64,
+    read: Reader<'_>,
+    ident: Identity<'_>,
+) -> Result<Outcome, String> {
     let base = dir.join(format!("fscheck.{}.{}", std::process::id(), row.name));
     if fs::symlink_metadata(&base).is_ok() {
         fs::remove_dir_all(&base).map_err(|e| at(&base, &e))?;
@@ -236,11 +286,25 @@ pub fn run_row(dir: &Path, row: Row, rounds: u64, read: Reader<'_>) -> Result<Ou
     }
     let mut probe = Probe { read, wrong: 0, first: None };
     let t0 = Instant::now();
-    for i in 0..rounds {
-        if let Err(e) = round(&base, row.name, i, &mut probe) {
-            probe.wrong += 1;
-            if probe.first.is_none() {
-                probe.first = Some(format!("round {i}: a step failed: {e}"));
+    if row.name == "inode-stable" {
+        let mut i = 0;
+        while i < rounds {
+            let n = INODE_BATCH.min(rounds - i);
+            if let Err(e) = inode_batch(&base, i, n, ident, &mut probe) {
+                probe.wrong += 1;
+                if probe.first.is_none() {
+                    probe.first = Some(format!("round {i}: a step failed: {e}"));
+                }
+            }
+            i += n;
+        }
+    } else {
+        for i in 0..rounds {
+            if let Err(e) = round(&base, row.name, i, &mut probe) {
+                probe.wrong += 1;
+                if probe.first.is_none() {
+                    probe.first = Some(format!("round {i}: a step failed: {e}"));
+                }
             }
         }
     }
@@ -303,6 +367,67 @@ fn link(from: &Path, to: &Path) -> Result<(), String> {
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to).map_err(|e| format!("rename {} to {}: {e}", from.display(), to.display()))
+}
+
+/// Rounds `first..first + n` of `inode-stable`: each creates a file (every
+/// other one written as a temporary and renamed to its name, as the store
+/// and `--write` publish) and reads its numbers; then they are read again
+/// at once and after [`INODE_WAIT`]. A file whose numbers differ at either
+/// is one wrong read; the files are removed at the end.
+fn inode_batch(
+    base: &Path,
+    first: u64,
+    n: u64,
+    ident: Identity<'_>,
+    p: &mut Probe<'_>,
+) -> Result<(), String> {
+    let tree = base.join("tree");
+    let mut made = Vec::new();
+    let result = (|| {
+        for i in first..first + n {
+            let f = tree.join(format!("f{i}.h"));
+            let bytes = format!("file {i}\n").into_bytes();
+            if i % 2 == 0 {
+                create(&f, &bytes)?;
+            } else {
+                let t = tree.join(format!("f{i}.h.tmp"));
+                create(&t, &bytes)?;
+                rename(&t, &f)?;
+            }
+            let id = ident(&f).map_err(|e| at(&f, &e))?;
+            made.push((f, id, false));
+        }
+        let t0 = Instant::now();
+        for wait in [Duration::ZERO, INODE_WAIT] {
+            std::thread::sleep(wait.saturating_sub(t0.elapsed()));
+            for (f, id, changed) in made.iter_mut().filter(|m| !m.2) {
+                let now = ident(f);
+                if now.as_ref().ok() == Some(id) {
+                    continue;
+                }
+                *changed = true;
+                p.wrong += 1;
+                if p.first.is_none() {
+                    let shown = match now {
+                        Ok((d, i)) => format!("{d}:{i}"),
+                        Err(e) => format!("an error: {e}"),
+                    };
+                    p.first = Some(format!(
+                        "{} was {}:{}, then {shown} after {:.1}s",
+                        f.display(),
+                        id.0,
+                        id.1,
+                        t0.elapsed().as_secs_f64()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })();
+    for (f, _, _) in &made {
+        unlink(f)?;
+    }
+    result
 }
 
 /// One round of `row`. Names are reused every seven rounds, as a tree that

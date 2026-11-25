@@ -4,10 +4,12 @@
 //! overlay built by hand with `slip_apply::build` (`spec/edits.md` §7.1),
 //! and the verify task through it (`spec/verify.md` §5.1 "The overlay
 //! form", §5.3 O1 and O2, §9.1, §10.4), over a small tree and a store in a
-//! directory of their own under the target directory.
+//! directory of their own under the work root (`common::work_root()`).
 //!
 //! A parse changes the process's current directory: every test that
 //! parses holds [`LOCK`], and every path is absolute.
+
+mod common;
 
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -109,8 +111,7 @@ impl Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp074-{name}-{}-{n}", std::process::id()));
+        let base = common::work_root().join(format!("wp074-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();

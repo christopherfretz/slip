@@ -6,8 +6,10 @@
 //! and declaration-extent tables recorded and without them.
 //!
 //! The parse is the production one (`parse_observer_with`), in a tree
-//! under the target directory; `slip_kiln`'s own test of this
+//! under the work root (`common::work_root()`); `slip_kiln`'s own test of this
 //! (`crates/slip_kiln/tests/written.rs`) cannot call the digest.
+
+mod common;
 
 use std::path::PathBuf;
 
@@ -36,7 +38,7 @@ v.push_back(\"x\"); Der d(1); return M(b.t); }
 
 #[test]
 fn wp067_written_changes_no_digest() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("written-on-off");
+    let dir = common::work_root().join("written-on-off");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();
@@ -93,4 +95,10 @@ fn wp067_written_changes_no_digest() {
     assert_eq!(on_shard.to_bytes(), off_shard.to_bytes(), "the shard");
     assert!(on_digest == off_digest, "the digest output differs");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }

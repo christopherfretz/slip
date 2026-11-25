@@ -33,6 +33,8 @@
 //! Keys are computed with subject paths relative to the tree's root, so
 //! that they do not depend on where the tree is written.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -198,7 +200,7 @@ fn with_unit<R: Send>(
     f: impl FnOnce(&Unit<'_>, &mut Keys<'_>, &str) -> R + Send,
 ) -> Option<R> {
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, &refs).unwrap();
+    let tree = Tree::new(&common::work_root(), name, &refs).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let obs = tree.observer("main.cpp", "c++20", &args);
@@ -729,7 +731,7 @@ fn post_image(case: &Case, e: &Edits) -> Vec<(String, Vec<u8>)> {
 fn run_on_a_diagnosed_unit_does_not_panic() {
     let files =
         [("main.cpp", &b"namespace n { void f(); }\nvoid g() { n::f(); undeclared(); }\n"[..])];
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), "diagnosed-run", &files).unwrap();
+    let tree = Tree::new(&common::work_root(), "diagnosed-run", &files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let obs = tree.observer("main.cpp", "c++20", &[]);
     let case = Case {
@@ -766,7 +768,7 @@ fn run_on_a_diagnosed_unit_does_not_panic() {
 #[test]
 fn requests_the_rename_does_not_run() {
     let files = [("main.cpp", &b"namespace n { void f(); }\n"[..])];
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), "requests", &files).unwrap();
+    let tree = Tree::new(&common::work_root(), "requests", &files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let obs = tree.observer("main.cpp", "c++20", &[]);
     let case = |new: &[u8]| Case {
@@ -1042,7 +1044,7 @@ fn map_shards(
     std: &str,
     t: &dyn Fn(&str) -> Transform,
 ) -> (Transform, Vec<slip_model::Shard>) {
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, files).unwrap();
+    let tree = Tree::new(&common::work_root(), name, files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let t = t(&root);
     let mut shards = Vec::new();
@@ -1086,7 +1088,7 @@ impl slip_reduce::Shards for Plan {
 /// Reduces the shards of `t`.
 fn reduced(name: &str, t: &Transform, shards: Vec<slip_model::Shard>) -> slip_reduce::Reduced {
     let id = slip_model::formats::content_id(&t.to_bytes()).unwrap();
-    let scratch = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-scratch"));
+    let scratch = common::work_root().join(format!("{name}-scratch"));
     std::fs::create_dir_all(&scratch).unwrap();
     let options = slip_reduce::Options::new(scratch.clone());
     let r = slip_reduce::reduce(t, id, Digest([0x50; 32]), 1, &Plan(shards), &options)
@@ -1388,7 +1390,7 @@ fn digest_units(
     rules: &RuleTable,
 ) -> (Units, Vec<slip_model::agreement::Use>) {
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
-    let tree = Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), name, &refs).unwrap();
+    let tree = Tree::new(&common::work_root(), name, &refs).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let obs = tree.observer(main, std, &[]);
     let (_, r) = tree
@@ -2944,8 +2946,7 @@ fn wp139_row_with_no_entity_is_no_evidence() {
     );
     let at = u64::try_from(text.find("t.f()").unwrap() + 2).unwrap();
     let files = [("main.cpp", text.as_bytes())];
-    let tree =
-        Tree::new(Path::new(env!("CARGO_TARGET_TMPDIR")), "wp139-no-entity", &files).unwrap();
+    let tree = Tree::new(&common::work_root(), "wp139-no-entity", &files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let obs = tree.observer("main.cpp", "c++20", &[]);
     let case = Case {
@@ -2988,8 +2989,7 @@ fn wp139_row_with_no_entity_is_no_evidence() {
 /// Whether the volume of the trees finds a name in another case; says so
 /// when it does not.
 fn volume_folds(test: &str) -> bool {
-    let p = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("one-spelling-probe-{}-{test}", std::process::id()));
+    let p = common::work_root().join(format!("one-spelling-probe-{}-{test}", std::process::id()));
     std::fs::write(&p, "x").unwrap();
     let upper = p.with_file_name(p.file_name().unwrap().to_string_lossy().to_uppercase());
     let folds = upper.exists();
@@ -3103,4 +3103,10 @@ fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
     let headers: Vec<&String> =
         files.iter().filter(|p| p.to_ascii_lowercase().ends_with("/h.h")).collect();
     assert_eq!(headers.len(), 1, "one name for the header: {files:?}");
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }

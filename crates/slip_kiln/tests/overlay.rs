@@ -1,12 +1,14 @@
 //! `spec/edits.md` §7.1, `docs/wp/WP-066.md`: `parse_observer_with` with
 //! `ParseOptions::overlay` (Kiln's overlay, its WP-2390). Each case parses
-//! a tree in a directory under the target directory with an overlay and
+//! a tree in a directory under the work root (`common::work_root()`) with an overlay and
 //! checks it against the reference: the same command without an overlay
 //! over a copy of the tree in which the overlaid files hold the overlay's
 //! bytes, the two roots made the same string.
 //!
 //! The parse changes the process's current directory, so every test here
 //! holds [`LOCK`] and uses absolute paths only.
+
+mod common;
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// One overlay entry: a real path and its replacement bytes.
 type Entry = (Vec<u8>, Arc<[u8]>);
 
-/// A tree `a/` under the target directory and, for the reference, its copy
+/// A tree `a/` under the work root and, for the reference, its copy
 /// `b/`; removed on drop.
 struct Tree {
     base: PathBuf,
@@ -32,8 +34,8 @@ struct Tree {
 impl Tree {
     fn new(name: &str) -> Tree {
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-        let base = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("slip-kiln-overlay-{}-{name}", std::process::id()));
+        let base =
+            common::work_root().join(format!("slip-kiln-overlay-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("a")).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();

@@ -25,6 +25,8 @@
 //! here; the parts that run `slip` are tested on rows written to a
 //! temporary directory.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{Read, Write as _};
@@ -1286,12 +1288,11 @@ fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// A directory of its own under the target's temporary directory.
+/// A directory of its own under the work root (`common::work_root()`).
 fn work_dir(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("pitfalls-{name}-{}-{n}", std::process::id()));
+    let root = common::work_root().join(format!("pitfalls-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("make the work directory");
     std::fs::canonicalize(&root).expect("the work directory's real path")

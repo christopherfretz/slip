@@ -24,6 +24,8 @@
 //! separated.) `measure` itself is run on every `cargo test` over a corpus
 //! made here, so that the command is known to work before it meets LLVM.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -444,8 +446,7 @@ fn demo1_names_report() {
 /// passes on a string that does not change (no note).
 #[test]
 fn measure_on_a_small_corpus() {
-    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("wp112-small-{}", std::process::id()));
+    let base = common::work_root().join(format!("wp112-small-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let corpus = base.join("corpus");
     let src = corpus.join("src");

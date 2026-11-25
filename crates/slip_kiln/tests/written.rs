@@ -4,7 +4,7 @@
 //! read from Kiln's written-reference table (Kiln `spec/ast.md` §18) and
 //! declaration-extent table (§19).
 //!
-//! Every unit is a tree written under the target directory and parsed by
+//! Every unit is a tree written under the work root (`common::work_root()`) and parsed by
 //! the production parse (`parse_observer_with`, `ParseOptions::written`):
 //! the snippet front end records neither table. Every span a test looks at
 //! is mapped to bytes of the file and compared byte for byte with the
@@ -17,6 +17,8 @@
 //! A test named `kiln_hole_…` pins what Kiln's tables lack at this pin
 //! (a finding for Kiln, in the package's handback): it asserts the hole,
 //! so that it fails, and is turned around, the day Kiln fills it.
+
+mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,9 +42,9 @@ fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A directory under the target directory, emptied first.
+/// A directory under the work root, emptied first.
 fn tree(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("written").join(name);
+    let dir = common::work_root().join("written").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::canonicalize(&dir).unwrap()

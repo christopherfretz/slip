@@ -4,6 +4,8 @@
 //! calling the trait directly. Each test names its section and rule, or
 //! the item of the package's test list.
 
+mod common;
+
 use std::collections::HashSet;
 
 use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
@@ -1271,7 +1273,7 @@ int y = TWICE(g(1));
 /// tree on disk.
 #[test]
 fn wp084_point6_a_recoded_file_gives_no_extent() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-recoded");
+    let dir = common::work_root().join("wp086-recoded");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("main.cpp"), b"int f(int);\n// \xff\nint y = f(1);\n").unwrap();
     std::fs::write(dir.join("ok.cpp"), b"int f(int);\n// ok\nint y = f(1);\n").unwrap();
@@ -2496,7 +2498,7 @@ using AT = A<k(9)>;
         args: Vec::new(),
         target: None,
     };
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-review");
+    let dir = common::work_root().join("wp086-review");
     let d = differential(&side, &dir, "review");
     assert!(d.not_parsed.is_empty(), "{:?}", d.not_parsed);
     assert_eq!((d.kiln_errors, d.clang_errors), (0, 0));
@@ -2550,7 +2552,7 @@ fn review086_differential_refuses_an_oversized_dump() {
         args: Vec::new(),
         target: None,
     };
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-oversized");
+    let dir = common::work_root().join("wp086-oversized");
     let d = differential(&side, &dir, "chain");
     assert!(d.not_parsed.is_empty(), "{:?}", d.not_parsed);
     assert_eq!((d.dump_skipped, d.clang_errors, d.kiln_errors), (1, 0, 0));
@@ -2612,7 +2614,7 @@ fn item7_differential_against_clang() {
             jobs.extend(kiln_sides(&d, "c++26"));
         }
     }
-    let scratch = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wp086-differential");
+    let scratch = common::work_root().join("wp086-differential");
     let next = std::sync::atomic::AtomicUsize::new(0);
     let diffs: Vec<Diff> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..test_threads())

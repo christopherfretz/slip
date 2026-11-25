@@ -428,7 +428,7 @@ test is an error.
 
 For each test, in byte order of paths:
 
-1. `pre/` is copied to a fresh **tree** under the target directory, and a
+1. `pre/` is copied to a fresh **tree** under the work base (§11.5), and a
    fresh store is made beside it. Nothing is written into the test's own
    directory except by `--bless`.
 2. `slip <run> --db <database> --owned … --readonly … --store <store>
@@ -1608,6 +1608,7 @@ goes on.
 | `tmp-again-after-link` | `T` linked to `L` and unlinked; `T` created again | nothing (the store's lock and journal before WP-159) |
 | `tmp-again-after-rename` | `T` renamed to `D`; `T` created again | the patch's and a report's temporary, staged names |
 | `unique-tmp-link` | `T` linked to `L` and unlinked; `T`'s name never used again | the store's lock and journal |
+| `inode-stable` | files created fresh, their device and inode numbers read, read again at once and 2 s later | a test's work directory (§11.5) |
 
 Output: `fscheck: <dir>: <n> rounds per row`, then per row
 `<row> rounds <n> wrong <w> <seconds>s  relied on|not relied on: <sequence>`
@@ -1618,6 +1619,14 @@ or an error. Exit status 0 for `ok`, 1 for `FAILED` or a `<dir>` that is
 not a directory, 2 for a usage error (`--rounds` not a positive integer,
 an unknown row or option, a second directory). `--row` runs only the
 rows named, in the order of the table.
+
+`inode-stable` creates its files in batches of 1,000 (every other one
+written as a temporary and renamed to its name), reads each one's
+device and inode numbers as it is made, reads them again when the batch
+is made and 2 s later, and removes the batch; a **wrong read** is a
+file whose numbers changed (or could not be read), counted once, and
+its first is `  first: <name> was <dev>:<ino>, then <dev>:<ino> after
+<s>s`. It waits 2 s per batch: 40 s at the default rounds.
 
 The rows not relied on are there to show the hazard; their counts vary
 with the load. The second row shows within a few thousand rounds; the
@@ -1651,6 +1660,54 @@ while, never as other bytes. The harness's trees do not depend on it;
 what it means for the store's lock and journal is
 `spec/landed/harness/WP-159.md` "A finding: a linked name read as
 absent", an open question.
+
+### 11.5 A file system that changes the inode numbers of new files
+
+On the workspace's mount the device and inode numbers of a file just
+created change now and then, in bursts: of 4,800 fresh files about 800
+had other numbers 2 s later in one run, none in several others, none in
+files held open (`spec/landed/harness/WP-162.md`). The front end
+identifies a file by these numbers (`kiln_source`: an overlay entry is
+keyed when it is added, a file when it is loaded), so a burst between
+the two makes the entry miss and the post-image's parse reads the file
+from the disk. Slip's guards make that loud (`not_parsed`,
+`unverifiable`, `incomplete`; never a wrong `verified`), and a test
+fails at random. Row `inode-stable` (§11.2) is the probe; on this mount
+it fails now and then, and **one clean run of it does not show that a
+directory is safe**: the bursts come and go with the host.
+
+**The rule.** A test's **work directory** (the trees it writes and then
+has a front end, `slip` or `slip_apply` read, its stores and databases)
+is under `$SLIP_TEST_ROOT` when that variable is set and not empty, and
+where it was before otherwise. The value must be an absolute path to a
+directory, made if missing; nothing in the repository depends on what
+it is. Only work directories move: the build, the target directory and
+the `slip` a harness runs stay where they are, and nothing is compiled
+under `$SLIP_TEST_ROOT`. A workspace sets it to a directory on a local
+file system (its `scripts/env.sh`).
+
+- **`cargo xtask transform`**: the work base is
+  `$SLIP_TEST_ROOT/transform/<checkout>/`, `<checkout>` the last
+  component of the repository's root (two checkouts never share one),
+  else `<target>/transform/`; a test works in `<base>/<area>/<name>/`
+  (§6.3), and the line that names a kept directory prints that path.
+  A value that is not absolute is `transform: SLIP_TEST_ROOT=<value>: not
+  an absolute path`, exit status 1, before any test runs.
+- **The crates' tests**: one helper in each crate's `tests/common`
+  (`work_root()`, a single file included by each), giving
+  `$SLIP_TEST_ROOT/<package>/<test binary>.<pid>.<token>/`, one
+  directory per test binary and process, else Cargo's
+  `CARGO_TARGET_TMPDIR`. The directory holds a lock on its file `.lock`
+  for the life of the process; the first call of a later process of the
+  package removes each sibling whose lock is free and that is older than
+  10 s, so the root holds the directories of running processes and of
+  the last ended ones. Where a lock does not exclude another (the
+  workspace's mount) nothing is removed. A test removes what it made as
+  it did before; which tests use the helper, and which do not and why,
+  is the landed note's list.
+- `cargo xtask demo`, `corpus`, `invariants` and `fscheck` take their
+  directories from the corpus or the command line and do not read the
+  variable.
 
 ## Tests
 
@@ -1724,7 +1781,16 @@ absent", an open question.
   command line, every row run with its line and nothing left behind,
   status 0 where every relied-on row is clean, a wrong read planted
   through the reader failing a relied-on row and not one that is not
-  relied on, a directory that does not exist.
+  relied on, a directory that does not exist; §11.5's `inode-stable`
+  waiting and clean here, and a change of numbers planted through the
+  reader of numbers failing it.
+- §11.5 — `xtask/tests/transform.rs`: the work base with
+  `$SLIP_TEST_ROOT` set, empty, unset and relative; a run with it set
+  works under it, makes nothing under the target directory, removes a
+  passing test's directory and prints a kept one's path there. Each
+  crate whose tests use the helper runs its `s11_5_work_root`: the
+  directory is under the variable (one per process, locked) or is the
+  fallback, and a sweep removes an ended process's directory only.
 - The corpus runs themselves (`invariants a llvm`, `invariants b llvm`,
   `demo 1`) are not in the gate: they need the corpus, and are run and
   recorded by the packages that land them and by the merge tier (§2).

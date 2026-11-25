@@ -5,13 +5,15 @@
 //! Every verdict is asserted from the report file and the exit status
 //! both, never from the text alone; "this run's shard" from the run
 //! record (`spec/verify.md` §7). Each test has its own directory and
-//! store, under the target directory, removed on drop. Every wait on a
+//! store, under the work root (`common::work_root()`), removed on drop. Every wait on a
 //! child is bounded.
 //!
 //! Sources are self-contained (no system header) and use only constructs
 //! the walk digests today (`docs/wp/WP-052.md` Handback: plain functions,
 //! structs, namespaces, calls, overloads, enums), except where a test is
 //! about an indeterminate unit.
+
+mod common;
 
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -75,8 +77,7 @@ impl Fixture {
     fn new(name: &str) -> Fixture {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp053-{name}-{}-{n}", std::process::id()));
+        let root = common::work_root().join(format!("wp053-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("s")).unwrap();
         std::fs::create_dir_all(root.join("post")).unwrap();
@@ -2190,4 +2191,10 @@ fn s5_1_roots_in_another_case() {
     let (s, post) = (Fixture::text(&f.path("S")), Fixture::text(&f.path("POST")));
     let (out, report) = f.verify_report(&plan, &["--root", &s, "--post", &post]);
     assert_verdict(&out, &report, "verified");
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
 }

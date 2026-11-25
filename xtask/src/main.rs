@@ -25,7 +25,7 @@ commands:
                                                the corpus invariants (§9)
   demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]
                                                Demo 1 (§10)
-  fscheck <dir> [--rounds <n>] [--row <name>]…  the hard-link probe of a file system (§11)
+  fscheck <dir> [--rounds <n>] [--row <name>]…  the hard-link and inode probe of a file system (§11)
   api-table [§N[.M]]…                          the rules-to-directories table of the
                                                script tests (docs/wp/WP-091.md)";
 

@@ -8,6 +8,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,8 +34,8 @@ impl Tree {
     fn new(name: &str) -> Tree {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("wp076-overlay-{}-{n}-{name}", std::process::id()));
+        let root =
+            common::work_root().join(format!("wp076-overlay-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         let t = Tree { root: std::fs::canonicalize(&root).unwrap() };
