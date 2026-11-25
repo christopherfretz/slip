@@ -1,0 +1,1 @@
+relocate X::f(int) => X :: fi
