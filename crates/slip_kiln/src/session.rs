@@ -26,7 +26,8 @@ use kiln_driver::session::{SessionFrontEnd, SessionRefused, with_eval_session};
 use kiln_driver::{Io, SharedWriter};
 use kiln_oven::{HostCalls, HostError, HostOut};
 use kiln_sema::session::{
-    CancelToken, Entry as KilnEntry, EntryError as KilnEntryError, RunBudget, RunError, RunValue,
+    CancelToken, Entry as KilnEntry, EntryError as KilnEntryError, FieldKind, IntValue, RunBudget,
+    RunError, RunValue,
 };
 use kiln_sema::stack_guard::StackGuard;
 use kiln_source::{FileOrigin, SourceManager};
@@ -335,6 +336,34 @@ pub enum EntryError {
     Undefined,
 }
 
+/// A class or struct entity of a transform unit, identified by its first
+/// declaration in that session (Kiln WP-2480). Names no Kiln type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Class {
+    decl: u32,
+    session: u64,
+}
+
+impl Class {
+    /// Constructs a synthetic [`Class`] for unit tests that do not run a
+    /// session.
+    #[doc(hidden)]
+    pub const fn for_test(decl: u32, session: u64) -> Class {
+        Class { decl, session }
+    }
+}
+
+/// A class or struct subobject of an uncaught exception's value (Kiln
+/// WP-2480): its entity (when the class existed when the session opened),
+/// its direct and virtual base subobjects, and its named integral or
+/// enumeration members (unsigned values).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThrownRecord {
+    pub class: Option<Class>,
+    pub bases: Vec<ThrownRecord>,
+    pub members: Vec<(String, u128)>,
+}
+
 /// How a run failed (`spec/api.md` §2.8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunFailure {
@@ -348,6 +377,9 @@ pub enum RunFailure {
     Host(String),
     Uncaught {
         type_name: String,
+        /// The thrown object when it is a class or struct whose value Kiln
+        /// froze and decoded (Kiln WP-2480).
+        record: Option<ThrownRecord>,
     },
     /// An earlier run's handler panicked: the session is unusable (Kiln
     /// did not put its state back), and this run did not reach Kiln. A
@@ -502,6 +534,13 @@ impl Session<'_> {
         Ok(Entry { entry, session: self.id })
     }
 
+    /// Finds the unique class or struct entity named `name` inside the
+    /// nested namespaces `namespaces` (e.g. `&["slip", "v0"]`), optionally
+    /// requiring its first declaration to lie under `in_dir`.
+    pub fn class(&self, namespaces: &[&str], name: &str, in_dir: Option<&Path>) -> Option<Class> {
+        self.engine.class(namespaces, name, in_dir).map(|decl| Class { decl, session: self.id })
+    }
+
     /// Runs `entry` once: host calls reach `handler`; the run stops at
     /// `budget` or when `cancel` is cancelled. The session is usable after
     /// any outcome of the run itself.
@@ -541,7 +580,7 @@ impl Session<'_> {
             return refused(RunFailure::Poisoned);
         }
         self.in_run = true;
-        let (report, tripped) = self.engine.run(entry.entry, handler, budget, &cancel.0);
+        let (report, tripped) = self.engine.run(entry.entry, handler, budget, &cancel.0, self.id);
         self.in_run = false;
         self.tripped |= tripped;
         report
@@ -823,12 +862,14 @@ trait Engine: Send {
     fn declares(&self, name: &str) -> bool;
     fn stack_exhausted(&self) -> bool;
     fn entry(&self, name: &str) -> Result<KilnEntry, EntryError>;
+    fn class(&self, namespaces: &[&str], name: &str, in_dir: Option<&Path>) -> Option<u32>;
     fn run(
         &mut self,
         entry: KilnEntry,
         handler: &mut dyn Handler,
         budget: Budget,
         cancel: &CancelToken,
+        session_id: u64,
     ) -> (RunReport, bool);
 }
 
@@ -954,16 +995,21 @@ impl Engine for SessionFrontEnd<'_, '_> {
         }
     }
 
+    fn class(&self, namespaces: &[&str], name: &str, in_dir: Option<&Path>) -> Option<u32> {
+        let ast = &self.session.sema().ast;
+        find_class(ast, self.sources, namespaces, name, in_dir).map(DeclId::index)
+    }
+
     fn run(
         &mut self,
         entry: KilnEntry,
         handler: &mut dyn Handler,
         budget: Budget,
         cancel: &CancelToken,
+        session_id: u64,
     ) -> (RunReport, bool) {
         // `result_bytes` (Kiln WP-2502) bounds a result's tree and an
-        // uncaught exception's value, neither of which Slip reads: Kiln's
-        // program profile.
+        // uncaught exception's value: Kiln's program profile.
         let budget = RunBudget {
             steps: budget.steps,
             bytes: budget.bytes,
@@ -992,11 +1038,11 @@ impl Engine for SessionFrontEnd<'_, '_> {
                 RunError::Host { message } | RunError::HostArgument { message } => {
                     RunFailure::Host(message)
                 }
-                // The type as `display_string_of` spells it, qualified
-                // (Kiln WP-2480; written and unqualified before).
-                RunError::Uncaught { ty, .. } => {
-                    RunFailure::Uncaught { type_name: ty.display.to_string() }
-                }
+                // The thrown object's type and frozen value (Kiln WP-2480).
+                RunError::Uncaught { ty, value, .. } => RunFailure::Uncaught {
+                    type_name: ty.display.to_string(),
+                    record: value.ok().and_then(|tree| thrown_record(&tree.root, session_id)),
+                },
                 // A kind Kiln adds (`#[non_exhaustive]`): the host cannot
                 // say what it means.
                 other => RunFailure::Unknown(format!("{other:?}")),
@@ -1011,6 +1057,123 @@ impl Engine for SessionFrontEnd<'_, '_> {
             diagnostics: report.diagnostics.iter().map(|d| diagnostic(self.sources, d)).collect(),
         };
         (report, tripped)
+    }
+}
+
+/// Extracts a [`ThrownRecord`] from a Kiln [`RunValue`] when it is a
+/// class or struct value (Kiln WP-2480). Direct and virtual base
+/// subobjects go into `bases`; named non-static data members with an
+/// integral or enumeration value go into `members`.
+fn thrown_record(v: &RunValue, session: u64) -> Option<ThrownRecord> {
+    let RunValue::Record(r) = v else { return None };
+    let class = r.ty.decl.map(|d| Class { decl: d.index(), session });
+    let mut bases = Vec::new();
+    let mut members = Vec::new();
+    for f in &r.fields {
+        match f.kind {
+            FieldKind::Base => {
+                if let Some(base) = thrown_record(&f.value, session) {
+                    bases.push(base);
+                }
+            }
+            FieldKind::Member => {
+                let val = match &f.value {
+                    RunValue::Bool(b) => Some(u128::from(*b)),
+                    RunValue::Unsigned(u) => Some(*u),
+                    RunValue::Signed(s) => u128::try_from(*s).ok(),
+                    RunValue::Enum(e) => match e.value {
+                        IntValue::Unsigned(u) => Some(u),
+                        IntValue::Signed(s) => u128::try_from(s).ok(),
+                    },
+                    _ => None,
+                };
+                if let Some(u) = val {
+                    members.push((f.name.to_string(), u));
+                }
+            }
+            FieldKind::Anonymous => {}
+        }
+    }
+    for vb in &r.virtual_bases {
+        if let Some(base) = thrown_record(&vb.value, session) {
+            bases.push(base);
+        }
+    }
+    Some(ThrownRecord { class, bases, members })
+}
+
+/// Finds the unique class or struct entity named `name` inside the nested
+/// namespaces `namespaces`, optionally requiring its first declaration to
+/// be in a file under `in_dir`.
+fn find_class(
+    ast: &Ast,
+    sm: &SourceManager,
+    namespaces: &[&str],
+    name: &str,
+    in_dir: Option<&Path>,
+) -> Option<DeclId> {
+    fn collect_ns(ast: &Ast, ctx: DeclId, target: &str, out: &mut Vec<DeclId>) {
+        for d in ast.members(ctx) {
+            let node = ast.decls.get(d);
+            match node.kind() {
+                DeclKind::LinkageSpec | DeclKind::Export => collect_ns(ast, d, target, out),
+                DeclKind::Namespace => {
+                    let is_target =
+                        node.name().as_ident().is_some_and(|n| n.as_str(ast.symbols()) == target);
+                    if is_target {
+                        out.push(d);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn collect_records(ast: &Ast, ctx: DeclId, target: &str, out: &mut Vec<DeclId>) {
+        for d in ast.members(ctx) {
+            let node = ast.decls.get(d);
+            match node.kind() {
+                DeclKind::LinkageSpec | DeclKind::Export => collect_records(ast, d, target, out),
+                DeclKind::CXXRecord => {
+                    if node.name().as_ident().is_some_and(|n| n.as_str(ast.symbols()) == target) {
+                        let first = ast.first(d);
+                        if !out.contains(&first) {
+                            out.push(first);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !identifier(name) || namespaces.iter().any(|n| !identifier(n)) {
+        return None;
+    }
+    let mut ctxs = vec![ast.tu];
+    for &ns in namespaces {
+        let mut next = Vec::new();
+        for ctx in ctxs {
+            collect_ns(ast, ctx, ns, &mut next);
+        }
+        if next.is_empty() {
+            return None;
+        }
+        ctxs = next;
+    }
+    let mut found = Vec::new();
+    for ctx in ctxs {
+        collect_records(ast, ctx, name, &mut found);
+    }
+    if let Some(dir) = in_dir {
+        found.retain(|&d| {
+            let loc = ast.decls.get(d).loc();
+            sm.offset_of(sm.spelling_loc(loc))
+                .is_some_and(|(f, _)| Path::new(sm.file_name(f)).starts_with(dir))
+        });
+    }
+    match found.as_slice() {
+        [only] => Some(*only),
+        _ => None,
     }
 }
 

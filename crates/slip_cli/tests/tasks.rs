@@ -5,9 +5,6 @@
 //! and the verify task through it (`spec/verify.md` §5.1 "The overlay
 //! form", §5.3 O1 and O2, §9.1, §10.4), over a small tree and a store in a
 //! directory of their own under the work root (`common::work_root()`).
-//!
-//! A parse changes the process's current directory: every test that
-//! parses holds [`LOCK`], and every path is absolute.
 
 mod common;
 
@@ -15,7 +12,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cli::image::Image;
 use slip_cli::transform::reduce::reduce_round;
@@ -34,8 +30,6 @@ use slip_model::verdict::VerdictKind;
 use slip_model::{
     Command, Configuration, Digest, FileRef, Language, Observer, Origin, Phase, Plan, Shard, Status,
 };
-
-static LOCK: Mutex<()> = Mutex::new(());
 
 /// The round of the transform's run: it maps and verifies in one round
 /// (`spec/edits.md` §8), so the verify job's `pre` is this round too.
@@ -84,16 +78,14 @@ impl slip_apply::Files for Disk {
     }
 }
 
-/// A tree `s/` and a store in a directory of their own, removed on drop;
-/// the lock is held while it lives. The plan has one observer per main
-/// file.
+/// A tree `s/` and a store in a directory of their own, removed on drop.
+/// The plan has one observer per main file.
 struct Tree {
     base: PathBuf,
     subject: PathBuf,
     store: Store,
     plan: Plan,
     plan_id: Digest,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for Tree {
@@ -119,7 +111,6 @@ impl Tree {
     /// about spelling on a volume that folds (`common::folding_root`).
     fn new_in(root: &Path, name: &str) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let base = root.join(format!("wp074-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -149,7 +140,7 @@ impl Tree {
             excluded: vec![],
         };
         let plan_id = store.publish_plan(&plan.to_bytes()).unwrap();
-        Tree { base, subject, store, plan, plan_id, _lock: lock }
+        Tree { base, subject, store, plan, plan_id }
     }
 
     fn path(&self, rel: &str) -> Vec<u8> {

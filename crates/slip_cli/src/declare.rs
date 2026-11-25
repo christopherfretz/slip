@@ -788,8 +788,7 @@ pub fn finish(
 pub(crate) const MAX_SELECTED: usize = 64;
 
 /// What `declare` and `units` work over: the store (opened shared), the
-/// plan's selected observers and the image, every path made absolute
-/// first (a parse changes the current directory).
+/// plan's selected observers and the image, every path made absolute.
 pub(crate) struct InProcess {
     /// Kept open (shared) while the command runs.
     _store: Store,

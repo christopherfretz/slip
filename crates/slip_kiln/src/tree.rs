@@ -12,16 +12,11 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use slip_model::hash::content_digest;
 use slip_model::{Command, FileRef, Language, Observer, Origin, Phase, Shard};
 
 use crate::{ParseOptions, Unit, parse_observer_with};
-
-/// Serialises the parses of every tree of the process: a parse changes
-/// the process's current directory (`parse_observer_with`).
-static PARSE: Mutex<()> = Mutex::new(());
 
 /// Makes directory names unique within the process; the process id makes
 /// them unique between processes.
@@ -149,10 +144,6 @@ impl Tree {
     }
 
     /// `parse_observer_with` on `observer` for the map phase, round 1.
-    /// Parses of all trees in one process are serialised by a lock here:
-    /// the parse changes the working directory
-    /// (`crates/slip_kiln/src/parse.rs`, "This changes the process's
-    /// current directory").
     ///
     /// # Errors
     ///
@@ -163,7 +154,6 @@ impl Tree {
         options: &ParseOptions<'_>,
         f: impl FnOnce(&Unit<'_>) -> R + Send,
     ) -> Result<(Shard, Option<R>), String> {
-        let _held = PARSE.lock().unwrap_or_else(PoisonError::into_inner);
         parse_observer_with(observer, Phase::Map, 1, *options, f)
     }
 }

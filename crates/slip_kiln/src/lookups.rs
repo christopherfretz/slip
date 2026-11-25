@@ -14,7 +14,7 @@ use kiln_pp::{
     SearchList, join_path,
 };
 
-use crate::kiln::source::{FileId, FileOrigin, SourceManager};
+use crate::kiln::source::{FileId, FileOrigin, SourceManager, WorkDir};
 
 /// The places one unit's front end looked at for a file, as the front end
 /// spelled them: a relative one is relative to the command's `directory`.
@@ -146,7 +146,9 @@ impl Lookups {
                 absent_paths.push(d);
             }
         }
-        let absent = place_absent(&list, log.angled_start as usize, &driver.dirs, &absent_paths);
+        let work_dir = fe.sm.work_dir();
+        let absent =
+            place_absent(&list, log.angled_start as usize, &driver.dirs, &absent_paths, work_dir);
         let mut tried = Places::default();
         let mut missed = Places::default();
         let mut found = Places::default();
@@ -217,7 +219,7 @@ impl Lookups {
                 missed.push(dir(log, d), &l.name);
             }
             for a in &absent {
-                if a.searched(l.angled, start, hit) && !a.holds(&l.name) {
+                if a.searched(l.angled, start, hit) && !a.holds(&l.name, work_dir) {
                     missed.push(&a.path, &l.name);
                 }
             }
@@ -284,8 +286,10 @@ impl Absent {
     /// Whether `name` is a regular file in this directory now (only a
     /// duplicate can hold one; the file is then its twin's, which the
     /// lookup searched).
-    fn holds(&self, name: &str) -> bool {
-        self.exists && std::fs::metadata(join_path(&self.path, name)).is_ok_and(|m| m.is_file())
+    fn holds(&self, name: &str, work_dir: &WorkDir) -> bool {
+        self.exists
+            && std::fs::metadata(work_dir.join_str(&join_path(&self.path, name)))
+                .is_ok_and(|m| m.is_file())
     }
 
     /// Whether a lookup in the list, from `start`, that ended at the list's
@@ -329,8 +333,9 @@ fn place_absent(
     angled_start: usize,
     dirs: &[(DirGroup, String)],
     absent: &[&str],
+    work_dir: &WorkDir,
 ) -> Vec<Absent> {
-    let frame = Frame::of(list, angled_start, dirs);
+    let frame = Frame::of(list, angled_start, dirs, work_dir);
     absent
         .iter()
         .map(|&p| {
@@ -338,7 +343,7 @@ fn place_absent(
                 dirs.iter().filter(|(_, d)| d == p).map(|(g, _)| *g).collect();
             Absent {
                 path: p.to_owned(),
-                exists: std::fs::metadata(p).is_ok_and(|m| m.is_dir()),
+                exists: std::fs::metadata(work_dir.join_str(p)).is_ok_and(|m| m.is_dir()),
                 slots: frame.as_ref().and_then(|f| f.slots(p, &groups)),
                 quoted_only: groups.iter().all(|&g| g == DirGroup::Quoted),
                 system: groups.iter().any(|&g| Characteristic::of_group(g).is_system()),
@@ -351,6 +356,7 @@ fn place_absent(
 /// The command's own search list, and how the log's list extends it.
 struct Frame {
     specs: Vec<SearchDirSpec>,
+    work_dir: WorkDir,
     /// How many of the command's own list are before its `-idirafter`
     /// directories.
     before_after: usize,
@@ -365,14 +371,20 @@ fn paths(l: &SearchList) -> Vec<String> {
 }
 
 impl Frame {
-    fn of(list: &[String], angled_start: usize, dirs: &[(DirGroup, String)]) -> Option<Frame> {
+    fn of(
+        list: &[String],
+        angled_start: usize,
+        dirs: &[(DirGroup, String)],
+        work_dir: &WorkDir,
+    ) -> Option<Frame> {
         let specs: Vec<SearchDirSpec> =
             dirs.iter().map(|(g, d)| SearchDirSpec::new(d.clone(), *g)).collect();
-        let full = SearchList::build(&specs, true, &mut RealFs::new());
+        let full = SearchList::build(&specs, true, &mut RealFs::in_dir(work_dir.clone()));
         let own = paths(&full);
         let no_after: Vec<SearchDirSpec> =
             specs.iter().filter(|s| s.group != DirGroup::After).cloned().collect();
-        let head = paths(&SearchList::build(&no_after, true, &mut RealFs::new()));
+        let head =
+            paths(&SearchList::build(&no_after, true, &mut RealFs::in_dir(work_dir.clone())));
         let k = head.len();
         if full.angled_start() != angled_start || k > own.len() || head[..] != own[..k] {
             return None;
@@ -386,13 +398,23 @@ impl Frame {
             return None;
         }
         let user_end = full.dirs().iter().take_while(|d| !d.characteristic.is_system()).count();
-        Some(Frame { specs, before_after: k, toolchain: t, user: angled_start..user_end })
+        Some(Frame {
+            specs,
+            work_dir: work_dir.clone(),
+            before_after: k,
+            toolchain: t,
+            user: angled_start..user_end,
+        })
     }
 
     /// The places `p` (named by words of `groups`) would take in the log's
     /// list were it a directory, from the command's list built with it.
     fn slots(&self, p: &str, groups: &[DirGroup]) -> Option<Vec<Slot>> {
-        let with = SearchList::build(&self.specs, true, &mut Pretend { path: p });
+        let with = SearchList::build(
+            &self.specs,
+            true,
+            &mut Pretend { path: p, work_dir: &self.work_dir },
+        );
         let names = paths(&with);
         let has_after = groups.contains(&DirGroup::After);
         let only_after = groups.iter().all(|&g| g == DirGroup::After);
@@ -419,6 +441,7 @@ impl Frame {
 /// The disk, with `path` a directory of its own.
 struct Pretend<'a> {
     path: &'a str,
+    work_dir: &'a WorkDir,
 }
 
 impl HeaderFs for Pretend<'_> {
@@ -426,15 +449,15 @@ impl HeaderFs for Pretend<'_> {
         if path == self.path {
             return Some(format!("\0absent {path}"));
         }
-        RealFs::new().dir_identity(path)
+        RealFs::in_dir(self.work_dir.clone()).dir_identity(path)
     }
 
     fn open(&mut self, sm: &SourceManager, path: &str) -> Option<FileId> {
-        RealFs::new().open(sm, path)
+        RealFs::in_dir(self.work_dir.clone()).open(sm, path)
     }
 
     fn read(&mut self, path: &str) -> Option<Vec<u8>> {
-        RealFs::new().read(path)
+        RealFs::in_dir(self.work_dir.clone()).read(path)
     }
 }
 

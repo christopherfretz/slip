@@ -4,22 +4,17 @@
 //! checks it against the reference: the same command without an overlay
 //! over a copy of the tree in which the overlaid files hold the overlay's
 //! bytes, the two roots made the same string.
-//!
-//! The parse changes the process's current directory, so every test here
-//! holds [`LOCK`] and uses absolute paths only.
 
 mod common;
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use slip_kiln::written::written_refs;
 use slip_kiln::{ParseOptions, Unit, parse_observer, parse_observer_with};
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
-
-static LOCK: Mutex<()> = Mutex::new(());
 
 /// One overlay entry: a real path and its replacement bytes.
 type Entry = (Vec<u8>, Arc<[u8]>);
@@ -28,18 +23,16 @@ type Entry = (Vec<u8>, Arc<[u8]>);
 /// `b/`; removed on drop.
 struct Tree {
     base: PathBuf,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Tree {
     fn new(name: &str) -> Tree {
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let base =
             common::work_root().join(format!("slip-kiln-overlay-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("a")).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
-        Tree { base, _lock: lock }
+        Tree { base }
     }
 
     fn a(&self) -> PathBuf {

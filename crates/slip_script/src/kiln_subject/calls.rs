@@ -28,11 +28,11 @@ use std::collections::HashMap;
 use slip_kiln::kiln::ast::attr::{AttrKind, AttrNode};
 use slip_kiln::kiln::ast::decl::{DeclKind, Defaulted, FriendTarget};
 use slip_kiln::kiln::ast::expr::ExprKind;
-use slip_kiln::kiln::ast::names::OverloadedOperator as Op;
 use slip_kiln::kiln::ast::stmt::StmtKind;
 use slip_kiln::kiln::ast::templates::Requirement;
-use slip_kiln::kiln::ast::types::{Nns, TypeKind, TypeView};
+use slip_kiln::kiln::ast::types::TypeView;
 use slip_kiln::kiln::ast::{AttrId, DeclId, ExprId, NnsId, QualType, StmtId};
+use slip_kiln::kiln::parse::ExprExtents;
 use slip_kiln::kiln::source::{Loc, Span};
 use slip_kiln::ranges::{self, Tier};
 use slip_kiln::written::{Role, WrittenRef};
@@ -1012,279 +1012,47 @@ impl KilnSubject<'_> {
         }
     }
 
-    // ---- extents (§6.6 rules 3 and 4) ----------------------------------------
+    // ---- extents (§6.6 rules 3 and 4; Kiln WP-2327 `ExprExtents`) ------------
 
-    /// The location of the first token of `e`, by the table of
-    /// `spec/landed/api/WP-086.md`.
-    pub(super) fn first_token(&self, mut e: ExprId) -> Result<Loc, NoExtent> {
-        let ast = self.ast;
-        let exprs = &ast.exprs;
-        loop {
-            if let Some(c) = self.transparent(e) {
-                e = c;
-                continue;
-            }
-            let n = exprs.get(e);
-            let kind = n.kind();
-            e = match kind {
-                ExprKind::UnaryOperator if exprs.unary_op(e).is_postfix() => exprs.operand(e),
-                ExprKind::CXXThisExpr => {
-                    if exprs.this_is_implicit(e) {
-                        return Err(NoExtent::new(kind, "implicit"));
-                    }
-                    return Ok(n.loc());
-                }
-                ExprKind::IntegerLiteral
-                | ExprKind::FloatingLiteral
-                | ExprKind::CharacterLiteral
-                | ExprKind::StringLiteral
-                | ExprKind::UnaryOperator
-                | ExprKind::CXXBoolLiteralExpr
-                | ExprKind::CXXNullPtrLiteralExpr
-                | ExprKind::GNUNullExpr
-                | ExprKind::ParenExpr
-                | ExprKind::LambdaExpr
-                | ExprKind::InitListExpr
-                | ExprKind::CXXStaticCastExpr
-                | ExprKind::CXXConstCastExpr
-                | ExprKind::CXXReinterpretCastExpr
-                | ExprKind::CXXDynamicCastExpr
-                | ExprKind::UnaryExprOrTypeTraitExpr
-                | ExprKind::CStyleCastExpr => return Ok(n.loc()),
-                ExprKind::DeclRefExpr => return self.name_first(e),
-                ExprKind::MemberExpr => {
-                    let base = exprs.operand(e);
-                    if self.is_implicit_this(base) {
-                        return self.implicit_member_first(e);
-                    }
-                    base
-                }
-                ExprKind::CXXFunctionalCastExpr | ExprKind::CXXTemporaryObjectExpr => {
-                    return self.type_first(e);
-                }
-                ExprKind::CallExpr | ExprKind::CXXMemberCallExpr => {
-                    if !self.postfix(e, self.strip_parens(exprs.callee(e))) {
-                        return Err(NoExtent::new(kind, "not a postfix call"));
-                    }
-                    if self.explicit_object(e) == Some(Object::Before) {
-                        let first = ast.lists.at::<ExprId>(exprs.call_args(e), 0);
-                        first.ok_or(NoExtent::new(kind, "no object"))?
-                    } else {
-                        exprs.callee(e)
-                    }
-                }
-                ExprKind::ArraySubscriptExpr | ExprKind::BinaryOperator => exprs.operands(e)[0],
-                ExprKind::CompoundAssignOperator | ExprKind::ConditionalOperator => {
-                    exprs.first_child(e, &ast.lists).ok_or(NoExtent::new(kind, "no operand"))?
-                }
-                ExprKind::CXXOperatorCallExpr => match self.operator_form(e) {
-                    Some(OpForm::Prefix) => return Ok(n.loc()),
-                    Some(_) => ast
-                        .lists
-                        .at::<ExprId>(exprs.call_args(e), 0)
-                        .ok_or(NoExtent::new(kind, "no operand"))?,
-                    None => return Err(NoExtent::new(kind, "operator form")),
-                },
-                _ => return Err(NoExtent::new(kind, "kind outside the table")),
-            };
-        }
+    /// Kiln's exact expression extents for this unit, built once on first use.
+    fn expr_extents(&self) -> &ExprExtents<'_> {
+        self.expr_extents.get_or_init(|| {
+            ExprExtents::new(self.ast, self.sm, self.tokens.interner(), self.tokens.lex_options())
+        })
     }
 
-    /// The location of the last token of `e`.
-    pub(super) fn last_token(&self, mut e: ExprId) -> Result<Loc, NoExtent> {
-        let ast = self.ast;
-        let exprs = &ast.exprs;
-        loop {
-            if let Some(c) = self.transparent(e) {
-                e = c;
-                continue;
-            }
-            let n = exprs.get(e);
-            let kind = n.kind();
-            let stored = || exprs.end_loc(e).ok_or(NoExtent::new(kind, "no closing token"));
-            e = match kind {
-                ExprKind::IntegerLiteral
-                | ExprKind::FloatingLiteral
-                | ExprKind::CharacterLiteral
-                | ExprKind::CXXBoolLiteralExpr
-                | ExprKind::CXXNullPtrLiteralExpr
-                | ExprKind::GNUNullExpr => return Ok(n.loc()),
-                ExprKind::CXXThisExpr if !exprs.this_is_implicit(e) => return Ok(n.loc()),
-                // A string literal of one piece has no stored end.
-                ExprKind::StringLiteral => return Ok(exprs.end_loc(e).unwrap_or(n.loc())),
-                ExprKind::ParenExpr
-                | ExprKind::LambdaExpr
-                | ExprKind::InitListExpr
-                | ExprKind::CXXStaticCastExpr
-                | ExprKind::CXXConstCastExpr
-                | ExprKind::CXXReinterpretCastExpr
-                | ExprKind::CXXDynamicCastExpr
-                | ExprKind::CXXFunctionalCastExpr
-                | ExprKind::CXXTemporaryObjectExpr
-                | ExprKind::CallExpr
-                | ExprKind::CXXMemberCallExpr
-                | ExprKind::ArraySubscriptExpr => return stored(),
-                ExprKind::UnaryExprOrTypeTraitExpr => match exprs.end_loc(e) {
-                    Some(l) => return Ok(l),
-                    None => {
-                        exprs.first_child(e, &ast.lists).ok_or(NoExtent::new(kind, "no operand"))?
-                    }
-                },
-                ExprKind::DeclRefExpr | ExprKind::MemberExpr => return self.name_last(e),
-                ExprKind::UnaryOperator if exprs.unary_op(e).is_postfix() => return Ok(n.loc()),
-                ExprKind::UnaryOperator | ExprKind::CStyleCastExpr => exprs.operand(e),
-                ExprKind::BinaryOperator => exprs.operands(e)[1],
-                ExprKind::CompoundAssignOperator => exprs.compound_assign(e).rhs,
-                ExprKind::ConditionalOperator => exprs.cond_arms(e)[1],
-                ExprKind::CXXOperatorCallExpr => {
-                    let arg = |i: usize| {
-                        ast.lists
-                            .at::<ExprId>(exprs.call_args(e), i)
-                            .ok_or(NoExtent::new(kind, "no operand"))
-                    };
-                    match self.operator_form(e) {
-                        Some(OpForm::Prefix) => arg(0)?,
-                        Some(OpForm::Binary) => arg(1)?,
-                        Some(OpForm::Postfix) => return Ok(n.loc()),
-                        Some(OpForm::Closed) => return stored(),
-                        Some(OpForm::Arrow) | None => {
-                            return Err(NoExtent::new(kind, "operator form"));
-                        }
-                    }
-                }
-                _ => return Err(NoExtent::new(kind, "kind outside the table")),
-            };
-        }
-    }
-
-    /// The form of an overloaded operator written as an operator.
-    fn operator_form(&self, e: ExprId) -> Option<OpForm> {
-        let exprs = &self.ast.exprs;
-        let op = exprs.operator_call_op(e);
-        let n = self.ast.lists.get(exprs.call_args(e)).len();
-        match op {
-            Op::Arrow => Some(OpForm::Arrow),
-            Op::Call | Op::Subscript => Some(OpForm::Closed),
-            Op::PlusPlus | Op::MinusMinus if n == 2 => Some(OpForm::Postfix),
-            _ if n == 1 => Some(OpForm::Prefix),
-            _ if n == 2 => Some(OpForm::Binary),
-            _ => None,
-        }
-    }
-
-    /// Whether `e` is the `this` Kiln makes for a member named without
-    /// one.
-    fn is_implicit_this(&self, mut e: ExprId) -> bool {
-        let exprs = &self.ast.exprs;
-        while exprs.get(e).kind() == ExprKind::ImplicitCastExpr {
-            e = exprs.operand(e);
-        }
-        exprs.get(e).kind() == ExprKind::CXXThisExpr && exprs.this_is_implicit(e)
-    }
-
-    /// The first token of a `DeclRefExpr`: the first of its qualifier (a
-    /// leading `::` included) or its name, when the written-reference
-    /// table and Kiln's begin agree on it.
-    fn name_first(&self, e: ExprId) -> Result<Loc, NoExtent> {
-        let kind = ExprKind::DeclRefExpr;
-        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
-        let begin = self.ast.begin_loc(e);
-        let qualified = self.ast.exprs.decl_ref_extra(e).and_then(|x| x.qualifier);
-        match qualified {
-            None if !r.global && r.first == r.name.lo && begin == r.name.lo => Ok(begin),
-            Some(q) if !r.global && r.first != r.name.lo && begin == r.first => {
-                self.qualifier_linked(q).then_some(begin).ok_or(NoExtent::new(kind, "qualifier"))
-            }
-            // `::f`: Kiln's begin is the `::` (the parser's qualifier
-            // begin); the table's first is the component after it.
-            Some(q) if r.global && self.order(begin, r.first).is_lt() => {
-                self.qualifier_linked(q).then_some(begin).ok_or(NoExtent::new(kind, "qualifier"))
-            }
-            _ => Err(NoExtent::new(kind, "qualifier")),
-        }
-    }
-
-    /// The first token of a member named without `this`: the first of its
-    /// qualifier, or its name. Kiln's begin of such a node is the name.
-    fn implicit_member_first(&self, e: ExprId) -> Result<Loc, NoExtent> {
-        let kind = ExprKind::MemberExpr;
-        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
-        let qualified = self.ast.exprs.decl_ref_extra(e).and_then(|x| x.qualifier);
-        match qualified {
-            None if !r.global && r.first == r.name.lo => Ok(r.name.lo),
-            Some(q) if !r.global && r.first != r.name.lo && self.qualifier_linked(q) => Ok(r.first),
-            _ => Err(NoExtent::new(kind, "qualifier")),
-        }
-    }
-
-    /// Whether every component of qualifier `q` is one the table links
-    /// (a namespace, or a type named by a name): a `decltype` or a splice
-    /// ends the table's chain, so its first would be too late.
-    fn qualifier_linked(&self, q: NnsId) -> bool {
-        let types = &self.ast.types;
-        let mut at = Some(q);
-        for _ in 0..self.chain_bound() {
-            let Some(c) = at else { return true };
-            at = match types.nns_view(c) {
-                Nns::Global => None,
-                Nns::Namespace { prefix, .. } | Nns::NamespaceAlias { prefix, .. } => prefix,
-                Nns::Type { prefix, ty, .. } => {
-                    if matches!(
-                        types.kind(ty.ty()),
-                        TypeKind::Decltype
-                            | TypeKind::DependentDecltype
-                            | TypeKind::TypeOf
-                            | TypeKind::PackIndexing
-                            | TypeKind::UnaryTransform
-                            | TypeKind::Splice
-                    ) {
-                        return false;
-                    }
-                    prefix
-                }
-                _ => return false,
-            };
-        }
-        false
-    }
-
-    /// The last token of a name (`DeclRefExpr`, `MemberExpr`): its name,
-    /// when that is one token and no template argument list follows.
-    fn name_last(&self, e: ExprId) -> Result<Loc, NoExtent> {
+    /// The first and last token locations of `e` as written, from Kiln's
+    /// `kiln_parse::ExprExtents` (Kiln WP-2327).
+    ///
+    /// One Kiln gap handled here (filed under "For Kiln" in WP-148): for a
+    /// member call to an explicit-object-parameter function (`s.f(2)`),
+    /// `WrittenExtents` takes `CallExpr`'s `first_child` (`f`) rather than
+    /// the object argument (`s`, `call_args[0]`), so `first` is adjusted to
+    /// the object's first token.
+    fn expr_tokens(&self, e: ExprId) -> Result<(Loc, Loc), NoExtent> {
         let kind = self.ast.exprs.get(e).kind();
-        if self.ast.exprs.decl_ref_extra(e).is_some_and(|x| x.template_args.is_some()) {
-            return Err(NoExtent::new(kind, "template arguments"));
+        let (mut first, last) = self
+            .expr_extents()
+            .written_extent(e)
+            .ok_or(NoExtent::new(kind, "no written extent"))?;
+        if self.explicit_object(e) == Some(Object::Before) {
+            let obj = self
+                .ast
+                .lists
+                .at::<ExprId>(self.ast.exprs.call_args(e), 0)
+                .ok_or(NoExtent::new(kind, "no object"))?;
+            first = self
+                .expr_extents()
+                .written_extent(obj)
+                .ok_or(NoExtent::new(kind, "no written extent"))?
+                .0;
         }
-        // A specialisation named without template arguments Kiln records:
-        // its arguments may be written after the name (`d.twice<7>`, a
-        // member variable template: Kiln records none there).
-        if self.ast.spec_info(self.ast.exprs.decl(e)).is_some() {
-            return Err(NoExtent::new(kind, "specialisation"));
-        }
-        let r = self.written_ref_of(e).ok_or(NoExtent::new(kind, "no reference"))?;
-        if self.tokens.token_end(r.name.lo) != Some(r.name.hi) {
-            return Err(NoExtent::new(kind, "name of several tokens"));
-        }
-        Ok(r.name.lo)
+        Ok((first, last))
     }
 
-    /// The first token of `T(x)` or `T{x}`: Kiln's location, the type's
-    /// first token, when the table has the type's name there unqualified
-    /// by `::` (or the type is a keyword).
-    fn type_first(&self, e: ExprId) -> Result<Loc, NoExtent> {
-        let ast = self.ast;
-        let n = ast.exprs.get(e);
-        let at = n.loc();
-        let named = self
-            .refs
-            .iter()
-            .any(|r| r.first == at && !r.global && matches!(r.role, Role::Type | Role::Template));
-        // A type written with keywords (`int(2)`, `unsigned(3)`): the
-        // node's type is the builtin type itself, no sugar (a typedef, a
-        // `decltype` keeps its sugar on the node).
-        let keyword = n.kind() == ExprKind::CXXFunctionalCastExpr
-            && ast.types.kind(n.ty().ty()) == TypeKind::Builtin;
-        if named || keyword { Ok(at) } else { Err(NoExtent::new(n.kind(), "type not named")) }
+    /// The location of the first token of `e`.
+    pub(super) fn first_token(&self, e: ExprId) -> Result<Loc, NoExtent> {
+        self.expr_tokens(e).map(|(first, _)| first)
     }
 
     /// The range of `e`'s tokens, or why there is none.
@@ -1304,8 +1072,7 @@ impl KilnSubject<'_> {
     fn expr_range_tier(&self, e: ExprId) -> Result<(Range, Tier), NoExtent> {
         use slip_kiln::kiln::lex::{Punct, TokKind};
         let kind = self.ast.exprs.get(e).kind();
-        let first = self.first_token(e)?;
-        let last = self.last_token(e)?;
+        let (first, last) = self.expr_tokens(e)?;
         let r = ranges::file_range_of_tokens(&self.tokens, first, last)
             .ok_or(NoExtent::new(kind, "no range of tier 0 or 1"))?;
         let range = self
@@ -1460,22 +1227,6 @@ enum Object {
     Before,
     /// Implicit: `f(2)` in a member function.
     Implicit,
-}
-
-/// The forms of an overloaded operator written as an operator.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OpForm {
-    /// `-a`, `++a`: the operator, then the operand.
-    Prefix,
-    /// `a++`: the operand, then the operator.
-    Postfix,
-    /// `a + b`.
-    Binary,
-    /// `a(x)`, `a[i]`: the operand, then a closing token Kiln stores.
-    Closed,
-    /// `a->m`: the operand, then `->`; the member's name, the last token
-    /// of the member access, is not the operator call's.
-    Arrow,
 }
 
 impl KilnSubject<'_> {

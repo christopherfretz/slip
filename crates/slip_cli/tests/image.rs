@@ -6,7 +6,6 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use slip_cli::args::ImageArgs;
 use slip_cli::image::{Image, ImageError, RootMap, Side};
@@ -14,9 +13,6 @@ use slip_cli::worker::MapTask;
 use slip_exec::store::{Access, Store};
 use slip_exec::worker::{Job, PostImage, Task};
 use slip_model::{Command, Digest, EnvVar, FileRef, Language, Observer, Origin, Phase, Status};
-
-/// A parse changes the process's current directory.
-static LOCK: Mutex<()> = Mutex::new(());
 
 fn map(subject: &str, post: &str) -> RootMap {
     RootMap { subject: subject.as_bytes().to_vec(), post: post.as_bytes().to_vec() }
@@ -319,7 +315,6 @@ fn job(dir: &Dir, observer: &Observer) -> Job {
 // value only for an `ok` shard.
 #[test]
 fn s5_1_file_spelling_in_a_post_root() {
-    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let dir = Dir::new("file");
     let s = dir.mkdir("s");
     let p = dir.mkdir("post-tree");

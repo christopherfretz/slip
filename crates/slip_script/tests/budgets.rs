@@ -126,7 +126,7 @@ fn s2_8_each_failure_kind_its_cause_and_place_then_a_normal_run() {
             "refused",
             small,
             FailureKind::Uncaught,
-            "an uncaught slip::error; the most recent refusal was: extent_of",
+            "an uncaught slip::error: extent_of",
             "(void)slip::extent_of(slip::lookup",
         ),
         // §3.5 rule 5: Kiln's own check of the primitive's buffers is not
@@ -219,10 +219,7 @@ fn s2_8_uncaught_slip_error_has_the_hosts_message_and_place() {
         let (o, _) = run(l, &s).unwrap();
         let f = failure(&o);
         assert_eq!(f.kind, FailureKind::Uncaught);
-        assert_eq!(
-            f.message,
-            format!("an uncaught slip::error; the most recent refusal was: {EXTENT_OF}")
-        );
+        assert_eq!(f.message, format!("an uncaught slip::error: {EXTENT_OF}"));
         // The refused call's place (`s2_8_the_place_of_a_refusal_is_the_call`).
         assert_eq!(
             at(f.place.as_ref()),
@@ -244,7 +241,7 @@ fn s2_8_rule3_of_two_refusals_the_most_recent() {
         let (o, _) = run(l, &mode("two")).unwrap();
         let f = failure(&o);
         let refusal = f.refusal.as_ref().expect("a refusal");
-        assert!(f.message.contains("the most recent refusal was: extent_of"), "{}", f.message);
+        assert!(f.message.contains("an uncaught slip::error: extent_of"), "{}", f.message);
         assert!(!f.message.ends_with("(wrong_kind)"), "not the first: {}", f.message);
         assert!(refusal.ordinal > 1, "{f:?}");
         assert!(
@@ -312,13 +309,11 @@ fn s2_8_the_place_of_a_refusal_is_the_call() {
     });
 }
 
-// M1 of the review: the three cases in which the rule "the most recent
+// M1 of the review: the three cases in which the old rule "the most recent
 // refusal, if the type is `slip::error`" was wrong (`spec/api.md` §2.8
-// rule 3). Each asserts the right result. Kiln WP-2480 (in the pin since
-// WP-066) names the type qualified, which fixes the second; the other two
-// need Slip to read which object was thrown (WP-138).
+// rule 3). WP-148 item 7 (Kiln WP-2480) matches `slip::v0::error` by entity
+// (directly or as a base subobject) and reads its own failure ordinal `__n`.
 #[test]
-#[ignore = "needs: WP-138 (the thrown object, Kiln WP-2480)"]
 fn m1_rethrowing_an_older_slip_error_reports_its_refusal() {
     with("rethrow_older", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("rethrow_older")).unwrap();
@@ -337,7 +332,6 @@ fn m1_an_error_of_another_namespace_has_no_refusal() {
 }
 
 #[test]
-#[ignore = "needs: WP-138 (the thrown object, Kiln WP-2480)"]
 fn m1_a_type_derived_from_slip_error_carries_its_refusal() {
     with("derived", &with_meta(MODES), &[], |l| {
         let (o, _) = run(l, &mode("derived")).unwrap();

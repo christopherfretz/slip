@@ -3,16 +3,12 @@
 //! test names the paragraph of §8.4 it covers ("the run", "outcome",
 //! "inputs", "counters"); the parity test compares every fixture with the
 //! parse task of WP-010 (`support::oracle`).
-//!
-//! The parse changes the process's current directory, so every test here
-//! holds [`LOCK`] and uses absolute paths only.
 
 mod common;
 
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cdb::check::FrontEndCheck;
 use slip_kiln::kiln::ast::decl::DeclKind;
@@ -21,27 +17,23 @@ use slip_kiln::{KilnCheck, ParseOptions, Unit, parse_observer, parse_observer_wi
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
-/// A fixture directory, removed on drop, a directory beside it for the
-/// oracle's dependency file, and the lock held while it lives.
+/// A fixture directory, removed on drop, and a directory beside it for the
+/// oracle's dependency file.
 struct Fixture {
     root: PathBuf,
     oracle: PathBuf,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let base =
-            std::env::temp_dir().join(format!("slip-kiln-parse-{}-{name}", std::process::id()));
+            common::work_root().join(format!("slip-kiln-parse-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("work")).unwrap();
         std::fs::create_dir_all(base.join("oracle")).unwrap();
         // The fixture's own real path: the system temp dir may be a link.
         let base = std::fs::canonicalize(&base).unwrap();
-        Fixture { root: base.join("work"), oracle: base.join("oracle"), _lock: lock }
+        Fixture { root: base.join("work"), oracle: base.join("oracle") }
     }
 
     fn write(&self, rel: &str, text: &str) -> PathBuf {
@@ -643,7 +635,6 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
     use slip_kiln::kiln::source::Loc;
     use slip_kiln::ranges::unit_order;
     use std::cmp::Ordering;
-    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let dir =
         common::work_root().join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1167,4 +1158,66 @@ fn s8_4_run_editable_ranges_and_token_end_through_slip_kiln() {
     assert_eq!(in_arg, Some("bar".to_owned()));
     assert_eq!(ident, Some(3), "an identifier");
     assert_eq!(literal, Some(6), "a string literal with its suffix");
+}
+
+// WP-148 item 1 (Kiln WP-2121): two parses with different working
+// directories run concurrently in one process without mutating the
+// process's current directory; each resolves its own relative main file,
+// relative `-I` header, and relative `@file` response file. Fails with
+// process-wide `set_current_dir`; must pass 20x in a row.
+#[test]
+fn s8_4_two_directories_concurrently() {
+    use std::sync::{Arc, Barrier};
+
+    let before_cwd = std::env::current_dir().unwrap();
+    let base = common::work_root().join(format!("slip-kiln-two-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dir_a = base.join("dir_a");
+    let dir_b = base.join("dir_b");
+    std::fs::create_dir_all(dir_a.join("inc")).unwrap();
+    std::fs::create_dir_all(dir_b.join("inc")).unwrap();
+    let dir_a = std::fs::canonicalize(&dir_a).unwrap();
+    let dir_b = std::fs::canonicalize(&dir_b).unwrap();
+
+    let h_a = dir_a.join("inc/val.h");
+    let h_b = dir_b.join("inc/val.h");
+    std::fs::write(&h_a, "constexpr int VAL = 11;\n").unwrap();
+    std::fs::write(&h_b, "constexpr int VAL = 22;\n").unwrap();
+    std::fs::write(dir_a.join("flags.rsp"), "-Iinc\n-DEXPECTED=11\n").unwrap();
+    std::fs::write(dir_b.join("flags.rsp"), "-Iinc\n-DEXPECTED=22\n").unwrap();
+    let main_src =
+        "#include <val.h>\nstatic_assert(VAL == EXPECTED, \"wrong dir\");\nint x = VAL;\n";
+    let main_a = dir_a.join("main.cpp");
+    let main_b = dir_b.join("main.cpp");
+    std::fs::write(&main_a, main_src).unwrap();
+    std::fs::write(&main_b, main_src).unwrap();
+
+    let obs_a = observer(&dir_a, &["c++", "-std=c++20", "@flags.rsp", "main.cpp"]);
+    let obs_b = observer(&dir_b, &["c++", "-std=c++20", "@flags.rsp", "main.cpp"]);
+    let want_a = refs(&[&h_a, &main_a]);
+    let want_b = refs(&[&h_b, &main_b]);
+
+    for round in 0..8u64 {
+        let barrier = Arc::new(Barrier::new(2));
+        let (b1, b2) = (Arc::clone(&barrier), Arc::clone(&barrier));
+        let (oa, ob) = (&obs_a, &obs_b);
+        let (sa, sb) = std::thread::scope(|s| {
+            let ta = s.spawn(move || {
+                b1.wait();
+                parse_observer(oa, Phase::Map, round).expect("dir_a")
+            });
+            let tb = s.spawn(move || {
+                b2.wait();
+                parse_observer(ob, Phase::Map, round).expect("dir_b")
+            });
+            (ta.join().unwrap(), tb.join().unwrap())
+        });
+        assert_eq!(sa.outcome.status, Status::Ok, "round {round} dir_a: {:?}", sa.outcome);
+        assert_eq!(sb.outcome.status, Status::Ok, "round {round} dir_b: {:?}", sb.outcome);
+        assert_eq!(sa.inputs.as_ref(), Some(&want_a), "round {round} dir_a inputs");
+        assert_eq!(sb.inputs.as_ref(), Some(&want_b), "round {round} dir_b inputs");
+    }
+
+    assert_eq!(std::env::current_dir().unwrap(), before_cwd, "process current_dir must not change");
+    let _ = std::fs::remove_dir_all(&base);
 }

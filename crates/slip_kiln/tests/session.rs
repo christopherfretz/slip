@@ -3,9 +3,7 @@
 //! test is named after the item of the package it covers (`t1` … `t8`).
 //!
 //! The transforms are written to a directory of their own under Cargo's
-//! temporary directory and named by absolute path. One test runs
-//! `parse_observer_with`, which changes the process's current directory;
-//! nothing here depends on it.
+//! temporary directory and named by absolute path.
 
 mod common;
 
@@ -19,7 +17,7 @@ use slip_kiln::kiln::oven::{HostCalls, HostError, HostOut};
 use slip_kiln::kiln::source::SourceManager;
 use slip_kiln::session::{
     Budget, Cancel, CompileError, EntryError, Handler, Out, RunFailure, RunReport, Session,
-    TransformCommand, with_transform,
+    ThrownRecord, TransformCommand, with_transform,
 };
 use slip_kiln::snippet::{Snippet, parse};
 use slip_kiln::{ParseOptions, Unit, parse_observer_with};
@@ -503,7 +501,8 @@ fn t5_each_run_failure_then_a_normal_run() {
          consteval void uncaught() { raise(); }
          consteval void fine() { spin(10); }",
     );
-    let results = with(&cmd, |s| {
+    let (thrown, results) = with(&cmd, |s| {
+        let thrown = s.class(&[], "Thrown", None).expect("Thrown class");
         let fine = s.entry("fine").unwrap();
         let mut out = Vec::new();
         for (name, budget, cancelled) in [
@@ -524,7 +523,7 @@ fn t5_each_run_failure_then_a_normal_run() {
             let after = s.run(fine, &mut Failing, BUDGET, &Cancel::new());
             out.push((name, r.result, r.rendered, after.result, after.rendered));
         }
-        out
+        (thrown, out)
     });
     let expected = [
         RunFailure::NotConstant,
@@ -533,7 +532,14 @@ fn t5_each_run_failure_then_a_normal_run() {
         RunFailure::DepthLimit,
         RunFailure::Cancelled,
         RunFailure::Host("the handler refuses".into()),
-        RunFailure::Uncaught { type_name: "Thrown".into() },
+        RunFailure::Uncaught {
+            type_name: "Thrown".into(),
+            record: Some(ThrownRecord {
+                class: Some(thrown),
+                bases: Vec::new(),
+                members: vec![("code".into(), 3)],
+            }),
+        },
     ];
     // The note that places the failure: the call to the function the entry
     // called (to the entry itself for a run cancelled before its first

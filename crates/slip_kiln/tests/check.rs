@@ -3,7 +3,6 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use slip_cdb::check::{ByExtension, FrontEndCheck, Rejection};
 use slip_kiln::{KilnCheck, parse_observer};
@@ -25,14 +24,10 @@ fn check(args: &[&str]) -> Result<Language, Rejection> {
     result
 }
 
-/// The parse changes the current directory: one at a time.
-static PARSE: Mutex<()> = Mutex::new(());
-
 /// Parses `args` in a fresh directory where each relative argument that
 /// does not start with `-` is an empty file.
 fn parse_in_fixture(args: &[&str]) -> Shard {
     static N: AtomicU32 = AtomicU32::new(0);
-    let _lock = PARSE.lock().unwrap_or_else(PoisonError::into_inner);
     let dir = std::env::temp_dir().join(format!(
         "slip-kiln-check-{}-{}",
         std::process::id(),
