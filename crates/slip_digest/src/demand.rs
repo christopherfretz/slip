@@ -1463,6 +1463,63 @@ mod tests {
         });
     }
 
+    // WP-158 (`spec/digest.md` §2.2, §13): `unheld` reads what Kiln
+    // instantiated, not the units the walk chose. In a walk that has
+    // written no unit, every instantiated body and default argument is
+    // unheld; holding them all makes the count 0. A count read from the
+    // digest's own list of units would be 0 here as well.
+    #[test]
+    fn unheld_reads_what_kiln_instantiated() {
+        const X: &str = "struct X { static int f(int) { return 1; } static int f(long) { return 2; } \
+                         int mf(int) { return 1; } int mf(long) { return 2; } };\n";
+        // The counts: the call operator's specialisation, and with the
+        // conversion its invoker's and the conversion function's
+        // specialisations (3, 1); `c<X>`'s body, the local function's
+        // body and its default argument (3, 3).
+        let cases: [(&str, &str, u64); 4] = [
+            (
+                "to pointer",
+                "int w() { auto l = [](auto u) { return u.mf(1L); }; int (*p)(X) = l; return p(X()); }",
+                3,
+            ),
+            (
+                "decltype",
+                "int w() { auto l = [](auto u) { return u.mf(1L); }; decltype(l(X())) x = 0; return x; }",
+                1,
+            ),
+            (
+                "lambda default",
+                "template <class T> int c(T) { auto l = [](int k = T::f(1L)) { return k; }; return l(); }\nint w() { return c(X()); }",
+                3,
+            ),
+            (
+                "local class default",
+                "template <class T> int c(T) { struct L { int g(int k = T::f(1L)) { return k; } }; return L().g(); }\nint w() { return c(X()); }",
+                3,
+            ),
+        ];
+        for (what, body, n) in cases {
+            crate::decl_func::tests::with_walk(&format!("{X}{body}\n"), |w| {
+                assert!(w.held_bodies.is_empty() && w.held_exprs.is_empty());
+                assert_eq!(super::unheld(w), n, "{what}");
+                let ast = w.ast;
+                for d in ast.decls.ids() {
+                    if let Some(f) = ast.decls.function(d) {
+                        if let Some(b) = f.body {
+                            w.held_bodies.insert(b);
+                        }
+                        for p in ast.lists.iter::<DeclId>(f.params) {
+                            if let Some(x) = ast.decls.param(p).and_then(|q| q.default_arg) {
+                                w.held_exprs.insert(x);
+                            }
+                        }
+                    }
+                }
+                assert_eq!(super::unheld(w), 0, "{what}");
+            });
+        }
+    }
+
     // digest-kinds §11.1 property 7: the values of a written default are
     // found by a second walk into a dropped stream; its cause is kept, as
     // a list an indeterminate walk found may be short (a local class
