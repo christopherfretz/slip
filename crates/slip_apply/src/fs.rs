@@ -4,7 +4,7 @@
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -112,6 +112,20 @@ impl Tree for DiskTree {
 
     fn identity(&self, p: &[u8]) -> io::Result<Option<(u64, u64)>> {
         Ok(slip_spelling::disk().lookup().lstat(p)?.map(|id| (id.dev, id.ino)))
+    }
+
+    /// `canonicalize`: `None` when the path, or a directory on it, is not
+    /// there.
+    fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        match fs::canonicalize(path(p)) {
+            Ok(r) => Ok(Some(r.into_os_string().into_vec())),
+            Err(e)
+                if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// `slip_spelling::Disk`: the mount that holds the directory is of its

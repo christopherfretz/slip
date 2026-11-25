@@ -1044,7 +1044,20 @@ fn map_shards(
     std: &str,
     t: &dyn Fn(&str) -> Transform,
 ) -> (Transform, Vec<slip_model::Shard>) {
-    let tree = Tree::new(&common::work_root(), name, files).unwrap();
+    map_shards_in(&common::work_root(), name, files, mains, std, t)
+}
+
+/// `map_shards` with the tree under `base`: the folding root for a test
+/// about spelling on a volume that folds (`common::folding_root`).
+fn map_shards_in(
+    base: &Path,
+    name: &str,
+    files: &[(&str, &[u8])],
+    mains: &[&str],
+    std: &str,
+    t: &dyn Fn(&str) -> Transform,
+) -> (Transform, Vec<slip_model::Shard>) {
+    let tree = Tree::new(base, name, files).unwrap();
     let root = tree.root().to_str().unwrap().to_owned();
     let t = t(&root);
     let mut shards = Vec::new();
@@ -2992,18 +3005,11 @@ fn wp139_row_with_no_entity_is_no_evidence() {
 // `s2_1_another_case_of_a_readonly_directory_refused` (it refuses,
 // `not_canonical`).
 
-/// Whether the volume of the trees finds a name in another case; says so
-/// when it does not.
+/// Whether the tests below run: through `common::folding_volume`, which
+/// panics on the gate's host when the folding root does not fold and says
+/// when a test skips.
 fn volume_folds(test: &str) -> bool {
-    let p = common::work_root().join(format!("one-spelling-probe-{}-{test}", std::process::id()));
-    std::fs::write(&p, "x").unwrap();
-    let upper = p.with_file_name(p.file_name().unwrap().to_string_lossy().to_uppercase());
-    let folds = upper.exists();
-    std::fs::remove_file(&p).unwrap();
-    if !folds {
-        eprintln!("{test}: skipped: the volume of the trees is case-sensitive");
-    }
-    folds
+    common::folding_volume(test).is_some()
 }
 
 /// `n::f` renamed to `h` under a request owning the tree with `dep/`
@@ -3032,7 +3038,7 @@ fn rename_of_a_dependency(name: &str, include: &str) -> (String, slip_reduce::Re
             script: None,
         }
     };
-    let (t, shards) = map_shards(name, &files, &["a.cpp"], "c++20", &t);
+    let (t, shards) = map_shards_in(&common::folding_root(), name, &files, &["a.cpp"], "c++20", &t);
     let r = reduced(name, &t, shards);
     (root.into_inner(), r)
 }
@@ -3053,7 +3059,7 @@ fn read_only_edited(root: &str, r: &slip_reduce::Reduced) -> Vec<String> {
 /// request makes read-only, and no edit of the edit set is in one.
 #[test]
 fn s2_1_rename_of_a_dependency_by_its_spelling() {
-    if !volume_folds("by-spelling") {
+    if !volume_folds("s2_1_rename_of_a_dependency_by_its_spelling") {
         return;
     }
     let (root, r) = rename_of_a_dependency("one-spelling-dep", "dep/x.h");
@@ -3066,7 +3072,7 @@ fn s2_1_rename_of_a_dependency_by_its_spelling() {
 /// dependency's header; only apply refuses it (`not_canonical`).
 #[test]
 fn s2_1_rename_of_a_dependency_through_another_case() {
-    if !volume_folds("another-case") {
+    if !volume_folds("s2_1_rename_of_a_dependency_through_another_case") {
         return;
     }
     let (root, r) = rename_of_a_dependency("one-spelling-dep-case", "Dep/x.h");
@@ -3081,7 +3087,7 @@ fn s2_1_rename_of_a_dependency_through_another_case() {
 /// entries of one file), and apply refuses the second spelling.
 #[test]
 fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
-    if !volume_folds("two-spellings") {
+    if !volume_folds("s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set") {
         return;
     }
     let files: [(&str, &[u8]); 3] = [
@@ -3102,7 +3108,8 @@ fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
         script: None,
     };
     let name = "one-spelling-two";
-    let (t, shards) = map_shards(name, &files, &["a.cpp", "b.cpp"], "c++20", &t);
+    let (t, shards) =
+        map_shards_in(&common::folding_root(), name, &files, &["a.cpp", "b.cpp"], "c++20", &t);
     let r = reduced(name, &t, shards);
     let files: Vec<String> =
         r.edits.files.iter().map(|f| String::from_utf8_lossy(&f.path).into_owned()).collect();
@@ -3115,4 +3122,13 @@ fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
 #[test]
 fn s11_5_work_root() {
     common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
+}
+
+/// The folding tests' guard (WP-151, `spec/harness.md` §11.5): fails when
+/// the source tree's volume folds and the folding root's does not, so
+/// that every test about a volume that folds skipping cannot pass unseen;
+/// says which kind each root is.
+#[test]
+fn s11_5_folding_root() {
+    common::work_root::folding_guard(env!("CARGO_TARGET_TMPDIR"));
 }

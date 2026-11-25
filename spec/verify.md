@@ -1181,7 +1181,14 @@ RootMap := subject: path, post: path
 ```
 
 - Each `subject` and each `post` is the real path of an existing directory
-  other than `/`. No root of an image, subject or post, equals another
+  other than `/`, spelled as on disk (`slip_spelling::real_path`:
+  `canonicalize`, then the walk of `spec/edits.md` §2.1, "One
+  spelling"). `--root` and `--post` are given that spelling, so a root
+  given in another case or normalisation verifies, and the report names
+  it as the disk does; a root of a job's image (or of an image written
+  by hand) that is not its own spelled real path is refused
+  (`image: <root> is not the real path of a directory`). A file's
+  identity under a root (below) is taken through the same function. No root of an image, subject or post, equals another
   root of it or lies under one (`/a/b` lies under `/a`; `/a/bc` does not),
   except that a post root may lie under a subject root (its own or
   another's). Every root is UTF-8, since it becomes part of a command line

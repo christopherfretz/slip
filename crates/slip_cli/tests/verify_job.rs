@@ -56,10 +56,22 @@ impl Tree {
     /// A tree whose subject is `<base>/<subject>` and post tree
     /// `<base>/<post>`.
     fn new_in(name: &str, subject: &str, post: &str, files: &[(&str, &str)]) -> Tree {
+        Tree::new_under(&common::work_root(), name, subject, post, files)
+    }
+
+    /// `new_in` under `root`: the work root, or the folding root for a test
+    /// about spelling on a volume that folds (`common::folding_root`).
+    fn new_under(
+        root: &Path,
+        name: &str,
+        subject: &str,
+        post: &str,
+        files: &[(&str, &str)],
+    ) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
         let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = common::work_root().join(format!("wp052-{name}-{}-{n}", std::process::id()));
+        let base = root.join(format!("wp052-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
@@ -1378,16 +1390,19 @@ fn image_word(tree: &Tree, word: &str) -> String {
 // file system is case-sensitive.
 #[test]
 fn f3_case_insensitive_spelling() {
-    let tree = Tree::new(
+    let tree = Tree::new_under(
+        &common::folding_root(),
         "f3",
+        "s",
+        "post-tree",
         &[("a.cpp", "#include <h.h>\nint f() { return k; }\n"), ("inc/h.h", "const int k = 1;\n")],
     );
     write(&tree.post.join("inc/h.h"), "const int k = 2;\n");
     let upper = tree.base.join("S").join("inc");
-    if std::fs::metadata(&upper).is_err() {
-        eprintln!("f3_case_insensitive_spelling: SKIPPED, the file system is case-sensitive");
+    if common::folding_volume("f3_case_insensitive_spelling").is_none() {
         return;
     }
+    assert!(std::fs::metadata(&upper).is_ok(), "{} does not fold", upper.display());
     let o = tree.observer_in(&tree.subject, &[arg("-I", &upper)]);
     let m = tree.map(&o);
     let v = tree.verify(&o);

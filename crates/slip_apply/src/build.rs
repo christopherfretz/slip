@@ -351,6 +351,36 @@ pub fn plan(set: &EditSet) -> Result<Vec<u64>, ApplyError> {
     Ok(layout(set)?.lengths)
 }
 
+/// An overlay names a file once (`spec/edits.md` §7.1; WP-074's second
+/// review, F1): two files of `set` that are one file now (the same device
+/// and inode: two hard links) would give it two post-images. `Invalid`
+/// naming both paths, in path order, for the first such pair; a path that
+/// finds nothing is left to the reads after (`StaleFile`). One `stat` per
+/// file of the set. What the builder asks first, before any post-image is
+/// made or handed to its sink, and what `slip reduce` asks of the edit
+/// set it makes before publishing it.
+pub fn one_name_per_file(set: &EditSet, files: &dyn Files) -> Result<(), ApplyError> {
+    let mut seen: std::collections::HashMap<(u64, u64), usize> = std::collections::HashMap::new();
+    for (f, file) in set.files.iter().enumerate() {
+        let id = files
+            .identity(&file.path)
+            .map_err(|e| ApplyError::Io(file.path.clone(), e.to_string()))?;
+        let Some(id) = id else { continue };
+        if let Some(&g) = seen.get(&id) {
+            return Err(ApplyError::Invalid(format!(
+                "{} and {} are one file (device {}, inode {}): an overlay names a file once \
+                 (spec/edits.md §7.1)",
+                String::from_utf8_lossy(&set.files[g].path),
+                String::from_utf8_lossy(&file.path),
+                id.0,
+                id.1
+            )));
+        }
+        seen.insert(id, f);
+    }
+    Ok(())
+}
+
 /// §7.1: the overlay and the post-image bytes, collected.
 pub fn build(set: &EditSet, set_id: Digest, files: &dyn Files) -> Result<Built, ApplyError> {
     let mut blobs = Vec::new();
@@ -363,7 +393,8 @@ pub fn build(set: &EditSet, set_id: Digest, files: &dyn Files) -> Result<Built, 
 
 /// `build` with a sink: called once per overlay file, in path order, with
 /// the post-image bytes. On an error the sink may have been called for
-/// the files before (`spec/landed/edits/WP-063.md` §2).
+/// the files before (`spec/landed/edits/WP-063.md` §2); never for a set
+/// two of whose files are one file ([`one_name_per_file`], asked first).
 pub fn build_into(
     set: &EditSet,
     set_id: Digest,
@@ -379,6 +410,7 @@ pub fn build_into(
             ));
         }
     }
+    one_name_per_file(set, files)?;
     let mut work = Work::new(&lay);
     let mut out_files = Vec::new();
     let mut spellings = Vec::new();
