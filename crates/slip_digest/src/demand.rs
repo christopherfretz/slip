@@ -872,7 +872,9 @@ fn immediates(w: &mut Walk<'_>, x: ExprId) -> Immediates {
     let saved = w.take_unit();
     w.unit.expr.imms = Some(Vec::new());
     let mut scratch = Stream::new();
+    w.dropped += 1;
     crate::expr::child(w, &mut scratch, x);
+    w.dropped -= 1;
     let values = w.unit.expr.imms.take().unwrap_or_default();
     w.unit = saved;
     (values, scratch.cause())
@@ -922,6 +924,211 @@ fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec
     }
 }
 
+/// The `default_argument` units of every local function that is no unit
+/// and whose declaration an instantiation made (a member of a local class,
+/// or the call operator of a lambda that is not generic, in an
+/// instantiated function body), appended to `out` (WP-158; digest-kinds
+/// §11.4). Kiln instantiates such a default argument with the body that
+/// declares the function (`kiln_sema/src/templ/subst/decls.rs`
+/// `defer_default_args_to`, in local scope), and the parameter holds it
+/// (`ParamData` `default_arg`); the function's own stream, written in
+/// place in its owner's, writes the row absent, as for every instantiated
+/// declaration (`decl_func::written_default`). The unit is that of
+/// [`default_arguments`]: parent the function's key (a member of a local
+/// type has an ordinary key under it, digest §4.3), name `parameter(i)`,
+/// derived, the function's origin file. Run once, after every unit is
+/// written.
+pub(crate) fn local_default_arguments(w: &mut Walk<'_>, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    for d in ast.decls.ids() {
+        if ast.first(d) != d || !is_local_default_holder(w, d) {
+            continue;
+        }
+        let owner = local_owner(w, d);
+        local_parts(w, d, &owner, out);
+    }
+}
+
+/// `digest.instantiated.unheld` (WP-158, `spec/digest.md` §2.2, §12,
+/// §13): what Kiln instantiated in this parse that no unit's stream
+/// holds. Read from Kiln, not from the units the walk chose:
+///
+/// - **bodies**: every function definition in Kiln's list of
+///   instantiated definitions (`DeclArena::fn_def_insts`, which Sema
+///   appends to when it finishes instantiating a function's body), and
+///   every function declaration with a body that an instantiation made
+///   (`templ::made_by_instantiation`: its own `SpecInfo` or
+///   `MemberSpecInfo` kind, else the kind governing its lexical context,
+///   which reaches a local class's member and a lambda's call operator
+///   in an instantiated body); its body (`FunctionData` `body`) must have
+///   been written by some unit (`Walk::hold_body`);
+/// - **default arguments**: every parameter that holds one
+///   (`ParamData` `default_arg`) of a function declaration an
+///   instantiation made, and every field an instantiation made
+///   (`Ast::instantiated_from`) that holds a default member initialiser
+///   (`FieldData` `init`); the expression must have been written by some
+///   unit (`Walk::hold_expr`);
+/// - **variable initialisers**: of every variable an instantiation made
+///   that is not at block scope ([`unheld_var_init`]: a variable template
+///   specialisation, a static data member of a class template
+///   specialisation), when its pattern has one.
+///
+/// Held means written by the own stream of a unit that is kept
+/// (`Walk::in_own_stream`, between `Walk::hold_begin` and
+/// `Walk::hold_end`): not by a stream that is dropped (the mark's walks,
+/// `immediates`, the candidates of `units::canonical_decl`, a trace).
+///
+/// A declaration in a dependent context (`DeclFlags::DEPENDENT_CTX`) is
+/// left out: it is a pattern, written as one. So is one inside a local
+/// type that a unit's stream met but could not number (digest §4.3, the
+/// closure of a lambda in an instantiated default argument): the stream
+/// writes the type as indeterminate and not its members, so the unit
+/// that holds them is unequal to everything (`Walk::hold_type`), which
+/// is the known limit of §4.3, not a missing unit. Zero on every fixture
+/// (`tests/common/mod.rs`); a non-zero count names a route by which an
+/// instantiation has no unit.
+pub(crate) fn unheld(w: &Walk<'_>) -> u64 {
+    let ast = w.ast;
+    let mut bodies: std::collections::HashSet<DeclId> =
+        ast.decls.fn_def_insts().iter().map(|&(d, _)| d).collect();
+    let mut n = 0u64;
+    // Inside a local type a stream wrote as indeterminate (its members
+    // unwritten): held by that unit, unequal to everything.
+    let in_held_type = |d: DeclId| {
+        let mut c = ast.decls.get(d).ctx();
+        while let Some(p) = c {
+            if w.held_types.contains(&ast.first(p)) {
+                return true;
+            }
+            c = ast.decls.get(p).ctx();
+        }
+        false
+    };
+    for d in ast.decls.ids() {
+        if ast.decls.get(d).has(DeclFlags::DEPENDENT_CTX) || in_held_type(d) {
+            bodies.remove(&d);
+            continue;
+        }
+        if let Some(f) = ast.decls.function(d) {
+            if !crate::templ::made_by_instantiation(w, d) {
+                continue;
+            }
+            if f.body.is_some() {
+                bodies.insert(d);
+            }
+            for p in ast.lists.iter::<DeclId>(f.params) {
+                if let Some(x) = ast.decls.param(p).and_then(|q| q.default_arg)
+                    && !w.held_exprs.contains(&x)
+                {
+                    n += 1;
+                }
+            }
+        } else if let Some(f) = ast.decls.field(d)
+            && let Some(x) = f.init
+            && ast.instantiated_from(d).is_some()
+            && !w.held_exprs.contains(&x)
+        {
+            n += 1;
+        } else if unheld_var_init(w, d) {
+            n += 1;
+        }
+    }
+    for d in bodies {
+        if let Some(b) = ast.decls.function(d).and_then(|f| f.body)
+            && !w.held_bodies.contains(&b)
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The `default_argument` units of the local function `e` under `owner`
+/// ([`local_owner`]), appended to `out`: what [`local_default_arguments`]
+/// writes for it (`trace.rs` writes them again).
+pub(crate) fn local_parts(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    default_arguments(w, e, owner, out);
+}
+
+/// Whether `e` (a first declaration) is a function [`local_default_arguments`]
+/// writes `default_argument` units for: local (not a block-scope extern),
+/// no unit, made by instantiation (`decl_func::instantiated_decl`), with a
+/// parameter of an instantiated declaration that holds a default
+/// argument.
+pub(crate) fn is_local_default_holder(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    if ast.decls.function(e).is_none() || !w.is_local(e) || w.is_local_extern(e) {
+        return false;
+    }
+    let decls: Vec<DeclId> =
+        w.redecls(e).into_iter().filter(|&x| crate::decl_func::instantiated_decl(w, x)).collect();
+    let holds = decls.iter().any(|&x| {
+        ast.decls.function(x).is_some_and(|f| {
+            ast.lists
+                .iter::<DeclId>(f.params)
+                .any(|p| ast.decls.param(p).is_some_and(|q| q.default_arg.is_some()))
+        })
+    });
+    holds && crate::units::unit_class(w, e).is_none()
+}
+
+/// The unit a local function's `default_argument` units are keyed under
+/// ([`local_default_arguments`]): no unit is written for it; it gives the
+/// parts their parent key (the function's, or a fallback under its
+/// nearest keyed context when it has none, whose cause the parts carry,
+/// `write_part`), their origin file and the declaration they are read
+/// from.
+pub(crate) fn local_owner(w: &mut Walk<'_>, e: DeclId) -> Written {
+    let (key, kind) = match w.key(e) {
+        KeyRes::Key { id, kind, .. } => (id, kind),
+        KeyRes::None(_) => crate::units::fallback_key(w, e, slip_model::Digest([0; 32]))
+            .map_or((slip_model::Digest([0; 32]), KeyKind::Function), |(id, kind, _)| (id, kind)),
+    };
+    Written {
+        entity: Some(e),
+        read: Some(crate::units::read_decl(w, e)),
+        key,
+        kind,
+        digest: slip_model::Digest([0; 32]),
+        cause: None,
+        class: GroupClass::Derived,
+        file: crate::units::origin_file(w, e),
+        resolved: None,
+        default_argument: None,
+        owner: None,
+        collided: false,
+        view: None,
+        denotes: None,
+        emitted: false,
+    }
+}
+
+/// Whether `d` is the first declaration of a variable an instantiation
+/// made, not at block scope, whose initialiser Kiln instantiated and no
+/// kept stream wrote ([`unheld`]): a variable template specialisation, a
+/// static data member of a class template specialisation. A variable at
+/// block scope (a local, a `static` local) is in its function's body,
+/// which is counted as a body. The initialiser is any declaration's of
+/// the chain (`var_data` and `var_definition` write the one
+/// `init_holder` names); a pattern with no initialiser makes none to
+/// count, as `var_definition` writes none (default-initialisation).
+fn unheld_var_init(w: &Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    if ast.decls.get(d).kind() != DeclKind::Var
+        || ast.first(d) != d
+        || w.is_local(d)
+        || !crate::templ::made_by_instantiation(w, d)
+    {
+        return false;
+    }
+    let inits: Vec<_> =
+        ast.redecls_of(d).filter_map(|x| ast.decls.var(x).and_then(|v| v.init)).collect();
+    if inits.is_empty() || (instantiated_pattern(w, d).is_some() && !pattern_has_init(w, d)) {
+        return false;
+    }
+    !inits.iter().any(|x| w.held_exprs.contains(x))
+}
+
 /// One `default_argument` unit: the expression `x`, walked as an
 /// initialiser is, with parameter j of the function (each declaration's
 /// parameter j, `params[j]`) the local entity of ordinal j, as the
@@ -942,6 +1149,7 @@ fn default_argument(
     let u = write_default_argument(w, e, owner, index, |w, s| {
         number_params(w, params);
         w.unit.expr.imms = Some(Vec::new());
+        w.hold_expr(x);
         crate::expr::child(w, s, x);
         values = w.unit.expr.imms.take().unwrap_or_default();
     });
@@ -1291,6 +1499,134 @@ mod tests {
             let mut one = Stream::new();
             w.write_ref(&mut one, base);
             assert_ne!(out[0].digest, one.finish(UNIT_TAG).digest);
+        });
+    }
+
+    // WP-158 (`spec/digest.md` §2.2, §13): `unheld` reads what Kiln
+    // instantiated, not the units the walk chose. In a walk that has
+    // written no unit, every instantiated body, default argument, default
+    // member initialiser and variable initialiser is unheld; holding them
+    // all makes the count 0. A count read from the digest's own list of
+    // units would be 0 here as well.
+    const UNHELD_X: &str = "struct X { static int f(int) { return 1; } static int f(long) { return 2; } \
+                            int mf(int) { return 1; } int mf(long) { return 2; } };\n";
+
+    /// Holds every body, default argument, default member initialiser and
+    /// variable initialiser of the parse.
+    fn hold_everything(w: &mut crate::walk::Walk<'_>) {
+        let ast = w.ast;
+        for d in ast.decls.ids() {
+            if let Some(f) = ast.decls.function(d) {
+                if let Some(b) = f.body {
+                    w.held_bodies.insert(b);
+                }
+                for p in ast.lists.iter::<DeclId>(f.params) {
+                    if let Some(x) = ast.decls.param(p).and_then(|q| q.default_arg) {
+                        w.held_exprs.insert(x);
+                    }
+                }
+            } else if let Some(x) = ast.decls.field(d).and_then(|f| f.init) {
+                w.held_exprs.insert(x);
+            } else if let Some(x) = ast.decls.var(d).and_then(|v| v.init) {
+                w.held_exprs.insert(x);
+            }
+        }
+    }
+
+    #[test]
+    fn unheld_reads_what_kiln_instantiated() {
+        // The counts: the call operator's specialisation, and with the
+        // conversion its invoker's and the conversion function's
+        // specialisations (3, 1); `c<X>`'s body, the local function's
+        // body and its default argument (3, 3); `D<X>`'s default member
+        // initialiser and one function body Kiln made for `D<X>` (2); the
+        // variable template specialisation's initialiser (1); the static
+        // data member's (1).
+        let cases: [(&str, &str, u64); 7] = [
+            (
+                "to pointer",
+                "int w() { auto l = [](auto u) { return u.mf(1L); }; int (*p)(X) = l; return p(X()); }",
+                3,
+            ),
+            (
+                "decltype",
+                "int w() { auto l = [](auto u) { return u.mf(1L); }; decltype(l(X())) x = 0; return x; }",
+                1,
+            ),
+            (
+                "lambda default",
+                "template <class T> int c(T) { auto l = [](int k = T::f(1L)) { return k; }; return l(); }\nint w() { return c(X()); }",
+                3,
+            ),
+            (
+                "local class default",
+                "template <class T> int c(T) { struct L { int g(int k = T::f(1L)) { return k; } }; return L().g(); }\nint w() { return c(X()); }",
+                3,
+            ),
+            (
+                "default member initialiser",
+                "template <class T> struct D { int k = T::f(1L); };\nint w() { return D<X>().k; }",
+                2,
+            ),
+            (
+                "variable template",
+                "template <class T> int v = T::f(1L);\nint w() { return v<X>; }",
+                1,
+            ),
+            (
+                "static data member",
+                "template <class T> struct S { static int s; };\ntemplate <class T> int S<T>::s = T::f(1L);\nint w() { return S<X>::s; }",
+                1,
+            ),
+        ];
+        for (what, body, n) in cases {
+            crate::decl_func::tests::with_walk(&format!("{UNHELD_X}{body}\n"), |w| {
+                assert!(w.held_bodies.is_empty() && w.held_exprs.is_empty());
+                assert_eq!(super::unheld(w), n, "{what}");
+                hold_everything(w);
+                assert_eq!(super::unheld(w), 0, "{what}");
+            });
+        }
+    }
+
+    // WP-158 fix round (review F4, mutation MD): a local type held as
+    // indeterminate leaves out only what it encloses. `Q` is held; the
+    // specialisation of `w`'s generic lambda is still counted.
+    #[test]
+    fn a_held_local_type_leaves_out_only_its_members() {
+        let src = format!(
+            "{UNHELD_X}int z() {{ struct Q {{ int q() {{ return 0; }} }}; return Q().q(); }}\n\
+             int w() {{ auto l = [](auto u) {{ return u.mf(1L); }}; decltype(l(X())) x = 0; return x; }}\n"
+        );
+        crate::decl_func::tests::with_walk(&src, |w| {
+            let q = crate::decl_func::tests::named(w, "Q", DeclKind::CXXRecord)[0];
+            assert_eq!(super::unheld(w), 1);
+            w.held_types.insert(w.ast.first(q));
+            assert_eq!(super::unheld(w), 1);
+        });
+    }
+
+    // WP-158 fix round (review F5): a stream that is dropped holds
+    // nothing. `immediates` walks a default argument again into a
+    // dropped stream, inside the run's window; the closure it meets (and
+    // its call operator's body) must not be recorded as held, or a body
+    // no kept stream wrote would leave the count.
+    #[test]
+    fn a_dropped_stream_holds_nothing() {
+        let src = "consteval int id(int x) { return x; }\n\
+                   void f(int a = id(3) + [] { struct Q *p = nullptr; return p ? 1 : 0; }());\n\
+                   void h() { f(); }\n";
+        crate::decl_func::tests::with_walk(src, |w| {
+            let ast = w.ast;
+            let f = crate::decl_func::tests::named(w, "f", DeclKind::Function)[0];
+            let p = ast.lists.iter::<DeclId>(ast.decls.function(f).expect("f").params).next();
+            let (_, x) = crate::decl_func::written_default(w, p.expect("a"));
+            w.hold_begin();
+            let _ = super::immediates(w, x.expect("the default"));
+            let recorded = w.hold_pending.as_ref().map_or(0, Vec::len);
+            w.hold_end(true);
+            assert_eq!(recorded, 0);
+            assert!(w.held_bodies.is_empty() && w.held_exprs.is_empty() && w.held_types.is_empty());
         });
     }
 

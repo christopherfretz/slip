@@ -41,6 +41,10 @@
 //! are not walked again: a record is a unit of the walk (its id, kind,
 //! class, name and flag are in the `Output` compared) and its `Key`, which
 //! `records` checks against the id, is the preimage of that id.
+//!
+//! The walk under the empty table also has `digest.instantiated.unheld` 0
+//! (`spec/digest.md` §13 item 7, WP-158): this runner reads every source of
+//! every root, `rules` included.
 
 mod common;
 
@@ -244,6 +248,14 @@ fn one(dir: &Path, tables: &[(&str, RuleTable)]) -> Result<(), String> {
             let files = headers_read_only(input);
             let headers = has_headers(input);
             let mut lines = Vec::new();
+            // WP-158 (`spec/digest.md` §13 item 7): what Kiln instantiated
+            // is held by a unit, here for every directory of every root,
+            // `rules` included, which the other runners' helper does not
+            // digest through.
+            let unheld = base.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
+            if unheld.is_none_or(|c| c.value != 0) {
+                lines.push(format!("digest.instantiated.unheld is {unheld:?}, not 0"));
+            }
             let all = tables.iter().map(|(l, t)| (*l, t)).chain([("declared parent", &declared)]);
             for (label, t) in all {
                 let mut views = vec![("every file owned", ReadOnly::NO_FILE)];

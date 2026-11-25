@@ -6709,6 +6709,15 @@ expression declares are numbered from the parameter count on. So a
 default argument that names an earlier parameter (`sizeof(p)`) holds the
 same bytes whichever use instantiated it.
 
+A local function that is no unit (a local class's member, the call
+operator of a lambda that is not generic, written in place in its
+owner's stream, `digest.md` §4.3) in an instantiated body has its
+default arguments instantiated with that body, in local scope, not on
+use. Each is a `default_argument` unit all the same (WP-158), keyed
+`parameter(i)` under the function's key, derived, written once after
+every other unit; its function's own stream writes the default absent
+as above.
+
 An inheriting constructor has no `default_argument` unit: a call to it
 uses the base constructor's parameters and their default arguments, which
 are the base constructor's units.

@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/ns-lambda-static-assert): a namespace-scope generic lambda reached only in a static_assert.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed gl::local(0)::operator()<X>(X) const::<definition>

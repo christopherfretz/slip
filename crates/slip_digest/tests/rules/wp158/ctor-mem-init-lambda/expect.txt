@@ -1,0 +1,6 @@
+# WP-158 fix round (the review's zz_rv158/ctor-mem-init-lambda): a generic lambda in a constructor's member initialiser of a class template; the pattern's constructor is indeterminate (kiln/pattern-mem-initializers), the instantiation's unit differs.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+indeterminate S::S<T>()
+derived-changed S<X>::S()::local(0)::operator()<X>(X) const::<definition>

@@ -1,0 +1,7 @@
+# WP-158 fix round, review F1 (spec/digest.md §2.3 "a friend definition
+# not instantiated"): fr defined and then declared again in one class
+# template. Kiln does not instantiate the definition either, but the two
+# friend declarations collide: the friend's unit is indeterminate on both
+# sides, so the pair fails closed.
+indeterminate S::friend fr(X, D *)
+collisions 1

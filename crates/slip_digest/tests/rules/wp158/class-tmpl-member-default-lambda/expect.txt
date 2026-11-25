@@ -1,0 +1,15 @@
+# WP-158 fix round (the review's zz_rv158/class-tmpl-member-default-lambda):
+# a generic lambda in a default argument of a class template's member. The
+# closure in the instantiated default has no number (spec/digest.md §4.3,
+# the known limit): the units fail closed, indeterminate on both sides.
+exact derived
+indeterminate S<X>::g(int (*)(X))::<default_argument 0>
+indeterminate S<X>::g(int (*)(X))::local(?)::__invoke<X>(X)
+indeterminate S<X>::g(int (*)(X))::local(?)::__invoke<X>(X)::<definition>
+indeterminate S<X>::g(int (*)(X))::local(?)::__invoke<X>(X)::<exception_spec>
+indeterminate S<X>::g(int (*)(X))::local(?)::operator auto (*)(X)<X>() const
+indeterminate S<X>::g(int (*)(X))::local(?)::operator auto (*)(X)<X>() const::<definition>
+indeterminate S<X>::g(int (*)(X))::local(?)::operator auto (*)(X)<X>() const::<exception_spec>
+indeterminate S<X>::g(int (*)(X))::local(?)::operator()<X>(X) const
+indeterminate S<X>::g(int (*)(X))::local(?)::operator()<X>(X) const::<definition>
+indeterminate S<X>::g(int (*)(X))::local(?)::operator()<X>(X) const::<exception_spec>

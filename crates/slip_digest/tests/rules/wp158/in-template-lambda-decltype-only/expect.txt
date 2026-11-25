@@ -1,0 +1,5 @@
+# WP-158: a shape that had no unit until WP-158 (the pair was equal);
+# the instantiation's unit now differs: the call keeps binding
+# X::mf(long) / X::f(long), renamed, so it binds the other overload.
+exact derived
+derived-changed c<X>(X)::local(0)::operator()<X>(X) const::<definition>

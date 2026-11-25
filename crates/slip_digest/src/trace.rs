@@ -263,8 +263,18 @@ fn part(
     if let std::collections::hash_map::Entry::Vacant(slot) = parts.entry(e) {
         let owner = written
             .iter()
-            .find(|o| o.entity == Some(e) && o.owner.is_none() && o.kind != KeyKind::Order)?;
-        slot.insert(parts_again(w, e, owner));
+            .find(|o| o.entity == Some(e) && o.owner.is_none() && o.kind != KeyKind::Order);
+        match owner {
+            Some(owner) => slot.insert(parts_again(w, e, owner)),
+            // A local function an instantiation made, whose
+            // `default_argument` units have no unit above them
+            // (`demand::local_default_arguments`, WP-158).
+            None if crate::demand::is_local_default_holder(w, e) => {
+                let owner = crate::demand::local_owner(w, e);
+                slot.insert(local_parts_again(w, e, &owner))
+            }
+            None => return None,
+        };
     }
     let again = parts.get(&e)?;
     again
@@ -275,13 +285,28 @@ fn part(
         .map(|(_, r)| r.clone())
 }
 
+/// The `default_argument` units of the local function `e` written again
+/// ([`parts_again`] for an owner that is no unit).
+fn local_parts_again(w: &mut Walk<'_>, e: DeclId, owner: &Written) -> Vec<(Written, Recording)> {
+    again_with(|w, out| crate::demand::local_parts(w, e, owner, out), w)
+}
+
 /// The parts of `owner` (the unit of `e`) written again, each with the
 /// stream of its second writing; a part whose stream was not kept is
 /// left out.
 fn parts_again(w: &mut Walk<'_>, e: DeclId, owner: &Written) -> Vec<(Written, Recording)> {
+    again_with(|w, out| crate::demand::resolved_units(w, e, owner, out), w)
+}
+
+/// The parts `write` writes again, each with the stream of its second
+/// writing; a part whose stream was not kept is left out.
+fn again_with(
+    write: impl FnOnce(&mut Walk<'_>, &mut Vec<Written>),
+    w: &mut Walk<'_>,
+) -> Vec<(Written, Recording)> {
     let armed = Armed::new();
     let mut again = Vec::new();
-    crate::demand::resolved_units(w, e, owner, &mut again);
+    write(w, &mut again);
     #[cfg(test)]
     tests::panic_at(tests::WHILE_ARMED);
     let kept = armed.take();

@@ -197,6 +197,52 @@ entity that also has written declarations (a friend's definition) is the
 class specialisation's: its friend unit refers to the entity, and the
 definition is the entity's resolved unit `definition`.
 
+**Every instantiation has a unit** (WP-158). Every function body and
+every default argument or default member initialiser that Kiln
+instantiated in this parse is in the stream of a derived unit, whatever
+made the front end instantiate it: a call, an unevaluated operand
+(`decltype`, `sizeof`, `noexcept`, a requires-expression), a conversion
+(a closure to a function pointer), a deduced return type, an address
+taken. Its key, group and cause are those above: the body is the
+`definition` of its specialisation, or written in place in the unit of
+the local type's owner; the default is a `default_argument` unit
+(§4.3). The rule is checked against what Kiln instantiated, not against
+the units the walk chose: the counter `digest.instantiated.unheld`
+(§12) counts
+
+- the bodies of the functions in Kiln's list of instantiated function
+  definitions (`DeclArena::fn_def_insts`), and of every function
+  declaration with a body that an instantiation made (its own
+  specialisation or member-specialisation kind, else the kind of the
+  context it is declared in: a local class's member, a lambda's call
+  operator in an instantiated body);
+- the default arguments of the parameters of those function
+  declarations, and the default member initialisers of fields an
+  instantiation made;
+- the initialiser of every variable an instantiation made that is not
+  local to a function: a variable template specialisation, a static
+  data member of a class template specialisation (also a member of a
+  local class in an instantiated body). A variable declared in a
+  function body is not one: its initialiser is a statement of that
+  body and is held with it;
+
+that no kept unit's own stream wrote, leaving out a declaration in a dependent
+context (a pattern, written as one) and one inside a local type that a
+stream met and could not number (§4.3 "What these rules do not yet
+show": the unit that holds it is indeterminate, unequal to everything).
+It is 0 over every fixture (§13 item 7) and is reported on the corpus.
+
+"Wrote" is exact: a body, a default or an initialiser counts as held
+only when it is written where the unit's own stream is being written
+(the unit's level, not in a profile, not detached, not a numbering
+walk: the condition under which the emitted mark is recorded in place,
+§11). A walk whose stream is dropped holds nothing: the second walk of
+a default argument's immediate invocations, and the streams of the
+candidates the canonical candidate of a friend is chosen from (§2.2
+above). The counter reads what Kiln instantiated, so it cannot see a
+definition Kiln never made: see the limit of §2.3 "a friend definition
+not instantiated".
+
 An implicit member that Kiln has declared but nothing references is not a
 unit: whether Kiln declared it depends on which lookups happened. What such
 a member would be is determined by its class, whose unit holds the facts
@@ -344,6 +390,48 @@ made from a partial specialisation) is true of every specialisation of
 a standard container (`spec/landed/digest/WP-153.md` §12). The design
 that removes the limit is `spec/landed/digest/WP-153.md`; what it needs
 of Kiln is `docs/requests/KR9-substitution-bindings.md`.
+
+**A limit: a friend definition not instantiated** (found by the review
+of WP-158, its finding F1). A friend function defined in a class
+template, and declared again by another declaration that an
+instantiation also makes, is called; Kiln does not instantiate its
+definition when the redeclaration instantiated *later* is the one the
+call names:
+
+```cpp
+struct D;
+template <class T> struct B { friend int fr(X u, D*) { return static_cast<T&>(u).mf(1L); } };
+template <class T> struct A { friend int fr(X u, D*); };
+struct D : B<X>, A<X> {};
+int w() { return fr(X(), (D*)nullptr); }
+```
+
+Rename `X::mf(long)`: the call in the body keeps the old name and now
+binds `X::mf(int)`. No digest differs, the counter
+`digest.instantiated.unheld` is 0 (Kiln made no body to count), and the
+verdict is `verified`; clang 19 runs the pre-image with status 0 and
+the edited tree with status 1. The orders:
+
+| Order | Outcome |
+|---|---|
+| two classes, the definition's (`B`) instantiated first, the redeclaration's (`A`) second | **wrong `verified`**: no definition, the pair is equal |
+| one class, the definition first, the redeclaration after it | Kiln makes no definition either; the digest fails closed: the two friend declarations collide (`digest.collisions 1`), the friend's unit is indeterminate on both sides |
+| two classes, the redeclaration's class first (`D : A<X>, B<X>`) | works: the definition is instantiated, `fr(X, D *)::<definition>` differs |
+| one class, the redeclaration first | fails closed, as the other one-class order |
+
+The cause, as far as read at Kiln `4a83f6e3c`:
+`instantiate_function_definition` (`kiln_sema/src/templ/class.rs:1626`)
+starts from `member_redecl_instance` (`:2318`), which returns the
+declaration itself whenever it was instantiated from a pattern; the
+search for the redeclaration whose pattern has a body (`:2329`) is
+reached only for a declaration that was not, so the later friend's
+pattern, which has no body, is the one instantiated, and nothing is.
+The request to Kiln is in `docs/wp/WP-158.md` ("Fix round 1", "For
+Kiln"). Nothing guards it in Slip (Kiln is parked, and the guard the
+review sketched would read the same missing definition). The rules
+pairs `rules/wp158/friend-two-classes-rev` (equal today: the limit) and
+`friend-twice-one-class-rev` (the collision) and the pitfall row R26
+pin it; each changes when Kiln instantiates the definition.
 
 ## 3. Keys
 
@@ -823,7 +911,18 @@ is the owner of what its own body or initialiser declares.
   operator or conversion function, an implicit member defined on use.
   Such a unit is keyed under the local type and is no part of the
   stream that holds the type, so a use never changes a declared unit
-  (§1 rule 5).
+  (§1 rule 5). A specialisation is one whatever made Kiln instantiate it
+  (§2.2 "Every instantiation has a unit"): a call, a conversion of the
+  closure to a function pointer, an unevaluated operand (WP-158).
+- An instantiated default argument of a local function that is no unit
+  (a local class's member, the call operator of a lambda that is not
+  generic, in an instantiated body) is a `default_argument` unit
+  (`digest-kinds.md` §11.4), keyed `parameter(i)` under the function's
+  key (the members of a local type have ordinary keys), derived, origin
+  file the function's (WP-158). The function's own stream, written in
+  place, writes the parameter's default as absent, as for every
+  instantiated declaration; without the unit the expression would be in
+  no stream.
 - A local alias or typedef is not digested: the types it names appear
   canonically wherever it is used.
 
@@ -1513,6 +1612,16 @@ are marked (below), not the format; no baseline of scheme 3 was recorded,
 so it shares the number. WP-141 landed beside it saying "`scheme` stays
 2" (`spec/landed/digest/WP-141.md`): written before this move, it reads
 as "no move of its own"; its changes are under 3 for the same reason.
+WP-158 (§2.2 "Every instantiation has a unit") changes no existing
+unit's stream, key or table row; it adds units (a local specialisation
+reached without a call, an instantiated default argument of a local
+function) that the stream of no unit held before. That closes wrong
+equals (an instantiation that binds otherwise and that no unit held
+compared equal), the case this rule moves the number for; but no
+baseline of scheme 3 is recorded (the shard goldens of `crates/slip_model`
+are unchanged by it, `bench/baselines` was last recorded under WP-050,
+and the corpus invariants are recorded by the supervisor at the merge,
+who confirms none was), so it shares the number 3.
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.
@@ -1689,6 +1798,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived` | derived units |
 | `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
 | `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
+| `digest.instantiated.unheld` | function bodies, default arguments and default member initialisers Kiln instantiated that no unit's stream holds (§2.2 "Every instantiation has a unit", WP-158); always present, 0 over every fixture |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
@@ -1768,6 +1878,15 @@ true by mechanism, not by review alone.
    invisible to 3 and 4. Mutation tests (§14) and, when Kiln provides it, a
    public table of operand roles (`docs/design/05-kiln-interface.md` KR5)
    cover it; until then every such word is listed in "Open questions".
+7. **Every instantiation has a unit.** The counter
+   `digest.instantiated.unheld` (§2.2, §12) is 0 for both sides of every
+   fixture the digest's tests parse (`tests/common`, beside
+   `digest.emitted.unplaced`): what Kiln instantiated is read from Kiln,
+   so a route by which an instantiation gets no unit fails the suite on
+   the first fixture that takes it. A unit test
+   (`demand::tests::unheld_reads_what_kiln_instantiated`) shows that the
+   count reads Kiln's facts: with no unit written, it counts every
+   instantiated body and default argument of the four shapes of WP-158.
 
 ## 14. What the tests must show
 

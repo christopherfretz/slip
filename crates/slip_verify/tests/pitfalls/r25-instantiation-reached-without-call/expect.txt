@@ -1,0 +1,49 @@
+# R25 (WP-158, spec/digest.md §2.2): the renamed overload is the one a
+# call in an instantiation binds, and nothing calls that instantiation.
+# Subjects 1 to 4: a generic lambda's call operator reached only through
+# the conversion to a function pointer, only in decltype; a default
+# argument of a lambda's call operator, of a local class's member, in an
+# instantiated function. 5 to 8: the same inside a function template (7
+# and 8 one level deeper). Until WP-158 no unit held the instantiation
+# and each bad tree verified (review of WP-154's design).
+#
+# The good trees edit the call's name, which is a dependent name: the
+# pattern that spells it differs (WP-154 maps it), and nothing else does;
+# no unit WP-158 added is a finding in them.
+good: verified
+xfail good: WP-154: the generic lambda's pattern spells the edited dependent name u.mg, so w() differs until a holder is compared with its edited dependent names mapped
+bad: mismatch derived_changed w()::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-2: verified
+xfail good-2: WP-154: as good
+bad-2: mismatch derived_changed w()::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-3: verified
+xfail good-3: WP-154: the function template's pattern spells the edited dependent name T::g
+bad-3: mismatch derived_changed c<X>(X)::local(0)::operator()(int) const::<default_argument 0> @ main.cpp:8
+good-4: verified
+xfail good-4: WP-154: as good-3
+bad-4: mismatch derived_changed c<X>(X)::local(0)::g(int)::<default_argument 0> @ main.cpp:8
+good-5: verified
+xfail good-5: WP-154: as good-3, and c<X>(X)'s definition, which writes the lambda's pattern in place
+bad-5: mismatch derived_changed c<X>(X)::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-6: verified
+xfail good-6: WP-154: as good-5
+bad-6: mismatch derived_changed c<X>(X)::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-7: verified
+xfail good-7: WP-154: as good-3
+bad-7: mismatch derived_changed c<X>(X)::local(0)::operator()() const::local(0)::operator()(int) const::<default_argument 0> @ main.cpp:9
+good-8: verified
+xfail good-8: WP-154: as good-3
+bad-8: mismatch derived_changed c<X>(X)::local(0)::M::g(int)::<default_argument 0> @ main.cpp:8
+# Subjects 9 to 12: shapes 1 to 4 with the overload the call does not
+# bind renamed (mf(int) or f(int)). good: the call left, as it must be:
+# the units WP-158 added are on both sides and equal, so a correct
+# transform is verified. bad: the call's name edited as well, so it binds
+# the renamed int overload.
+good-9: verified
+bad-9: mismatch derived_changed w()::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-10: verified
+bad-10: mismatch derived_changed w()::local(0)::operator()<X>(X) const::<definition> @ main.cpp:8
+good-11: verified
+bad-11: mismatch derived_changed c<X>(X)::local(0)::operator()(int) const::<default_argument 0> @ main.cpp:8
+good-12: verified
+bad-12: mismatch derived_changed c<X>(X)::local(0)::g(int)::<default_argument 0> @ main.cpp:8

@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/generic-in-local-class-member): a generic lambda in a local class's member, converted.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed w()::local(0)::g(X)::local(0)::operator()<X>(X) const::<definition>

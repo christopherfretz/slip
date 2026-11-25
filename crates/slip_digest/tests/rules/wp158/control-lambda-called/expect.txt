@@ -1,0 +1,3 @@
+# WP-158 control: differed before WP-158 and still does, on the same unit.
+exact derived
+derived-changed w()::local(0)::operator()<X>(X) const::<definition>

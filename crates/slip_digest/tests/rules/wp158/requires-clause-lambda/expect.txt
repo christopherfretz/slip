@@ -1,0 +1,10 @@
+# WP-158 fix round (the review's zz_rv158/requires-clause-lambda): a generic
+# lambda in a requires-clause. Fails closed: the template, its
+# specialisation and its caller are indeterminate on both sides.
+exact derived
+indeterminate t<X>(X)
+indeterminate t<X>(X)::<definition>
+indeterminate template <class> requires (sizeof (...(T())) > 0) int t(type-parameter-0-0)
+indeterminate template <class> requires (sizeof (...(T())) > 0) int t(type-parameter-0-0)::local(?)::operator()<X>(X) const
+indeterminate template <class> requires (sizeof (...(T())) > 0) int t(type-parameter-0-0)::local(?)::operator()<X>(X) const::<definition>
+indeterminate w()

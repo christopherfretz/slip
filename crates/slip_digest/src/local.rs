@@ -958,10 +958,12 @@ fn local_type(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         Err(Cause::UndeclaredLocal) => {
             // The walk declares it and its owner's numbering does not.
             s.uv(0).indeterminate(NUMBERING);
+            w.hold_type(t);
             return;
         }
         Err(c) => {
             s.uv(0).indeterminate(c);
+            w.hold_type(t);
             return;
         }
     };

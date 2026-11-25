@@ -305,6 +305,26 @@ pub(crate) struct Walk<'a> {
     /// The declarations the second way marked an entity for, as `hosts`
     /// holds them.
     pub hosts_hit: HashSet<DeclId>,
+    /// The function bodies a unit's stream wrote, and the default
+    /// arguments and default member initialisers (`Walk::hold_body`,
+    /// `Walk::hold_expr`): what `demand::unheld` checks Kiln's
+    /// instantiations against (WP-158).
+    pub held_bodies: HashSet<slip_kiln::kiln::ast::StmtId>,
+    pub held_exprs: HashSet<slip_kiln::kiln::ast::ExprId>,
+    /// The local types a unit's stream met and could not number, so wrote
+    /// as indeterminate without their members (`local::local_type`): what
+    /// they enclose is in that unit, which is unequal to everything
+    /// (`Walk::hold_type`, `demand::unheld`).
+    pub held_types: HashSet<DeclId>,
+    /// What the unit being written would hold (`Walk::hold_begin`): put
+    /// into the held sets only if the unit is kept (`Walk::hold_end`), so
+    /// a stream written and dropped (a second walk, a mark, a trace)
+    /// holds nothing.
+    pub(crate) hold_pending: Option<Vec<Hold>>,
+    /// Streams being written that are dropped, nested (`demand::immediates`'
+    /// second walk, `units::canonical_decl`'s candidate streams): what they
+    /// meet is no kept unit's ([`Walk::in_own_stream`]).
+    pub(crate) dropped: u32,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -407,6 +427,11 @@ impl<'a> Walk<'a> {
             content_emits: HashMap::new(),
             emits_placed: HashSet::new(),
             hosts_hit: HashSet::new(),
+            held_bodies: HashSet::new(),
+            held_exprs: HashSet::new(),
+            held_types: HashSet::new(),
+            hold_pending: None,
+            dropped: 0,
             name_values: None,
             by_value: 0,
             in_constant: 0,
@@ -524,6 +549,83 @@ impl<'a> Walk<'a> {
     /// name one (§4.2). The caller puts it back.
     pub(crate) fn take_expr_state(&mut self) -> ExprState {
         std::mem::take(&mut self.unit.expr)
+    }
+
+    /// Starts recording what the units written next hold
+    /// ([`Walk::hold_body`]).
+    pub(crate) fn hold_begin(&mut self) {
+        self.hold_pending = Some(Vec::new());
+    }
+
+    /// Stops recording; what was recorded is held if `kept` (the units
+    /// written are in the output), else dropped.
+    pub(crate) fn hold_end(&mut self, kept: bool) {
+        let Some(p) = self.hold_pending.take() else { return };
+        if !kept {
+            return;
+        }
+        for h in p {
+            match h {
+                Hold::Body(b) => {
+                    self.held_bodies.insert(b);
+                }
+                Hold::Expr(x) => {
+                    self.held_exprs.insert(x);
+                }
+                Hold::Type(t) => {
+                    self.held_types.insert(t);
+                }
+            }
+        }
+    }
+
+    /// Records that a unit's stream holds function body `b`
+    /// (`demand::unheld`, WP-158): only between [`Walk::hold_begin`] and
+    /// [`Walk::hold_end`] (the run's loop, around a unit that is kept and
+    /// its resolved units), and only in its own stream
+    /// ([`Walk::in_own_stream`]).
+    pub(crate) fn hold_body(&mut self, b: slip_kiln::kiln::ast::StmtId) {
+        if self.in_own_stream()
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Body(b));
+        }
+    }
+
+    /// Records that a unit's stream holds default argument or default
+    /// member initialiser `x` ([`Walk::hold_body`]'s conditions).
+    pub(crate) fn hold_expr(&mut self, x: slip_kiln::kiln::ast::ExprId) {
+        if self.in_own_stream()
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Expr(x));
+        }
+    }
+
+    /// Records that a unit's stream met local type `t` and wrote it as
+    /// indeterminate, its members unwritten ([`Walk::hold_body`]'s
+    /// conditions).
+    pub(crate) fn hold_type(&mut self, t: DeclId) {
+        if self.in_own_stream()
+            && let Some(p) = self.hold_pending.as_mut()
+        {
+            p.push(Hold::Type(t));
+        }
+    }
+
+    /// Whether what is written now goes into the own stream of the unit
+    /// being written, the stream that is kept: at unit level
+    /// ([`Walk::unit_level`]), not while an owner is numbered, not in a
+    /// profile walk, not in a stream whose local state is put aside
+    /// (`local::detached`), not in a stream that is dropped
+    /// ([`Walk::dropped`]). Read by `emitted::in_place` (rule 1 of the
+    /// mark) and by [`Walk::hold_body`] and its siblings (WP-158).
+    pub(crate) fn in_own_stream(&self) -> bool {
+        !crate::local::numbering_mode(self)
+            && self.unit_level()
+            && self.unit.expr.profile.is_none()
+            && !self.unit.local.detached
+            && self.dropped == 0
     }
 
     /// Whether what is written now goes straight into a unit stream: not
@@ -661,6 +763,13 @@ pub(crate) fn run_with<R>(
     run_kept(input, options, &[], f)
 }
 
+/// One thing a unit's stream holds (`Walk::hold_pending`).
+pub(crate) enum Hold {
+    Body(slip_kiln::kiln::ast::StmtId),
+    Expr(slip_kiln::kiln::ast::ExprId),
+    Type(DeclId),
+}
+
 /// [`run_with`], counting rule use with `Declared.kept` (`kept`,
 /// ascending; `spec/verify.md` §9.2).
 pub(crate) fn run_kept<R>(
@@ -683,14 +792,37 @@ pub(crate) fn run_kept<R>(
     // are fed to as well.
     let mut fed: Vec<(usize, Digest)> = Vec::new();
     let mut i = 0;
-    while i < w.queue.len() {
+    // The `default_argument` units of local functions an instantiation
+    // made (`demand::local_default_arguments`, WP-158): written once the
+    // queue is empty, and the queue drained again for what they demand.
+    // The second drain is a defence, not a need found: every entity such
+    // a default refers to is queued already (an implicit instantiation is
+    // a derived unit from `units::collect`, and `local_default_arguments`
+    // scans every declaration, not the queue), so today one pass is the
+    // fixpoint and dropping the drain changes no test (review of WP-158,
+    // mutation MC). It is kept so that a unit only such a default demands
+    // (a `Ref` to an on-demand unit) is written all the same.
+    let mut local_defaults = false;
+    loop {
+        if i == w.queue.len() {
+            if local_defaults {
+                break;
+            }
+            local_defaults = true;
+            w.hold_begin();
+            crate::demand::local_default_arguments(&mut w, &mut written);
+            w.hold_end(true);
+            continue;
+        }
         let (e, class) = w.queue[i];
         i += 1;
         let saved = w.names_start();
+        w.hold_begin();
         if let Some(mut u) = crate::units::write(&mut w, e, class) {
             // Its resolved units (`demand.rs`), after it.
             let mut resolved = Vec::new();
             crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
+            w.hold_end(true);
             // The mark "emitted unreferenced" (`emitted.rs`, WP-155).
             crate::emitted::mark(&mut w, e, &mut u, &mut resolved);
             if let Some(d) = w.names_end(saved) {
@@ -699,6 +831,7 @@ pub(crate) fn run_kept<R>(
             written.push(u);
             written.append(&mut resolved);
         } else {
+            w.hold_end(false);
             w.names_end(saved);
         }
     }
@@ -718,6 +851,12 @@ pub(crate) fn run_kept<R>(
     let unplaced = crate::emitted::unplaced(&mut w);
     counters
         .push(slip_model::Counter { name: "digest.emitted.unplaced".to_owned(), value: unplaced });
+    // What Kiln instantiated that no unit holds (`demand::unheld`,
+    // WP-158), always counted.
+    counters.push(slip_model::Counter {
+        name: "digest.instantiated.unheld".to_owned(),
+        value: crate::demand::unheld(&w),
+    });
     crate::ns_refs::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);

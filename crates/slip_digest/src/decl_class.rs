@@ -294,6 +294,9 @@ pub(crate) fn field_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if instantiated_field(w, d) {
         s.opt(false);
     } else {
+        if let Some(x) = init {
+            w.hold_expr(x);
+        }
         crate::expr::child_opt(w, s, init);
     }
     // flags-mutable, flags-no-unique-address.
