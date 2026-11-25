@@ -19,3 +19,10 @@ template <int N> struct Q { int f() { return N; } };
 template int Q<sizeof(make(0))>::f();
 template <int N> struct R { int f() { return N; } };
 template struct R<sizeof(make(0))>;
+// Fix round 2, S-2: a member class's explicit instantiation (M11); a
+// function's whose parameter type's qualifier holds the operand (M23).
+template <int N> struct QI { struct In { int f() { return N; } }; };
+template struct QI<sizeof(make(0))>::In;
+template <int N> struct QN { struct In {}; };
+template <class T> void fn(T) {}
+template void fn(QN<sizeof(make(0))>::In);

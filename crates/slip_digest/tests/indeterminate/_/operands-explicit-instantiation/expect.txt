@@ -2,3 +2,5 @@ indeterminate ft<4>()::<operands>
 indeterminate Q<4>::f()::<operands>
 indeterminate fx<Wr<int>>(Wr<int>)::<operands>
 indeterminate vt<int>::<operands>
+indeterminate QI<4>::In::<operands>
+indeterminate fn<QN<4>::In>(QN<4>::In)::<operands>

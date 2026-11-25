@@ -1,0 +1,5 @@
+exact derived
+removed lib::make(lib::X)
+derived-added make<lib::X>(lib::X)
+derived-changed CE::E::<operands>
+derived-changed CE<int>::E::<definition>::<operands>
