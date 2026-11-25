@@ -594,15 +594,26 @@ or not the holder had an operand:
   nothing fails.
 - `kiln/explicit-instantiation-written`: an explicit instantiation of a
   function, a variable or a member that its own directive names (not
-  its class's): Kiln keeps neither its arguments nor its declarator as
-  written.
+  its class's), when the directive may have spelt an operand: the
+  entity is a member of a class of `kiln/declarator-qualifier`'s set,
+  or its arguments hold a non-type argument, or one of its type
+  arguments, its type, its return type or a parameter's type is
+  (canonically) a type of the arena that holds an operand. Kiln keeps
+  neither the directive's arguments nor its declarator as written. A
+  class's explicit instantiation keeps its arguments and is read.
 - `kiln/declarator-qualifier`: a declaration written outside its class
   (not an instantiation's), or a `using enum`, when a class around it
-  is named somewhere in the translation unit by a template-id whose
-  written arguments hold an operand that is no literal, or by a
-  `decltype` or `typeof` of an expression (`template <> int
-  Q<sizeof(make(x))>::s = 5;`, also through an alias template): Kiln
-  keeps no declarator's qualifier as written.
+  is in this set: a class named somewhere in the translation unit by a
+  template-id whose written arguments hold an operand that is no
+  literal, or by a `decltype` or `typeof` of an expression (`template
+  <> int Q<sizeof(make(x))>::s = 5;`); a class an alias template names
+  (`template <int> using AL = Pl;`, then `int AL<sizeof(make(x))>::s`);
+  a specialisation of a class template an alias template names
+  (`template <class T> using A2 = Q2<T>;`). Kiln keeps no declarator's
+  qualifier as written, and an alias template's template-id leaves no
+  type in the arena. A limit by name: an alias template whose target a
+  dependent name finds (`typename T::type`) names a class the arena
+  cannot tell, and is not failed closed.
 - `operands/splice`: a splice in a written type or qualifier.
 
 **`noexcept` of a specialisation** (a function whose exception

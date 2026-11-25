@@ -1,0 +1,13 @@
+# WP-156 fix round 1 (S4).
+exact derived
+removed lib::make(lib::X)
+derived-changed at::<operands>
+derived-changed fpp::<operands>
+derived-changed pm::<operands>
+derived-changed qa::<operands>
+derived-changed qb::<operands>
+derived-changed template <class> void f24(type-parameter-0-0, typename Tn<type-parameter-0-0>::inner::t)::<operands>
+derived-changed tot::<operands>
+derived-changed tt::<operands>
+derived-changed vp::<operands>
+derived-added make<lib::X>(lib::X)

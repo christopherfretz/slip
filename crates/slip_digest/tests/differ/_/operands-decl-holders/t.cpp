@@ -28,3 +28,7 @@ template <class T> int vt = 0;
 template <> decltype(make(x)) vt<int> = 1;
 // W8: a class's explicit instantiation keeps its arguments as written.
 template struct W2<sizeof(make(x)) + 1>;
+// W1 with a constrained placeholder (mutation R18): the parameter's type
+// is the placeholder as written, its type-constraint read.
+template <class T, class U> concept Same = __is_same(T, U);
+template <Same<decltype(make(x))> auto N> struct P3 {};

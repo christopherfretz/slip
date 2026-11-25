@@ -11,3 +11,4 @@ derived-changed template <int> int I1::g()::<operands>
 derived-changed template <int> int I1<int>::g()::<operands>
 derived-changed vt<int>::<operands>
 derived-added make<lib::X>(lib::X)
+derived-changed P3::<operands>
