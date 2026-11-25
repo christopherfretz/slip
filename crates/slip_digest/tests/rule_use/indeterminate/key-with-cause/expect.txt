@@ -1,3 +1,4 @@
 use 3 via 1 direct 0
 indeterminate g(A<^^int> *)
+indeterminate g(A<^^int> *)::<operands>
 indeterminate use()

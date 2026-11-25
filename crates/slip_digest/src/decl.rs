@@ -28,6 +28,7 @@ impl Walk<'_> {
             s.uv(0).indeterminate(TOO_DEEP);
             return;
         }
+        crate::operands::decl(self, d);
         self.decl_node(s, d, e);
         s.mark_decls(e);
         crate::decl_scope::cold(self, s, d);
@@ -54,6 +55,10 @@ impl Walk<'_> {
             };
         }
         let aborts = self.aborts;
+        #[cfg(test)]
+        if crate::zz_probe156::TRACE.with(std::cell::Cell::get) {
+            eprintln!("PROBE4 content_hash {e:?} start numbering={} {}", crate::local::numbering_mode(self), std::backtrace::Backtrace::force_capture());
+        }
         let read = crate::units::read_decl(self, e);
         // A unit digest of its own: a fresh unit state, and not inside the
         // key computation that may have asked for it.
@@ -66,19 +71,29 @@ impl Walk<'_> {
         // real cycle.
         let keys = std::mem::take(&mut self.keys_in_progress);
         self.unit.local.content = Some(e);
+        crate::operands::begin(self, e, Some(read));
         let mut s = Stream::new();
         self.decl_stream(&mut s, read, e);
         crate::own_spelling::write_unit_list(self, &mut s);
         // What rule 1 of the mark met, read when the unit is written
         // (`units::write`).
         let emits = std::mem::take(&mut self.unit.emits);
+        // The unit's stream ends before its operand unit's begins (an
+        // armed stream module records one stream at a time, `trace.rs`).
+        let h = s.finish(UNIT_TAG);
+        // Its operand unit (`operands.rs`), read when the unit is written.
+        let operands = crate::operands::finish(self);
+        self.content_operands.insert(e, operands);
         self.keys_in_progress = keys;
         self.in_key = in_key;
         self.restore_types(types);
         self.unit = saved;
-        let h = s.finish(UNIT_TAG);
         let h = self.hashed(h);
         self.content_in_progress.remove(&e);
+        #[cfg(test)]
+        if crate::zz_probe156::TRACE.with(std::cell::Cell::get) {
+            eprintln!("PROBE4 content_hash {e:?} end memo={} digest={}", self.aborts == aborts, h.digest);
+        }
         if self.aborts == aborts {
             self.content.insert(e, h);
         }

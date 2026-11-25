@@ -129,6 +129,8 @@ pub(crate) fn resolved_units(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: 
         }
     }
     default_arguments(w, e, owner, out);
+    // The parts' operand units, after the parts (`operands.rs`).
+    out.append(&mut w.part_operands);
 }
 
 /// Writes one resolved unit of `owner` (the unit of entity `e`): the
@@ -144,9 +146,8 @@ pub(crate) fn write_resolved(
     body: impl FnOnce(&mut Walk<'_>, &mut Stream),
 ) -> Written {
     let name = Name::Property(u64::from(p.number()));
-    let mut u = write_part(w, e, owner, KeyKind::Resolved, name, disc, body);
-    u.resolved = Some(Resolved { property: p, disc });
-    u
+    let what = Part::Resolved(Resolved { property: p, disc });
+    write_part(w, e, owner, KeyKind::Resolved, name, disc, what, body)
 }
 
 /// Writes the `default_argument` unit (digest-kinds §11.4) of parameter
@@ -162,15 +163,24 @@ pub(crate) fn write_default_argument(
     body: impl FnOnce(&mut Walk<'_>, &mut Stream),
 ) -> Written {
     let name = Name::Parameter(index);
-    let mut u = write_part(w, e, owner, KeyKind::DefaultArgument, name, None, body);
-    u.default_argument = Some(index);
-    u
+    let what = Part::DefaultArgument(index);
+    write_part(w, e, owner, KeyKind::DefaultArgument, name, None, what, body)
+}
+
+/// What a part is ([`write_part`]): its `Written::resolved` or
+/// `Written::default_argument`, set before its operand unit copies them
+/// (`operands::unit`).
+#[derive(Clone, Copy)]
+enum Part {
+    Resolved(Resolved),
+    DefaultArgument(u64),
 }
 
 /// A derived unit keyed under `owner` (a resolved or `default_argument`
 /// unit): key `kind` / `Parent::Unit(owner.key)` / `name` / the `uv`
 /// discriminator `disc`, whose stream `body` writes with a fresh unit
-/// state.
+/// state; `what` says which part it is.
+#[allow(clippy::too_many_arguments, reason = "the key's fields, the part and its body")]
 fn write_part(
     w: &mut Walk<'_>,
     e: DeclId,
@@ -178,16 +188,22 @@ fn write_part(
     kind: KeyKind,
     name: Name,
     disc: Option<u64>,
+    what: Part,
     body: impl FnOnce(&mut Walk<'_>, &mut Stream),
 ) -> Written {
     let saved = w.take_unit();
+    crate::operands::begin(w, e, None);
     let mut stream = Stream::new();
     body(w, &mut stream);
     let emits = std::mem::take(&mut w.unit.emits);
+    // The part's stream ends before its operand unit's begins (an armed
+    // stream module records one stream at a time, `trace.rs`).
+    let finished = stream.finish(UNIT_TAG);
+    // Its operand unit, in its state (`operands.rs`, S6).
+    let operands = crate::operands::finish(w);
     w.unit = saved;
     // Rule 1 of the mark "emitted unreferenced" (`emitted.rs`, WP-155).
     let emitted = crate::emitted::written(w, e, emits);
-    let finished = stream.finish(UNIT_TAG);
     let h = w.hashed(finished);
     let disc_digest = disc.map(|n| {
         let d = disc_hashed(n);
@@ -212,7 +228,7 @@ fn write_part(
             crate::units::origin_file(w, owner.read.unwrap_or(e))
         }
     };
-    Written {
+    let u = Written {
         entity: Some(e),
         read: owner.read,
         key: key.id(),
@@ -221,14 +237,28 @@ fn write_part(
         cause,
         class: GroupClass::Derived,
         file,
-        resolved: None,
-        default_argument: owner.default_argument,
+        resolved: match what {
+            Part::Resolved(r) => Some(r),
+            Part::DefaultArgument(_) => None,
+        },
+        default_argument: match what {
+            Part::DefaultArgument(i) => Some(i),
+            Part::Resolved(_) => owner.default_argument,
+        },
         owner: Some(owner.key),
         collided: false,
         view: None,
         denotes: None,
         emitted,
+        operands: None,
+    };
+    // The part's operand unit, which the arm's caller takes
+    // (`Walk::part_operands`).
+    if let Some(h) = operands {
+        let o = crate::operands::unit(w, e, &u, h);
+        w.part_operands.push(o);
     }
+    u
 }
 
 /// The discriminator stream of a part unit: one `uv`.
@@ -241,11 +271,12 @@ fn disc_hashed(n: u64) -> crate::stream::Hashed {
 /// The mapped `Key` of the written part unit `u` (a resolved or
 /// `default_argument` unit), computed again from `entity`, the mapped key
 /// of its entity, as [`write_part`] builds it: the `default_argument` unit
-/// first if `u` is one or is under one, then the resolved unit. `None` for
-/// a unit that is neither (its key is `entity`). For unit records
+/// first if `u` is one or is under one, then the resolved unit, then the
+/// operand unit if `u` is one (`operands::unit`). `None` for a unit that
+/// is none of these (its key is `entity`). For unit records
 /// (`records.rs`); hashes into no unit.
 pub(crate) fn part_key(w: &Walk<'_>, entity: Key, u: &Written) -> Option<Key> {
-    if u.default_argument.is_none() && u.resolved.is_none() {
+    if u.default_argument.is_none() && u.resolved.is_none() && u.operands.is_none() {
         return None;
     }
     let mut key = entity;
@@ -264,6 +295,16 @@ pub(crate) fn part_key(w: &Walk<'_>, entity: Key, u: &Written) -> Option<Key> {
             parent: Parent::Unit(key.id()),
             name: Name::Property(u64::from(r.property.number())),
             disc: r.disc.map(|n| disc_hashed(n).digest),
+        };
+        key = w.rules.map(k);
+    }
+    // An operand unit is keyed under its parent (`operands::unit`).
+    if u.operands.is_some() {
+        let k = Key {
+            kind: KeyKind::Operands,
+            parent: Parent::Unit(key.id()),
+            name: Name::Operands,
+            disc: None,
         };
         key = w.rules.map(k);
     }
@@ -311,7 +352,9 @@ pub(crate) fn number_parts(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     let ast = w.ast;
     if let Some(def) = defining_declaration(w, e) {
         drop(w.take_unit());
+        crate::operands::begin(w, e, None);
         definition_stream(w, s, e, def);
+        crate::operands::number(w);
     }
     let d = crate::units::read_decl(w, e);
     if let Some(f) = ast.decls.field(d)
@@ -320,7 +363,9 @@ pub(crate) fn number_parts(w: &mut Walk<'_>, s: &mut Stream, e: DeclId) {
     {
         drop(w.take_unit());
         w.unit.local.holder = Some(e);
+        crate::operands::begin(w, e, None);
         crate::expr::child(w, s, x);
+        crate::operands::number(w);
     }
 }
 
@@ -689,6 +734,8 @@ fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Wr
     }
     let u = write_resolved(w, e, owner, Property::ExceptionSpec, None, |w, s| {
         w.write_exc_spec(s, spec, true);
+        // S4: its `noexcept(e)` is its operand unit's only.
+        crate::operands::exception_spec(w, spec);
     });
     out.push(u);
 }
@@ -1048,6 +1095,7 @@ pub(crate) fn unheld(w: &Walk<'_>) -> u64 {
 /// writes for it (`trace.rs` writes them again).
 pub(crate) fn local_parts(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     default_arguments(w, e, owner, out);
+    out.append(&mut w.part_operands);
 }
 
 /// Whether `e` (a first declaration) is a function [`local_default_arguments`]
@@ -1100,6 +1148,7 @@ pub(crate) fn local_owner(w: &mut Walk<'_>, e: DeclId) -> Written {
         view: None,
         denotes: None,
         emitted: false,
+        operands: None,
     }
 }
 

@@ -140,6 +140,10 @@ fn no_spelling(w: &mut Walk<'_>, s: &mut Stream, ctx: Ctx, site: &'static str) {
 }
 
 fn push(w: &mut Walk<'_>, f: Fact) {
+    #[cfg(test)]
+    if crate::zz_probe156::TRACE.with(std::cell::Cell::get) && f.due() {
+        eprintln!("PROBE3 fact due content={:?} {}", w.unit.local.content, std::backtrace::Backtrace::force_capture());
+    }
     w.unit.facts_due |= f.due();
     w.unit.facts.push(f);
 }

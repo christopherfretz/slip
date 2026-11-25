@@ -322,7 +322,8 @@ pub(super) fn json_name(n: &Name) -> Value {
         | Name::DeductionGuide
         | Name::Anonymous
         | Name::Content
-        | Name::Order => return Value::Str(n.form().to_owned()),
+        | Name::Order
+        | Name::Operands => return Value::Str(n.form().to_owned()),
     };
     object(vec![(n.form(), value)])
 }
@@ -358,6 +359,7 @@ fn read_name_at(v: &Value, at: &At<'_>, wrappers: usize) -> JResult<Name> {
             "anonymous" => Ok(Name::Anonymous),
             "content" => Ok(Name::Content),
             "order" => Ok(Name::Order),
+            "operands" => Ok(Name::Operands),
             form if has_value(form) => {
                 Err(at.error(format!("the form {form} is written {{\"{form}\": <value>}}")))
             }

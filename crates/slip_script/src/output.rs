@@ -516,6 +516,7 @@ impl fmt::Display for Rendered<'_> {
                 Name::Property(k) => write!(f, "property({k})"),
                 Name::Order => f.write_str("order"),
                 Name::Parameter(k) => write!(f, "parameter({k})"),
+                Name::Operands => f.write_str("operands"),
             },
         }
     }

@@ -78,11 +78,14 @@ pub enum KeyKind {
     TemplateParamObject = 31,
     UsingShadow = 32,
     UnresolvedIfExists = 33,
+    /// The operand unit of a unit (`spec/digest.md` §2.4, WP-156). 34 is
+    /// reserved (the substitution unit of `docs/wp/WP-153.md`).
+    Operands = 35,
 }
 
 /// Every `KeyKind` with its number and its name in digest-kinds §3.1, in
 /// number order.
-pub(crate) const KEY_KINDS: [(KeyKind, u64, &str); 33] = [
+pub(crate) const KEY_KINDS: [(KeyKind, u64, &str); 34] = [
     (KeyKind::Namespace, 1, "namespace"),
     (KeyKind::Class, 2, "class"),
     (KeyKind::Enumeration, 3, "enumeration"),
@@ -116,14 +119,15 @@ pub(crate) const KEY_KINDS: [(KeyKind, u64, &str); 33] = [
     (KeyKind::TemplateParamObject, 31, "template_param_object"),
     (KeyKind::UsingShadow, 32, "using_shadow"),
     (KeyKind::UnresolvedIfExists, 33, "unresolved_if_exists"),
+    (KeyKind::Operands, 35, "operands"),
 ];
 
 impl KeyKind {
     /// Every value, in number order.
-    pub const ALL: [KeyKind; 33] = {
-        let mut all = [KeyKind::Namespace; 33];
+    pub const ALL: [KeyKind; 34] = {
+        let mut all = [KeyKind::Namespace; 34];
         let mut i = 0;
-        while i < 33 {
+        while i < 34 {
             all[i] = KEY_KINDS[i].0;
             i += 1;
         }
@@ -135,15 +139,15 @@ impl KeyKind {
         self as u64
     }
 
-    /// The kind with number `code`, if the table lists it.
+    /// The kind with number `code`, if the table lists it (34 is
+    /// reserved and unlisted).
     pub fn from_code(code: u64) -> Option<KeyKind> {
-        let i = usize::try_from(code.checked_sub(1)?).ok()?;
-        KEY_KINDS.get(i).map(|t| t.0)
+        KEY_KINDS.iter().find(|t| t.1 == code).map(|t| t.0)
     }
 
     /// Its name in digest-kinds §3.1 (`class_template`), as in JSON.
     pub fn name(self) -> &'static str {
-        KEY_KINDS[self as usize - 1].2
+        KEY_KINDS.iter().find(|t| t.0 == self).map_or("", |t| t.2)
     }
 
     /// Appends its encoding: `uv`, its number.
@@ -238,10 +242,14 @@ pub enum Name {
     Order,
     /// 15: the parameter's index (a default argument unit).
     Parameter(u64),
+    /// 17: the operand unit (`spec/digest.md` §2.4, WP-156). 16 is
+    /// reserved (the substitution unit of `docs/wp/WP-153.md`).
+    Operands,
 }
 
 /// The name of each `Name` form in digest-kinds §3.2, by number − 1.
-pub(crate) const NAME_FORMS: [&str; 15] = [
+/// 16 is reserved, so `operands` (17) is the last entry.
+pub(crate) const NAME_FORMS: [&str; 16] = [
     "identifier",
     "operator",
     "constructor",
@@ -257,6 +265,7 @@ pub(crate) const NAME_FORMS: [&str; 15] = [
     "property",
     "order",
     "parameter",
+    "operands",
 ];
 
 /// The `what` of a `Name` whose `unnamed_by` nest too deep.
@@ -298,12 +307,14 @@ impl Name {
             Name::Property(_) => 13,
             Name::Order => 14,
             Name::Parameter(_) => 15,
+            Name::Operands => 17,
         }
     }
 
     /// The name of its form in digest-kinds §3.2 (`literal_operator`), as in JSON.
     pub fn form(&self) -> &'static str {
-        NAME_FORMS[self.code() as usize - 1]
+        // 16 is reserved: `operands` (17) is entry 16.
+        NAME_FORMS[self.code().min(16) as usize - 1]
     }
 
     /// The rules a reader checks of a name in memory: an `operator` number
@@ -355,7 +366,8 @@ impl Name {
                 | Name::DeductionGuide
                 | Name::Anonymous
                 | Name::Content
-                | Name::Order => {}
+                | Name::Order
+                | Name::Operands => {}
             }
             return;
         }
@@ -396,6 +408,7 @@ impl Name {
                 13 => Name::Property(d.uv()?),
                 14 => Name::Order,
                 15 => Name::Parameter(d.uv()?),
+                17 => Name::Operands,
                 _ => return Err(malformed(at, "unlisted Name value")),
             };
             break name;
@@ -566,7 +579,7 @@ impl Rule {
         if matches!(self.kind, KeyKind::Specialisation | KeyKind::PartialSpecialisation) {
             return Some(RULE_ON_SPECIALISATION);
         }
-        if matches!(self.kind, KeyKind::Resolved | KeyKind::DefaultArgument) {
+        if matches!(self.kind, KeyKind::Resolved | KeyKind::DefaultArgument | KeyKind::Operands) {
             return Some(RULE_ON_PART);
         }
         if self.kind == KeyKind::Namespace
@@ -807,13 +820,15 @@ mod tests {
     fn key_kind_table_is_in_number_order() {
         for (i, (kind, code, name)) in KEY_KINDS.iter().enumerate() {
             assert_eq!(kind.code(), *code);
-            assert_eq!(*code, i as u64 + 1);
+            // 34 is reserved (WP-156): `operands` is 35.
+            assert_eq!(*code, if i == 33 { 35 } else { i as u64 + 1 });
             assert_eq!(KeyKind::ALL[i], *kind);
             assert_eq!(kind.name(), *name);
             assert_eq!(KeyKind::from_code(*code), Some(*kind));
         }
         assert_eq!(KeyKind::from_code(0), None);
         assert_eq!(KeyKind::from_code(34), None);
+        assert_eq!(KeyKind::from_code(36), None);
         assert_eq!(KeyKind::from_code(u64::MAX), None);
     }
 

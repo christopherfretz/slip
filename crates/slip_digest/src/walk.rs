@@ -80,6 +80,8 @@ pub(crate) struct UnitState {
     /// The stream's holder and the local types it declared
     /// (`local::UnitLocals`).
     pub local: crate::local::UnitLocals,
+    /// The unit's operand unit being collected (`operands.rs`, WP-156).
+    pub operands: crate::operands::State,
 }
 
 /// The state of the expression walk in a unit (`expr.rs`): put aside with
@@ -362,6 +364,22 @@ pub(crate) struct Walk<'a> {
     /// [`Walk::const_memo`] (computed with [`Walk::by_value`] at 0); a
     /// constant with no entry has none (`value::const_names`).
     pub const_names: HashMap<u32, Digest>,
+    /// How many references to an entity the walk has written
+    /// (`Walk::write_ref`, and a type digest that holds one,
+    /// `TypeRef::refs`): an operand is written only if its walk moved it
+    /// (`operands.rs`, S5).
+    pub op_refs: u64,
+    /// The counters of operand units (`operands::counters`).
+    pub op_counts: crate::operands::Counts,
+    /// The operand unit of the entity's unit `units::write` wrote last,
+    /// taken by `run_kept`.
+    pub pending_operands: Option<Hashed>,
+    /// The operand units of the parts written since they were last taken
+    /// (`demand::write_part`), taken by the arms' callers.
+    pub part_operands: Vec<Written>,
+    /// The operand unit of each content-keyed entity's stream
+    /// (`Walk::content_hash`), read when its unit is written.
+    pub content_operands: HashMap<DeclId, Option<Hashed>>,
 }
 
 /// `H("slip.names.v1", entries)`: the names digest of a unit or a constant
@@ -440,6 +458,11 @@ impl<'a> Walk<'a> {
             rule_use: None,
             names: None,
             const_names: HashMap::new(),
+            op_refs: 0,
+            op_counts: crate::operands::Counts::default(),
+            pending_operands: None,
+            part_operands: Vec::new(),
+            content_operands: HashMap::new(),
         }
     }
 
@@ -819,6 +842,9 @@ pub(crate) fn run_kept<R>(
         let saved = w.names_start();
         w.hold_begin();
         if let Some(mut u) = crate::units::write(&mut w, e, class) {
+            // Its operand unit (`operands.rs`, WP-156), written with its
+            // stream.
+            let operands = w.pending_operands.take();
             // Its resolved units (`demand.rs`), after it.
             let mut resolved = Vec::new();
             crate::demand::resolved_units(&mut w, e, &u, &mut resolved);
@@ -828,7 +854,9 @@ pub(crate) fn run_kept<R>(
             if let Some(d) = w.names_end(saved) {
                 fed.push((written.len(), d));
             }
+            let operands = operands.map(|h| crate::operands::unit(&mut w, e, &u, h));
             written.push(u);
+            written.extend(operands);
             written.append(&mut resolved);
         } else {
             w.hold_end(false);
@@ -841,6 +869,7 @@ pub(crate) fn run_kept<R>(
     let collisions = crate::units::mark_collisions(&mut written)
         + crate::keys::mark_mapped_collisions(&w, input, &mut written);
     let collisions = collisions + crate::units::mark_part_collisions(&mut written);
+    crate::operands::inherit_causes(&mut written);
     let namespace_parts = crate::ns_refs::notes(&mut w, &written);
     let names = if options.names { crate::names::names(&w, &written) } else { Vec::new() };
     let (digests, totals) = crate::groups::build(&written, &options.detail);
@@ -858,6 +887,7 @@ pub(crate) fn run_kept<R>(
         value: crate::demand::unheld(&w),
     });
     crate::ns_refs::counters(&w, &mut counters);
+    crate::operands::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);
     // Last: the lists form keys of their own (`own_lists.rs`, inert).

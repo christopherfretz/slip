@@ -175,6 +175,11 @@ fn traces_into(w: &mut Walk<'_>, written: &[Written], keys: &[Digest], out: &mut
         }
         let again = match (u.entity, u.owner) {
             (None, _) => Some(order(w)),
+            (Some(e), Some(parent))
+                if u.operands.is_some() && u.resolved.is_none() && u.default_argument.is_none() =>
+            {
+                operand_unit(w, written, u, parent, e)
+            }
             (Some(e), Some(_)) => part(w, written, &mut parts, u, e),
             (Some(e), None) if content(w, Some(e)) => Some(content_unit(w, e)),
             (Some(e), None) => Some(entity_unit(w, u, e)),
@@ -200,24 +205,49 @@ fn content(w: &Walk<'_>, e: Option<DeclId>) -> bool {
 
 /// The second writing of the unit of entity `e` (`units::write`).
 fn entity_unit(w: &mut Walk<'_>, u: &Written, e: DeclId) -> Recording {
+    entity_again(w, u, e, false)
+}
+
+/// The writing of [`entity_unit`]; with `operands`, as the first writing
+/// was, with its operand unit (`operands.rs`) after it and the stream
+/// module armed by the caller ([`operand_unit`]): the unit's stream is
+/// then an ordinary one, finished before the operand unit's begins, and
+/// what is returned is not the unit's.
+fn entity_again(w: &mut Walk<'_>, u: &Written, e: DeclId, operands: bool) -> Recording {
     let outside = crate::units::outside_only(w, e);
     let from = if outside { u.read.unwrap_or(e) } else { crate::units::read_decl(w, e) };
     let saved = w.take_unit();
     w.unit.local.holder = Some(e);
-    let mut s = Stream::traced();
+    if operands {
+        crate::operands::begin(w, e, Some(from));
+    }
+    let mut s = if operands { Stream::new() } else { Stream::traced() };
     w.decl_stream(&mut s, from, e);
     #[cfg(test)]
     tests::panic_at(tests::IN_A_TRACED_STREAM);
     crate::enclosing::write(w, &mut s, e);
     crate::own_spelling::write_unit_list(w, &mut s);
+    let rec = if operands {
+        let _ = s.finish(UNIT_TAG);
+        let _ = crate::operands::finish(w);
+        Recording { bytes: Vec::new(), marks: Vec::new(), digests: Vec::new() }
+    } else {
+        s.into_recording()
+    };
     w.unit = saved;
-    s.into_recording()
+    rec
 }
 
 /// The second writing of the content-keyed entity `e`
 /// (`Walk::content_hash`): as the first, which met no memo entry of `e`
 /// and found `e` in progress inside its own writing.
 fn content_unit(w: &mut Walk<'_>, e: DeclId) -> Recording {
+    content_again(w, e, false)
+}
+
+/// The writing of [`content_unit`]; with `operands`, as
+/// [`entity_again`]'s.
+fn content_again(w: &mut Walk<'_>, e: DeclId, operands: bool) -> Recording {
     let read = crate::units::read_decl(w, e);
     let memo = w.content.remove(&e);
     let fresh = w.content_in_progress.insert(e);
@@ -226,9 +256,19 @@ fn content_unit(w: &mut Walk<'_>, e: DeclId) -> Recording {
     let in_key = std::mem::take(&mut w.in_key);
     let keys = std::mem::take(&mut w.keys_in_progress);
     w.unit.local.content = Some(e);
-    let mut s = Stream::traced();
+    if operands {
+        crate::operands::begin(w, e, Some(read));
+    }
+    let mut s = if operands { Stream::new() } else { Stream::traced() };
     w.decl_stream(&mut s, read, e);
     crate::own_spelling::write_unit_list(w, &mut s);
+    let rec = if operands {
+        let _ = s.finish(UNIT_TAG);
+        let _ = crate::operands::finish(w);
+        Recording { bytes: Vec::new(), marks: Vec::new(), digests: Vec::new() }
+    } else {
+        s.into_recording()
+    };
     w.keys_in_progress = keys;
     w.in_key = in_key;
     w.restore_types(types);
@@ -239,7 +279,29 @@ fn content_unit(w: &mut Walk<'_>, e: DeclId) -> Recording {
     if let Some(h) = memo {
         w.content.insert(e, h);
     }
-    s.into_recording()
+    rec
+}
+
+/// The second writing of the operand unit `u` (`operands.rs`, WP-156)
+/// of the entity or content-keyed unit of `e`, whose key is `parent`: the
+/// parent's writing again with its operand unit after it, the stream
+/// module armed, and the kept stream that hashes to `u`'s digest. `None`
+/// if the parent is not among `written` or no kept stream hashes so.
+fn operand_unit(
+    w: &mut Walk<'_>,
+    written: &[Written],
+    u: &Written,
+    parent: Digest,
+    e: DeclId,
+) -> Option<Recording> {
+    let p = written.iter().find(|p| p.key == parent && p.operands.is_none())?;
+    let armed = Armed::new();
+    if content(w, Some(e)) {
+        content_again(w, e, true);
+    } else {
+        entity_again(w, p, e, true);
+    }
+    armed.take().into_iter().find(|r| tagged_digest(UNIT_TAG, &r.bytes) == u.digest)
 }
 
 /// The second writing of the order unit (`units::order_unit`).

@@ -72,6 +72,11 @@ pub(crate) struct Written {
     /// unit emits unreferenced (`emitted.rs`, WP-155): `Unit::EMITTED`,
     /// part of no digest.
     pub emitted: bool,
+    /// For an operand unit (`operands.rs`, WP-156), its parent's key
+    /// kind, which names it (`names::names`); `None` for every other
+    /// unit. An operand unit's `owner` is its parent's key, and its
+    /// `resolved` and `default_argument` are its parent's.
+    pub operands: Option<KeyKind>,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -606,12 +611,14 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
     let read = if outside { canonical_decl(w, e) } else { w.representative(e) };
     let (hashed, emits) = if content {
         let h = w.content_hash(e);
+        w.pending_operands = w.content_operands.get(&e).copied().flatten();
         (h, w.content_emits.get(&e).cloned().unwrap_or_default())
     } else {
         // `local::stream_source`, which numbering an owner reads from.
         let from = if outside { read } else { read_decl(w, e) };
         let saved = w.take_unit();
         w.unit.local.holder = Some(e);
+        crate::operands::begin(w, e, Some(from));
         let mut s = Stream::new();
         w.decl_stream(&mut s, from, e);
         crate::enclosing::write(w, &mut s, e);
@@ -619,10 +626,14 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         // (digest-kinds §1.7, §4.4 "Spellings" item 6).
         crate::own_spelling::write_unit_list(w, &mut s);
         let emits = std::mem::take(&mut w.unit.emits);
+        // The unit's stream ends before its operand unit's begins (an
+        // armed stream module records one stream at a time, `trace.rs`).
+        let h = s.finish(UNIT_TAG);
+        // The operand unit, in the unit's state (`operands.rs`, S6).
+        w.pending_operands = crate::operands::finish(w);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);
-        let h = s.finish(UNIT_TAG);
         (w.hashed(h), emits)
     };
     let (key, kind, key_cause) = match w.key(e) {
@@ -676,6 +687,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         view: None,
         denotes: None,
         emitted,
+        operands: None,
     })
 }
 
@@ -918,6 +930,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         view: None,
         denotes: None,
         emitted: false,
+        operands: None,
     }
 }
 
@@ -1078,9 +1091,10 @@ fn runs(written: &[Written]) -> Vec<Vec<usize>> {
     order.chunk_by(|&a, &b| written[a].key == written[b].key).map(<[usize]>::to_vec).collect()
 }
 
-/// A unit keyed under another unit's key (digest-kinds §11.1, §11.4).
+/// A unit keyed under another unit's key (digest-kinds §11.1, §11.4,
+/// §11.11).
 fn is_part(kind: KeyKind) -> bool {
-    matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
+    matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument | KeyKind::Operands)
 }
 
 fn collides(written: &[Written], run: &[usize]) -> bool {

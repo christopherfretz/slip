@@ -217,7 +217,7 @@ pub(crate) fn subst_non_type_template_parm_pack_expr(w: &mut Walk<'_>, s: &mut S
 /// `Ref::param` of a function parameter: its function-scope depth and
 /// position (`ParamData`), what Kiln's profile and the Itanium mangling
 /// read; `Ref::none` and `cause` without its `ParamData`.
-fn param_ref(w: &Walk<'_>, s: &mut Stream, d: DeclId, cause: Cause) {
+pub(crate) fn param_ref(w: &Walk<'_>, s: &mut Stream, d: DeclId, cause: Cause) {
     match w.ast.decls.param(d) {
         Some(p) => {
             s.uv(REF_PARAM).uv(u64::from(p.scope_depth())).uv(u64::from(p.index));

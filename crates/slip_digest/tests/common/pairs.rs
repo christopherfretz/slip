@@ -492,3 +492,54 @@ pub fn judge_equal(a: &Digested, b: &Digested) -> Result<(), String> {
     }
     if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
+
+/// The suffix of an operand unit's name (`names.rs`, WP-156).
+pub const OPERANDS: &str = "::<operands>";
+
+/// The key of the operand unit of the unit whose key is `parent`
+/// (`spec/digest-kinds.md` §11.10): no rule maps it further.
+pub fn operand_key(parent: &Digest) -> Digest {
+    use slip_model::keys::{Key, KeyKind, Name, Parent};
+    Key { kind: KeyKind::Operands, parent: Parent::Unit(*parent), name: Name::Operands, disc: None }
+        .id()
+}
+
+/// The operand-unit class of pairs (`tests/operands.rs`, WP-156 item 6,
+/// `spec/verify.md` §4 step 3, S8): every unit both sides have is equal;
+/// every unit one side alone has is the operand unit of a unit both sides
+/// have; no unit is indeterminate for a cause other than `Pending`. `Ok`
+/// holds the names of the parents of each side's operand units (the
+/// operand unit's name without [`OPERANDS`]): side A's, then side B's.
+pub fn judge_operands(
+    a: &Digested,
+    b: &Digested,
+) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+    let mut problems = hard(a, b);
+    for (k, ua) in &a.units {
+        if let Some(ub) = b.units.get(k)
+            && ua != ub
+        {
+            problems.push(format!("differs: {}", a.name(k)));
+        }
+    }
+    let both: BTreeSet<&Digest> = a.units.keys().filter(|k| b.units.contains_key(*k)).collect();
+    let of_both: BTreeSet<Digest> = both.iter().map(|p| operand_key(p)).collect();
+    for (side, d, other) in [("A", a, b), ("B", b, a)] {
+        for k in d.units.keys() {
+            if !other.units.contains_key(k) && !of_both.contains(k) {
+                problems.push(format!(
+                    "only in {side}: {} (not the operand unit of a unit both sides have)",
+                    d.name(k)
+                ));
+            }
+        }
+    }
+    let parents = |d: &Digested| -> BTreeSet<String> {
+        d.units
+            .values()
+            .flatten()
+            .filter_map(|u| u.name.strip_suffix(OPERANDS).map(str::to_owned))
+            .collect()
+    };
+    if problems.is_empty() { Ok((parents(a), parents(b))) } else { Err(problems.join("\n")) }
+}

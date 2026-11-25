@@ -629,7 +629,11 @@ fn compute(w: &mut Walk<'_>, owner: DeclId) -> Numbering {
     w.local.in_type = 0;
     w.local.record = Record { owner: Some(owner), ..Record::default() };
     let mut sink = Stream::new();
+    // The operands its operand unit walks (`operands.rs`, WP-156): the
+    // local types and objects in them are the owner's too.
+    crate::operands::begin(w, owner, Some(from));
     w.decl_stream(&mut sink, from, owner);
+    crate::operands::number(w);
     // Then the streams of its units that hold what the own stream leaves
     // out (`demand::number_parts`).
     crate::demand::number_parts(w, &mut sink, owner);
@@ -1302,6 +1306,13 @@ pub(crate) fn write_type_names(w: &mut Walk<'_>, s: &mut Stream, q: QualType) {
 fn member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if numbering_mode(w) {
         call_op_prototype(w, d);
+        // The operands of its signature, which the writing walk gives the
+        // operand unit of the unit being written (WP-156): a lambda in
+        // them is the owner's (a closure's call operator's `noexcept`).
+        let e = w.entity(d);
+        if let Role::Entity(_) = info(w.ast.decls.get(e).kind()).role {
+            crate::operands::member(w, e);
+        }
         return;
     }
     let e = w.entity(d);
@@ -1331,7 +1342,7 @@ fn member(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
 /// parameters' default arguments, walked as its stream walks them. Its
 /// body is the call operator's own; a lambda in its trailing
 /// requires-clause is in its key (`LAMBDA_IN_KEY`), and one in a
-/// noexcept operand is written as the operand's value only.
+/// noexcept operand is the operand unit's (`operands::member`).
 fn call_op_prototype(w: &mut Walk<'_>, d: DeclId) {
     let ast = w.ast;
     let f = match ast.decls.get(d).kind() {
@@ -2032,11 +2043,15 @@ mod tests {
             let (e, class) = w.queue[i];
             i += 1;
             if let Some(mut u) = crate::units::write(w, e, class) {
-                // Its resolved units after it, as `run_with` writes them.
+                // Its operand unit and resolved units after it, as
+                // `run_with` writes them.
+                let operands = w.pending_operands.take();
                 let mut resolved = Vec::new();
                 crate::demand::resolved_units(w, e, &u, &mut resolved);
                 crate::emitted::mark(w, e, &mut u, &mut resolved);
+                let operands = operands.map(|h| crate::operands::unit(w, e, &u, h));
                 written.push(u);
+                written.extend(operands);
                 written.append(&mut resolved);
             }
         }

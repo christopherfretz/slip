@@ -424,6 +424,8 @@ fn write_node(
         s.uv(u64::from(walk_row::BACKREF)).uv(count);
         return;
     }
+    // The holders of a written type (`operands.rs`).
+    crate::operands::expr_node(w, e);
     let n = node(w, e);
     let row = expr_kind::row(&n.kind);
     s.tag(row);

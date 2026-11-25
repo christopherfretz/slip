@@ -230,8 +230,11 @@ pub enum Suffix {
 pub struct Number {
     pub line: usize,
     pub value: u32,
-    /// `None` for a retired number.
+    /// `None` for a retired number, or a reserved one.
     pub name: Option<String>,
+    /// The number is reserved (§3.1, §3.2: `reserved` in the name cell):
+    /// a later package names it.
+    pub reserved: bool,
 }
 
 /// §1.7: the base of the walk's own tags, the next range of 256 after
@@ -640,7 +643,7 @@ pub fn parse_encoding(cell: &str) -> Result<Encoding, String> {
 }
 
 /// A row of §1.7, §3.1, §3.2 or §11.1: `| N | `name` | ... |`, or
-/// `retired` in §11.1.
+/// `retired` in §11.1, or `reserved` in §3.1 and §3.2.
 fn parse_number(line: &str, n: usize, which: &str, errors: &mut Vec<String>) -> Option<Number> {
     let c = cells(line)?;
     if c.len() < 2 || c[0].bytes().all(|b| b == b'-') || matches!(c[0], "Tag" | "Number") {
@@ -650,15 +653,16 @@ fn parse_number(line: &str, n: usize, which: &str, errors: &mut Vec<String>) -> 
         errors.push(err(n, format!("`{}` is not a number", c[0])));
         return None;
     };
+    let reserved = c[1] == "reserved" && matches!(which, "key_kinds" | "names");
     let name = match c[1].strip_prefix('`').and_then(|t| t.strip_suffix('`')) {
         Some(t) if is_ident(t) => Some(t.to_owned()),
-        _ if c[1] == "retired" && which == "properties" => None,
+        _ if (c[1] == "retired" && which == "properties") || reserved => None,
         _ => {
             errors.push(err(n, format!("`{}` is not one code span holding a name", c[1])));
             return None;
         }
     };
-    Some(Number { line: n, value: number, name })
+    Some(Number { line: n, value: number, name, reserved })
 }
 
 /// `CamelCase` to `snake_case`: an underscore before an upper-case letter

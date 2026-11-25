@@ -29,6 +29,11 @@ pub(crate) struct TypeRef {
     /// that writes the type and has no spelling of its own for the
     /// operand is `Unaccounted("spelling/<site>")` (`own_spelling.rs`).
     pub spelling: bool,
+    /// The type's stream wrote a reference to an entity (`Walk::op_refs`):
+    /// a memo hit counts it again, so that whether an operand is written
+    /// does not depend on which unit computed the type first
+    /// (`operands.rs`, S5).
+    pub refs: bool,
 }
 
 /// The cause of a variant or field digest-kinds §4.1 says never appears
@@ -92,7 +97,7 @@ impl Walk<'_> {
     pub(crate) fn type_digest(&mut self, q: QualType, no_exc: bool) -> TypeRef {
         // Numbering an owner reads no type (`local.rs`).
         if crate::local::numbering_mode(self) {
-            return TypeRef { digest: Digest([0; 32]), cause: None, spelling: false };
+            return TypeRef { digest: Digest([0; 32]), cause: None, spelling: false, refs: false };
         }
         if let Some(t) = self.aligned_sugar_digest(q, no_exc) {
             return t;
@@ -102,12 +107,14 @@ impl Walk<'_> {
         let memo = if no_exc { &self.type_memo_no_exc } else { &self.type_memo };
         if let Some(&t) = memo.get(&raw) {
             self.left_out += u64::from(t.spelling);
+            self.op_refs += u64::from(t.refs);
             return t;
         }
         let unit_key = u64::from(raw) | (u64::from(no_exc) << 32);
         if let Some(&t) = self.unit.types.get(&unit_key) {
             self.unit.local_uses += 1;
             self.left_out += u64::from(t.spelling);
+            self.op_refs += u64::from(t.refs);
             return t;
         }
         if let Some(&(t, local)) = self.abort_memo.get(&(raw, no_exc)) {
@@ -116,15 +123,17 @@ impl Walk<'_> {
             self.aborts += 1;
             self.unit.local_uses += u64::from(local);
             self.left_out += u64::from(t.spelling);
+            self.op_refs += u64::from(t.refs);
             return t;
         }
         if !self.enter() {
-            return TypeRef { digest: Digest([0; 32]), cause: Some(TOO_DEEP), spelling: false };
+            return TypeRef { digest: Digest([0; 32]), cause: Some(TOO_DEEP), spelling: false, refs: false };
         }
         let aborts = self.aborts;
         let uses = self.unit.local_uses;
         let rooted = self.local.self_rooted;
         let left_out = self.left_out;
+        let refs = self.op_refs;
         let mut s = Stream::new();
         // The expression state is the unit's: a memoised type must not
         // depend on it (`Walk::take_expr_state`).
@@ -143,7 +152,12 @@ impl Walk<'_> {
         self.leave();
         let h = s.finish(TYPE_TAG);
         let h = self.hashed(h);
-        let t = TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out };
+        let t = TypeRef {
+            digest: h.digest,
+            cause: h.cause,
+            spelling: self.left_out != left_out,
+            refs: self.op_refs != refs,
+        };
         let local = self.unit.local_uses != uses || self.local.self_rooted != rooted;
         if self.aborts == aborts {
             if local {
@@ -188,6 +202,7 @@ impl Walk<'_> {
                 digest: Digest([0; 32]),
                 cause: Some(TOO_DEEP),
                 spelling: false,
+                refs: false,
             });
         }
         let mut s = Stream::new();
@@ -218,7 +233,7 @@ impl Walk<'_> {
         if self.type_nesting == 0 {
             self.abort_memo.clear();
         }
-        Some(TypeRef { digest: h.digest, cause: h.cause, spelling: inner.spelling })
+        Some(TypeRef { digest: h.digest, cause: h.cause, spelling: inner.spelling, refs: false })
     }
 
     /// The type digest of a name-derived array (`spec/digest.md` §9,
@@ -243,6 +258,7 @@ impl Walk<'_> {
                 digest: Digest([0; 32]),
                 cause: Some(TOO_DEEP),
                 spelling: false,
+                refs: false,
             });
         }
         let left_out = self.left_out;
@@ -264,7 +280,12 @@ impl Walk<'_> {
         if self.type_nesting == 0 {
             self.abort_memo.clear();
         }
-        Some(TypeRef { digest: h.digest, cause: h.cause, spelling: self.left_out != left_out })
+        Some(TypeRef {
+            digest: h.digest,
+            cause: h.cause,
+            spelling: self.left_out != left_out,
+            refs: false,
+        })
     }
 
     /// The stream of canonical type `c`: `Quals`, then `enum TypeView`.

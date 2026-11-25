@@ -74,6 +74,7 @@ pub(crate) fn mark(w: &mut Walk<'_>, e: DeclId, own: &mut Written, resolved: &mu
     }
     let at = resolved.iter().position(|u| {
         u.default_argument.is_none()
+            && u.operands.is_none()
             && u.resolved.is_some_and(|r| r.property == Property::Definition)
     });
     let def = match at {

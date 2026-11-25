@@ -79,7 +79,10 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
         .map(|u| {
             let name = match u.entity {
                 Some(e) => {
-                    let mut name = n.unit(u.read.unwrap_or(e), e, u.kind);
+                    // An operand unit is named as its parent, by the
+                    // parent's kind.
+                    let kind = u.operands.unwrap_or(u.kind);
+                    let mut name = n.unit(u.read.unwrap_or(e), e, kind);
                     if let Some(i) = u.default_argument {
                         name.push_str("::<default_argument ");
                         name.push_str(&i.to_string());
@@ -104,6 +107,9 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                             name.push_str(&i.to_string());
                         }
                         name.push('>');
+                    }
+                    if u.operands.is_some() {
+                        name.push_str("::<operands>");
                     }
                     name
                 }

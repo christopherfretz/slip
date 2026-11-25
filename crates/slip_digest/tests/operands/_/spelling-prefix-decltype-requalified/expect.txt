@@ -1,0 +1,2 @@
+operands-a g
+operands-a h()

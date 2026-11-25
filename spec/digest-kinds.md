@@ -435,7 +435,9 @@ says so in its note.
 ## 3. Keys
 
 These are Slip's own enumerations; the tables in this section are not
-parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
+parsed against Kiln. A row whose name cell is `reserved` holds a number
+that a later package names: nothing is written with it until then, and
+no other row takes it. Which key kind each `DeclKind` has is in §5.2.
 
 ### 3.1 KeyKind
 
@@ -474,6 +476,8 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 31 | `template_param_object` | a class-type constant used as a template argument; keyed by content |
 | 32 | `using_shadow` | one name a using-declaration brings into a scope |
 | 33 | `unresolved_if_exists` | the placeholder of a `using_if_exists` declaration whose name does not exist |
+| 34 | reserved | the substitution unit of `spec/landed/digest/WP-153.md` §3.1 (not written yet) |
+| 35 | `operands` | the operand unit (digest §2.4, §11.11): the operands written in a unit's holders of a written type; its parent is that unit |
 
 ### 3.2 Name
 
@@ -494,6 +498,8 @@ parsed against Kiln. Which key kind each `DeclKind` has is in §5.2.
 | 13 | `property` | `uv`: a resolved property (§11.1) |
 | 14 | `order` | |
 | 15 | `parameter` | `uv`: the parameter's index (a default argument unit) |
+| 16 | reserved | `substitution(kind)` of `spec/landed/digest/WP-153.md` §3.1 (not written yet) |
+| 17 | `operands` | nothing (an operand unit, §11.11) |
 
 A class's constructors and destructor are named `constructor` and
 `destructor`, never by the class name: renaming the class changes their
@@ -2690,7 +2696,7 @@ A variable's stream also holds its language linkage (`ScopeData`,
 | `redecl` | bookkeeping | out | - |  |
 | `members-fields` | entity | in | key* | the non-static data members (`Field`, `IndirectField`), in declaration order |
 | `members-virtual` | entity | in | key* | the virtual member functions, in declaration order |
-| `members-other` | entity | in | key*sorted | every other member that is a declared unit |
+| `members-other` | entity | in | key*sorted | every other member that is a declared unit; of a class made by instantiation (not local), also each member template that is a derived unit (a class, function, variable or alias template: digest §2.4, WP-156 B3) |
 | `bases` | type | in | record BaseSpec* | in declaration order |
 | `defn` | flag | in | record DefinitionBits |  |
 | `templ` | entity | in | record TemplLink |  |
@@ -7315,6 +7321,49 @@ whether a field was instantiated from a pattern (§11.4). Whether a
 context is an implicit instantiation, for the declarations instantiated
 outside their class (digest §2.2), is the effective kind of the nearest
 context that has one (`units::in_implicit_instantiation`).
+
+### 11.11 Operand units
+
+The operand unit of a unit (digest §2.4, WP-156) holds the expressions
+inside its written types that the type's canonical form or a constant's
+value leaves out. Its key: `KeyKind` `operands` (§3.1), `Name`
+`operands` (§3.2), parent the unit's key, no discriminator; it is a
+derived unit, in the derived group of its parent's file. Its stream:
+
+```text
+operands = group* own-spelling-list
+group    = count entry+            ; per declaration with written operands
+entry    = uv site expr            ; sites 1, 2, 4, 6
+         | uv site count argument* ; site 8: the canonical arguments
+```
+
+| Site | Holder in a written type | Written when |
+|---|---|---|
+| 1 | `Decltype` (`decltype(e)`) | its walk writes a reference, or is indeterminate |
+| 2 | `TypeOfExpr` (`typeof(e)`) | as 1 |
+| 3 | reserved: `ArrayDep`/`ConstantArray` bound | never (the limit of digest §2.3) |
+| 4 | an `Expr` template argument (`ArgView::Expr`) as written | as 1 |
+| 5 | reserved: `PackIndexing` index | never (digest §2.3) |
+| 6 | `NoexceptExpr` of a `FunctionProto` | as 1; of a specialisation whose specification is deferred (§11.2), only in its `exception_spec` unit's operand unit |
+| 7 | reserved: `explicit(e)` | never (the unit's own stream walks it) |
+| 8 | a `TemplateSpecialization` of an alias template, as written | always, unless instantiation-dependent |
+
+An operand that is instantiation-dependent is never written (§4.4: the
+pattern's own spellings hold it). The walk of a written type stops at a
+`Typedef`/`Using` type's underlying type, a `Record`/`Enum` type's
+declaration, a `SubstTemplateTypeParm` type's replacement, a
+`SubstNonTypeTemplateParmExpr`'s replacement, and the argument list of a
+specialisation's own type (an `InjectedClassName`); it never reads an
+expression's type or a deduced type (`Auto`, `DeducedTemplateSpecialization`).
+An expression met in an entry is walked as §4.3 and §4.4 walk any
+expression, in the parent's numbering (digest §4.3); a holder inside it
+is an entry of its own after it.
+
+**Member templates of an instantiated class (B3).** The `members-other`
+list (§5.5) of a class made by instantiation holds the keys of its member
+templates that are derived units, sorted with the others: a name moved
+in a member template's partly substituted signature changes its key,
+and so the class.
 
 ## 12. Unsupported
 

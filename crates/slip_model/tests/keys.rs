@@ -54,6 +54,7 @@ fn every_name() -> Vec<Name> {
         Name::Property(7),
         Name::Order,
         Name::Parameter(1),
+        Name::Operands,
     ]
 }
 
@@ -74,17 +75,23 @@ fn unnamed_by(depth: usize, inner: Name) -> Name {
 // round-trips; 24 (`explicit_instantiation`) reads although it is unused.
 #[test]
 fn every_key_kind_round_trips() {
-    assert_eq!(KeyKind::ALL.len(), 33);
+    assert_eq!(KeyKind::ALL.len(), 34);
     for (i, kind) in KeyKind::ALL.into_iter().enumerate() {
-        assert_eq!(kind.code(), i as u64 + 1);
+        // 34 is reserved (WP-156): the last kind, `operands`, is 35.
+        let code = if i == 33 { 35 } else { i as u64 + 1 };
+        assert_eq!(kind.code(), code);
         let k = key(kind, Parent::Root, id("x"), None);
         let bytes = k.to_bytes();
-        assert_eq!(bytes[0], i as u8 + 1, "{kind:?}");
+        assert_eq!(u64::from(bytes[0]), code, "{kind:?}");
         assert_eq!(Key::from_bytes(&bytes).unwrap(), k);
     }
     assert_eq!(KeyKind::ExplicitInstantiation.code(), 24);
     assert_eq!(KeyKind::ExplicitInstantiation.name(), "explicit_instantiation");
     assert_eq!(KeyKind::UnresolvedIfExists.name(), "unresolved_if_exists");
+    assert_eq!(KeyKind::Operands.code(), 35);
+    assert_eq!(KeyKind::Operands.name(), "operands");
+    // 34 is reserved and unlisted.
+    assert_eq!(Key::from_bytes(&[34]).map(|_| ()).unwrap_err().what, "unlisted KeyKind value");
     assert_eq!(KeyKind::Namespace.name(), "namespace");
 }
 
@@ -92,7 +99,7 @@ fn every_key_kind_round_trips() {
 // round-trips.
 #[test]
 fn every_name_form_round_trips() {
-    let expected: [(&str, String); 15] = [
+    let expected: [(&str, String); 16] = [
         ("identifier", "01 01 66".into()),
         ("operator", "02 05".into()),
         ("constructor", "03".into()),
@@ -108,9 +115,11 @@ fn every_name_form_round_trips() {
         ("property", "0d 07".into()),
         ("order", "0e".into()),
         ("parameter", "0f 01".into()),
+        // 16 is reserved (WP-156).
+        ("operands", "11".into()),
     ];
     for (i, (name, (form, bytes))) in every_name().into_iter().zip(expected).enumerate() {
-        assert_eq!(name.code(), i as u64 + 1);
+        assert_eq!(name.code(), if i == 15 { 17 } else { i as u64 + 1 });
         assert_eq!(name.form(), form);
         let mut e = Encoder::new();
         name.encode(&mut e);
@@ -268,7 +277,7 @@ fn keys_differing_in_one_field_differ() {
         .collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 15);
+    assert_eq!(ids.len(), 16);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +300,7 @@ fn rejects_unknown_key_kind() {
 // An unknown Name number: Malformed at its first byte.
 #[test]
 fn rejects_unknown_name() {
-    for name in ["00", "10", "ff 01"] {
+    for name in ["00", "10", "12", "ff 01"] {
         let bytes = hex(&["01 00", name, "00"]);
         assert_eq!(key_error(&bytes), (ErrorKind::Malformed, 2, "unlisted Name value"));
     }

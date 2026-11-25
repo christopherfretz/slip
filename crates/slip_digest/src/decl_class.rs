@@ -267,6 +267,8 @@ pub(crate) fn record_definition(w: &mut Walk<'_>, s: &mut Stream, def: DeclId) {
     };
     members(w, s, def);
     bases(w, s, def, tag);
+    // Their operands are this unit's operand unit's (`operands.rs`).
+    crate::operands::bases(w, def);
     definition_bits(s, defn);
     crate::decl_scope::class_definition(w, s, def);
 }
@@ -401,11 +403,19 @@ pub(crate) fn ctor_init(w: &mut Walk<'_>, s: &mut Stream, init: &CtorInit) {
 /// (§5.5): each member in exactly one list, the lists holding exactly the
 /// members that are declared units (`units::unit_class`), so that they
 /// agree with the units and do not depend on which implicit members Kiln
-/// declared. A local class writes them in place (§2.4).
+/// declared, and, of a class made by instantiation, its member templates
+/// (derived units, in `members-other`: WP-156 item 5, B3). A local class
+/// writes them in place (§2.4).
 fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     let ast = w.ast;
     let class = w.entity(d);
     let local = w.is_local(d);
+    // B3: a member template's signature an instantiation substituted
+    // without making it non-dependent is in its key alone; listing the
+    // key here makes a moved binding a change of this unit.
+    let instantiated = !local && crate::templ::made_by_instantiation(w, d);
+    #[cfg(test)]
+    let instantiated = instantiated && !crate::zz_probe156::OFF.with(std::cell::Cell::get);
     let mut seen: HashSet<DeclId> = HashSet::new();
     let (mut fields, mut virtuals, mut others) = (Vec::new(), Vec::new(), Vec::new());
     for m in members_of(w, s, d) {
@@ -421,7 +431,11 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         let listed = if local {
             local_member(w, e)
         } else {
-            crate::units::unit_class(w, e) == Some(UnitClass::Declared)
+            match crate::units::unit_class(w, e) {
+                Some(UnitClass::Declared) => true,
+                Some(UnitClass::Derived) => instantiated && member_template(w, e),
+                Some(UnitClass::OnDemand) | None => false,
+            }
         };
         if !listed {
             continue;
@@ -484,6 +498,18 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     for e in &encoded {
         s.raw(e);
     }
+}
+
+/// Whether member `e` of a class made by instantiation is a member
+/// template (B3): a class, function, variable or alias template.
+fn member_template(w: &Walk<'_>, e: DeclId) -> bool {
+    matches!(
+        w.ast.decls.get(e).kind(),
+        DeclKind::ClassTemplate
+            | DeclKind::FunctionTemplate
+            | DeclKind::VarTemplate
+            | DeclKind::TypeAliasTemplate
+    )
 }
 
 /// The lexical members of `d`, bounded by [`MEMBER_LIMIT`].

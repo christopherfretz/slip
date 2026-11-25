@@ -1439,7 +1439,8 @@ impl Walk<'_> {
             | KeyKind::Order
             | KeyKind::DefaultArgument
             | KeyKind::TemplateParamObject
-            | KeyKind::UnresolvedIfExists => return None,
+            | KeyKind::UnresolvedIfExists
+            | KeyKind::Operands => return None,
         }
         let h = s.finish(DISC_TAG);
         let h = self.hashed(h);
@@ -1674,7 +1675,8 @@ fn follows_pattern(name: &Name) -> bool {
         | Name::Content
         | Name::Property(_)
         | Name::Order
-        | Name::Parameter(_) => false,
+        | Name::Parameter(_)
+        | Name::Operands => false,
     }
 }
 

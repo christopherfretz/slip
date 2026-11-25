@@ -205,7 +205,8 @@ fn numbers(o: &mut String, m: &str, title: &str, list: &[Number], errors: &mut V
                 let _ = writeln!(o, "    pub(crate) const {c}: u32 = {};", n.value);
             }
             None => {
-                let _ = writeln!(o, "    // {}: retired.", n.value);
+                let word = if n.reserved { "reserved" } else { "retired" };
+                let _ = writeln!(o, "    // {}: {word}.", n.value);
             }
         }
     }

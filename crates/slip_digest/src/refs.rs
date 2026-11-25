@@ -66,6 +66,17 @@ impl Walk<'_> {
             | Role::Unsupported(_) => false,
         };
         if local_object {
+            // A parameter of a function type no function declaration holds,
+            // in an operand (`operands.rs`, S6): by depth and index.
+            if self.unit.operands.writing > 0
+                && kind == DeclKind::ParmVar
+                && !crate::operands::of_function(self, d)
+            {
+                self.op_refs += 1;
+                crate::expr_dep::param_ref(self, s, d, Cause::Unaccounted("operands/param"));
+                return;
+            }
+            self.op_refs += 1;
             if self.unit.expr.profile.is_some() {
                 // Inside a profile (digest-kinds §4.4).
                 crate::expr_dep::profile_local(self, s, d);
@@ -94,6 +105,7 @@ impl Walk<'_> {
             }
             return;
         }
+        self.op_refs += 1;
         match self.key(d) {
             KeyRes::Key { id, cause, .. } => {
                 s.uv(REF_UNIT).digest(&id).absorb(cause);

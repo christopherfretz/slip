@@ -195,7 +195,7 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
 fn candidate(w: &mut Walk<'_>, e: DeclId, kind: KeyKind) -> bool {
     if kind == KeyKind::Namespace
         || crate::units::repeatable(kind)
-        || matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
+        || matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument | KeyKind::Operands)
     {
         return false;
     }
