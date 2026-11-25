@@ -1,0 +1,2 @@
+# Equal. K is left in legacy and kept (left_kept 1); the opening of legacy itself is left 1 (R6.4: a namespace's own trace is included).
+declares gen.h rule 1 mapped 0 left 0 left_kept 2

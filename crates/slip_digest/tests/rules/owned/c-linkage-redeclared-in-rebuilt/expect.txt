@@ -1,0 +1,4 @@
+# A dependency entity: a difference.
+changed user()
+removed gen_start()
+added gen_init()

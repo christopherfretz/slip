@@ -28,7 +28,7 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   [--estimate-base <size>] [--estimate-per-byte <n>]
                   [--worker-jobs <n>] [--worker-stack <size>]
        slip declare --plan <id or file> --from <file> --out <file>
-                  [--owned <path>]... [--readonly <path>]...
+                  [--owned <path>]... [--readonly <path>]... [--rebuilt <path>]...
                   [--root <dir>]... [--post <dir>]... [--store <dir>] [--only <substring>]... [--limit <n>]
        slip units --plan <id or file> [--post-image] [--root <dir>]... [--post <dir>]...
                   [--store <dir>] [--only <substring>]... [--limit <n>] [--match <substring>]...
@@ -36,12 +36,12 @@ usage: slip plan  --db [<name>=]<compile_commands.json>...  [--store <dir>] [-j 
                   (--from <qualified name> --to <identifier> [--kind function|variable]
                    [--dependent offer|refuse|leave]
                    | --transform <file.cpp> [--transform-arg <option>]... [--indivisible])
-                  --owned <path>... [--readonly <path>]...
+                  --owned <path>... [--readonly <path>]... [--rebuilt <path>]...
                   [the store, selection, memory, timeout and worker options of parse]
        slip rename --from <qualified name> --to <identifier> [--kind function|variable]
                   [--dependent offer|refuse|leave]
                   (--plan <id or file> | --db [<name>=]<compile_commands.json>...)
-                  --owned <path>... [--readonly <path>]...
+                  --owned <path>... [--readonly <path>]... [--rebuilt <path>]...
                   [--write | --patch <file>] [--relative-to <dir>] [--report <file>]
                   [--allow-residue] [--allow-unparsed] [--allow-partial] [--allow-errors]
                   [--residue-ext <list>] [--findings <n>] [--locate <n>]
@@ -204,10 +204,12 @@ pub struct DeclareArgs {
     pub from: PathBuf,
     /// `--out`: the `DECL` container written.
     pub out: PathBuf,
-    /// `--owned` and `--readonly`: the run's files, as given (made real
-    /// paths by the command); `--readonly` only with `--owned`.
+    /// `--owned`, `--readonly` and `--rebuilt` (WP-118): the run's files,
+    /// as given (made real paths by the command); `--readonly` and
+    /// `--rebuilt` only with `--owned`.
     pub owned: Vec<PathBuf>,
     pub readonly: Vec<PathBuf>,
+    pub rebuilt: Vec<PathBuf>,
     pub image: ImageArgs,
     pub store: PathBuf,
     pub only: Vec<Vec<u8>>,
@@ -337,9 +339,11 @@ pub struct ApplyArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[allow(clippy::struct_excessive_bools, reason = "one per option of the command line")]
 pub struct TransformOptions {
-    /// `--owned`, `--readonly`, as given (made real paths by the command).
+    /// `--owned`, `--readonly`, `--rebuilt` (WP-118), as given (made real
+    /// paths by the command).
     pub owned: Vec<PathBuf>,
     pub readonly: Vec<PathBuf>,
+    pub rebuilt: Vec<PathBuf>,
     pub allow_residue: bool,
     pub allow_unparsed: bool,
     pub allow_partial: bool,
@@ -829,24 +833,25 @@ fn parse_declare(args: &[OsString]) -> Result<Invocation, UsageError> {
             "--out",
             "--owned",
             "--readonly",
+            "--rebuilt",
             "--root",
             "--post",
             "--store",
             "--only",
             "--limit",
         ],
-        &["--only", "--root", "--post", "--owned", "--readonly"],
+        &["--only", "--root", "--post", "--owned", "--readonly", "--rebuilt"],
     )?;
-    let (owned, readonly) = (values.paths("--owned"), values.paths("--readonly"));
-    if owned.is_empty() && !readonly.is_empty() {
-        return usage("`--readonly` needs `--owned`");
-    }
+    let (owned, readonly, rebuilt) =
+        (values.paths("--owned"), values.paths("--readonly"), values.paths("--rebuilt"));
+    needs_owned_for(&owned, &readonly, &rebuilt)?;
     Ok(Invocation::Declare(DeclareArgs {
         plan: values.plan("declare")?,
         from: values.required_path("declare", "--from")?,
         out: values.required_path("declare", "--out")?,
         owned,
         readonly,
+        rebuilt,
         image: values.image()?,
         store: values.store(),
         only: values.bytes("--only"),
@@ -878,10 +883,9 @@ impl Values {
 
     /// The options of [`TransformOptions`] among those given.
     fn transform_options(&self) -> Result<TransformOptions, UsageError> {
-        let (owned, readonly) = (self.paths("--owned"), self.paths("--readonly"));
-        if owned.is_empty() && !readonly.is_empty() {
-            return usage("`--readonly` needs `--owned`");
-        }
+        let (owned, readonly, rebuilt) =
+            (self.paths("--owned"), self.paths("--readonly"), self.paths("--rebuilt"));
+        needs_owned_for(&owned, &readonly, &rebuilt)?;
         let residue_ext = self
             .one("--residue-ext")
             .map(|v| {
@@ -914,6 +918,7 @@ impl Values {
         Ok(TransformOptions {
             owned,
             readonly,
+            rebuilt,
             allow_residue: self.flag("--allow-residue"),
             allow_unparsed: self.flag("--allow-unparsed"),
             allow_partial: self.flag("--allow-partial"),
@@ -980,6 +985,21 @@ fn rename_target(values: &Values, command: &str) -> Result<RenameTarget, UsageEr
     }
 }
 
+/// `--readonly` and `--rebuilt` (WP-118 R1.1) only with `--owned`.
+fn needs_owned_for(
+    owned: &[PathBuf],
+    readonly: &[PathBuf],
+    rebuilt: &[PathBuf],
+) -> Result<(), UsageError> {
+    if owned.is_empty() && !readonly.is_empty() {
+        return usage("`--readonly` needs `--owned`");
+    }
+    if owned.is_empty() && !rebuilt.is_empty() {
+        return usage("`--rebuilt` needs `--owned`");
+    }
+    Ok(())
+}
+
 /// `--owned`, which `map` and `rename` require (`spec/exec.md` §8).
 fn needs_owned(t: &TransformOptions, command: &str) -> Result<(), UsageError> {
     if t.owned.is_empty() { usage(format!("`{command}` needs `--owned`")) } else { Ok(()) }
@@ -998,12 +1018,13 @@ fn parse_map(args: &[OsString]) -> Result<Invocation, UsageError> {
         "--dependent",
         "--owned",
         "--readonly",
+        "--rebuilt",
     ];
     let values = options_only_with(
         args,
         &with_run_options(&own),
         TRANSFORM_FLAGS,
-        &["--db", "--only", "--owned", "--readonly", "--transform-arg"],
+        &["--db", "--only", "--owned", "--readonly", "--rebuilt", "--transform-arg"],
     )?;
     let source = plan_or_db(&values, "map")?;
     let rename = ["--from", "--to", "--kind"].into_iter().find(|o| values.one(o).is_some());
@@ -1045,6 +1066,7 @@ fn parse_rename(args: &[OsString]) -> Result<Invocation, UsageError> {
         "--db",
         "--owned",
         "--readonly",
+        "--rebuilt",
         "--write",
         "--patch",
         "--relative-to",
@@ -1061,7 +1083,7 @@ fn parse_rename(args: &[OsString]) -> Result<Invocation, UsageError> {
         args,
         &with_run_options(&own),
         TRANSFORM_FLAGS,
-        &["--db", "--only", "--owned", "--readonly"],
+        &["--db", "--only", "--owned", "--readonly", "--rebuilt"],
     )?;
     let source = plan_or_db(&values, "rename")?;
     let target = rename_target(&values, "rename")?;

@@ -380,7 +380,11 @@ fn case() -> Case {
 }
 
 fn owned(entries: &[&str]) -> Ownership {
-    Ownership { owned: entries.iter().map(|e| e.as_bytes().to_vec()).collect(), readonly: vec![] }
+    Ownership {
+        owned: entries.iter().map(|e| e.as_bytes().to_vec()).collect(),
+        readonly: vec![],
+        rebuilt: Vec::new(),
+    }
 }
 
 /// The ownership of the in-memory tree's writes.
@@ -646,10 +650,33 @@ fn s7_3_refusals_touch_nothing() {
     // A readonly entry carves a file out of an owned directory.
     let c = case();
     let w = c.world.healthy();
-    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/b.h".to_vec()] };
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/w/b.h".to_vec()],
+        rebuilt: Vec::new(),
+    };
+    assert_eq!(
+        write(&c.overlay, c.id, &own, &w, &w, &w),
+        Err(WriteError::Refused(Refused::NotOwned(b.clone())))
+    );
+    // WP-118 A10: a rebuilt entry is not owned either: an edit in a
+    // rebuilt file is refused `not_owned`, and nothing is touched.
+    let c = case();
+    let w = c.world.healthy();
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![],
+        rebuilt: vec![b"/w/b.h".to_vec()],
+    };
     assert_eq!(
         write(&c.overlay, c.id, &own, &w, &w, &w),
         Err(WriteError::Refused(Refused::NotOwned(b)))
+    );
+    untouched(&c, &w);
+    let log = w.0.borrow().log.clone();
+    assert!(
+        log.iter().all(|(op, _)| matches!(*op, "read" | "stat" | "get" | "journal")),
+        "{log:?}"
     );
 }
 
@@ -1248,7 +1275,11 @@ fn s7_3_recover_refuses_a_journal_outside_its_ownership() {
     let c = case();
     let start = after_commit(&c);
     let narrow = owned(&["/w/sub"]);
-    let carved = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/b.h".to_vec()] };
+    let carved = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/w/b.h".to_vec()],
+        rebuilt: Vec::new(),
+    };
     for (own, path) in [(narrow, b"/w/a.cc".to_vec()), (carved, b"/w/b.h".to_vec())] {
         let w = start.healthy();
         assert_eq!(
@@ -1267,12 +1298,29 @@ fn s7_3_recover_refuses_a_journal_outside_its_ownership() {
 fn s7_3_ownership_is_validated() {
     let c = case();
     let bad = [
-        Ownership { owned: vec![b"".to_vec()], readonly: vec![] },
-        Ownership { owned: vec![b"w".to_vec()], readonly: vec![] },
-        Ownership { owned: vec![b"/w/".to_vec()], readonly: vec![] },
-        Ownership { owned: vec![], readonly: vec![] },
-        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/../x".to_vec()] },
-        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w".to_vec()] },
+        Ownership { owned: vec![b"".to_vec()], readonly: vec![], rebuilt: Vec::new() },
+        Ownership { owned: vec![b"w".to_vec()], readonly: vec![], rebuilt: Vec::new() },
+        Ownership { owned: vec![b"/w/".to_vec()], readonly: vec![], rebuilt: Vec::new() },
+        Ownership { owned: vec![], readonly: vec![], rebuilt: Vec::new() },
+        Ownership {
+            owned: vec![b"/w".to_vec()],
+            readonly: vec![b"/w/../x".to_vec()],
+            rebuilt: Vec::new(),
+        },
+        Ownership {
+            owned: vec![b"/w".to_vec()],
+            readonly: vec![b"/w".to_vec()],
+            rebuilt: Vec::new(),
+        },
+        // WP-118: the third list is checked as the other two are.
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"w/b".to_vec()] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"/".to_vec()] },
+        Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: vec![b"/w".to_vec()] },
+        Ownership {
+            owned: vec![b"/w".to_vec()],
+            readonly: vec![b"/w/b".to_vec()],
+            rebuilt: vec![b"/w/b".to_vec()],
+        },
     ];
     for own in bad {
         let w = c.world.healthy();
@@ -1741,7 +1789,7 @@ mod disk {
     }
 
     pub fn own(r: &Path) -> Ownership {
-        Ownership { owned: vec![bytes(&r.join("tree"))], readonly: vec![] }
+        Ownership { owned: vec![bytes(&r.join("tree"))], readonly: vec![], rebuilt: Vec::new() }
     }
 
     pub fn mode(p: &Path) -> u32 {
@@ -2176,7 +2224,11 @@ fn c(b: &[u8]) -> Content {
 }
 
 fn vendor_ownership() -> Ownership {
-    Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/vendor".to_vec()] }
+    Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/w/vendor".to_vec()],
+        rebuilt: Vec::new(),
+    }
 }
 
 /// The reviewer's case: `/w` owned, `/w/vendor` read-only, the overlay
@@ -2277,6 +2329,7 @@ fn s2_1_disk_another_case() {
     let own = Ownership {
         owned: vec![disk::bytes(&r.join("tree"))],
         readonly: vec![disk::bytes(&r.join("tree/vendor"))],
+        rebuilt: Vec::new(),
     };
     let store = disk::Store(r.join("store"));
     let got = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
@@ -2313,6 +2366,7 @@ fn s2_1_disk_readonly_entry_in_another_case() {
     let own = Ownership {
         owned: vec![disk::bytes(&r.join("tree"))],
         readonly: vec![disk::bytes(&r.join("tree/VENDOR"))],
+        rebuilt: Vec::new(),
     };
     let got = slip_apply::check_owned(&o, &own, &slip_apply::fs::DiskTree);
     let store = disk::Store(r.join("store"));
@@ -2349,6 +2403,7 @@ fn s2_1_disk_entry_through_a_link() {
     let own = |readonly: &str| Ownership {
         owned: vec![disk::bytes(&r.join("tree"))],
         readonly: vec![disk::bytes(&r.join(readonly))],
+        rebuilt: Vec::new(),
     };
     let tree = slip_apply::fs::DiskTree;
     let store = disk::Store(r.join("store"));
@@ -2368,6 +2423,21 @@ fn s2_1_disk_entry_through_a_link() {
     let real = own("tree/vendor");
     let got = slip_apply::check_owned(&o, &real, &tree);
     assert!(matches!(&got, Err(WriteError::Refused(_))), "the control is not_owned: {got:?}");
+    // WP-118 review S4: a rebuilt entry through the link is refused the
+    // same way, before anything is checked against the ownership.
+    let rebuilt = Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![],
+        rebuilt: vec![disk::bytes(&r.join("tree/vlink"))],
+    };
+    let want = want.replace("the readonly entry", "the rebuilt entry");
+    for got in [
+        slip_apply::check_owned(&o, &rebuilt, &tree),
+        write(&o, id, &rebuilt, &tree, &store, &store).map(|_| ()),
+    ] {
+        assert_eq!(got, Err(WriteError::Invalid(want.clone())));
+    }
+    assert_eq!(std::fs::read(&x).unwrap(), b"int v;\n");
     common::remove_tree(&r);
 }
 
@@ -2399,7 +2469,11 @@ fn s2_1_disk_another_normalisation() {
         r.display()
     );
     let (o, id) = one_file(r.join(nfd).to_str().unwrap(), b"int v;\n", b"int w;\n");
-    let own = Ownership { owned: vec![disk::bytes(&r.join("tree"))], readonly: vec![] };
+    let own = Ownership {
+        owned: vec![disk::bytes(&r.join("tree"))],
+        readonly: vec![],
+        rebuilt: Vec::new(),
+    };
     let store = disk::Store(r.join("store"));
     let got = write(&o, id, &own, &slip_apply::fs::DiskTree, &store, &store);
     if folds {
@@ -2523,6 +2597,7 @@ fn s2_1_another_normalisation_on_a_volume_that_answers_inconsistently() {
     let own = Ownership {
         owned: vec![b"/w".to_vec()],
         readonly: vec!["/w/vend\u{f6}r".as_bytes().to_vec()],
+        rebuilt: Vec::new(),
     };
     let (o, _) = one_file("/w/vendo\u{308}r/x.h", b"int v;\n", b"int w;\n");
     let got = slip_apply::check_owned(&o, &own, &tree);
@@ -2611,7 +2686,8 @@ impl Tree for Unlistable {
 #[test]
 fn s2_1_a_directory_that_cannot_be_listed() {
     let files = vec![(b"/srv/alice/w/a.cc".to_vec(), b"a".to_vec())];
-    let own = Ownership { owned: vec![b"/srv/alice/w".to_vec()], readonly: vec![] };
+    let own =
+        Ownership { owned: vec![b"/srv/alice/w".to_vec()], readonly: vec![], rebuilt: Vec::new() };
     let (o, _) = one_file("/srv/alice/w/a.cc", b"a", b"b");
     assert_eq!(slip_apply::check_owned(&o, &own, &Unlistable(files.clone(), true)), Ok(()));
     let untrusted = Unlistable(files, false);
@@ -2619,14 +2695,18 @@ fn s2_1_a_directory_that_cannot_be_listed() {
         assert!(matches!(&got, Err(WriteError::Io { path, .. }) if path == b"/srv"), "{got:?}");
     };
     io_at_srv(slip_apply::check_owned(&o, &own, &untrusted));
-    let root = Ownership { owned: vec![b"/".to_vec()], readonly: vec![] };
+    let root = Ownership { owned: vec![b"/".to_vec()], readonly: vec![], rebuilt: Vec::new() };
     io_at_srv(slip_apply::check_owned(&o, &root, &untrusted));
     // An ownership entry under the directory, the overlay's path not:
     // the entry's check lists `/srv` and fails there.
     let files =
         vec![(b"/w/a.cc".to_vec(), b"a".to_vec()), (b"/srv/bob/v.h".to_vec(), b"v".to_vec())];
     let (o, _) = one_file("/w/a.cc", b"a", b"b");
-    let entry = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/srv/bob".to_vec()] };
+    let entry = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/srv/bob".to_vec()],
+        rebuilt: Vec::new(),
+    };
     assert_eq!(slip_apply::check_owned(&o, &entry, &Unlistable(files.clone(), true)), Ok(()));
     io_at_srv(slip_apply::check_owned(&o, &entry, &Unlistable(files, false)));
 }
@@ -2678,7 +2758,7 @@ impl Tree for TwoNames {
 
 #[test]
 fn s2_1_two_names_of_one_file_are_not_canonical() {
-    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![] };
+    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![], rebuilt: Vec::new() };
     let (o, _) = one_file("/w/x.H", b"a", b"b");
     assert_eq!(
         slip_apply::check_owned(&o, &own, &TwoNames),
@@ -2697,7 +2777,11 @@ fn s2_1_an_ownership_entry_not_spelled_on_disk() {
     let tree = Folding::new(&[("/w/vendor/x.h", b"int v;\n"), ("/w/a.cc", b"a")]);
     let w = World(Rc::new(RefCell::new(State::default())));
     let (o, id) = one_file("/w/vendor/x.h", b"int v;\n", b"int w;\n");
-    let own = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/Vendor".to_vec()] };
+    let own = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/w/Vendor".to_vec()],
+        rebuilt: Vec::new(),
+    };
     let invalid = |got: Result<(), WriteError>| match got {
         Err(WriteError::Invalid(m)) => assert_eq!(
             m,
@@ -2711,19 +2795,48 @@ fn s2_1_an_ownership_entry_not_spelled_on_disk() {
     w.0.borrow_mut().journal = Some(Journal::of_write(&o, id).to_bytes());
     invalid(recover(&own, &tree, &w, &w).map(|_| ()));
     assert!(w.0.borrow().journal.is_some(), "the journal is kept");
-    let owned = Ownership { owned: vec![b"/W".to_vec()], readonly: vec![] };
+    let owned = Ownership { owned: vec![b"/W".to_vec()], readonly: vec![], rebuilt: Vec::new() };
     let got = slip_apply::check_owned(&o, &owned, &tree);
     assert!(
         matches!(&got, Err(WriteError::Invalid(m)) if m.contains("owned entry \"/W\"")),
         "{got:?}"
     );
-    let gone = Ownership { owned: vec![b"/w".to_vec()], readonly: vec![b"/w/gone".to_vec()] };
+    let gone = Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![b"/w/gone".to_vec()],
+        rebuilt: Vec::new(),
+    };
     assert_eq!(
         slip_apply::check_owned(&o, &gone, &tree),
         Err(WriteError::Invalid(
             "ownership: the readonly entry \"/w/gone\" does not exist".to_string()
         ))
     );
+    // WP-118 review S4: the rebuilt list is checked as the other two are,
+    // in another case and missing; `write` and `recover` refuse it too.
+    let rebuilt = |e: &[u8]| Ownership {
+        owned: vec![b"/w".to_vec()],
+        readonly: vec![],
+        rebuilt: vec![e.to_vec()],
+    };
+    for (e, want) in [
+        (
+            &b"/w/Vendor/x.h"[..],
+            "ownership: the rebuilt entry \"/w/Vendor/x.h\" is not spelled as on disk \
+             (\"/w/vendor/x.h\")",
+        ),
+        (&b"/w/gone.h"[..], "ownership: the rebuilt entry \"/w/gone.h\" does not exist"),
+    ] {
+        let own = rebuilt(e);
+        let want = Err(WriteError::Invalid(want.to_string()));
+        w.0.borrow_mut().journal = None;
+        assert_eq!(slip_apply::check_owned(&o, &own, &tree), want);
+        assert_eq!(write(&o, id, &own, &tree, &w, &w).map(|_| ()), want);
+        assert_eq!(w.0.borrow().journal, None, "nothing journaled");
+        w.0.borrow_mut().journal = Some(Journal::of_write(&o, id).to_bytes());
+        assert_eq!(recover(&own, &tree, &w, &w).map(|_| ()), want);
+        assert!(w.0.borrow().journal.is_some(), "the journal is kept");
+    }
 }
 
 /// Review S1: `--recover` on a volume that answers a lookup
@@ -2745,6 +2858,7 @@ fn s7_3_recover_reports_a_path_the_walk_finds_missing() {
     let own = Ownership {
         owned: vec![b"/w".to_vec()],
         readonly: vec!["/w/vend\u{f6}r".as_bytes().to_vec()],
+        rebuilt: Vec::new(),
     };
     let asked = "/w/vendo\u{308}r/x.h";
     let (o, id) = one_file(asked, b"int v;\n", b"int w;\n");

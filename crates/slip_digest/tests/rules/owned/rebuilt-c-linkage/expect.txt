@@ -1,0 +1,4 @@
+# C linkage in a rebuilt file: a difference.
+changed user()
+removed gen_start()
+added gen_init()

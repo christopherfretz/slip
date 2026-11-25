@@ -36,14 +36,14 @@ Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, n
             created: list<KeyId>     units that may exist only in the post-image
             removed: list<KeyId>     units that may exist only in the pre-image
             kept:    list<KeyId>     version 2: owned entities that are, on purpose, members of a namespace a rule maps onto (§9.2)
-            files:   opt<Ownership>  version 2: which files are read-only (`spec/edits.md` §2.1); required when `rules` is not empty
+            files:   opt<Ownership>  version 2: the run's files (`spec/edits.md` §2.1); required when `rules` is not empty. Version 3: with `rebuilt`
 ```
 
 `kept` and `files` are version 2 of the container (WP-110); a version 1
 `DECL` is read as one with `kept` empty and `files` absent, and a
 version 1 `DECL` with a rule is refused. `kept` is sorted and has no
 duplicate, like the other lists. `files` is part of the rule table's
-identity: `rules_id` is then `H("slip.rules.v2", rules, files)`.
+identity (below).
 
 Each list is sorted and has no duplicate (rules by the bytes of their
 encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
@@ -58,10 +58,17 @@ rendering follows `spec/model.md` §10, with members `rules`, `changed`,
 record `owned: list<bytes>, readonly: list<bytes>`. A writer writes
 version 2; `dump` and `undump` keep a file's version, so a version 1
 file's rendering has version 1 and the four members.
-`rules_id = H("slip.rules.v1", rules)` names the rule table when `files`
-is absent, and `H("slip.rules.v2", rules, files)` (rules as
-`list<Rule>`, then `owned` and `readonly` as `list<bytes>`) when it is
-present.
+`files` is part of the rule table's identity. `rules_id` is
+`H("slip.rules.v1", rules)` when `files` is absent,
+`H("slip.rules.v2", rules, owned, readonly)` when it is present and
+its `rebuilt` list is empty, and `H("slip.rules.v3", rules, owned,
+readonly, rebuilt)` when that list is not empty (rules as
+`list<Rule>`, each list of paths as `list<bytes>`). The container is
+version 3 exactly when `files.rebuilt` is not empty (WP-118): version
+2 with `rebuilt: list<bytes>` after `readonly`, and in JSON the member
+`"rebuilt"` of `files`. A writer writes version 2 otherwise, so a
+`DECL` that declares nothing rebuilt has the bytes and the ids it had;
+a reader reads version 2 as `rebuilt` empty.
 
 **The reader's checks**, in this order, each with its message; a binary
 reader reports `Malformed` at the offset named, a JSON reader at the path
@@ -81,7 +88,13 @@ reader reports `Malformed` at the offset named, a JSON reader at the path
    `owned is empty` (at `owned`); `not a canonical absolute path`,
    `owned is not strictly ascending` (at the entry); the same two for
    `readonly`; `a readonly entry is also in owned` (at the `readonly`
-   entry).
+   entry); then for `rebuilt` (version 3): the same two rows, `a rebuilt
+   entry is /`, `a rebuilt entry is also in owned`, `a rebuilt entry is
+   also in readonly` (at the `rebuilt` entry); and `a version 3
+   container has no rebuilt entry`, at the list, or **at the `files`
+   tag** when a version 3 container has no `files` at all (there is
+   then no list to point at); `a version 2 container has a rebuilt
+   entry` for a value in memory written as version 2.
 5. `a version 1 container has a rule`, at the first rule.
 6. `rules without files`, and `files without a rule`, at `files` (its
    tag byte). `files`
@@ -204,12 +217,26 @@ must not make a table that holds one, and the walk keys nothing under
 such a table, so every unit of the post-image is indeterminate
 (`key/refused-rule`) and nothing verifies.
 
-**Rules rename owned entities only.** A run has files it may edit and
-files it may not (`spec/edits.md` §2.1; `Declared.files`). A rule that
-says "`acme` is what `legacy` was" is a claim about the code the run
-owns; the dependency's code was not edited, its binaries were not
-rebuilt, and whatever it declares has the name it had. An entity of the
-post-image is a **dependency entity** if
+**Rules rename owned entities only.** A run has files it may edit,
+files the build writes again, and files of neither kind
+(`spec/edits.md` §2.1; `Declared.files`). A rule that says "`acme` is
+what `legacy` was" is a claim about the code the run compiles from
+source; the dependency's code was not edited, its binaries were not
+rebuilt, and whatever it declares has the name it had. **A rebuilt
+file is not a read-only file anywhere in this section**: its
+declarations are no reason for an entity to be a dependency entity, it
+passes nothing on along an include chain, and a name token spelled in
+its macro body is not a dependency's. Entered through a read-only
+file it is read-only for that inclusion, as an owned file is. One
+exception, per declaration: **a declaration of an entity with C
+language linkage that lies in a rebuilt file lies in a read-only
+file** (the entity is then a dependency entity; its holders are
+routinely no C++ translation unit of the run, §8, and a generator
+Slip does not see writes the name). The table of every sentence is
+`spec/landed/verify/WP-118.md` §2; a sentence about who may write
+that is not in it reads a rebuilt file as read-only, and every reader
+of the walk's ownership reads it as owned. An entity of the post-image
+is a **dependency entity** if
 
 - one of its declarations lies in a read-only file. A declaration lies
   in the file of its **expansion location**: the file it is written in,
@@ -232,11 +259,14 @@ post-image is a **dependency entity** if
   the walk follows (`digest.md` §2, the redeclaration limit) is a
   dependency entity: an unread declaration might be in a read-only
   file;
-- where a file is read-only, it is so **per inclusion**: a file entered
-  through an include chain that passes through a read-only file (it, or
-  a file that includes it, or one further up, is read-only) is
-  read-only for that inclusion in that translation unit, whatever the
-  run's files say of it. The dependency was compiled against what it
+- where a file is read-only, it is so **per inclusion**: a file,
+  owned or rebuilt, entered through an include chain that passes
+  through a read-only file (a file that includes it, or one further
+  up, is read-only by its own path) is read-only for that inclusion in
+  that translation unit, whatever the run's files say of it. A rebuilt
+  file on the chain passes nothing on: `rebuilt → owned` is owned,
+  `rebuilt → read-only → owned` and `read-only → rebuilt` are
+  read-only. The dependency was compiled against what it
   includes, so its binary bakes in the types, typedefs, exception types
   and RTTI of an owned header it includes: moving them breaks it
   (`tests/rules/owned/dependency-built-against-owned-*`). Kiln has one
@@ -396,7 +426,7 @@ includes"); the third waits for Kiln's WP-2111 (below).
   `dependency-macro-fixed-functions`). At this pin Kiln does not say
   which operands of `##` came from an argument, and a pasted name made
   from an owned argument (`TEST(Suite, Name)`) must stay renamable.
-- **A guard-skipped inclusion.** A file entered first directly, then
+- **A guard-skipped inclusion.** A file, owned or rebuilt, entered first directly, then
   included by a read-only file whose `#include` the include guard or
   `#pragma once` skips, is owned for its only inclusion: the skipped one
   makes no location range, and nothing the walk reads at this pin
@@ -406,21 +436,26 @@ includes"); the third waits for Kiln's WP-2111 (below).
   (every inclusion directive recorded, skipped ones included) would let
   the walk close it per translation unit.
 
-**The cost of the include-chain rule.** It errs in the safe direction
-in one common shape: a read-only file that the build generates and that
-includes owned code. A CMake precompiled-header file (`cmake_pch.hxx`,
-in the build tree, itself entered by `-include`) and a unity-build main
-file (`unity_0_cxx.cxx`, which `#include`s owned `.cpp` files) are
-read-only, since they lie outside every subject root, so every owned
-entity behind them is a dependency entity for that observer: no rule
-renames it, and a correct migration is reported as a difference in every
-such observer (`tests/rules/owned/generated-includer-of-owned`, a
-read-only `pch.h` including an owned `src.h`;
-`main-file-read-only`, a read-only main file). That stays: knowing
-less never accepts more. The answer is a third class of file, **not
-edited, and rebuilt from source**, whose names no binary outside the run
-holds; it is an open question below and a package of its own
-(`docs/wp/WP-118.md`).
+**The cost of the include-chain rule, and the class that answers
+it.** The rule errs in the safe direction in one common shape: a file
+the build generates that includes owned code. A CMake
+precompiled-header file (`cmake_pch.hxx`, entered by `-include`), a
+unity-build main file (`unity_0_cxx.cxx`) and a generator's fragment
+(TableGen's `…GenRegisterInfo.inc`, which includes
+`llvm/CodeGen/TargetRegisterInfo.h`) lie in the build tree, outside
+every entry, and are read-only; every owned entity first entered
+through one is a dependency entity for that observer, no rule renames
+it, and a correct migration differs there (Demo 2: one observer in
+4,059, where a header's first `#include` is a generated `.inc`). That
+stays for a file the user said nothing about: knowing less never
+accepts more. The user answers it by declaring the file **rebuilt**
+(`--rebuilt`, `spec/edits.md` §2.1): the walk then reads it as an
+owned file (`tests/rules/owned/generated-includer-of-owned`,
+`generated-inc-includer-of-owned`, `main-file-read-only`: equal
+declared, the difference undeclared). So an entity has one ownership,
+and one key, whether an observer reaches it directly, through a unity
+main file or through a precompiled-header file. Nothing is detected;
+the report names the file when it sees the shape (§9.4, the hint).
 
 `slip declare` (§2.3) refuses a `relocate` line whose entity is a
 dependency entity and not a namespace (`DependencyEntity`).
@@ -435,7 +470,9 @@ The run's files are in subject paths, and ownership is of **real
 paths** (`spec/edits.md` §2.1). The job decides each buffer by the
 subject path of the buffer's real path, its symbolic links resolved, and
 never by the path as the front end spells it: a read-only file reached
-through a symbolic link under an owned root is read-only. That subject
+through a symbolic link under an owned root is read-only, and so is one
+reached through a link under a rebuilt directory; a file is rebuilt
+only by its real path. That subject
 path is a real path of the subject (or a created path under its real
 directories) only because guard G6 (§5.3) holds: a post-image whose
 links differ from the subject's along the routes the parse used is
@@ -1214,6 +1251,17 @@ RootMap := subject: path, post: path
   no subject root is the same file in both images.
 - The **subject path** (`digest.md` §11) of a real path `p/x` is `s/x`; of
   any other real path, the path itself.
+- **A rebuilt file** (`spec/edits.md` §2.1) is a file of the image
+  like any other. Under a subject root, the post tree holds what the
+  build regenerated. In a build directory beside the subject, that
+  directory is given as a root of its own (`--root <build> --post
+  <regenerated build>`): the command's `directory` and its words under
+  it are rewritten as any root's are. Under no root it is the same
+  file in both images, so the image cannot hold a regenerated one: it
+  is **frozen**, and guard RB (§5.3) refuses an observer in which it
+  still declares what a rule says was left. Slip
+  runs no generator: the post tree's rebuilt files are the user's
+  build's.
 
 **The post command** is the observer's `Command` (`spec/model.md` §7)
 with `argv[0]` and `env` kept and:
@@ -1545,6 +1593,17 @@ post-image's bytes being a blob in the store.
   rewritten and no word is added, so the paragraph on the textual rule
   does not apply.
 - **The subject path of a real path is the path itself.**
+- **A rebuilt file is frozen**: an overlay names the files an edit set
+  changed, and no edit is made in a rebuilt file, so its post-image is
+  its pre-image. An overlay whose `files` name a rebuilt path is
+  `unverifiable` (O3, §5.3). A precompiled-header file, a unity main
+  file or a generated fragment that only includes owned code, or that
+  is included inside a block the edit moves, is the same bytes after
+  the build, and verifies as it stands. A rebuilt file that still
+  declares an entity under the name a rule says was left is not, and
+  guard RB makes the observer `unverifiable`: such a run is verified
+  in the tree form. (Regenerated content given with the overlay:
+  `docs/wp/WP-165.md`.)
 - The front end is given the overlay
   ([KF2](../docs/requests/KF2-overlay-and-file-identity.md)): every read
   of a file the overlay names, by whatever spelling the file is reached,
@@ -1578,6 +1637,7 @@ post-image's bytes being a blob in the store.
   overlay does not name is reading the post-image. In their place are,
   over the `inputs` of step 1 (§5.2 step 2, in this order): G4; O1 (an
   overlaid file was read with the overlay's content, through the overlay);
+  O3 (the overlay names no rebuilt file, WP-118);
   O2 (i) (a file that is not overlaid has the content the map phase saw);
   the subject's sums (the overlay was made from the pre-image the map
   phase read, then O2 (ii) over the files the map parse read and the post
@@ -1597,8 +1657,9 @@ post-image's bytes being a blob in the store.
    `digests` section.
 1. Parse the post-image: the parse of `spec/model.md` §8.4 with the post
    command, digested as `spec/model.md` §8.5 says with `Declared.rules`,
-   the read-only files of §2.1 (`ReadOnlyFiles` of `Declared.files`, each
-   buffer decided by the subject path of its real path; step 6's walk the
+   the classes of §2.1 (`ReadOnlyFiles` of `Declared.files`: owned,
+   rebuilt or read-only, each buffer decided by the subject path of its
+   real path; step 6's walk the
    same), the subject paths of §5.1, and detail `differing` from the pre shard's
    group sums (`digest.md` §11; detail `none` if the pre shard is not
    usable). With an image of the overlay form this is the last parse of
@@ -1606,10 +1667,11 @@ post-image's bytes being a blob in the store.
    outcome, no `digests` and no `verdict`: the observer is `not_parsed`
    (§7), and the job ends. In the same parse, after the walk: the rule
    use of §9.1 when `Declared.rules` is not empty, and the checks of
-   §10.2 when the overlay has obligations.
+   §10.2 when the overlay has obligations, and the `rebuilt_use` of
+   §9.1.
 2. Check, in this order: the pre shard is usable; guards G1, L1, G4, G5, G6
-   and, with an image other than the identity, O2, N1 then N2 (tree form), or
-   guards G4, O1, O2, the subject's sums, N1 then N2 (overlay form,
+   and, with an image other than the identity, O2, N1 then N2, then RB (tree form), or
+   guards G4, O1, O3, O2, the subject's sums, N1 then N2, then RB (overlay form,
    `spec/landed/exec/WP-074.md` §5: G1, L1, G5 and G6 do not run);
    `comparable` (§3). The first that fails makes
    the verdict `unverifiable` with the reason of §5.3, and the job ends.
@@ -1652,10 +1714,12 @@ only withdraws: guard G3.
 | G4 | step 2: no word of the post command after `argv[0]` is a response file (`@` and a name, as Kiln's driver reads one) | `post-image: the command names the response file <word>, whose words slip cannot examine` |
 | G5 | step 2, tree form: the post command's map pairs (§5.1) are consistent: (a) none other than the identity has a post prefix that is empty or holds `=`; (b) when one pair's post prefix is a prefix of another's, the first applied to the second's post prefix gives the second's written prefix; (c) no `-fmacro-prefix-map=` or `-ffile-prefix-map=` of the command's own (alone, after `-Xclang` or `-Xpreprocessor`, in a `-Wp,` list) has an old prefix prefix-related to a post or written prefix of a pair other than the identity; (d) no `#line` name of the post parse begins with the post prefix of such a pair; (e), checked first: the post prefix of each pair other than the identity and the roots' is under a post root, by real paths; (f), checked last: the command's directory, and every path-bearing word with a `..`, walks names of the subject's directories that have the same kind in the post tree, and has no `..` after a component that does not exist | (a) `post-image: <word> is rewritten to <path>, which no -fmacro-prefix-map word can map back`; (b) `post-image: <word> and <word> spell the files under <post prefix> differently (<pair> and <pair>)`; (c) `post-image: <option word> maps <old>, which overlaps <prefix> of <word>; slip does not compose prefix maps`; (d) `post-image: the #line name <name> begins with <post prefix>, which the post command maps`; (e) `post-image: <word> is spelled through the subject and leaves it (<post prefix> is under no post root)`; (f) `post-image: <word, or "the directory <dir>"> walks <path>, which is <kind> in the subject and <kind> in the post tree` or `post-image: <word> has a `..` after <path>, which does not exist; slip cannot tell where it ends` |
 | O1 | step 2, overlay form: first, every entry of the post-image parse's `inputs` that is an overlay file (by path, or else by identity, device and file number now) was read by the front end through the overlay (`slip_kiln::Unit::overlaid`; a path consulted and not entered, as by `__has_include`, only if the overlay file was given); then every entry whose path the overlay names has the overlay's `post` size and content digest | `post-image: <path> was not read through the overlay` (the first such path, in path order, of the first part, then of the second) |
-| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed; overlay form: (ii) runs within the subject's sums, over every entry of the pre shard's `inputs` the post-image parse's do not list (there is no subject root) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order), or, overlay form, when the entry is an overlay file by identity and not by path, `pre-image: <path> is another name of the overlay's <overlay path>`; (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
+| O2 | step 2, overlay form, and tree form other than the identity: (i) every entry of the post-image parse's `inputs` whose path the overlay does not name (tree form: that is under no post root) and the pre shard's `inputs` also list has the size and content digest the pre shard gives it; (ii), tree form, after (i): every entry of the pre shard's `inputs` that is under no subject root (`Resolver::under_subject`, judged on the path as recorded: when the nearest of the path and its ancestors that exists now is not its own real path, a link made since, the entry is taken as under no root) and whose path the post-image parse's `inputs` do not list (the same identity as (i): the path's bytes; both are real paths) is, now, links followed, a regular file whose real path is the path itself (the map parse recorded real paths) and of the size and content digest listed; overlay form: (ii) runs within the subject's sums, over every entry of the pre shard's `inputs` the post-image parse's do not list (there is no subject root) | (i) `pre-image: <path> changed since the map phase` (the first such path, in path order), followed, when the path is a rebuilt file, by ` (a rebuilt file under no root: give its directory as a root)` (WP-118), or, overlay form, when the entry is an overlay file by identity and not by path, `pre-image: <path> is another name of the overlay's <overlay path>`; (ii) `pre-image: <path> is gone since the map phase (run `slip parse` again)` when no regular file is there, `pre-image: <path> now leads to <real path>, not the file the map parse read (run `slip parse` again)` when its real path is now another, `pre-image: <path> changed since the map phase (run `slip parse` again)` when its size or content differs or it cannot be read (the first such path, in path order) |
 | N1 | step 2, tree form other than the identity, after O2, and overlay form: the pre shard has a `negatives` section (`model.md` §8.6), and no path of it at which a file now exists is, in the tree form, outside every subject root, judged by the file's real path now (links and `..` resolved; `Resolver::under_subject`, its directory by identity), not by the path as written (`s/../ext/h.h` is outside); in the overlay form none may exist. A file exists as Kiln's lookup decides it: the path, links followed now, names a regular file that can be opened (a directory, a dangling link, a device, a file that cannot be opened are none) | `pre-image: the map shard has no negative inputs (run `slip parse` again)`; `pre-image: <path> appeared since the map phase` (the first such path, in path order) |
 | S | step 2, overlay form, after O2 (the subject's sums): every entry of the pre shard's `inputs` whose path the overlay names has the overlay's `pre` size and content digest (the overlay was made from the pre-image the map phase read); then O2 (ii), over every entry | `pre-image: the overlay was made from another <path> than the map phase read` (the first such path, in path order); then O2 (ii)'s |
 | N2 | step 2, tree form other than the identity, after N1, and overlay form (with no subject root, every place): the pre shard has a `found` section (`model.md` §8.8), and (i) for each place of it in path order, under a subject root or not, the place as written, walked now (its real path; when it does not exist, the real path of its deepest prefix that does, then the rest as written), is the path of the input it led to, or the place and that input are now the same file (device and file number, links followed: a hard link the front end read as the input's buffer); (ii) after (i), twice, for each two inputs of the pre shard: each at its recorded path, and each taken where the post parse would read it (an input under a subject root, as O2 (ii) judges it on the path as recorded, at its post tree's counterpart `p/x`; any other at its path); of each pair both of whose members exist there: they are one file there (device and file number, links followed) exactly when one class of the section holds both | `pre-image: the map shard has no record of where its lookups led (run `slip parse` again)`; (i) `pre-image: <place> now leads to <walk>, not to <input> (run `slip parse` again)` (the first place); (ii) `pre-image: <a> and <b> are one file now, two at the map phase (run `slip parse` again)` or `pre-image: <a> and <b> were one file at the map phase, two now (run `slip parse` again)` (the first pair `a < b` of either comparison, by index into `inputs`, the inputs' recorded paths) |
+| RB | step 2, tree form other than the identity and overlay form, after the form's other guards: no row of the step 1 walk's `declares` (§9.1) with `left > 0` names a **frozen** rebuilt file: in the overlay form any rebuilt file, in the tree form one whose subject path is under no subject root. Rows that only have `mapped` or `left_kept` are accounting (WP-118) | `post-image: <file> is rebuilt and still declares an entity under the name rule <index> says was left; an overlay holds no regenerated file (verify a post tree: slip verify --root … --post …)`; tree form: `post-image: <file> is rebuilt, is under no root of the image, and still declares an entity under the name rule <index> says was left; give its directory as a root (--root <dir> --post <regenerated dir>)` (the first such row, by file then rule) |
+| O3 | step 2, overlay form, beside O1: no path of the overlay's `files` has class rebuilt under `Declared.files` (WP-118) | `post-image: the overlay names <path>, a rebuilt file` (the first, in path order) |
 | C | step 2: `comparable(pre, post)` | `digests: <its message>` |
 | R1 | step 4: the pre-image parse is `ok` | `pre-image: no longer parses (<status>): <message>` |
 | G2 | step 4: its `inputs` are the pre shard's `inputs`, entry for entry | `pre-image: <path> changed since the map phase` (the first path, in path order, whose entry is not the same in both lists or is in one only) |
@@ -2485,12 +2549,20 @@ empty message.
   compiled against it (a moved exception type is no longer caught, a
   function taking a moved type no longer links). WP-116's run-level
   check is to close the second only (§2.1).
-- **What a generated includer hides** (the safe direction). A read-only
-  file the build generates that includes owned code (a precompiled
-  header, a unity-build main file) makes that code read-only for the
-  observer (§2.1): a correct migration is reported as a difference there,
-  not shown correct. The third class of file of "Open questions"
-  (WP-118) is to answer it.
+- **What a generated includer hides** (the safe direction). A
+  read-only file the build generates that includes owned code makes
+  that code read-only for the observer (§2.1), unless the user
+  declares it rebuilt. The report hints at it (§9.4).
+- **What a rebuilt file will be.** `rebuilt` is the user's statement
+  that every binary holding the file's names is compiled from source
+  in the run. Slip cannot check it, does not run the generator, and
+  does not compare a rebuilt file with what the generator makes of the
+  post-image. A copy of a rebuilt header that a dependency was
+  compiled against is shown only where an observer reads it (a
+  read-only observer that includes the rebuilt file itself differs;
+  one that includes a copy is stale for a rule that names the entity,
+  and shows nothing under a namespace rule alone). Every run lists the
+  entries it relied on.
 - **Where the map parse looked, as far as Kiln's log shows it.** Guard
   N1 (§5.3) knows the places the map parse looked for a file and found
   none only from Kiln's lookup log and the command's own search
@@ -2544,9 +2616,9 @@ empty message.
   links, exports the name or finds it at run time. A transform that
   renames an entity with C language linkage, or one a binary exports,
   owes its user the list of such files to edit; Slip reads none of them.
-- **Derived inputs.** A file the build generated from the subject (a
-  table, a configuration header, a module file) lies in the build tree,
-  outside every subject root, and is the same file in both images: the
+- **Derived inputs.** A file the build generated from the subject lies
+  in the build tree; unless it is under a root of the image it is the
+  same file in both images (a rebuilt one is then frozen, §5.1): the
   edit's effect on it is not seen until it is generated again from the
   post-image, which Slip does not do. A generated file that includes a
   subject file by an absolute path trips G1 (§5.3) for every observer
@@ -2625,6 +2697,41 @@ Binding := overlay:  opt<digest>    content id of the OVLY container, for an ima
            pre:      uv             the round of the pre shard (§5.2 step 0)
 ```
 
+```
+RebuiltUse := relied:     list<uv>          indices into Declared.files.rebuilt; strictly ascending
+              declares:   list<Declares>    strictly ascending by (file, rule)
+              hints:      list<path>        strictly ascending; at most 16
+              hints_more: uv
+Declares   := file: path, rule: uv, mapped: uv, left: uv, left_kept: uv
+```
+
+Section **33, `rebuilt_use`** (WP-118), in an `ok` shard of phase
+`verify` under a rule table that is not empty, when it is not empty.
+For an entity the walk decided owned, let its *rebuilt entries* be the
+entries covering a file that holds one of its declarations (its
+expansion location or its name token's spelling) or lies on the
+include chain of one, and its *rebuilt files* the rebuilt files one of
+its declarations lies in. A rule **gave it its key** when it is in
+that rule's `via`, when it is a member whose chain of namespaces the
+rule mapped, or when it is a namespace whose unit in the owned view
+counts the rule's `via`; a rule **produces the key it kept** when it
+is in the rule's `direct` trace (a namespace's own included) or is a
+member of a namespace left under the key the rule produces. `relied`
+is every rebuilt entry of an entity a rule gave its key to, and of a
+reference to a namespace written in a rebuilt file that a rule
+mapped; `declares` has a row per rebuilt file and rule with the
+number of entities a rule gave their key (`mapped`), that kept the
+key it produces (`left`), and of those the ones in `Declared.kept`
+and the namespaces (`left_kept`, not counted in `left`: a namespace is
+never `left`, its members count by their own rows; WP-118 R6.4). `hints` are the files of §9.4's
+hint. The reader's rows are `spec/landed/verify/WP-118.md` §4.4; an
+index out of range for the run's `Declared` makes the run
+`incomplete`. With an empty `Declared.files.rebuilt` the section is
+still written when `hints` is not empty: the one exception to
+WP-118's P0 (an empty list changes no byte), accepted before the first
+release because no shard outlives the build that wrote it
+(`digest.md` §11).
+
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
 `binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
 is `spellings`, §10.4; 25 is retired, below.)
@@ -2697,7 +2804,7 @@ as a dependency entity it would count for nothing, and a run in which
 one observer moved `legacy::f` and the dependency's binary still refers
 to it would verify. So for a namespace rule's counts, an entity that is
 a dependency entity **only by the per-inclusion rule**, every
-declaration of it in a file the run's files say is owned (its expansion
+declaration of it in a file the run's files say is owned or rebuilt (its expansion
 location in a file, a name token spelled in a file in one too), none in
 a file read-only by its own path and none of the kinds that are in no
 file, is counted as an owned member is: `direct(r)` unless its key is in
@@ -2717,7 +2824,7 @@ owned code is behind a generated read-only includer (a precompiled
 header, a unity-build main file) counts every owned member it reaches
 through it that was left in the old namespace, so a correct migration
 that leaves members in `legacy` on purpose lists them in `kept` for that
-observer as for any other.
+observer as for any other, for an includer that is not declared rebuilt.
 
 Why this is the condition: two observers disagree about an entity with
 key `K` when one has it in the old namespace and the other reaches `K`
@@ -2912,6 +3019,10 @@ the M1 document. Members added, each present only when it applies:
 "agreement": { "rules": <n>,                               when Declared.rules is not empty
                "stale": [ { "rule": <index>, "observer": <id>, "main": <path>, "direct": <n>, "kept_via": <n> }, … ],
                "unused": [ <index>, … ] }
+"rebuilt": { "entries":  [ { "path": <entry>, "observers": <n> }, … ],
+             "declares": [ { "file": <path>, "rule": <index>, "observers": <n>, "mapped": <n>, "left": <n>, "left_kept": <n> }, … ],
+             "hints":    [ { "file": <path>, "directory": <path>, "observers": <n>, "first": <main file> }, … ] }
+                                                           when Declared.files has a rebuilt entry or a hint exists; after "agreement"
 "spellings": …                                             §10.5
 ```
 
@@ -2930,7 +3041,22 @@ agreement rules <n> stale <n> unused <n>         when there are rules; `stale <n
 stale rule <index> direct <n> kept_via <n> <main file>    at most 100, then `stale: <n> more (see the report)`
 unused rule <index>
 agreement read <n> of <m> observers: rule use of <k> unverifiable not read    when there are rules and k > 0
+rebuilt <entry> relied on by <n> observer(s)
+unused rebuilt <entry>
+rebuilt file <file> still declares <n> entit(y|ies) under the name rule <index> says was left (not regenerated)    at most 100
+hint: <file> is read-only, is under the build directory <directory>, and makes code of the run read-only in <n> observer(s) (first <main file>); if the build writes it again from source, pass --rebuilt <file> (only if no binary outside this run was compiled against it)     at most 20
 ```
+
+An entry is **relied on** by an observer whose `rebuilt_use.relied`
+has it; the fold is over every `ok` verify shard that has the
+section, whatever its verdict. An entry no observer relied on is reported like an unused
+rule and changes no verdict. A **hint** is a file that is read-only,
+that no entry of the run's files covers, that lies under the
+observer's command's `directory`, and that was the first read-only
+file above an inclusion of a file not read-only by its own path
+(`spec/landed/verify/WP-118.md` R1.3); it is printed for observers
+that are `mismatch` or stale, and names the file, never a directory.
+The `rebuilt` lines follow the `agreement read` line (WP-118).
 
 `agreement read` follows the `unused rule` lines: `n` observers'
 `rule_use` was folded (those `verified` or `mismatch`), of the `m`
@@ -3398,14 +3524,16 @@ is pending, until Kiln records a range for it
   post-image. That removes the rewrite of §5.1, the map pairs and guards
   G1, L1 and G5 together, leaving the overlay form's O1 and O2.
 
-- **A third class of file: not edited, and rebuilt from source.**
-  `spec/edits.md` §2.1 has owned and read-only files; a file the build
-  writes and compiles with the rest (a precompiled header, a unity-build
-  main file, a generator's `.inc` or `config.h`) is not edited by Slip,
-  but no binary outside the run holds its names. Read-only today, it
-  costs false differences (§2.1, "The cost of the include-chain rule").
-  The class `rebuilt`, the user's statement about a path, is
-  `docs/wp/WP-118.md`.
+- **Regenerated files in the overlay form** (WP-118, F1;
+  `docs/wp/WP-165.md`). An overlay
+  holds no post-image for a rebuilt file, so an observer in which one still declares what a rule says was
+  left is `unverifiable` through an overlay, and the native rename
+  refuses a name in one: a transform-driven namespace migration over
+  generated files that open the namespace waits for it. Entries for rebuilt paths given
+  by the user (a list of their own that apply never writes) would let
+  a transform's run verify such a migration.
+- **A generated `extern "C"` name** cannot be renamed by a rule
+  (§2.1); WP-116's assertion may be the way to say it is the run's.
 
 - **A literal operator as a rule's new name.** `relocate` moves a literal
   operator with `=` and cannot rename its suffix (`NotRenamable`: `<name>`

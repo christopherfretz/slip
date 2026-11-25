@@ -1,0 +1,5 @@
+# gen.inc read-only (undeclared): own.h is read-only by the include chain; the difference Investigation 079 recorded (Demo 2).
+removed llvm::getAsU(unsigned long long &)
+changed llvm::use(unsigned long long &)
+added llvm::parseAsU(unsigned long long &)
+use 1 via 0 direct 0

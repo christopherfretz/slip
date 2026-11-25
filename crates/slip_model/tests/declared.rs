@@ -9,7 +9,7 @@ use std::path::Path;
 
 use slip_model::Digest;
 use slip_model::container::{HEADER_LEN, TRAILER_LEN, Writer};
-use slip_model::declared::{Declared, DeclaredError, RULES_V2_TAG};
+use slip_model::declared::{Declared, DeclaredError, RULES_V2_TAG, RULES_V3_TAG};
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::tagged_digest;
 use slip_model::json::{self, Value};
@@ -82,7 +82,11 @@ fn golden_rules() -> Vec<Rule> {
 
 /// Files for a value with rules: an owned tree with a read-only subtree.
 fn files() -> Ownership {
-    Ownership { owned: vec![b"/src".to_vec()], readonly: vec![b"/src/dep".to_vec()] }
+    Ownership {
+        owned: vec![b"/src".to_vec()],
+        readonly: vec![b"/src/dep".to_vec()],
+        rebuilt: Vec::new(),
+    }
 }
 
 /// A value with rules is written with its files (verify §2).
@@ -127,6 +131,9 @@ struct At2 {
     owned: usize,
     owned_at: Vec<usize>,
     readonly_at: Vec<usize>,
+    /// Version 3 (WP-118): the `rebuilt` list and its entries.
+    rebuilt: usize,
+    rebuilt_at: Vec<usize>,
 }
 
 /// The payload of a version 2 `declared` section, by the test's encoder:
@@ -170,9 +177,30 @@ fn raw_payload_v2(
                     e.bytes(p);
                 }
             }
+            // Version 3 (WP-118 R5.4): `rebuilt` after `readonly`, written
+            // exactly when it is not empty.
+            if !o.rebuilt.is_empty() {
+                at.rebuilt = e.as_bytes().len();
+                e.count(o.rebuilt.len());
+                for p in &o.rebuilt {
+                    at.rebuilt_at.push(e.as_bytes().len());
+                    e.bytes(p);
+                }
+            }
         }
     }
     (e.into_bytes(), at)
+}
+
+/// The version a value is written in: 3 exactly when its files have a
+/// rebuilt entry (WP-118 R5.4).
+fn version_of(files: Option<&Ownership>) -> u32 {
+    if files.is_some_and(|o| !o.rebuilt.is_empty()) { 3 } else { 2 }
+}
+
+/// A version 3 file.
+fn decl3(payload: &[u8]) -> Vec<u8> {
+    file(*b"DECL", 3, &[(1, payload)])
 }
 
 fn file(kind: [u8; 4], version: u32, sections: &[(u64, &[u8])]) -> Vec<u8> {
@@ -279,7 +307,12 @@ fn round_trip(x: &Declared) {
         x.kept(),
         x.files(),
     );
-    assert_eq!(bytes, decl2(&payload), "to_bytes agrees with the test's encoder");
+    let version = version_of(x.files());
+    assert_eq!(
+        bytes,
+        file(*b"DECL", version, &[(1, &payload)]),
+        "to_bytes agrees with the test's encoder"
+    );
     let back = Declared::from_bytes(&bytes).unwrap();
     assert_eq!(&back, x);
     assert_eq!(back.to_bytes(), bytes);
@@ -466,7 +499,7 @@ fn rejects_each_bad_ownership() {
         (vec![p("/a"), p("/b")], vec![p("/b")], "a readonly entry is also in owned", 2, 0),
     ];
     for (owned, readonly, what, which, i) in cases {
-        let o = Ownership { owned, readonly };
+        let o = Ownership { owned, readonly, rebuilt: Vec::new() };
         let (payload, at) = raw_payload_v2(&rules, [&[], &[], &[]], &[], Some(&o));
         let mut json = golden_declared().to_json();
         for list in ["changed", "created", "removed", "kept"] {
@@ -508,11 +541,13 @@ fn rules_id_covers_files() {
     let other = x.clone().with_files(Some(Ownership {
         owned: vec![b"/src".to_vec()],
         readonly: vec![b"/src/dep2".to_vec()],
+        rebuilt: Vec::new(),
     }));
     assert_ne!(other.rules_id(), x.rules_id());
     let moved = x.clone().with_files(Some(Ownership {
         owned: vec![b"/src".to_vec(), b"/src/dep".to_vec()],
         readonly: vec![],
+        rebuilt: Vec::new(),
     }));
     assert_ne!(moved.rules_id(), x.rules_id());
     // Only the rules and the files: the exemption lists and `kept` are not
@@ -755,11 +790,12 @@ fn rejects_wrong_kind() {
     assert_eq!(Declared::from_json(&v).unwrap_err().path, "kind");
 }
 
-// model §5.3: a wrong version is UnsupportedVersion at byte 12.
+// model §5.3: a wrong version is UnsupportedVersion at byte 12. Version 3
+// is read since WP-118 (`declared_v3_*`); 4 is the first unknown one.
 #[test]
 fn rejects_wrong_version() {
     let payload = raw_payload(&[], [&[], &[], &[]]);
-    for version in [0u32, 3] {
+    for version in [0u32, 4] {
         let mut bytes = file(*b"DECL", 1, &[(1, &payload)]);
         bytes[12..16].copy_from_slice(&version.to_le_bytes());
         let e = Declared::from_bytes(&bytes).unwrap_err();
@@ -824,4 +860,143 @@ fn rejects_other_json_forms() {
     let mut v = golden_declared().to_json();
     set(&mut v, &["sections", "declared", "rules", "0", "kind"], Value::Str("namespaces".into()));
     assert_eq!(Declared::from_json(&v).unwrap_err().path, "sections.declared.rules[0].kind");
+}
+
+// ---------------------------------------------------------------------------
+// WP-118: `files.rebuilt`, DECL version 3 (R5.3, R5.4, R5.5)
+
+fn files3() -> Ownership {
+    Ownership { rebuilt: vec![b"/src/build".to_vec()], ..files() }
+}
+
+fn paths(l: &[Vec<u8>]) -> Value {
+    Value::Array(l.iter().map(|b| Value::Str(String::from_utf8(b.clone()).unwrap())).collect())
+}
+
+// R5.4: version 3 exactly for a rebuilt list; version 2, byte for byte as
+// before, without one (the golden of `golden_declared_binary_and_json`
+// is that); `dump`/`undump` keep the version; the JSON member `rebuilt`
+// is present exactly in version 3.
+#[test]
+fn declared_v3_round_trip() {
+    let two = golden_declared();
+    let three = two.clone().with_files(Some(files3()));
+    round_trip(&two);
+    round_trip(&three);
+    assert_eq!(two.to_bytes()[12..16], 2u32.to_le_bytes());
+    assert_eq!(three.to_bytes()[12..16], 3u32.to_le_bytes());
+    let files = |x: &Declared| get(&x.to_json(), &["sections", "declared", "files"]).clone();
+    let Value::Object(f2) = files(&two) else { panic!("files is an object") };
+    let Value::Object(f3) = files(&three) else { panic!("files is an object") };
+    assert_eq!(f2.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["owned", "readonly"]);
+    assert_eq!(
+        f3.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["owned", "readonly", "rebuilt"]
+    );
+    assert_eq!(get(&three.to_json(), &["version"]), &Value::Int(3));
+    assert!(dump(&three.to_bytes()).unwrap().contains("\"rebuilt\": ["));
+}
+
+// R5.3: each new row, in order, at its offset and JSON path; R5.4: a
+// version 3 file with an empty `rebuilt` list is a second encoding,
+// refused at the list; a version 2 JSON with a `rebuilt` member is refused.
+#[test]
+fn declared_v3_rejects_each_bad_rebuilt() {
+    let p = |s: &str| s.as_bytes().to_vec();
+    let rules = golden_rules();
+    let owned = vec![p("/a")];
+    let readonly = vec![p("/a/r")];
+    // (rebuilt, message, index)
+    let cases: [(Vec<Vec<u8>>, &str, usize); 7] = [
+        (vec![p("/a/g"), p("g")], "not a canonical absolute path", 1),
+        (vec![p("/a/g/")], "not a canonical absolute path", 0),
+        (vec![p("/a/h"), p("/a/g")], "rebuilt is not strictly ascending", 1),
+        (vec![p("/a/g"), p("/a/g")], "rebuilt is not strictly ascending", 1),
+        (vec![p("/")], "a rebuilt entry is /", 0),
+        (vec![p("/"), p("/a")], "a rebuilt entry is /", 0),
+        (vec![p("/a")], "a rebuilt entry is also in owned", 0),
+    ];
+    let later: [(Vec<Vec<u8>>, &str, usize); 2] = [
+        (vec![p("/a"), p("/a/r")], "a rebuilt entry is also in owned", 0),
+        (vec![p("/a/g"), p("/a/r")], "a rebuilt entry is also in readonly", 1),
+    ];
+    for (rebuilt, what, i) in cases.into_iter().chain(later) {
+        let o = Ownership { owned: owned.clone(), readonly: readonly.clone(), rebuilt };
+        let (payload, at) = raw_payload_v2(&rules, [&[], &[], &[]], &[], Some(&o));
+        let mut json = golden_declared().with_files(Some(files3())).to_json();
+        for list in ["changed", "created", "removed", "kept"] {
+            set(&mut json, &["sections", "declared", list], Value::Array(vec![]));
+        }
+        set(&mut json, &["sections", "declared", "files", "owned"], paths(&o.owned));
+        set(&mut json, &["sections", "declared", "files", "readonly"], paths(&o.readonly));
+        set(&mut json, &["sections", "declared", "files", "rebuilt"], paths(&o.rebuilt));
+        let path = format!("sections.declared.files.rebuilt[{i}]");
+        rejected(&decl3(&payload), base(&payload) + at.rebuilt_at[i], &json, &path);
+        assert_eq!(Declared::from_bytes(&decl3(&payload)).unwrap_err().what, what);
+        let x = Declared::new(rules.clone(), vec![], vec![], vec![]).unwrap().with_files(Some(o));
+        assert!(x.validate().is_err(), "{what}");
+    }
+    // A version 3 file whose list is empty.
+    let o = files();
+    let (mut payload, _) = raw_payload_v2(&rules, [&[], &[], &[]], &[], Some(&o));
+    let list_at = payload.len();
+    payload.push(0);
+    let mut json = golden_declared().with_files(Some(files3())).to_json();
+    for list in ["changed", "created", "removed", "kept"] {
+        set(&mut json, &["sections", "declared", list], Value::Array(vec![]));
+    }
+    set(&mut json, &["sections", "declared", "files", "rebuilt"], Value::Array(vec![]));
+    rejected(&decl3(&payload), base(&payload) + list_at, &json, "sections.declared.files.rebuilt");
+    assert_eq!(
+        Declared::from_bytes(&decl3(&payload)).unwrap_err().what,
+        "a version 3 container has no rebuilt entry"
+    );
+    // M20: a version 3 file with `files` absent (no rules, so a version 2
+    // one would be valid): refused at the `files` tag.
+    let (payload, at) = raw_payload_v2(&[], [&[], &[], &[]], &[], None);
+    let mut json = Declared::none().to_json();
+    set(&mut json, &["version"], Value::Int(3));
+    rejected(&decl3(&payload), base(&payload) + at.files, &json, "sections.declared.files");
+    assert_eq!(
+        Declared::from_bytes(&decl3(&payload)).unwrap_err().what,
+        "a version 3 container has no rebuilt entry"
+    );
+    // A version 2 JSON with the member: not version 2's record.
+    let mut json = golden_declared().with_files(Some(files3())).to_json();
+    set(&mut json, &["version"], Value::Int(2));
+    assert!(Declared::from_json(&json).is_err());
+}
+
+// R5.5: `rules_id` keeps the v2 tag without a rebuilt list and uses
+// `slip.rules.v3` (rules, owned, readonly, rebuilt) with one; three values
+// that differ only in the class of one path have three ids.
+#[test]
+fn rules_id_v3() {
+    let x = golden_declared().with_files(Some(files3()));
+    let mut e = Encoder::new();
+    e.count(x.rules().rules().len());
+    for r in x.rules().rules() {
+        r.encode(&mut e);
+    }
+    e.count(1).bytes(b"/src").count(1).bytes(b"/src/dep").count(1).bytes(b"/src/build");
+    assert_eq!(x.rules_id(), tagged_digest(RULES_V3_TAG, e.as_bytes()));
+    assert_ne!(RULES_V3_TAG, RULES_V2_TAG);
+    let with = |owned: &[&str], readonly: &[&str], rebuilt: &[&str]| {
+        let l = |v: &[&str]| v.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>();
+        golden_declared()
+            .with_files(Some(Ownership {
+                owned: l(owned),
+                readonly: l(readonly),
+                rebuilt: l(rebuilt),
+            }))
+            .rules_id()
+    };
+    let ids = [
+        with(&["/src", "/src/b"], &[], &[]),
+        with(&["/src"], &["/src/b"], &[]),
+        with(&["/src"], &[], &["/src/b"]),
+    ];
+    assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
+    // The v2 id is the one it was.
+    assert_eq!(golden_declared().rules_id(), with(&["/src"], &["/src/dep"], &[]));
 }

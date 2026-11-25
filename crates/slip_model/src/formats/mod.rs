@@ -45,6 +45,7 @@ mod names;
 mod negatives;
 mod overlay;
 mod plan;
+mod rebuilt_use;
 mod result;
 mod run;
 mod shard;
@@ -372,8 +373,8 @@ macro_rules! format_impl {
 format_impl!(Plan, plan, b"PLAN", 1);
 format_impl!(Shard, shard, b"SHRD", 2);
 format_impl!(RunRecord, run, b"RUNR", 1);
-format_impl!(Declared, declared, b"DECL", 2);
-format_impl!(Transform, transform, b"TRFM", 2);
+format_impl!(Declared, declared, b"DECL", 3);
+format_impl!(Transform, transform, b"TRFM", 3);
 format_impl!(EditSet, editset, b"EDTS", 3);
 format_impl!(Overlay, overlay, b"OVLY", 1);
 format_impl!(TransformResult, result, b"RSLT", 2);

@@ -216,7 +216,7 @@ fn read_only_files(input: &Input<'_>, listed: &[&str]) -> ReadOnlyFiles {
     let mut readonly: Vec<Vec<u8>> =
         listed.iter().map(|n| format!("{ROOT}/{n}").into_bytes()).collect();
     readonly.sort();
-    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly };
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly, rebuilt: Vec::new() };
     let subject = |f| {
         let p = (input.subject_path)(f);
         if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }

@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A8b: owned own.h includes the rebuilt fragment frag.inc inside `namespace legacy {`, edited to `namespace acme {`. The fragment needs no regeneration (it is the same bytes); its G is mapped, and its row is mapped, never left.

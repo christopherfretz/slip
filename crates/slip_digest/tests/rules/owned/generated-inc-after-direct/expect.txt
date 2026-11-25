@@ -1,0 +1,2 @@
+# WP-118 (Investigation 079, zz_inv079-direct-first): own.h is entered directly first; the .inc include of it is skipped by the guard, so the .inc decides nothing. Equal, no entry relied on.
+use 1 via 1 direct 0

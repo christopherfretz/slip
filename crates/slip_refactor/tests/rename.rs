@@ -4,7 +4,8 @@
 //! request: `spec:` lines naming what it covers, `from: a::b::f`, `to:
 //! g`, `kind: function|variable|any`, an optional `args:` line of extra
 //! front-end words), the files of a small tree (`slip_kiln::tree`; the
-//! main file is `main.cpp`; everything under `dep/` is read-only), and
+//! main file is `main.cpp`; everything under `dep/` is read-only, and
+//! everything under `gen/` rebuilt, WP-118), and
 //! `expect.txt`, a text rendering of the `Edits`:
 //!
 //! ```text
@@ -172,6 +173,13 @@ fn transform(case: &Case, root: &str) -> Transform {
         ownership: Ownership {
             owned: vec![root.as_bytes().to_vec()],
             readonly: vec![format!("{root}/dep").into_bytes()],
+            // WP-118: `gen/` is rebuilt in a case that has it; no list
+            // otherwise, so every other case keeps its request.
+            rebuilt: if case.files.iter().any(|(p, _)| p.starts_with("gen/")) {
+                vec![format!("{root}/gen").into_bytes()]
+            } else {
+                Vec::new()
+            },
         },
         indivisible: true,
         rename: Some(Rename {
@@ -648,6 +656,7 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::Crossing => "crossing",
         Reason::NotAFile => "not_a_file",
         Reason::NotOwned => "not_owned",
+        Reason::Rebuilt => "rebuilt",
         Reason::FileRecoded => "file_recoded",
         Reason::NotPlain => "not_plain",
         Reason::MixedSet => "mixed_set",
@@ -3027,6 +3036,7 @@ fn rename_of_a_dependency(name: &str, include: &str) -> (String, slip_reduce::Re
             ownership: Ownership {
                 owned: vec![r.as_bytes().to_vec()],
                 readonly: vec![format!("{r}/dep").into_bytes()],
+                rebuilt: Vec::new(),
             },
             indivisible: true,
             rename: Some(Rename {
@@ -3097,7 +3107,11 @@ fn s5_1_one_header_under_two_spellings_is_one_file_of_the_edit_set() {
     ];
     let t = |r: &str| Transform {
         kind: TransformKind::Rename,
-        ownership: Ownership { owned: vec![r.as_bytes().to_vec()], readonly: Vec::new() },
+        ownership: Ownership {
+            owned: vec![r.as_bytes().to_vec()],
+            readonly: Vec::new(),
+            rebuilt: Vec::new(),
+        },
         indivisible: true,
         rename: Some(Rename {
             target: vec![b"n".to_vec(), b"f".to_vec()],
