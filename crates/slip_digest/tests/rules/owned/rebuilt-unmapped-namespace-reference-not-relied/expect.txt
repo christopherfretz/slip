@@ -1,1 +1,1 @@
-# Equal; gen.h is not relied on: its only namespace reference names other, which no rule maps.
+# Equal; gen.h is not relied on: its only namespace reference, a using-directive, names other, which no rule maps.

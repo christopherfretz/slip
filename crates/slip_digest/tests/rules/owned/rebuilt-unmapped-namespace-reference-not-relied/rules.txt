@@ -1,2 +1,2 @@
 relocate legacy => :: acme
-# WP-118 R6.4 (second review N-d, X17): rebuilt gen.h refers to namespace other (other::o), which no rule maps; the mapped legacy is in the main file. A reference to a namespace written in a rebuilt file makes its entry relied on only when a rule mapped that namespace: gen.h is not relied on.
+# WP-118 R6.4 (second review N-d, X17): rebuilt gen.h refers to namespace other (a using-directive), which no rule maps; the mapped legacy is in the main file. A reference to a namespace written in a rebuilt file makes its entry relied on only when a rule mapped that namespace: gen.h is not relied on.

@@ -1,3 +1,3 @@
 #pragma once
 #include "other.h"
-inline int g() { return other::o; }
+inline int g() { using namespace other; return o; }
