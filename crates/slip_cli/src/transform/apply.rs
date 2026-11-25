@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use slip_apply::{ApplyError, Refused, WriteError};
+use slip_apply::{ApplyError, Recovered, Refused, WriteError};
 use slip_exec::signals;
 use slip_exec::store::{self as exec_store, Object, Store};
 use slip_model::Digest;
@@ -481,6 +481,14 @@ fn ownership_of_journal(
     ownership_of(store, set.transform).map_err(Err)
 }
 
+/// What `--recover` says of a journal cut short (§7.3 step 2).
+fn interrupted_line(why: &str) -> String {
+    format!(
+        "recovered: the write was interrupted before any file was touched ({why}); the journal is \
+         removed"
+    )
+}
+
 /// `slip apply --recover` (§7.3): status 0 when the tree is the
 /// pre-image again (or there was no journal), 3 when a file had to be
 /// reported (the journal is kept) or recovery could not start.
@@ -494,8 +502,13 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
         let _ = writeln!(out, "recovered: no unfinished write");
         return Ok(status::OK);
     };
-    let read = slip_apply::journal::Journal::read(&bytes)
-        .map_err(|m| Failure::Input(format!("{}: {m}", store.journal_path().display())))?;
+    let read = slip_apply::journal::Journal::read(&bytes).map_err(|m| {
+        Failure::Input(format!(
+            "{}: {m}; the journal is damaged, not cut short: it is kept and nothing was changed \
+             (spec/edits.md §10.4)",
+            store.journal_path().display()
+        ))
+    })?;
     let j = match read {
         slip_apply::journal::Read::Whole(j) => j,
         slip_apply::journal::Read::Interrupted(_) => {
@@ -503,15 +516,11 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
             // (§7.3 step 2). Read again by `discard_interrupted`, which
             // removes it only if it is still interrupted.
             match slip_apply::discard_interrupted(&journal) {
-                Ok(true) => {
-                    let _ = writeln!(
-                        out,
-                        "recovered: the write was interrupted before any file was touched; the \
-                         journal is removed"
-                    );
+                Ok(Some(why)) => {
+                    let _ = writeln!(out, "{}", interrupted_line(&why));
                     return Ok(status::OK);
                 }
-                Ok(false) => {
+                Ok(None) => {
                     return Err(Failure::Input(format!(
                         "{}: the journal changed while it was read; run --recover again",
                         store.journal_path().display()
@@ -531,13 +540,9 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
     let recovered =
         slip_apply::recover(&ownership, &slip_apply::fs::DiskTree, &StoreBlobs(&store), &journal);
     let r = match recovered {
-        Ok(Some(r)) if r.interrupted => {
+        Ok(Some(Recovered { interrupted: Some(why), .. })) => {
             // Not reached: the journal read above was whole.
-            let _ = writeln!(
-                out,
-                "recovered: the write was interrupted before any file was touched; the journal \
-                 is removed"
-            );
+            let _ = writeln!(out, "{}", interrupted_line(&why));
             return Ok(status::OK);
         }
         Ok(None) => {

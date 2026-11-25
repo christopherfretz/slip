@@ -19,6 +19,14 @@ fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// The other process of `create-new-xproc`: this package's `xtask`.
+fn reader(extra: &[&str]) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> =
+        vec![env!("CARGO_BIN_EXE_xtask").into(), "fscheck-reader".into()];
+    v.extend(extra.iter().map(Into::into));
+    v
+}
+
 fn run(req: &Request, read: fscheck::Reader<'_>) -> (u8, Vec<String>) {
     let mut lines = Vec::new();
     let code = fscheck::run(req, read, &mut |l| lines.push(l.to_owned()));
@@ -29,7 +37,7 @@ fn run(req: &Request, read: fscheck::Reader<'_>) -> (u8, Vec<String>) {
 #[test]
 fn s11_2_parse() {
     let r = fscheck::parse(&args(&["d"])).unwrap();
-    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 11));
+    assert_eq!((r.dir.as_path(), r.rounds, r.rows.len()), (Path::new("d"), DEFAULT_ROUNDS, 12));
     let r = fscheck::parse(&args(&[
         "--row",
         "unique-tmp-link",
@@ -64,7 +72,12 @@ fn s11_2_parse() {
 #[test]
 fn s11_2_rows_run() {
     let f = Fixture::empty("fscheck-rows");
-    let req = Request { dir: f.root().to_owned(), rounds: 20, rows: ROWS.to_vec() };
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 20,
+        rows: ROWS.to_vec(),
+        reader: Some(reader(&[])),
+    };
     let (code, lines) = run(&req, &|p| std::fs::read(p));
     assert_eq!(lines[0], format!("fscheck: {}: 20 rounds per row", f.root().display()));
     let rows: Vec<&String> = lines.iter().filter(|l| l.contains(" rounds 20 wrong ")).collect();
@@ -100,7 +113,12 @@ fn s11_2_a_wrong_read_fails_a_relied_row() {
         }
     };
     let row = |name: &str| *ROWS.iter().find(|r| r.name == name).unwrap();
-    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("link-read-both")] };
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 3,
+        rows: vec![row("link-read-both")],
+        reader: None,
+    };
     let (code, lines) = run(&req, &planted);
     assert_eq!(code, 1, "{lines:#?}");
     assert!(lines[1].starts_with("link-read-both") && lines[1].contains(" wrong 6 "), "{lines:#?}");
@@ -114,13 +132,19 @@ fn s11_2_a_wrong_read_fails_a_relied_row() {
         dir: f.root().to_owned(),
         rounds: 3,
         rows: vec![row("link-unlink-create"), row("copy-unlink-create")],
+        reader: None,
     };
     let (code, lines) = run(&req, &planted);
     assert_eq!(code, 1);
     assert!(lines[1].contains(" wrong 3 ") && lines[1].contains("not relied on"), "{lines:#?}");
     assert_eq!(lines.last().unwrap(), "fscheck: FAILED (copy-unlink-create)");
 
-    let req = Request { dir: f.root().to_owned(), rounds: 2, rows: vec![row("link-rename-over")] };
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 2,
+        rows: vec![row("link-rename-over")],
+        reader: None,
+    };
     let (code, lines) = run(&req, &planted);
     assert_eq!((code, lines.last().unwrap().as_str()), (0, "fscheck: ok"), "{lines:#?}");
 
@@ -128,7 +152,12 @@ fn s11_2_a_wrong_read_fails_a_relied_row() {
     // no longer on `unique-tmp-link`.
     assert!(row("create-new-read").relied);
     assert!(!row("unique-tmp-link").relied);
-    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("create-new-read")] };
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 3,
+        rows: vec![row("create-new-read")],
+        reader: None,
+    };
     let (code, lines) = run(&req, &planted);
     assert_eq!(code, 1, "{lines:#?}");
     assert!(
@@ -137,16 +166,63 @@ fn s11_2_a_wrong_read_fails_a_relied_row() {
     );
     assert!(lines[2].ends_with("read `planted`, not `pre 0 detail`"), "{lines:#?}");
     assert_eq!(lines.last().unwrap(), "fscheck: FAILED (create-new-read)");
-    let req = Request { dir: f.root().to_owned(), rounds: 3, rows: vec![row("unique-tmp-link")] };
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 3,
+        rows: vec![row("unique-tmp-link")],
+        reader: None,
+    };
     let (code, lines) = run(&req, &planted);
     assert_eq!((code, lines.last().unwrap().as_str()), (0, "fscheck: ok"), "{lines:#?}");
+}
+
+// §11.2, WP-161: `create-new-xproc` is relied on; a short read by the
+// other process (planted: it drops the last byte of round 8's file, a
+// 256 KiB one) is its wrong read, shown, and the status is 1.
+#[test]
+fn s11_2_create_new_xproc() {
+    let f = Fixture::empty("fscheck-xproc");
+    let row = *ROWS.iter().find(|r| r.name == "create-new-xproc").unwrap();
+    assert!(row.relied);
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 10,
+        rows: vec![row],
+        reader: Some(reader(&["--short-at", "8"])),
+    };
+    let (code, lines) = run(&req, &|p| std::fs::read(p));
+    assert_eq!(code, 1, "{lines:#?}");
+    assert!(
+        lines[1].starts_with("create-new-xproc") && lines[1].contains(" wrong 1 "),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[2].contains("round 8, after the creation: the other process: wrong: ")
+            && lines[2].ends_with(&format!(
+                "j8 read {} bytes, not {}",
+                fscheck::XPROC_BIG - 1,
+                fscheck::XPROC_BIG
+            )),
+        "{lines:#?}"
+    );
+    assert_eq!(lines.last().unwrap(), "fscheck: FAILED (create-new-xproc)");
+    // A reader that cannot start is an error of the row.
+    let req = Request {
+        dir: f.root().to_owned(),
+        rounds: 1,
+        rows: vec![row],
+        reader: Some(vec![f.path("no-such-program").into()]),
+    };
+    let (code, lines) = run(&req, &|p| std::fs::read(p));
+    assert_eq!(code, 1, "{lines:#?}");
+    assert!(lines[1].starts_with("create-new-xproc") && lines[1].contains("error: "), "{lines:#?}");
 }
 
 // §11.2: a directory that does not exist is status 1.
 #[test]
 fn s11_2_no_directory() {
     let f = Fixture::empty("fscheck-none");
-    let req = Request { dir: f.path("none"), rounds: 1, rows: ROWS.to_vec() };
+    let req = Request { dir: f.path("none"), rounds: 1, rows: ROWS.to_vec(), reader: None };
     let (code, lines) = run(&req, &|p| std::fs::read(p));
     assert_eq!(code, 1);
     assert!(lines[0].starts_with(&format!("fscheck: {}: ", f.path("none").display())), "{lines:?}");
@@ -164,7 +240,7 @@ fn s11_5_inode_stable() {
     let f = Fixture::empty("fscheck-inode");
     let row = *ROWS.iter().find(|r| r.name == "inode-stable").unwrap();
     assert!(row.relied);
-    let req = Request { dir: f.root().to_owned(), rounds: 5, rows: vec![row] };
+    let req = Request { dir: f.root().to_owned(), rounds: 5, rows: vec![row], reader: None };
     // The real numbers: clean here, and the row waits.
     let t0 = Instant::now();
     let (code, lines) = run(&req, &|p| std::fs::read(p));

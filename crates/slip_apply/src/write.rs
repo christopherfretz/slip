@@ -172,14 +172,15 @@ pub enum WriteError {
 
 /// What `recover` did, by path: restored to the pre-image, left (already
 /// the pre-image), reported (neither image; left, and the journal kept).
-/// `interrupted`: the journal was interrupted (§7.3 step 2) and removed;
-/// nothing else was done, and the lists are empty.
+/// `interrupted`: the journal was interrupted (§7.3 step 2) and removed,
+/// with the reason (how short it was); nothing else was done, and the
+/// lists are empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Recovered {
     pub restored: Vec<Vec<u8>>,
     pub left: Vec<Vec<u8>>,
     pub reported: Vec<Vec<u8>>,
-    pub interrupted: bool,
+    pub interrupted: Option<String>,
 }
 
 /// The path `Io` errors of the journal name.
@@ -776,10 +777,10 @@ pub fn recover(
     };
     let j = match Journal::read(&bytes).map_err(WriteError::Journal)? {
         Read::Whole(j) => j,
-        Read::Interrupted(_) => {
+        Read::Interrupted(why) => {
             // Cut short before its publish returned: no file was touched.
             remove_journal(journal).map_err(|e| io_error(JOURNAL_PATH, &e, true))?;
-            return Ok(Some(Recovered { interrupted: true, ..Recovered::default() }));
+            return Ok(Some(Recovered { interrupted: Some(why), ..Recovered::default() }));
         }
     };
     let mut spelling = Spelling::new(tree);
@@ -801,18 +802,18 @@ pub fn recover(
     restore(&j, &missing, tree, blobs, journal).map(Some).map_err(|(p, e)| io_error(&p, &e, true))
 }
 
-/// Removes the journal if it is interrupted (§7.3 step 2): `true`. A whole
-/// journal, or none: `false`, nothing done. A malformed one: `Journal`,
-/// kept.
-pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<bool, WriteError> {
+/// Removes the journal if it is interrupted (§7.3 step 2): the reason. A
+/// whole journal, or none: `None`, nothing done. A malformed one:
+/// `Journal`, kept.
+pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<Option<String>, WriteError> {
     let Some(bytes) = journal.read().map_err(|e| io_error(JOURNAL_PATH, &e, true))? else {
-        return Ok(false);
+        return Ok(None);
     };
     match Journal::read(&bytes).map_err(WriteError::Journal)? {
-        Read::Whole(_) => Ok(false),
-        Read::Interrupted(_) => {
+        Read::Whole(_) => Ok(None),
+        Read::Interrupted(why) => {
             remove_journal(journal).map_err(|e| io_error(JOURNAL_PATH, &e, true))?;
-            Ok(true)
+            Ok(Some(why))
         }
     }
 }

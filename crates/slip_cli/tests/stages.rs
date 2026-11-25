@@ -1779,9 +1779,10 @@ fn s7_2_relative_to_in_another_case() {
 }
 
 /// §7.3 step 2 (WP-161): a journal cut short before its publish returned
-/// (a prefix of a whole one, bytes of no format) is removed by `apply
-/// --recover`, which says so and exits 0 with the tree untouched; until
-/// then, `--write` refuses the store as it refuses any journal.
+/// (a prefix of a whole one, shorter than the head or than its declared
+/// total) is removed by `apply --recover`, which says so and why and exits
+/// 0 with the tree untouched; until then, `--write` refuses the store as it
+/// refuses any journal. A damaged whole one is kept.
 #[test]
 fn s7_3_recover_removes_an_interrupted_journal() {
     let (fx, set, overlay_id) = agreed("interrupted", Fx::rename);
@@ -1796,17 +1797,30 @@ fn s7_3_recover_removes_an_interrupted_journal() {
         assert!(out.stderr.contains("unfinished write of the working tree"), "{out:#?}");
         let out = fx.slip(&["apply", "--recover"]);
         out.expect(0);
-        assert_eq!(
-            out.lines(),
-            vec![
-                "recovered: the write was interrupted before any file was touched; the journal \
-                 is removed"
-            ],
+        let lines = out.lines();
+        assert_eq!(lines.len(), 1, "{out:#?}");
+        assert!(
+            lines[0].starts_with(
+                "recovered: the write was interrupted before any file was touched (the journal is "
+            ) && lines[0].ends_with("); the journal is removed"),
             "{out:#?}"
         );
         assert!(!fx.store().journal_path().exists());
         assert!(fx.tree_is_pre());
     }
+    // A whole-length journal with a bit flipped is damaged, not cut short:
+    // `--recover` refuses it, names the file, keeps it, and never says that
+    // no file was touched (spec/edits.md §10.4).
+    let mut flipped = whole.clone();
+    flipped[whole.len() - 40] ^= 1;
+    fx.put_journal(&flipped);
+    let out = fx.slip(&["apply", "--recover"]);
+    out.expect(3);
+    assert!(out.stderr.contains("write.journal"), "{out:#?}");
+    assert!(out.stderr.contains("damaged, not cut short: it is kept"), "{out:#?}");
+    assert!(!out.stdout.contains("no file") && !out.stdout.contains("before any file"), "{out:#?}");
+    assert_eq!(fs::read(fx.store().journal_path()).unwrap(), flipped);
+    fs::remove_file(fx.store().journal_path()).unwrap();
     // The store is usable again.
     apply_write(&fx, &r, &[]).expect(0);
     assert!(fx.tree_is_post());

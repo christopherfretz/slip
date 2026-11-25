@@ -145,7 +145,8 @@ fn child(dir: &Path, rounds: u64) -> ExitCode {
         c.locked += 1;
         // The lock is this process's.
         match fs::read(store_dir.join("lock")) {
-            Ok(t) if t == format!("{me}\n").as_bytes() => {}
+            // `<pid> <nonce>\n` (`spec/exec.md` §2.1 "The lock").
+            Ok(t) if t.starts_with(format!("{me} ").as_bytes()) && t.ends_with(b"\n") => {}
             Ok(t) => {
                 c.not_mine += 1;
                 let _ = writeln!(out, "NOT_MINE {me} read {:?}", String::from_utf8_lossy(&t));

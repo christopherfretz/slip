@@ -1435,10 +1435,25 @@ The **staged name** of an overlay file is, in the file's own directory,
    JournalFile := path: path, staged: bytes, pre: Content, post: Content
    ```
 
-   one record in the encoding of `model.md` §2, the one section (id 1,
-   required) of a container of kind `JRNL`, version 1 (`model.md` §5),
-   so that its length (the section's) and its digest (the trailer) are
-   in it; it is not addressed by content and never leaves the store.
+   one record in the encoding of `model.md` §2, in a container of kind
+   `JRNL`, version 1 (`model.md` §5), whose first 34 bytes are the
+   **head**:
+
+   ```
+   0..8    53 4C 49 50 1A 0A 00 00     the container's magic
+   8..12   "JRNL"                      kind
+   12..16  01 00 00 00                 version 1, u32le
+   16..18  01 10                       section 1 (required), its payload 16 bytes
+   18..26  total: u64le                the length of the whole file, in bytes
+   26..34  check                       the first 8 bytes of the content digest
+                                       (model.md §3) of bytes 0..26
+   34..    02 <uv length> <record>     section 2 (required): the record
+           00 <trailer>                the end byte; the content digest of all before it
+   ```
+
+   so that its length (the head's, under a check of its own) and its
+   digest (the trailer) are in it; it is not addressed by content and
+   never leaves the store.
    The publish is exclusive: it fails if a journal exists, which is the
    unfinished-write refusal (two writes on one store cannot both
    proceed). It creates `write.journal` exclusively, writes it, syncs
@@ -1446,16 +1461,26 @@ The **staged name** of an overlay file is, in the file's own directory,
    returns only then: nothing of the tree is touched before (step 3
    comes after it).
 
-   A journal is **whole** when it passes `model.md` §5 rule 5 (magic,
-   kind, version, trailer, framing). One that does not, other than for
-   its version (`UnsupportedVersion`: a newer Slip's, refused and kept),
-   was cut short by a crash before its publish returned, so before any
-   file of the tree was touched: it is an **interrupted** journal. A
-   journal with no container (an earlier Slip's, version 0) is whole
-   when it decodes as the record above and passes the reader's rules;
-   otherwise it is interrupted too. A whole journal whose record does not
-   decode, or breaks a rule of the reader, is malformed: refused and
-   kept.
+   What `write.journal`'s bytes are, every case, in this order:
+   - shorter than the head (34 bytes), or than the total its head
+     declares: **interrupted**. The publish syncs the whole file before
+     it returns, so the file was cut short by a crash before step 3:
+     no file of the tree was touched.
+   - otherwise **malformed** (refused, kept, and no message says that
+     nothing was touched): a head whose magic or kind is not a
+     journal's, whose section framing is not `01 10`, or whose check
+     does not match bytes 0..26 (so no damage to the head, a flipped bit
+     of the total among it, makes a whole journal read as a short one);
+     a version other than 1; bytes after the declared total; a container
+     that fails `model.md` §5 rule 5 (its trailer, its framing, a
+     critical section unknown); a record that does not decode or breaks
+     a rule of the reader.
+   - else **whole**.
+
+   A journal at its declared length with damage anywhere is malformed,
+   not interrupted: a crash cannot make it (the publish never writes
+   past what it syncs), but a bad sector, a bad read or a power loss
+   that zeroed its tail can (§10.4).
 3. **Stage.** For every file, in path order: the post-image blob is
    copied to the staged name (created exclusively, with the original's
    permission bits) and synced.
@@ -1510,9 +1535,12 @@ interruption, leaves a journal, and the journal names every file the
 write may have created. Every Slip command that opens the store
 exclusively finds it and refuses to run (`Input`: the store has an
 unfinished write). `slip apply --recover` finishes it. An interrupted
-journal (step 2) is removed, durably, and `--recover` says so
-(`recovered: the write was interrupted before any file was touched;
-the journal is removed`, status 0); nothing else is read or touched.
+journal (step 2) is removed, durably, and `--recover` says so and why
+(`recovered: the write was interrupted before any file was touched
+(the journal is <n> bytes, shorter than …); the journal is removed`,
+status 0); nothing else is read or touched. A malformed journal is
+refused (`Input`, naming `write.journal` and saying it is damaged, not
+cut short, and kept), and nothing is touched (§10.4).
 `--write` refuses a store with an interrupted journal as it refuses any
 journal. Otherwise the journal must be exactly the one a
 write of the overlay it names publishes (the same files, `pre` and
@@ -1607,15 +1635,16 @@ pub enum Refused { NotOwned(Vec<u8>), HardLinked(Vec<u8>), NotWritable(Vec<u8>),
 pub enum WriteError { Refused(Refused), Io { path: Vec<u8>, message: String, journal_left: bool }, Journal(String),
                       Invalid(String) }   // the overlay or the ownership is malformed, or the id is wrong
 pub struct Recovered { pub restored: Vec<Vec<u8>>, pub left: Vec<Vec<u8>>, pub reported: Vec<Vec<u8>>,
-                       pub interrupted: bool }   // an interrupted journal (§7.3 step 2), removed; nothing else done
+                       pub interrupted: Option<String> }   // an interrupted journal (§7.3 step 2), removed,
+                                                           // with the reason; nothing else done
 
 pub fn write(overlay: &Overlay, overlay_id: Digest, ownership: &Ownership,
              tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore) -> Result<u64, WriteError>;
 pub fn recover(ownership: &Ownership, tree: &dyn Tree, blobs: &dyn Blobs, journal: &dyn JournalStore)
     -> Result<Option<Recovered>, WriteError>;   // the ownership the write was given
-/// Removes the journal if it is interrupted (§7.3 step 2): `true`. A whole journal, or none: `false`,
-/// nothing done; a malformed one: `Journal`.
-pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<bool, WriteError>;
+/// Removes the journal if it is interrupted (§7.3 step 2): the reason. A whole journal, or none:
+/// `None`, nothing done; a malformed one: `Journal`, kept.
+pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<Option<String>, WriteError>;
 // slip_apply::journal
 pub enum Read { Whole(Journal), Interrupted(String) }   // the reason, for a message
 impl Journal { pub fn read(bytes: &[u8]) -> Result<Read, String>; }   // Err: malformed, refused and kept
@@ -2564,7 +2593,24 @@ an `Input` error.
 `write.journal` is created exclusively under its own name, written and
 synced there (`exec.md` §2.1 "The journal"): no temporary, no link
 (`harness.md` §11). A crash before it is synced leaves an interrupted
-journal (§7.3 step 2).
+journal (§7.3 step 2): shorter than its head, or than the total its head
+declares; `apply --recover` removes it.
+
+A journal at its declared length (or longer) that does not read whole is
+damaged after its publish: a flipped bit, a bad read, or a power loss
+that left the file at its full length with its tail zeroed (a file
+system may extend a file before its data reaches the disk). It is
+malformed and kept: `--recover` refuses it (`Input`, naming the file)
+and says nothing about what was touched, because the write may have
+renamed any number of its files. What the user does then: look at the
+files of the write (`git status` or the like on the tree) and at the
+staged files (`.<name>.slip-<16 hex digits>`, beside each file) the
+write left; restore each file the write touched, from version control
+or from its pre-image blob in `<store>/blobs/` (named by the content
+digest the overlay's `pre` gives, `slip apply`'s overlay); remove the
+staged files; then remove `write.journal` by hand. Slip does not do
+this itself: with the journal unreadable it cannot know which files
+the write had renamed.
 
 **What a write promises about names** (`harness.md` §11). `--write`
 (§7.3), `--patch <file>` (§7.2) and `--report <file>` (§10.2) each

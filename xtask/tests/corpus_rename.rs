@@ -687,6 +687,23 @@ fn s6_5_determinism_fails() {
     assert!(out.ends_with("corpus rename: FAILED (determinism)\n"), "{out}");
 }
 
+// Check 3 reads the plan by id and compares it with the id (review of
+// WP-161, note 7): a plan stored under another's id fails the check.
+#[test]
+fn s6_5_accept_refuses_a_plan_under_another_id() {
+    let w = World::new("rename-plan-id");
+    w.records(&Run1::of(State::Verified));
+    let plans = w.store().join("plans");
+    let name = std::fs::read_dir(&plans).unwrap().next().unwrap().unwrap().path();
+    let mut other = w.plan();
+    other.tool_slip = "another".into();
+    std::fs::write(&name, other.to_bytes()).unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    assert!(out.contains("the file's content id is not its name"), "{out}");
+}
+
 // §6.5, check 3: a unit clang rejects on both images passes; one it
 // rejects only on the post-image fails, named with its first error.
 #[test]
