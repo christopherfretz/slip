@@ -1,0 +1,2 @@
+# Equal: the empty opening in a rebuilt file is nothing. The opening of legacy is still counted left (R6.4: a namespace's own trace).
+declares gen.h rule 1 mapped 0 left 0 left_kept 1

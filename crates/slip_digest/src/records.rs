@@ -72,6 +72,10 @@ pub struct Facts {
     /// function's rule and needs one of its own (`spec/landed/digest/
     /// WP-103.md`, fix round 3, finding 2).
     pub undefined_friends: BTreeSet<Digest>,
+    /// Units of `dependency` whose entity has C language linkage and a
+    /// declaration lying in a rebuilt file (WP-118 R2.2): the message of
+    /// `DependencyEntity` says so.
+    pub c_linkage_rebuilt: BTreeSet<Digest>,
 }
 
 impl Facts {
@@ -81,6 +85,7 @@ impl Facts {
     pub fn merge(&mut self, other: Facts) {
         self.dependency.extend(other.dependency);
         self.undefined_friends.extend(other.undefined_friends);
+        self.c_linkage_rebuilt.extend(other.c_linkage_rebuilt);
     }
 }
 
@@ -98,6 +103,9 @@ pub fn facts(input: &Input<'_>, read_only: crate::ReadOnly<'_>) -> Facts {
             let Some(e) = u.entity else { continue };
             if !w.owned(e) {
                 out.dependency.insert(u.key);
+                if w.chain(e).into_iter().any(|d| w.c_linkage_in_rebuilt(d)) {
+                    out.c_linkage_rebuilt.insert(u.key);
+                }
             }
             if w.friend_class(e).is_some()
                 && !crate::units::instantiated_outside_class(w, e)
@@ -395,6 +403,7 @@ mod tests {
             namespace_parts: Vec::new(),
             made: Vec::new(),
             fixed: Vec::new(),
+            rebuilt: crate::RebuiltOutput::default(),
         }
     }
 
@@ -463,6 +472,7 @@ mod tests {
                 namespace_parts: Vec::new(),
                 made: Vec::new(),
                 fixed: Vec::new(),
+                rebuilt: crate::RebuiltOutput::default(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

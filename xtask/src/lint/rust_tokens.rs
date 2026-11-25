@@ -96,7 +96,12 @@ pub fn tokens(src: &str) -> Vec<Token<'_>> {
 fn skip_string(b: &[u8], mut i: usize, line: &mut usize) -> usize {
     while i < b.len() {
         match b[i] {
-            b'\\' => i += 2,
+            b'\\' => {
+                if b.get(i + 1) == Some(&b'\n') {
+                    *line += 1;
+                }
+                i += 2;
+            }
             b'"' => return i + 1,
             b'\n' => {
                 *line += 1;
@@ -196,8 +201,8 @@ mod tests {
 
     #[test]
     fn lines() {
-        let t = tokens("a\n/* \n */ \"\n\" b\n'\\n'\nc");
+        let t = tokens("a\n/* \n */ \"\n\" b\n'\\n'\nc\n\"d \\\n e\"\nf");
         let got: Vec<(&str, usize)> = t.iter().map(|t| (t.text, t.line)).collect();
-        assert_eq!(got, [("a", 1), ("b", 4), ("c", 6)]);
+        assert_eq!(got, [("a", 1), ("b", 4), ("c", 6), ("f", 9)]);
     }
 }

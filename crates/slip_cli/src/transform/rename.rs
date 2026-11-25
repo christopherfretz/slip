@@ -37,8 +37,10 @@ pub(crate) fn main(
     let relative_to = match &a.options.relative_to {
         None => None,
         Some(d) => Some(
-            std::fs::canonicalize(d)
-                .map_err(|e| Failure::Input(format!("{}: {e}", d.display())))?
+            // The real path spelled as on disk (`spec/edits.md` §2.1), as
+            // the edit set's and overlay's paths are.
+            slip_spelling::real_path(d)
+                .map_err(|e| Failure::Input(format!("{}: {}", d.display(), e.detail())))?
                 .as_os_str()
                 .as_bytes()
                 .to_vec(),

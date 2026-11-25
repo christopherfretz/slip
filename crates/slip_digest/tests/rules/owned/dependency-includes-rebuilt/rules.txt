@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A4 (R3.2 row 3): read-only dep.h includes rebuilt gen.h, regenerated. gen.h is read-only for that inclusion: G is a dependency entity there, no rule matches it, and the regenerated name differs.

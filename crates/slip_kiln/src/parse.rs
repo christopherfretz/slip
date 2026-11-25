@@ -536,6 +536,7 @@ fn new_shard(
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -861,6 +862,7 @@ fn read_consulted(real: &[u8]) -> Result<(u64, Digest), String> {
 /// case or normalisation: `inputs.respelled`).
 fn real_path(directory: &Path, name: &str) -> Result<(Vec<u8>, bool), String> {
     let spelled = directory.join(name);
+    // canonicalize: first half of real_path to count inputs.respelled (spec/edits.md §2.1)
     let real = std::fs::canonicalize(&spelled)
         .map_err(|e| format!("cannot resolve {}: {e}", spelled.display()))?;
     let real = path_bytes(&real);

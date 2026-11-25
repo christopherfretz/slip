@@ -1,0 +1,4 @@
+# C linkage spelled in a rebuilt macro body, expanded in an owned file: a difference.
+changed user()
+removed gen_start()
+added gen_init()
