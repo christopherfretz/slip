@@ -1,0 +1,6 @@
+# WP-158 (review of WP-154, B1): Y::mf renamed mg with the text edited;
+# X's specialisation, reached only through the conversion, now takes the
+# else branch. Equal until WP-158.
+exact derived
+derived-changed w()::local(0)::operator()<X>(X) const::<definition>
+changed w()

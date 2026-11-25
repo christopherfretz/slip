@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/two-local-classes-default): a default argument of a member of a local class two levels deep.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed c<X>(X)::local(0)::B::g(int)::<default_argument 0>

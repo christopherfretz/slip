@@ -1,0 +1,4 @@
+# WP-158 control of h1: the same with X's specialisation called.
+exact derived
+derived-changed w()::local(0)::operator()<X>(X) const::<definition>
+changed w()

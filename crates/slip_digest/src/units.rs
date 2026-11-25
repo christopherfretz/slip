@@ -212,6 +212,19 @@ fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         // (`__va_list_tag`), a unit only when referred to.
         return Some(UnitClass::OnDemand);
     }
+    // A specialisation under a local type (a generic lambda's call
+    // operator for given arguments): what it would be were the type not
+    // local, a derived unit whenever Kiln made it, whatever demanded it
+    // (`spec/digest.md` §2.2, §4.3; WP-158). Before `in_builtin`, which
+    // reads a closure type, `IMPLICIT`, as a builtin's implicit class and
+    // made such a specialisation a unit only if a `Ref` named it: a
+    // conversion to a function pointer or an unevaluated operand writes
+    // none.
+    if w.is_local(e)
+        && let Some((_, i)) = ast.spec_info(e)
+    {
+        return spec_class(i.kind);
+    }
     if in_builtin(w, e) {
         return Some(UnitClass::OnDemand);
     }
@@ -522,7 +535,9 @@ pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
         let names = w.names_off();
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
+        w.dropped += 1;
         w.decl_stream(&mut s, d, e);
+        w.dropped -= 1;
         w.names_end(names);
         w.unit = saved;
         let h = s.finish(UNIT_TAG);
@@ -667,7 +682,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
 /// The fallback key of a unit whose key cannot be formed: its own key
 /// kind, parent the nearest enclosing entity with a key (else `root`),
 /// name `content`, discriminator the unit's digest.
-fn fallback_key(
+pub(crate) fn fallback_key(
     w: &mut Walk<'_>,
     e: DeclId,
     digest: Digest,
@@ -853,7 +868,14 @@ fn denoted(
 pub(crate) fn apply_taints(w: &Walk<'_>, written: &mut [Written]) {
     for &(scope, cause) in &w.taints {
         let target = scope
-            .and_then(|s| written.iter().position(|u| u.entity == Some(s)))
+            // Not a part keyed under a local function, which has no unit of
+            // its own (`demand::local_default_arguments`): the taint goes
+            // where it went before those parts existed.
+            .and_then(|s| {
+                written
+                    .iter()
+                    .position(|u| u.entity == Some(s) && !(u.owner.is_some() && w.is_local(s)))
+            })
             .or_else(|| written.iter().position(|u| u.kind == KeyKind::Order));
         if let Some(i) = target {
             written[i].cause = Some(merge(written[i].cause, cause));
@@ -1594,5 +1616,35 @@ mod tests {
         let b = j(&src("A<long> b;", "A<int> a;"));
         assert_eq!(a.len(), 1, "one derived unit");
         assert_eq!(a, b);
+    }
+
+    // WP-158 fix round (review F5): the candidates' streams that
+    // `canonical_decl` digests to break a tie (a friend declared twice by
+    // one specialisation) are dropped: inside the run's window they
+    // record no hold. Today a candidate's declaration stream writes no
+    // body, default or initialiser (the definition is the resolved unit's,
+    // and a friend with a default argument has one declaration only), so
+    // this guards the predicate's use there rather than kills a mutant.
+    #[test]
+    fn canonical_candidates_hold_nothing() {
+        let src = "struct D;\n\
+                   template <class T> struct S { friend int fr(D *, T *); \
+                   friend int fr(D *, T *) { return sizeof(T); } };\n\
+                   struct D : S<int> {};\n\
+                   int w() { return fr((D *)nullptr, (int *)nullptr); }\n";
+        with_walk(src, |w| {
+            let inst = named(w, "fr", DeclKind::Function).into_iter().find(|&d| {
+                !w.ast.decls.get(d).has(slip_kiln::kiln::ast::decl::DeclFlags::DEPENDENT_CTX)
+            });
+            let e = w.entity(inst.expect("an instantiated fr"));
+            CANDIDATES.with(|c| c.set((0, 0)));
+            w.hold_begin();
+            let _ = super::canonical_decl(w, e);
+            let recorded = w.hold_pending.as_ref().map_or(0, Vec::len);
+            w.hold_end(true);
+            let (_, read) = CANDIDATES.with(std::cell::Cell::get);
+            assert!(read >= 2, "a tie: each candidate's stream read ({read})");
+            assert_eq!(recorded, 0);
+        });
     }
 }
