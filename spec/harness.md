@@ -1218,9 +1218,10 @@ counts):
   (`docs/requests/KD2-oven-minmax-paren.md`). Kiln's `main` fixed both
   (`83566cc47`, WP-044). With Kiln at `913a490bb` (WP-101) none is
   `failed`: 4059 `ok` and the 2 `diagnosed` above.
-- Slip's Kiln pin is `4a83f6e3c` since WP-066. The numbers of this
-  section are as of `913a490bb`: no corpus run has been made at the new
-  pin, so they are not yet its numbers.
+- Slip's Kiln pin is `60fb5ab9d` since WP-163 (PCH format 187, module
+  image format 101; `4a83f6e3c` from WP-066). The numbers of this
+  section are as of `913a490bb`: no corpus run has been made at either
+  later pin, so they are not yet its numbers.
 - The counts of `bench/baselines/llvm.json` are those of the map task
   (WP-050: the parse task and the semantic digest's walk, `spec/model.md`
   §8.5) at `913a490bb`, so they hold the `digest.*` counters of every

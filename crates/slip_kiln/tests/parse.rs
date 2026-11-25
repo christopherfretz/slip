@@ -940,6 +940,54 @@ fn s8_4_run_reproducible_time() {
     );
 }
 
+const SWITCH_CHILD: &str = "SLIP_KILN_SWITCH_CHILD";
+
+// WP-163 fix round 1 (F3): Kiln reads `KILN_VERIFY_SUBST_FAILED` and
+// `KILN_FN_NAMES_VERIFY` from the process environment on every parse
+// since the pin `60fb5ab9d`, and Slip cannot set the checks they turn on
+// off (`slip_kiln::check::kiln_switch_in_environment`): while one is set
+// the unit is `rejected`, naming it. In a child, as `s8_4_run_reproducible_time`:
+// this binary again with one variable set and only this test selected.
+// Set to what Kiln reads as off, the parse runs.
+#[test]
+fn wp163_kiln_switch_in_environment_is_refused() {
+    if let Some(var) = std::env::var_os(SWITCH_CHILD) {
+        let var = var.to_str().unwrap().to_owned();
+        let f = Fixture::new("switch");
+        f.write("main.cpp", "int x;\n");
+        let s = f.parse(".", &["c++", "-std=c++17", "main.cpp"]);
+        let off = std::env::var_os(&var).is_some_and(|v| v == "0" || v.is_empty());
+        if off {
+            assert_eq!(s.outcome.status, Status::Ok, "{:?}", s.outcome);
+        } else {
+            assert_eq!(s.outcome.status, Status::Rejected, "{:?}", s.outcome);
+            assert!(s.outcome.message.contains(&var), "{:?}", s.outcome);
+        }
+        return;
+    }
+    for (var, value) in [
+        ("KILN_VERIFY_SUBST_FAILED", "1"),
+        ("KILN_VERIFY_SUBST_FAILED", "yes"),
+        ("KILN_VERIFY_SUBST_FAILED", "0"),
+        ("KILN_FN_NAMES_VERIFY", "1"),
+        ("KILN_FN_NAMES_VERIFY", "0"),
+    ] {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["wp163_kiln_switch_in_environment_is_refused", "--exact", "--test-threads=1"])
+            .arg("--nocapture")
+            .env(SWITCH_CHILD, var)
+            .env(var, value)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{var}={value}: the child failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 // §8.4 outcome, at the Kiln pin `83566cc47` (WP-044): the smallest
 // reproducers of the Oven panics Slip reported (docs/requests/KD1, KD2),
 // which failed at the old pin `62d190007`, parse `ok`.

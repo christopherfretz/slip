@@ -191,6 +191,7 @@ pub(crate) mod type_kind {
     pub(crate) const UNRESOLVED_USING: Row = Row { tag: 43, decision: Decision::Out };
     pub(crate) const PAREN: Row = Row { tag: 44, decision: Decision::Out };
     pub(crate) const DEPENDENT_ADDR_SPACE: Row = Row { tag: 45, decision: Decision::Out };
+    pub(crate) const DECAYED: Row = Row { tag: 46, decision: Decision::Out };
 
     pub(crate) fn row(v: &kiln::ast::types::TypeKind) -> Row {
         match v {
@@ -239,6 +240,7 @@ pub(crate) mod type_kind {
             kiln::ast::types::TypeKind::UnresolvedUsing => UNRESOLVED_USING,
             kiln::ast::types::TypeKind::Paren => PAREN,
             kiln::ast::types::TypeKind::DependentAddrSpace => DEPENDENT_ADDR_SPACE,
+            kiln::ast::types::TypeKind::Decayed => DECAYED,
         }
     }
 }
@@ -292,6 +294,7 @@ pub(crate) mod type_view {
     pub(crate) const DEDUCED_TEMPLATE_SPECIALIZATION: Row = Row { tag: 1067, decision: Decision::In };
     pub(crate) const ATTRIBUTED: Row = Row { tag: 1068, decision: Decision::Out };
     pub(crate) const SPLICE: Row = Row { tag: 1069, decision: Decision::Unsupported };
+    pub(crate) const DECAYED: Row = Row { tag: 1070, decision: Decision::Out };
 }
 
 /// `kiln_ast::types::kinds::BuiltinType`.
@@ -1099,6 +1102,8 @@ pub(crate) mod type_context {
         ("opts", Decision::Out),
         ("exhausted", Decision::Out),
         ("vla_star_bound", Decision::Out),
+        ("pack_bounds", Decision::Out),
+        ("inst_bounds", Decision::Out),
         ("param_abis", Decision::Out),
     ];
 }
@@ -1674,6 +1679,7 @@ pub(crate) mod var_spec {
         ("0-exception-var", Decision::In),
         ("0-cxx-for-range", Decision::In),
         ("0-inline-implied", Decision::In),
+        ("0-placeholder", Decision::Out),
     ];
 }
 
@@ -2052,6 +2058,57 @@ pub(crate) mod friend_target {
     }
 }
 
+/// `kiln_ast::friend_form::FriendForm`.
+pub(crate) mod friend_form {
+    use super::Decision;
+
+    pub(crate) const ROWS: &[(&str, Decision)] = &[
+        ("kind", Decision::Out),
+        ("flags", Decision::Out),
+        ("name", Decision::Out),
+        ("name_loc", Decision::Out),
+        ("qualifier", Decision::Out),
+        ("qualifier_loc", Decision::Out),
+        ("args", Decision::Out),
+        ("entity", Decision::Out),
+        ("found", Decision::Out),
+        ("heads", Decision::Out),
+        ("requires", Decision::Out),
+    ];
+}
+
+/// `kiln_ast::friend_form::FriendFormFlags`.
+pub(crate) mod friend_form_flags {
+    use super::Decision;
+
+    pub(crate) const ROWS: &[(&str, Decision)] = &[
+        ("0", Decision::Out),
+    ];
+}
+
+/// `kiln_ast::friend_form::FriendFormKind`.
+pub(crate) mod friend_form_kind {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const FUNCTION: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const SPECIALIZATION: Row = Row { tag: 2, decision: Decision::Out };
+    pub(crate) const CONSTRUCTOR: Row = Row { tag: 3, decision: Decision::Out };
+    pub(crate) const DESTRUCTOR: Row = Row { tag: 4, decision: Decision::Out };
+    pub(crate) const CONVERSION: Row = Row { tag: 5, decision: Decision::Out };
+    pub(crate) const CLASS: Row = Row { tag: 6, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::friend_form::FriendFormKind) -> Row {
+        match v {
+            kiln::ast::friend_form::FriendFormKind::Function => FUNCTION,
+            kiln::ast::friend_form::FriendFormKind::Specialization => SPECIALIZATION,
+            kiln::ast::friend_form::FriendFormKind::Constructor => CONSTRUCTOR,
+            kiln::ast::friend_form::FriendFormKind::Destructor => DESTRUCTOR,
+            kiln::ast::friend_form::FriendFormKind::Conversion => CONVERSION,
+            kiln::ast::friend_form::FriendFormKind::Class => CLASS,
+        }
+    }
+}
+
 /// `kiln_ast::slot::ColdMap`.
 pub(crate) mod cold_map {
     use super::Decision;
@@ -2103,7 +2160,33 @@ pub(crate) mod cold_decl_data {
         ("init_fp", Decision::In),
         ("closure_owner", Decision::In),
         ("written_ns", Decision::Out),
+        ("shadow_named", Decision::Out),
+        ("friend_form", Decision::Out),
+        ("subst_failed", Decision::Unsupported),
     ];
+}
+
+/// `kiln_ast::decl::SubstFailedKind`.
+pub(crate) mod subst_failed_kind {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const FUNCTION_SIGNATURE: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const EXPLICIT_SPECIFIER: Row = Row { tag: 2, decision: Decision::Out };
+    pub(crate) const VARIABLE_PARTIAL_AMBIGUITY: Row = Row { tag: 3, decision: Decision::Out };
+    pub(crate) const CLASS_PARTIAL_AMBIGUITY: Row = Row { tag: 4, decision: Decision::Out };
+    pub(crate) const LOCAL_OF_FAILED_SIGNATURE: Row = Row { tag: 5, decision: Decision::Out };
+    pub(crate) const OTHER_TRAPPED: Row = Row { tag: 6, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::decl::SubstFailedKind) -> Row {
+        match v {
+            kiln::ast::decl::SubstFailedKind::FunctionSignature => FUNCTION_SIGNATURE,
+            kiln::ast::decl::SubstFailedKind::ExplicitSpecifier => EXPLICIT_SPECIFIER,
+            kiln::ast::decl::SubstFailedKind::VariablePartialAmbiguity => VARIABLE_PARTIAL_AMBIGUITY,
+            kiln::ast::decl::SubstFailedKind::ClassPartialAmbiguity => CLASS_PARTIAL_AMBIGUITY,
+            kiln::ast::decl::SubstFailedKind::LocalOfFailedSignature => LOCAL_OF_FAILED_SIGNATURE,
+            kiln::ast::decl::SubstFailedKind::OtherTrapped => OTHER_TRAPPED,
+        }
+    }
 }
 
 /// `kiln_ast::decl::DeclArena`.
@@ -2132,6 +2215,8 @@ pub(crate) mod decl_arena {
         ("fn_def_insts", Decision::Demand),
         ("cold", Decision::Out),
         ("ty_journal", Decision::Out),
+        ("friend_forms", Decision::Out),
+        ("friend_form_decls", Decision::Out),
     ];
 }
 
@@ -4041,6 +4126,52 @@ pub(crate) mod array_trait_extra {
     ];
 }
 
+/// `kiln_ast::expr::SrcLocRole`.
+pub(crate) mod src_loc_role {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const FILE: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const FILE_NAME: Row = Row { tag: 2, decision: Decision::Out };
+    pub(crate) const FUNCTION: Row = Row { tag: 3, decision: Decision::Out };
+    pub(crate) const PRETTY_FUNCTION: Row = Row { tag: 4, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::expr::SrcLocRole) -> Row {
+        match v {
+            kiln::ast::expr::SrcLocRole::File => FILE,
+            kiln::ast::expr::SrcLocRole::FileName => FILE_NAME,
+            kiln::ast::expr::SrcLocRole::Function => FUNCTION,
+            kiln::ast::expr::SrcLocRole::PrettyFunction => PRETTY_FUNCTION,
+        }
+    }
+}
+
+/// `kiln_ast::expr::StringMaker`.
+pub(crate) mod string_maker {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const SOURCE_LOC: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const REFLECTION: Row = Row { tag: 2, decision: Decision::Out };
+    pub(crate) const CONTRACT_SITE: Row = Row { tag: 3, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::expr::StringMaker) -> Row {
+        match v {
+            kiln::ast::expr::StringMaker::SourceLoc { .. } => SOURCE_LOC,
+            kiln::ast::expr::StringMaker::Reflection => REFLECTION,
+            kiln::ast::expr::StringMaker::ContractSite => CONTRACT_SITE,
+        }
+    }
+}
+
+/// `kiln_ast::expr::UseImmediate`.
+pub(crate) mod use_immediate {
+    use super::Decision;
+
+    pub(crate) const ROWS: &[(&str, Decision)] = &[
+        ("invocation", Decision::Out),
+        ("value", Decision::Out),
+    ];
+}
+
 /// `kiln_ast::expr::ColdExprData`.
 pub(crate) mod cold_expr_data {
     use super::Decision;
@@ -4055,10 +4186,13 @@ pub(crate) mod cold_expr_data {
         ("array_trait", Decision::In),
         ("trait_rhs_loc", Decision::Out),
         ("source_loc", Decision::Symbolic),
+        ("string_maker", Decision::Out),
         ("default_imm", Decision::Demand),
+        ("use_imm", Decision::Out),
         ("union_field", Decision::In),
         ("cast_written-unresolved-construct", Decision::In),
         ("cast_written-cast", Decision::In),
+        ("compound_literal_written", Decision::Out),
         ("offsetof_pattern-type", Decision::In),
         ("offsetof_pattern-components", Decision::In),
         ("offsetof_layout", Decision::In),
@@ -4567,6 +4701,62 @@ pub(crate) mod arg_shape {
     }
 }
 
+/// `kiln_ast::templates::PatternMemInits`.
+pub(crate) mod pattern_mem_inits {
+    use super::Decision;
+
+    pub(crate) const ROWS: &[(&str, Decision)] = &[
+        ("colon", Decision::Out),
+        ("failed", Decision::Out),
+        ("inits", Decision::Out),
+    ];
+}
+
+/// `kiln_ast::templates::PatternMemInit`.
+pub(crate) mod pattern_mem_init {
+    use super::Decision;
+
+    pub(crate) const ROWS: &[(&str, Decision)] = &[
+        ("id", Decision::Out),
+        ("loc", Decision::Out),
+        ("end", Decision::Out),
+        ("pack_expansion", Decision::Out),
+        ("init", Decision::Out),
+    ];
+}
+
+/// `kiln_ast::templates::PatternMemInitId`.
+pub(crate) mod pattern_mem_init_id {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const MEMBER: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const TYPE: Row = Row { tag: 2, decision: Decision::Out };
+    pub(crate) const IDENT: Row = Row { tag: 3, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::templates::PatternMemInitId) -> Row {
+        match v {
+            kiln::ast::templates::PatternMemInitId::Member(..) => MEMBER,
+            kiln::ast::templates::PatternMemInitId::Type { .. } => TYPE,
+            kiln::ast::templates::PatternMemInitId::Ident(..) => IDENT,
+        }
+    }
+}
+
+/// `kiln_ast::templates::PatternMemInitArgs`.
+pub(crate) mod pattern_mem_init_args {
+    use super::{Decision, Row, kiln};
+
+    pub(crate) const PAREN: Row = Row { tag: 1, decision: Decision::Out };
+    pub(crate) const LIST: Row = Row { tag: 2, decision: Decision::Out };
+
+    pub(crate) fn row(v: &kiln::ast::templates::PatternMemInitArgs) -> Row {
+        match v {
+            kiln::ast::templates::PatternMemInitArgs::Paren { .. } => PAREN,
+            kiln::ast::templates::PatternMemInitArgs::List(..) => LIST,
+        }
+    }
+}
+
 /// `kiln_ast::templates::TemplateTables`.
 pub(crate) mod template_tables {
     use super::Decision;
@@ -4580,6 +4770,7 @@ pub(crate) mod template_tables {
         ("defaults", Decision::In),
         ("inherited_defaults", Decision::Out),
         ("trailing_requires", Decision::In),
+        ("pattern_mem_inits", Decision::Unsupported),
         ("expr_targs", Decision::In),
         ("expr_nns", Decision::In),
         ("oper_lookups", Decision::In),
@@ -4587,11 +4778,13 @@ pub(crate) mod template_tables {
         ("size_of_pack_origin", Decision::In),
         ("size_of_pack_partial", Decision::In),
         ("pack_index_origin", Decision::In),
+        ("pack_index_written", Decision::Out),
         ("member_op_loc", Decision::Out),
         ("pseudo_dtor_name", Decision::In),
         ("pseudo_dtor_first-type", Decision::In),
         ("pseudo_dtor_first-position", Decision::Out),
         ("template_kw", Decision::Out),
+        ("unresolved_found", Decision::Out),
         ("ttp_owner", Decision::In),
         ("member_like_friend", Decision::In),
         ("pattern_next", Decision::Out),
@@ -5859,7 +6052,7 @@ macro_rules! pin {
 pin!(kiln::ast::types::Quals, 0x2a3f_5ea1_7eae_a163);
 pin!(kiln::ast::types::TypeFlags, 0xd752_5f5a_6707_0460);
 pin!(kiln::ast::types::node::TypeNode, 0x4ea7_0ca7_a4c9_4390);
-pin!(kiln::ast::types::TypeKind, 0xe0c7_2d2a_6477_d057);
+pin!(kiln::ast::types::TypeKind, 0x5839_6135_b5c5_4025);
 pin!(kiln::ast::types::BuiltinType, 0x45ae_f02c_6213_f1c4);
 pin!(kiln::ast::types::node::ConstArray, 0x0a22_be67_71ca_4b71);
 pin!(kiln::ast::types::TagKeyword, 0x1d9c_7a79_8aad_0c7a);
@@ -5889,7 +6082,7 @@ pin!(kiln::ast::types::args::ArgTable, 0xe695_d10a_1286_38b1);
 pin!(kiln::ast::types::intern::KeyedEntry, 0xe7a7_0180_3200_e996);
 pin!(kiln::ast::types::intern::KeyedTable, 0x70e0_3ff8_4d49_2d1f);
 pin!(kiln::ast::types::node::Store, 0x7874_c602_b3f4_2d77);
-pin!(kiln::ast::types::TypeContext, 0xd027_8f3b_fbdb_0724);
+pin!(kiln::ast::types::TypeContext, 0x8ba1_7d5c_c9b0_f045);
 pin!(kiln::ast::types::TypeOptions, 0x91ff_436b_572e_5e16);
 pin!(kiln::ast::types::TargetTypes, 0x266c_bb68_14d6_9cd0);
 pin!(kiln::ast::types::FloatFormat, 0x44df_00aa_c1a6_bad9);
@@ -5934,13 +6127,18 @@ pin!(kiln::ast::decl::ScopeData, 0xdae3_703a_cd05_5fa8);
 pin!(kiln::ast::decl::LinkageLang, 0x4be8_c507_6640_1483);
 pin!(kiln::ast::decl::StaticAssertData, 0xd978_6ba9_1a79_367f);
 pin!(kiln::ast::decl::FriendTarget, 0x139f_9186_5ace_bd01);
+pin!(kiln::ast::friend_form::FriendForm, 0xb2db_fa5d_e3ff_e98a);
+pin!(kiln::ast::friend_form::FriendFormFlags, 0x2ffe_cd5b_196a_975a);
+pin!(kiln::ast::friend_form::FriendFormKind, 0x829f_9123_bf69_76d1);
 pin!(kiln::ast::slot::ColdMap<(kiln::ast::ids::DeclId, u32), kiln::ast::ids::ListId>, 0xbf76_87a6_006c_ff25);
+pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::decl::SubstFailedKind>, 0x3efa_6000_5e22_97f8);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::fp::FpOverride>, 0x506e_4417_765e_75d6);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::ids::DeclId>, 0xa7c2_3046_f96d_5571);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::ids::ExprId>, 0x5f56_c961_1b2a_8341);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::ids::ListId>, 0x9bca_ed0b_c528_c7d1);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::ids::QualType>, 0x346e_ce4c_3ee7_bfe8);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::ids::StringLitId>, 0xde56_5c83_365f_d397);
+pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::templates::PatternMemInits>, 0x60c5_9a3c_1824_565b);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::ast::types::args::TemplateArg>, 0x625b_e071_1986_ecf3);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, kiln::source::Loc>, 0xb3dc_7bdf_f8ae_344f);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::DeclId, u16>, 0xb5dd_cbe5_eb24_dd6b);
@@ -5950,23 +6148,27 @@ pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, (kiln::ast::ids::QualType,
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, (kiln::ast::ids::QualType, kiln::source::Loc)>, 0x131a_9439_d3b3_f129);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, Box<[kiln::ast::expr::Designator]>>, 0xc13a_f8a7_effd_0320);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, Box<[kiln::ast::expr::OffsetofStep]>>, 0xf432_d8cf_ba84_0e81);
+pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, Box<[kiln::ast::expr::UseImmediate]>>, 0x4984_3653_5f11_3ef0);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::expr::ArrayTraitExtra>, 0x0ab0_f359_3ee7_9361);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::expr::DeclRefExtra>, 0x54b2_895f_dabc_ba93);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::expr::OverloadedMember>, 0xfca0_279f_7b39_c305);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::expr::SourceLocValues>, 0x289d_8b4c_991f_880a);
+pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::expr::StringMaker>, 0x0081_f218_150e_e017);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::fp::FpRound>, 0x2f42_7d23_272c_5397);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::ArgListId>, 0xf382_e48d_684a_5488);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::ConstValueId>, 0xba6b_cfdc_e1ff_b962);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::DeclId>, 0x4a33_7137_d55c_6702);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::ExprId>, 0xa125_c5d5_ec67_1ec1);
+pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::ListId>, 0x73b4_61c3_35b7_d90a);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::NnsId>, 0xd316_eb04_0dda_21e6);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::ids::QualType>, 0xa88f_1813_6e0c_2721);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::oper_lookup::OperSetId>, 0xeea3_9535_a389_4bcb);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::source::Loc>, 0x961f_29c8_7288_c276);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::source::symbol::Symbol>, 0x606a_dfbd_bb9a_cf74);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::StmtId, kiln::ast::stmt::ContractSite>, 0x9dfd_ba51_15ad_9f92);
-pin!(kiln::ast::decl::ColdDeclData, 0xe073_e6c9_657f_9765);
-pin!(kiln::ast::decl::DeclArena, 0x0f42_899a_ced2_73f8);
+pin!(kiln::ast::decl::ColdDeclData, 0x2c1e_9c64_10a6_2ca8);
+pin!(kiln::ast::decl::SubstFailedKind, 0x0f5d_3a9f_227b_348b);
+pin!(kiln::ast::decl::DeclArena, 0x854a_649a_1ad0_aa79);
 pin!(kiln::ast::journal::Journal<(u32, u32)>, 0x8477_87e4_b631_299d);
 pin!(kiln::ast::journal::Journal<kiln::ast::ids::DeclId>, 0x1664_736a_fc45_fedd);
 pin!(kiln::ast::redecl::RedeclGroup, 0xdcb6_beb1_06bc_57f4);
@@ -6034,9 +6236,12 @@ pin!(kiln::ast::expr::InitListExtra, 0x0f1d_52b1_11de_cf91);
 pin!(kiln::ast::expr::NewExtra, 0x47e1_1bd8_9a44_f9f6);
 pin!(kiln::ast::expr::SourceLocValues, 0xd8e3_526e_9278_b413);
 pin!(kiln::ast::expr::ArrayTraitExtra, 0xe03b_651d_742e_8ada);
-pin!(kiln::ast::expr::ColdExprData, 0x206c_d637_01c4_cfec);
+pin!(kiln::ast::expr::SrcLocRole, 0xa177_b0c9_ef6c_de38);
+pin!(kiln::ast::expr::StringMaker, 0xf35e_ebfd_45c9_39ec);
+pin!(kiln::ast::expr::UseImmediate, 0x09a1_7e71_61c2_3487);
+pin!(kiln::ast::expr::ColdExprData, 0x4080_4d30_72fc_6718);
 pin!(kiln::ast::expr::OverloadedMember, 0xa94f_e1b6_63fc_3207);
-pin!(kiln::ast::expr::ExprArena, 0x292c_af37_bc05_a64f);
+pin!(kiln::ast::expr::ExprArena, 0x4c7b_1137_e7f6_3c72);
 pin!(kiln::ast::consts::ValueKind, 0x2233_5045_68a4_f599);
 pin!(kiln::ast::consts::FloatKind, 0x80a3_def2_2ff1_8578);
 pin!(kiln::ast::consts::NullKind, 0x4647_d412_c4c3_0e95);
@@ -6064,8 +6269,12 @@ pin!(kiln::ast::templates::SpecKind, 0x7529_ef5b_164d_2792);
 pin!(kiln::ast::templates::SpecInfo, 0x021c_7c69_1934_e174);
 pin!(kiln::ast::templates::MemberSpecInfo, 0xe6ba_b22f_4382_cad6);
 pin!(kiln::ast::templates::PartialSpecInfo, 0xf107_5f5e_5ee5_490e);
-pin!(kiln::ast::templates::ArgShape, 0x3cc1_9e44_e0e2_6401);
-pin!(kiln::ast::templates::TemplateTables, 0x98b8_ffb6_9115_79a0);
+pin!(kiln::ast::templates::ArgShape, 0x9d9b_6136_1125_98d2);
+pin!(kiln::ast::templates::PatternMemInits, 0x9109_4dbc_66d4_1ea1);
+pin!(kiln::ast::templates::PatternMemInit, 0x1b61_211b_67b0_801a);
+pin!(kiln::ast::templates::PatternMemInitId, 0xbd56_399c_f331_030a);
+pin!(kiln::ast::templates::PatternMemInitArgs, 0x11bb_4c01_2680_8138);
+pin!(kiln::ast::templates::TemplateTables, 0x0f5f_2ac0_b9b5_e7b8);
 pin!(kiln::ast::oper_lookup::OperLookups, 0x2308_2fcb_83cb_752f);
 pin!(kiln::ast::oper_lookup::OperCandidate, 0xcfff_4640_d5ab_9f00);
 pin!(kiln::ast::oper_lookup::OperSetId, 0xc73f_728a_3838_2b76);
@@ -6114,7 +6323,7 @@ pin!(kiln::ast::modules::UnitKind, 0x543e_2228_e73a_14b9);
 pin!(kiln::ast::reflect::Reflectee, 0xa074_c3ec_bac7_39a6);
 pin!(kiln::ast::reflect::DmsDesc, 0x85e8_b3e6_0c93_3925);
 pin!(kiln::ast::reflect::ReflectionTable, 0x7320_84d8_1d3e_3d36);
-pin!(kiln::ast::ast::Ast, 0x080a_61b3_ec1b_986f);
+pin!(kiln::ast::ast::Ast, 0xfd03_add6_b0ae_6717);
 pin!(kiln::ast::decl_extents::DeclExtents, 0x9d55_6258_ac68_9006);
 pin!(kiln::ast::decl_extents::DeclExtent, 0xcb1f_faf8_1d30_8082);
 pin!(kiln::ast::decl_extents::ModuleDeclExtent, 0xe965_1c4f_4509_7ce4);

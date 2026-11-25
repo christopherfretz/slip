@@ -2,6 +2,6 @@
 removed n::k
 added n::u
 changed <order>
-removed M::<friend It<type-parameter-0-0, n::k>>
-added M::<friend It<type-parameter-0-0, n::u>>
+removed M::<friend It<type-parameter-0-0, 0>>
+added M::<friend It<type-parameter-0-0, 0>>
 changed M

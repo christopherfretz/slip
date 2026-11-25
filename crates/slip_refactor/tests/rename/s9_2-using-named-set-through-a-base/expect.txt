@@ -1,6 +1,7 @@
 subjects:
   3b98ec8e seed - rule=yes n::D::f()
-  8e22d4a6 follower - rule=yes n::D::f of=0c083ef3,3b98ec8e,b6e95146
+  8e22d4a6 follower - rule=yes n::D::f of=b6e95146
+  b036d5cc follower - rule=yes n::D::f of=0c083ef3,3b98ec8e
 links:
 claims:
   main.cpp:2:17+1 keep t0 votes=1 none

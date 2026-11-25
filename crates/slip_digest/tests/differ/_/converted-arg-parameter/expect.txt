@@ -1,0 +1,1 @@
+changed template <class> void f(It<type-parameter-0-0, 0> *)

@@ -159,6 +159,9 @@ impl Walk<'_> {
         // Arguments written in a template's explicit specialisation
         // (digest-kinds §4.4 "Spellings", rule 11).
         crate::own_spelling::explicit_specialisation(self, s, d);
+        // An out-of-line member of a partial specialisation whose
+        // qualifier's arguments Kiln does not keep (rule 12).
+        crate::own_spelling::out_of_line_member(self, s, d);
         self.decl_data(s, d, kind);
     }
 

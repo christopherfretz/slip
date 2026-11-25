@@ -1,0 +1,1 @@
+changed template <class> It<type-parameter-0-0, 0> * f(type-parameter-0-0)

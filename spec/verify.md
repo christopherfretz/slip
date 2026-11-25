@@ -2765,10 +2765,12 @@ observer needed (§2.2).
   [temp.deduct.guide] keeps in the template's scope, which the run cannot
   move); a guide of an owned template is counted like any owned member,
   left behind `direct` (`tests/rules/stale/deduction-guide-of-dependency`,
-  `guide-of-owned-template-left`, `guide-of-owned-template-moved`). That
-  a guide left in another scope than its template's does not parse is
-  not relied on: Kiln accepts one at this pin, where clang 19 rejects it
-  (`spec/landed/verify/WP-111.md`, For Kiln). An entity with C
+  `guide-of-owned-template-moved`). That a guide left in another scope
+  than its template's does not parse is not relied on. Since Kiln
+  WP-3272 (`a610d83aa`, in the pin since WP-163) Kiln rejects one, as
+  clang 19 does, so no valid source leaves an owned guide behind and
+  WP-111's `guide-of-owned-template-left` (whose post-image held one) is
+  gone (`spec/landed/digest-kinds/WP-163.md`). An entity with C
   language linkage has the parent `c_linkage` and is not counted. A
   namespace's own key is not counted in `direct` (the merge of §2.1);
   a namespace a rule matched counts in `via`, as before.
@@ -3324,7 +3326,7 @@ is pending, until Kiln records a range for it
 - `crates/slip_kiln/tests/lookups.rs` — what Kiln's lookup log holds, each
   form through a real parse: `#include` both forms, `#include_next`,
   `__has_include`, `__has_include_next`, `#embed`, `__has_embed`,
-  `-include`; `-imacros` not accepted; an absolute name recorded, found
+  `-include`; `-imacros` and `-iwithprefix` refused by Slip (WP-163); an absolute name recorded, found
   or not; a
   lookup after five thousand; a lookup from another directory; the
   toolchain's directories in the list.

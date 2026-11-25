@@ -1,3 +1,2 @@
 added u(D &, const D &)
-# The shadow stays a unit (an implicit hider does not count) and D does not change. It still shows changed: its record writes Kiln's hidden mark (§5.7 ColdDeclData hidden_shadow), which the implicit operator declared on use sets. That dependence on use predates WP-119 (handback, For Kiln). The mutation "an implicit hider counts" makes it removed and D changed.
-changed D::<shadow Base::operator=(const D &)>
+# The shadow stays a unit (an implicit hider does not count) and D does not change; nor does the shadow since WP-163: its record writes Kiln's hidden mark (§5.7 ColdDeclData hidden_shadow), which the implicit operator set only when declared on use until Kiln WP-3145/WP-3146 (`690711450`) marks it at the class's closing brace (WP-119's For Kiln item, fixed). The mutation "an implicit hider counts" now drops the shadow on both sides alike, so this pair no longer kills it (WP-163 handback).

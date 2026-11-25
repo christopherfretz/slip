@@ -1,0 +1,1 @@
+changed template <class> requires (sizeof(It<T, n::k>) > 0) void f(type-parameter-0-0)

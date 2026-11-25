@@ -12,7 +12,9 @@ use slip_model::formats::clip_message;
 use slip_model::hash::content_digest;
 use slip_model::{Counter, Digest, FileRef, Observer, Outcome, Phase, Shard, Status};
 
-use crate::check::{front_end_line, program, utf8_command};
+use crate::check::{
+    front_end_line, kiln_switch_in_environment, not_modelled, program, utf8_command,
+};
 use crate::kiln::ast::Ast;
 use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
@@ -593,6 +595,13 @@ pub fn parse_observer_with<R: Send>(
     let words = written_words(options);
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
+    let args = Args::parse_as(&program, &kiln_driver::rsp::expand(&line));
+    if let Some(flag) = not_modelled(&args) {
+        return Ok((shard(rejected(&not_modelled_message(flag)), None), None));
+    }
+    if let Some(var) = kiln_switch_in_environment() {
+        return Ok((shard(rejected(&switch_message(var)), None), None));
+    }
     let dir: &Path = &directory;
     let (program_ref, line_ref) = (&program, &line);
     let overlay_ref = overlay.as_deref();
@@ -715,6 +724,16 @@ fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<Arc<Overlay>>, Strin
 /// driver parses it, as `run_front_end` reads it.
 fn driver(program: &str, line: &[String]) -> Driver {
     Driver::of(&Args::parse_as(program, &kiln_driver::rsp::expand(line)))
+}
+
+/// The message of a unit refused by [`kiln_switch_in_environment`].
+pub(crate) fn switch_message(var: &str) -> String {
+    format!("{var} is set: Slip does not parse under a Kiln check it does not model")
+}
+
+/// The message of a unit refused by [`not_modelled`].
+fn not_modelled_message(flag: &str) -> String {
+    format!("{flag} is not supported by Slip (spec/cdb.md §6.2)")
 }
 
 fn rejected(message: &str) -> Outcome {

@@ -290,19 +290,45 @@ auto gl = [](S) { return 0; };
 // Test 3: each `unsupported`.
 
 #[test]
-fn s7_5_rule2_test3_no_holder() {
-    // Kiln attributes the names of an alias, an enumerator, a template
-    // head and a `static_assert` to the namespace or the class around
-    // them (Kiln `spec/ast.md` §18.3): no holder. A name in the
-    // decl-specifiers of two declarators is held by both.
+fn s7_5_rule2_test3_holder_named_by_kiln() {
+    // Until Kiln WP-3143 (`9c947d049`, in the pin since WP-163) Kiln
+    // attributed the names of an alias, an enumerator and a template head
+    // to the namespace or the class around them (Kiln `spec/ast.md`
+    // §18.3): no holder, `NoHolder`. Kiln now names the declaration that
+    // holds each, and its unit is the answer.
     let src = "\
 struct S {};
 using A = S;
 enum E { e = sizeof(S) };
 template <class T = S> void t() {}
 struct C { using I = S; };
-S a, b;
 namespace m { using J = S; }
+";
+    with(src, |s, d| {
+        let got: Vec<Result<Vec<String>, Why>> = refs_to(s, one(s, "S"))
+            .into_iter()
+            .map(|r| keys_of(s, d, Value::Reference(r)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                Ok(strs(&["A"])),
+                Ok(strs(&["e"])),
+                Ok(strs(&["template <class> void t()"])),
+                Ok(strs(&["C::I"])),
+                Ok(strs(&["m::J"])),
+            ]
+        );
+    });
+}
+
+#[test]
+fn s7_5_rule2_test3_no_holder() {
+    // A name in the decl-specifiers of two declarators is held by both:
+    // no holder (`keys.rs`), at either pin.
+    let src = "\
+struct S {};
+S a, b;
 template <int N> struct X {};
 X<sizeof(S)> xa, xb;
 ";
@@ -310,6 +336,7 @@ X<sizeof(S)> xa, xb;
         for r in refs_to(s, one(s, "S")) {
             assert_eq!(keys_of(s, d, Value::Reference(r)), Err(Why::NoHolder));
         }
+        assert_eq!(refs_to(s, one(s, "S")).len(), 2);
     });
 }
 

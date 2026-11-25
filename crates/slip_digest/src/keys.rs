@@ -1211,7 +1211,8 @@ impl Walk<'_> {
                 | TypeView::Auto { .. }
                 | TypeView::DeducedTemplateSpecialization { .. }
                 | TypeView::Attributed { .. }
-                | TypeView::Splice { .. } => return None,
+                | TypeView::Splice { .. }
+                | TypeView::Decayed { .. } => return None,
             }
         }
         None
@@ -1532,7 +1533,8 @@ impl Walk<'_> {
                 | TypeView::Auto { .. }
                 | TypeView::DeducedTemplateSpecialization { .. }
                 | TypeView::Attributed { .. }
-                | TypeView::Splice { .. } => None,
+                | TypeView::Splice { .. }
+                | TypeView::Decayed { .. } => None,
             });
         let Some(p) = proto else {
             s.indeterminate(Cause::Unaccounted("key/function-type"));

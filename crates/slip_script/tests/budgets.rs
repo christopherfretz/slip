@@ -230,7 +230,9 @@ fn s2_8_uncaught_slip_error_has_the_hosts_message_and_place() {
         );
         let refusal = f.refusal.as_ref().expect("the refusal");
         assert_eq!((refusal.errc, refusal.place), (2, Some(foo_name)));
-        assert!(f.rendered.contains("unhandled exception of type 'error'"), "{}", f.rendered);
+        // Kiln's own note, passed through: the exception object's canonical
+        // type since Kiln WP-3408 (`3d56da28a`; `'error'` before WP-163).
+        assert!(f.rendered.contains("unhandled exception of type 'slip::error'"), "{}", f.rendered);
     });
 }
 

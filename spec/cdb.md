@@ -346,6 +346,14 @@ In this order; the first that applies decides.
    - what it refuses with `drv_front_end_unsupported` when written on the
      command line: `-verify` (`Args::verify`), `-include-pch`
      (`pch.include`).
+   - Slip's own refusal (not the entry's): a flag that reads a file or
+     names a search directory Slip's lookup guards do not model
+     (`spec/verify.md` §5.3): `-imacros` (`Args::imacros`), `-iprefix`
+     (`Args::iprefix`), `-iwithprefix`, `-iwithprefixbefore`
+     (`Args::prefixed_dirs`), each with its aliases. Kiln's driver refused
+     them as unknown arguments until Kiln WP-2822 (`c52c27ba8`); Slip
+     refuses them since WP-163 as it did, and its parse refuses them too
+     (`rejected`, before Kiln runs).
 
    `UnsupportedFlag`, detail the argument responsible: the last argument
    of the shortest prefix `argv[1..=k]` of the command that is refused (in

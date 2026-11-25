@@ -1,0 +1,2 @@
+added f(long)
+changed template <class> void g(type-parameter-0-0, void (*)(int (*)[sizeof (f(T()))]))

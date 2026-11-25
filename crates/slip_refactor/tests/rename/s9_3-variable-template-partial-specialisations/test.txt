@@ -1,4 +1,4 @@
-spec: edits.md §9.3 row 1 (partial specialisations of a variable template, in the namespace and out of line: literal; WP-071 review A1; WP-127: g<long> binds n::v<T> to the subject, refused)
+spec: edits.md §9.3 row 1 (partial specialisations of a variable template, in the namespace and out of line: literal; WP-071 review A1; WP-127: g<long> binds n::v<T> to the subject, refused; since WP-163, Kiln WP-3009, the pattern's n::v<T> names the template itself, so 3:40 is a spelled claim like 3:50 and g<long> is no instance: the bytes are as before)
 from: n::v
 to: w
 kind: variable

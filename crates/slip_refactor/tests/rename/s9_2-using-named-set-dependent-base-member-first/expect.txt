@@ -1,5 +1,6 @@
 subjects:
-  1a005e78 follower - rule=yes n::D<int>::f of=2e887d42,8c4111e0,c59c794c,fdc4d601
+  1a005e78 follower - rule=yes n::D<int>::f of=8c4111e0,fdc4d601
+  221bd5f3 follower - rule=yes n::D<int>::f of=2e887d42,c59c794c
   91d7e426 follower - rule=yes n::D<int>::f() of=c59c794c
   c59c794c seed - rule=yes n::D::f()
 links:

@@ -1,0 +1,2 @@
+added f(long)
+changed template <class> void g(type-parameter-0-0, void (*)(__attribute__((__vector_size__(sizeof (f(T())) * 4 * sizeof(type-parameter-0-0)))) type-parameter-0-0 *))

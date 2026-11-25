@@ -216,6 +216,38 @@ fn s6_unknown_flag_refused() {
         check(&["clang++", "--language=c", "a.cpp"]),
         Err(Rejection::UnsupportedFlag("--language=c".into()))
     );
+    // WP-163: a flag that reads a file or names a search directory Slip
+    // does not model is refused as written, as Kiln's driver refused it
+    // before Kiln WP-2822 (`c52c27ba8`), though Kiln accepts it now
+    // (`slip_kiln::check::not_modelled`).
+    for (argv, flag) in [
+        (&["clang++", "-imacros", "m.h", "a.cpp"][..], "-imacros"),
+        (&["clang++", "--imacros=m.h", "a.cpp"][..], "--imacros=m.h"),
+        (&["clang++", "-iprefix", "p/", "a.cpp"][..], "-iprefix"),
+        (&["clang++", "-iwithprefix", "inc", "a.cpp"][..], "-iwithprefix"),
+        (&["clang++", "-iwithprefixbefore", "inc", "a.cpp"][..], "-iwithprefixbefore"),
+        (&["clang++", "--imacros", "m.h", "a.cpp"][..], "--imacros"),
+        (&["clang++", "--include-prefix=p/", "a.cpp"][..], "--include-prefix=p/"),
+        (&["clang++", "--include-with-prefix", "inc", "a.cpp"][..], "--include-with-prefix"),
+        (
+            &["clang++", "--include-with-prefix-after=inc", "a.cpp"][..],
+            "--include-with-prefix-after=inc",
+        ),
+        (
+            &["clang++", "--include-with-prefix-before", "inc", "a.cpp"][..],
+            "--include-with-prefix-before",
+        ),
+        // Tables, checks and dumps Kiln added for a tooling client
+        // (fix round 1 of WP-163): refused at the old pin, accepted now.
+        (&["clang++", "-fkiln-written-ref-keys", "a.cpp"][..], "-fkiln-written-ref-keys"),
+        (&["clang++", "-fkiln-fn-names", "a.cpp"][..], "-fkiln-fn-names"),
+        (&["clang++", "-fkiln-builtin-literals", "a.cpp"][..], "-fkiln-builtin-literals"),
+        (&["clang++", "-fkiln-verify-subst-failed", "a.cpp"][..], "-fkiln-verify-subst-failed"),
+        (&["clang++", "-fkiln-dump-friend-forms", "a.cpp"][..], "-fkiln-dump-friend-forms"),
+        (&["clang++", "-fkiln-dump-fn-names", "a.cpp"][..], "-fkiln-dump-fn-names"),
+    ] {
+        assert_eq!(check(argv), Err(Rejection::UnsupportedFlag(flag.into())), "{argv:?}");
+    }
     // A separate-value option left without one at the end (rejection 2).
     assert_eq!(
         check(&["clang++", "a.cpp", "-dumpdir"]),

@@ -2027,3 +2027,26 @@ static void weakref_fn() __attribute__((weakref(\"aliased_target\")));
         nothing_at(u, src, "weakref(\"aliased_target\")", "aliased_target");
     });
 }
+
+// WP-163: the rows Kiln records since WP-3520 (`4401d1644`) for a name in
+// a function template's default template argument, substituted by a
+// deduction, are left out by `instances` (`written::in_template_head`):
+// the name stays without a row, as at the pin before. A name of the
+// template's body keeps its rows.
+#[test]
+fn wp163_default_template_argument_rows_are_left_out() {
+    let src = "struct R { static int s(); };\ntemplate <class T, int = sizeof(T::s())> int call() { return T::s(); }\nint u() { return call<R>(); }\n";
+    with_unit("wp163-head-rows", src, |u| {
+        let table = &u.ast().written_refs;
+        // Each name by the end of `s` (the entry's range ends there).
+        let head = at(src, "sizeof(T::s())", "s").1;
+        let body = at(src, "return T::s();", "s").1;
+        let raw: Vec<usize> =
+            table.specs().map(|(_, r)| bytes(u, table.get(r.entry).range).1).collect();
+        assert!(raw.contains(&head) && raw.contains(&body), "Kiln's rows: {raw:?}");
+        let kept: Vec<usize> =
+            slip_kiln::written::instances(u).keys().map(|s| bytes(u, *s).1).collect();
+        assert!(!kept.contains(&head), "{kept:?}");
+        assert!(kept.contains(&body), "{kept:?}");
+    });
+}

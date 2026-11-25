@@ -710,13 +710,16 @@ int use(O x) { return f({x}) + g({x}) + g({x,}) + g2(1, {x}, 2) + f(x) + h(1 /* 
         assert_eq!(a, want);
         let x = calls_of(s, one(s, "g"))[0];
         let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
-        assert_eq!(why.reason, "not all of the argument");
+        // Since Kiln WP-2723 (`dececca4e`, in the pin since WP-163) the copy
+        // of a one-element list is the list's construction, a kind outside
+        // the table: still no extent (`not all of the argument` before).
+        assert_eq!(why.reason, "kind outside the table", "{why:?}");
     });
 }
 
 /// Rule 4: a member variable template named with template arguments
-/// (`d.twice<7>`): Kiln records no arguments on the member access, so
-/// its last token is not known.
+/// (`d.twice<7>`): its last token is not known (the name's arguments are
+/// not read; Kiln records them on the member access since WP-2724).
 #[test]
 fn s6_6_rule4_a_member_variable_template() {
     let src = "\
@@ -729,7 +732,10 @@ int use(V d, V* p) { return k(d.twice<7>) + k(p->twice<2>) + k(d.one) + k(V::twi
         assert_eq!(a, vec![None, None, Some("d.one".to_owned()), None]);
         let x = calls_of(s, one(s, "k"))[0];
         let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
-        assert_eq!(why.reason, "specialisation");
+        // Since Kiln WP-2724 (`dececca4e`, in the pin since WP-163) the
+        // member access records its template arguments: still no extent
+        // (`specialisation` before).
+        assert_eq!(why.reason, "template arguments", "{why:?}");
     });
 }
 
