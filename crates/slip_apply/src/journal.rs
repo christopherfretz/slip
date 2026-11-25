@@ -46,6 +46,16 @@ const CHECKED: usize = 26;
 /// The head: the container's header and section 1.
 pub const HEAD_LEN: usize = CHECKED + 8;
 
+/// The head's fixed bytes: magic, kind, version, the framing of section 1.
+fn fixed() -> [u8; 18] {
+    let mut f = [0u8; 18];
+    f[..8].copy_from_slice(&MAGIC);
+    f[8..12].copy_from_slice(&KIND);
+    f[12..16].copy_from_slice(&VERSION.to_le_bytes());
+    f[16..18].copy_from_slice(&[1, 16]);
+    f
+}
+
 /// The check of a head whose first [`CHECKED`] bytes are `head`.
 fn head_check(head: &[u8]) -> [u8; 8] {
     let d = slip_model::hash::content_digest(&head[..CHECKED]);
@@ -179,9 +189,12 @@ impl Journal {
 
     /// Reads the bytes of `write.journal` (§7.3 step 2), every case:
     ///
-    /// - shorter than the head, or shorter than the total its head
-    ///   declares: `Interrupted` (the publish, which syncs the whole file
-    ///   before it returns, never returned, so no file was touched);
+    /// - shorter than the head and a prefix of a head this Slip writes as
+    ///   far as its fixed bytes go (magic, kind, version, framing; empty
+    ///   included), or shorter than the total its head declares:
+    ///   `Interrupted` (the publish, which syncs the whole file before it
+    ///   returns, never returned, so no file was touched);
+    /// - shorter than the head and not such a prefix: `Err`, kept;
     /// - otherwise `Err`, malformed and kept: a head that is not a
     ///   journal's (magic, kind), fails its check, or is of another version;
     ///   bytes after the declared total; a container that fails
@@ -194,6 +207,16 @@ impl Journal {
     pub fn read(bytes: &[u8]) -> Result<Read, String> {
         let len = bytes.len();
         if len < HEAD_LEN {
+            // A prefix of a head this Slip writes, as far as its fixed
+            // bytes go (the length and the check cannot be judged): cut
+            // short. Anything else this short is not a journal's start.
+            let fixed = fixed();
+            let n = len.min(fixed.len());
+            if bytes[..n] != fixed[..n] {
+                return Err(format!(
+                    "journal: {len} bytes that are not the start of a journal's head"
+                ));
+            }
             return Ok(Read::Interrupted(format!(
                 "the journal is {len} bytes, shorter than its {HEAD_LEN}-byte head"
             )));

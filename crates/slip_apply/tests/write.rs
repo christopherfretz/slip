@@ -1342,6 +1342,17 @@ fn damaged(whole: &[u8], record: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
     };
     let mut zero_tail = whole.to_vec();
     zero_tail[n - 48..].fill(0);
+    // The review's crafted case for J5: the framing `01 11`, a total above
+    // the file's length, the check made again over them. Only the framing
+    // check keeps it malformed (it would read as cut short).
+    let framing_head = {
+        let mut x = whole.to_vec();
+        x[17] = 0x11;
+        x[18..26].copy_from_slice(&(n as u64 + 1).to_le_bytes());
+        let c = content_digest(&x[..26]);
+        x[26..34].copy_from_slice(&c.0[..8]);
+        x
+    };
     // A valid container, its head's check valid, whose head declares one
     // byte fewer than the file holds: only the comparison with the length
     // finds it.
@@ -1370,6 +1381,15 @@ fn damaged(whole: &[u8], record: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
         ("the tail zeroed", zero_tail),
         ("all zero", vec![0; n]),
         ("a whole container declaring one byte fewer", declared_less),
+        ("framing 01 11 under a recomputed check, declaring more", framing_head),
+        ("seven bytes of no journal", b"garbage".to_vec()),
+        ("33 zeros", vec![0; HEAD_LEN - 1]),
+        ("one ff", vec![0xff]),
+        ("a head's prefix, its version byte wrong", {
+            let mut x = whole[..14].to_vec();
+            x[12] = 2;
+            x
+        }),
         ("framing behind a valid trailer", framing),
         ("of version 2", frame(2, &[(2, record)])),
         ("an unknown critical section", frame(1, &[(2, record), (3, b"?")])),
@@ -1413,8 +1433,12 @@ fn s7_3_recover_refuses_a_malformed_journal() {
 fn s7_3_recover_removes_an_interrupted_journal() {
     let c = case();
     let whole = Journal::of_write(&c.overlay, c.id).to_bytes();
-    let mut cut: Vec<Vec<u8>> = vec![b"garbage".to_vec(), vec![0; HEAD_LEN - 1]];
-    cut.extend((0..whole.len()).map(|n| whole[..n].to_vec()));
+    // Every true prefix, from empty (a crash between the creation and the
+    // first write) through every length shorter than the head (0 to 33)
+    // to one byte short. Short bytes that are no head's start are
+    // malformed (`damaged`).
+    let cut: Vec<Vec<u8>> = (0..whole.len()).map(|n| whole[..n].to_vec()).collect();
+    assert!(whole.len() > HEAD_LEN);
     for bytes in cut {
         let n = bytes.len();
         let w = c.world.healthy();

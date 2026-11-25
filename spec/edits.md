@@ -1462,10 +1462,16 @@ The **staged name** of an overlay file is, in the file's own directory,
    comes after it).
 
    What `write.journal`'s bytes are, every case, in this order:
-   - shorter than the head (34 bytes), or than the total its head
-     declares: **interrupted**. The publish syncs the whole file before
-     it returns, so the file was cut short by a crash before step 3:
-     no file of the tree was touched.
+   - shorter than the head (34 bytes) and a prefix of a head this Slip
+     writes as far as its fixed bytes go (every byte present of the
+     magic, `JRNL`, the version `01 00 00 00` and the framing `01 10`
+     matches; the bytes of the total and the check cannot be judged; an
+     empty file is such a prefix), or at least a head long and shorter
+     than the total its head declares: **interrupted**. The publish
+     syncs the whole file before it returns, so the file was cut short
+     by a crash before step 3: no file of the tree was touched.
+   - shorter than the head and not such a prefix (a short file this
+     Slip did not write): **malformed**.
    - otherwise **malformed** (refused, kept, and no message says that
      nothing was touched): a head whose magic or kind is not a
      journal's, whose section framing is not `01 10`, or whose check
@@ -2593,8 +2599,8 @@ an `Input` error.
 `write.journal` is created exclusively under its own name, written and
 synced there (`exec.md` §2.1 "The journal"): no temporary, no link
 (`harness.md` §11). A crash before it is synced leaves an interrupted
-journal (§7.3 step 2): shorter than its head, or than the total its head
-declares; `apply --recover` removes it.
+journal (§7.3 step 2): a prefix of its head, or shorter than the total
+its head declares; `apply --recover` removes it.
 
 A journal at its declared length (or longer) that does not read whole is
 damaged after its publish: a flipped bit, a bad read, or a power loss

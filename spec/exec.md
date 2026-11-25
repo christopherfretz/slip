@@ -113,7 +113,14 @@ took (§8.7).
   decoded; for `1\n` the message says that an earlier Slip wrote the
   store (its lock was published by a link and held `<pid>\n`: it does not
   share §2.1 "The lock" with this Slip, so the two must never take one
-  store's lock) and to use a new store. Version 2 is the first with
+  store's lock) and to use a new store. If such a store holds a name
+  `write.journal` (of any type), the error is `EarlierUnfinishedWrite`
+  with its path instead: the message says an unfinished write of the
+  working tree is recorded there, to finish it with `slip apply
+  --recover` of the Slip that wrote it (an earlier one), then to use a
+  new store. Of a version-1 store nothing is read beyond `VERSION` and
+  the existence of that name, and nothing is written or removed, by any
+  opener (`open_for_recovery` too). Version 2 is the first with
   claims and nonces (WP-161). A missing `VERSION` in an absent or empty directory initialises
   it, in both access modes: `tmp/`, `plans/`, `declared/`, `shards/`,
   `runs/`, `logs/` are created, then `VERSION` is published (a `tmp/` file and a rename)
@@ -230,7 +237,9 @@ took (§8.7).
   returned is seen by every operation that starts after it, in any
   process of the host (creation, removal, a read by name and a listing of
   `tmp/`; the rows `create-new-read` and `create-new-xproc` of `cargo
-  xtask fscheck`, `spec/harness.md` §11.2); *(P)* `/proc/<pid>` tells a
+  xtask fscheck`, `spec/harness.md` §11.2; an `fsync` the mount does not
+  pass through to the host's disk is outside (L) and not addressed,
+  §11.4); *(P)* `/proc/<pid>` tells a
   live process from a dead one; *(S)* every exclusive opener of the store
   is a Slip that follows these rules (a store of version 2 is opened by
   none other: an earlier Slip refuses it, and this one refuses version
@@ -320,7 +329,7 @@ took (§8.7).
 pub const VERSION_TEXT: &str = "2\n";
 pub fn phase_name(phase: Phase) -> &'static str;            // "map", "verify"
 pub enum Access { Exclusive, Shared }
-pub enum StoreError { Unrecognised(PathBuf), Version(String), Busy { holder: Option<u32>, lock: PathBuf },
+pub enum StoreError { Unrecognised(PathBuf), Version(String), EarlierUnfinishedWrite(PathBuf), Busy { holder: Option<u32>, lock: PathBuf },
                       Invalid(String), Io { path: PathBuf, error: io::Error } }   // Display, Error
 pub struct Store;   // Drop: §2.1 "Closing"
 impl Store {

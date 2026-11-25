@@ -1256,6 +1256,39 @@ fn s10_5_journal_refused_by_reduce_and_apply() {
     assert!(fx.tree_is_pre());
 }
 
+/// Review 2 of WP-161, finding 1: a store of version 1 (an earlier
+/// Slip's) is refused, status 3, by `apply --recover` and by `reduce`;
+/// when it holds `write.journal` the message says an unfinished write is
+/// recorded there and to finish it with the earlier Slip's `apply
+/// --recover`, then use a new store. Nothing in it is changed.
+#[test]
+fn s2_an_earlier_store_with_an_unfinished_write() {
+    let (fx, _set, _overlay) = agreed("earlier-journal", Fx::rename);
+    let plan = fx.store().find_plan("").unwrap()[0];
+    fs::write(fx.store_dir().join("VERSION"), "1\n").unwrap();
+    let journal = fx.store_dir().join("write.journal");
+    for with_journal in [false, true] {
+        if with_journal {
+            fs::write(&journal, b"an earlier Slip's journal").unwrap();
+        }
+        for out in [fx.slip(&["apply", "--recover"]), fx.reduce(plan, ROUND, &[])] {
+            out.expect(3);
+            assert!(out.stderr.contains("store version 1: written by an earlier Slip"), "{out:#?}");
+            let told =
+                out.stderr.contains("an unfinished write of the working tree is recorded there")
+                    && out.stderr.contains("`slip apply --recover` of the Slip that wrote it")
+                    && out.stderr.contains(&journal.display().to_string());
+            assert_eq!(told, with_journal, "{out:#?}");
+            assert!(out.stderr.contains("use a new store"), "{out:#?}");
+            assert!(!out.stdout.contains("recovered"), "{out:#?}");
+        }
+        assert_eq!(fs::read_to_string(fx.store_dir().join("VERSION")).unwrap(), "1\n");
+        assert_eq!(journal.exists(), with_journal);
+        assert!(fx.tree_is_pre());
+    }
+    assert_eq!(fs::read(&journal).unwrap(), b"an earlier Slip's journal");
+}
+
 /// The journal of a write of the agreed overlay, and the post-image
 /// blobs, as `write` publishes them before it stages anything.
 fn journal_of(fx: &Fx, overlay_id: Digest, overlay: &Overlay) -> Journal {
@@ -1790,7 +1823,7 @@ fn s7_3_recover_removes_an_interrupted_journal() {
     let overlay = fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap();
     let overlay = Overlay::from_bytes(&overlay).unwrap();
     let whole = journal_of(&fx, overlay_id, &overlay).to_bytes();
-    for cut in [whole[..whole.len() / 2].to_vec(), Vec::new(), b"anything".to_vec()] {
+    for cut in [whole[..whole.len() / 2].to_vec(), Vec::new(), whole[..20].to_vec()] {
         fx.put_journal(&cut);
         let out = apply_write(&fx, &r, &[]);
         out.expect(3);
@@ -1808,19 +1841,25 @@ fn s7_3_recover_removes_an_interrupted_journal() {
         assert!(!fx.store().journal_path().exists());
         assert!(fx.tree_is_pre());
     }
-    // A whole-length journal with a bit flipped is damaged, not cut short:
-    // `--recover` refuses it, names the file, keeps it, and never says that
-    // no file was touched (spec/edits.md §10.4).
+    // A whole-length journal with a bit flipped, or a short file that is
+    // no journal's start, is damaged, not cut short: `--recover` refuses
+    // it, names the file, keeps it, and never says that no file was
+    // touched (spec/edits.md §10.4).
     let mut flipped = whole.clone();
     flipped[whole.len() - 40] ^= 1;
-    fx.put_journal(&flipped);
-    let out = fx.slip(&["apply", "--recover"]);
-    out.expect(3);
-    assert!(out.stderr.contains("write.journal"), "{out:#?}");
-    assert!(out.stderr.contains("damaged, not cut short: it is kept"), "{out:#?}");
-    assert!(!out.stdout.contains("no file") && !out.stdout.contains("before any file"), "{out:#?}");
-    assert_eq!(fs::read(fx.store().journal_path()).unwrap(), flipped);
-    fs::remove_file(fx.store().journal_path()).unwrap();
+    for bad in [flipped, b"anything".to_vec()] {
+        fx.put_journal(&bad);
+        let out = fx.slip(&["apply", "--recover"]);
+        out.expect(3);
+        assert!(out.stderr.contains("write.journal"), "{out:#?}");
+        assert!(out.stderr.contains("damaged, not cut short: it is kept"), "{out:#?}");
+        assert!(
+            !out.stdout.contains("no file") && !out.stdout.contains("before any file"),
+            "{out:#?}"
+        );
+        assert_eq!(fs::read(fx.store().journal_path()).unwrap(), bad);
+        fs::remove_file(fx.store().journal_path()).unwrap();
+    }
     // The store is usable again.
     apply_write(&fx, &r, &[]).expect(0);
     assert!(fx.tree_is_post());

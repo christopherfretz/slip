@@ -13,8 +13,9 @@
 //! harness and the store do not use, run to show why.
 //!
 //! The row `create-new-xproc` runs a second process, this program's
-//! `fscheck-reader`: this process creates a claim and a file (synced, every
-//! eighth round 256 KiB, as a journal; else 32 bytes, as a lock) and asks
+//! `fscheck-reader`: this process creates a claim and a file (synced; every
+//! 1,000th round 16 MiB, a large write's journal; every eighth round
+//! 256 KiB, as a journal; else 32 bytes, as a lock) and asks
 //! the reader, over a pipe, to list the claim and read the file whole; then
 //! it removes both and asks the reader not to list the claim. A reply other
 //! than `ok` is its wrong read (`spec/exec.md` §2.1 "The lock").
@@ -89,7 +90,8 @@ pub const ROWS: &[Row] = &[
     Row {
         name: "create-new-xproc",
         relied: true,
-        what: "a claim and a file (256 KiB every 8th round) created and synced; \
+        what: "a claim and a file (16 MiB every 1,000th round, 256 KiB every 8th) created \
+               and synced; \
                another process lists the claim and reads the file whole",
     },
     Row {
@@ -102,6 +104,14 @@ pub const ROWS: &[Row] = &[
 /// The size of the file of `create-new-xproc` every eighth round: a
 /// journal's of a large write.
 pub const XPROC_BIG: usize = 256 * 1024;
+
+/// The size of the file of `create-new-xproc` every
+/// [`XPROC_HUGE_EVERY`]th round (round 0 among them): a journal's at the
+/// scale of a write of about 100,000 files.
+pub const XPROC_HUGE: usize = 16 * 1024 * 1024;
+
+/// How often a round of `create-new-xproc` writes [`XPROC_HUGE`] bytes.
+pub const XPROC_HUGE_EVERY: u64 = 1_000;
 
 /// Its size in the other rounds: a lock's.
 pub const XPROC_SMALL: usize = 32;
@@ -735,7 +745,13 @@ fn xproc_bytes(i: u64, size: usize) -> Vec<u8> {
 
 /// One round of `create-new-xproc` in `dir`.
 fn xproc_round(dir: &Path, i: u64, other: &mut Other, p: &mut Probe<'_>) -> Result<(), String> {
-    let size = if i.is_multiple_of(8) { XPROC_BIG } else { XPROC_SMALL };
+    let size = if i.is_multiple_of(XPROC_HUGE_EVERY) {
+        XPROC_HUGE
+    } else if i.is_multiple_of(8) {
+        XPROC_BIG
+    } else {
+        XPROC_SMALL
+    };
     let claim = dir.join(format!("{i}.claim"));
     let file = dir.join(format!("j{i}"));
     create(&claim, b"")?;

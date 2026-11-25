@@ -76,6 +76,11 @@ pub enum StoreError {
     Unrecognised(PathBuf),
     /// `VERSION` holds something other than `"2\n"` (shown lossily).
     Version(String),
+    /// `VERSION` is `"1\n"` and the store holds `write.journal` (this
+    /// path): an earlier Slip's unfinished write of the working tree, which
+    /// only that Slip's `apply --recover` finishes. Nothing else of the
+    /// store is read.
+    EarlierUnfinishedWrite(PathBuf),
     /// The lock could not be taken: `holder`, the live process that holds
     /// it; `None` when no holder is known (other openers were taking it at
     /// the same time, §2.1 "The lock").
@@ -106,6 +111,14 @@ impl fmt::Display for StoreError {
             StoreError::Version(v) => {
                 write!(f, "unsupported store version {v:?} (this Slip reads version 2)")
             }
+            StoreError::EarlierUnfinishedWrite(journal) => write!(
+                f,
+                "store version 1: written by an earlier Slip (this Slip reads version 2); an \
+                 unfinished write of the working tree is recorded there ({}): finish it with \
+                 `slip apply --recover` of the Slip that wrote it (an earlier one), then use a \
+                 new store",
+                journal.display()
+            ),
             StoreError::Busy { holder: Some(pid), lock } => {
                 write!(f, "the store is busy: process {pid} holds {}", lock.display())
             }
@@ -675,6 +688,18 @@ impl Store {
         let version = root.join("VERSION");
         match fs::read(&version) {
             Ok(text) => {
+                if text == b"1\n" {
+                    // An earlier Slip's store: only whether it holds an
+                    // unfinished write is looked at (§2 "Opening").
+                    let journal = root.join("write.journal");
+                    return Err(match fs::symlink_metadata(&journal) {
+                        Ok(_) => StoreError::EarlierUnfinishedWrite(journal),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                            StoreError::Version(String::from_utf8_lossy(&text).into_owned())
+                        }
+                        Err(e) => StoreError::Io { path: journal, error: e },
+                    });
+                }
                 if text != VERSION_TEXT.as_bytes() {
                     return Err(StoreError::Version(String::from_utf8_lossy(&text).into_owned()));
                 }
