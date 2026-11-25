@@ -211,6 +211,9 @@ fn s2_open_refuses_other_version() {
     assert_eq!(names(&s), ["VERSION"]);
 }
 
+/// One way to open a store.
+type Opener = fn(&Path) -> Result<Store, StoreError>;
+
 // Review 2 of WP-161, finding 1: a store of version 1 holding
 // `write.journal` (an earlier Slip's unfinished write) is refused with a
 // message that says so and what to do; the journal is not read, and
@@ -222,19 +225,19 @@ fn s2_open_refuses_an_earlier_store_with_an_unfinished_write() {
     fs::write(s.join("VERSION"), "1\n").unwrap();
     // Unreadable bytes, and a directory: only the name's existence counts.
     for journal in [&b"\xff not a journal"[..], b""] {
-        let j = s.join("write.journal");
-        fs::write(&j, journal).unwrap();
-        let opens: [fn(&Path) -> Result<Store, StoreError>; 3] = [
+        let path = s.join("write.journal");
+        fs::write(&path, journal).unwrap();
+        let opens: [Opener; 3] = [
             |d| Store::open(d, Access::Shared),
             |d| Store::open(d, Access::Exclusive),
             Store::open_for_recovery,
         ];
         for open in opens {
             match open(&s) {
-                Err(e @ StoreError::EarlierUnfinishedWrite(_)) => {
-                    let StoreError::EarlierUnfinishedWrite(p) = &e else { unreachable!() };
-                    assert_eq!(p, &j);
-                    let m = e.to_string();
+                Err(err @ StoreError::EarlierUnfinishedWrite(_)) => {
+                    let StoreError::EarlierUnfinishedWrite(named) = &err else { unreachable!() };
+                    assert_eq!(named, &path);
+                    let m = err.to_string();
                     assert!(m.contains("store version 1"), "{m}");
                     assert!(m.contains("an unfinished write of the working tree"), "{m}");
                     assert!(m.contains("`slip apply --recover` of the Slip that wrote it"), "{m}");
@@ -243,7 +246,7 @@ fn s2_open_refuses_an_earlier_store_with_an_unfinished_write() {
                 other => panic!("expected EarlierUnfinishedWrite, got {other:?}"),
             }
         }
-        assert_eq!(fs::read(&j).unwrap(), journal);
+        assert_eq!(fs::read(&path).unwrap(), journal);
         assert_eq!(names(&s), ["VERSION", "write.journal"]);
     }
     fs::remove_file(s.join("write.journal")).unwrap();
