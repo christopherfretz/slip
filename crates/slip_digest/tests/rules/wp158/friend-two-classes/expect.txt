@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/friend-two-classes): control of the limit friend-two-classes-rev: the redeclaration's class A<X> first; Kiln instantiates the friend's definition.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed fr(X, D *)::<definition>

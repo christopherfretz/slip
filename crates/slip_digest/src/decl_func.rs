@@ -240,6 +240,9 @@ pub(crate) fn var_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     if definition_class {
         s.opt(false);
     } else {
+        if let Some(x) = init {
+            w.hold_expr(x);
+        }
         crate::expr::child_opt(w, s, init);
     }
     // spec: record VarSpec. A declaration directly in a linkage
@@ -606,6 +609,9 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
     // written (§11.9).
     let (init, style) =
         if crate::demand::pattern_has_init(w, e) { (init, style) } else { (None, InitStyle::C) };
+    if let Some(x) = init {
+        w.hold_expr(x);
+    }
     crate::expr::child_opt(w, s, init);
     s.tag(init_style::row(&style));
     let mut specs: Vec<VarSpec> =

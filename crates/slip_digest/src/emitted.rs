@@ -334,10 +334,7 @@ fn attributed(w: &Walk<'_>, f: DeclId) -> bool {
 /// state is put aside (`local::detached`): these are no unit's own
 /// stream, or are memoised across units.
 pub(crate) fn in_place(w: &mut Walk<'_>, f: DeclId) {
-    if crate::local::numbering_mode(w)
-        || !w.unit_level()
-        || w.unit.expr.profile.is_some()
-        || w.unit.local.detached
+    if !w.in_own_stream()
         || w.ast.decls.function(f).is_none()
         || !attributed(w, f)
         || crate::units::defining_decl(w, f).is_none()

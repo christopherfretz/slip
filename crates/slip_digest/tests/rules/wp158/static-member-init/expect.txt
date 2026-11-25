@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/static-member-init): a static data member's initialiser in a class template (F3).
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed S<X>::v::<definition>

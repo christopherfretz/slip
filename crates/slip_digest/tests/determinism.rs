@@ -30,9 +30,13 @@ use common::Side;
 const BEGIN: &str = "=== slip-digest-output-begin";
 const END: &str = "=== slip-digest-output-end";
 
+/// The roots walked: every pair-test root, the rules pairs included
+/// (WP-158 fix round, F2).
+const ROOTS: [&str; 6] = ["differ", "equal", "demand", "indeterminate", "resolved", "rules"];
+
 fn all_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
+    for root in ROOTS {
         v.extend(common::dirs(root).into_iter().filter(|d| !common::is_pending(d)));
     }
     v
@@ -52,7 +56,7 @@ fn render(dir: &Path) -> Vec<String> {
     [Side::A, Side::B].into_iter().map(|s| text(&common::digest_side(dir, s))).collect()
 }
 
-/// The first walk of every directory of the four roots, pending ones
+/// The first walk of every directory of [`ROOTS`], pending ones
 /// included: each side's [`text`] and what [`keys::check`] finds in it.
 /// Both tests of this file read it, so a source is parsed once for both.
 struct First {
@@ -66,7 +70,7 @@ fn first() -> &'static [First] {
     static FIRST: OnceLock<Vec<First>> = OnceLock::new();
     FIRST.get_or_init(|| {
         let mut dirs = Vec::new();
-        for root in ["differ", "equal", "demand", "indeterminate", "resolved"] {
+        for root in ROOTS {
             dirs.extend(common::dirs(root));
         }
         let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));

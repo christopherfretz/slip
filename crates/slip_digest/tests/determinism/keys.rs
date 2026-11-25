@@ -1,8 +1,9 @@
 //! Key uniqueness (WP-039 item 1; `spec/digest.md` §3.4) and display-name
 //! uniqueness (WP-039 item 2; `verify.md` §6 `name`), checked on every
 //! output the determinism test walks first (`determinism.rs`
-//! `keys_and_names_are_unique`): both sides of every directory of
-//! `differ`, `equal`, `demand` and `indeterminate`, pending ones included.
+//! `keys_and_names_are_unique`): both sides of every directory of the
+//! roots `determinism.rs` walks (`ROOTS`: the rules pairs too, since the
+//! WP-158 fix round), pending ones included.
 //!
 //! Two different entities with one key are the worst defect the digest
 //! can have (a false "same"). The walk marks such a key `Collision`
@@ -48,13 +49,50 @@ pub const SAME_KEY: &[(&str, &[&str], u64, &str)] = &[
         1,
         "a lambda in a signature: two templates, one key; the test is about it",
     ),
+    // Walked since the WP-158 fix round (F2), with what the pairs expect.
+    (
+        "rules/inert/unnamed-ordinal",
+        &[],
+        1,
+        "the ordinal of an unnamed type of a class template is not found (a follow-up of \
+         WP-131); the pair expects the collision on both sides",
+    ),
+    (
+        "rules/wp158/friend-twice-one-class-rev",
+        &["S::friend fr(X, D *)"],
+        1,
+        "a friend defined and then declared again in one class template: the two \
+         declarations collide and fail closed (spec/digest.md §2.3, a friend definition \
+         not instantiated); the pair is about it",
+    ),
 ];
 
 /// Display names two different units of one output are known to share:
-/// (directory, name, how many keys share it, reason). Empty: names print
-/// a trailing requires-clause and a typed null pointer argument's type
-/// (`spec/verify.md` §6.1), which separated the last shared names.
-pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[];
+/// (directory, name, how many keys share it, reason). Names print a
+/// trailing requires-clause and a typed null pointer argument's type
+/// (`spec/verify.md` §6.1), which separated the shared names of the other
+/// roots; the rules pairs, walked since the WP-158 fix round (F2), had
+/// these.
+pub const SAME_NAME: &[(&str, &str, usize, &str)] = &[
+    (
+        "rules/disc/function-template-relocated-concept",
+        "f<int>(int)",
+        2,
+        TWO_SPECS,
+    ),
+    (
+        "rules/disc/function-template-relocated-concept-renamed",
+        "f<int>(int)",
+        2,
+        TWO_SPECS,
+    ),
+];
+
+/// Why the `disc` pairs share a name: found when the rules pairs were first
+/// walked here (WP-158 fix round, F2), pre-existing, not yet ruled on.
+const TWO_SPECS: &str = "two function templates `f`, one with a type-constraint: deduction \
+     made a specialisation of each for `int`, and a specialisation's name prints its \
+     signature, not its template's constraint";
 
 /// Sides of the pair tests that are known not to digest: (directory,
 /// side, reason). Any other side that does not digest fails the sweep,

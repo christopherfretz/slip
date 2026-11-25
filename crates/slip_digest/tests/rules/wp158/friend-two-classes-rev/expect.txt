@@ -1,0 +1,9 @@
+# WP-158 fix round, review F1: a LIMIT pinned as equal (spec/digest.md
+# §2.3 "a friend definition not instantiated"). B<X>, whose friend fr is
+# defined, is instantiated before A<X>, which declares fr again; the call
+# names the later redeclaration and Kiln does not instantiate fr's
+# definition (kiln_sema/src/templ/class.rs:2318), so nothing holds the
+# call u.mf(1L) and the wrong edit is equal. This pair must start to
+# differ (derived-changed fr(X, D *)::<definition>, as in
+# friend-two-classes) when Kiln instantiates the definition: then it fails
+# here, and its expectation and pitfall R26's held-out bad tree are added.

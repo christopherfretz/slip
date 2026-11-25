@@ -1,0 +1,16 @@
+# WP-158 fix round (the review's zz_rv158/tmplarg-value-conv): a conversion in a constant template argument: the value changes, so another specialisation of I is used.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed w()::local(0)::operator()<X>(X) const::<definition>
+changed w()
+derived-removed I<2>
+derived-removed I<2>::v
+derived-added I<1>
+derived-added I<1>::v
+derived-removed I<2>::<definition>
+derived-removed I<2>::v::<definition>
+derived-removed I<2>::v::<value>
+derived-added I<1>::<definition>
+derived-added I<1>::v::<definition>
+derived-added I<1>::v::<value>

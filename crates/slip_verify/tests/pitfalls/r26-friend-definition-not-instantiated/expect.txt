@@ -1,0 +1,24 @@
+# R26 (review of WP-158, F1; spec/digest.md §2.3 "a friend definition not
+# instantiated"): a friend function defined in class template B and
+# declared again in class template A, both instantiated for X by the
+# bases of D, and called through argument-dependent lookup. X::mf(long) is
+# renamed mg; the call in the friend's body keeps the old name and so
+# binds X::mf(int) (clang++-19: the pre-image exits 0, the wrong edit 1).
+#
+# pre: B<X> (the definition) is instantiated before A<X> (the
+# redeclaration). Kiln does not instantiate the friend's definition
+# (kiln_sema/src/templ/class.rs:2318, member_redecl_instance, returns the
+# later redeclaration, whose pattern has no body), so the wrong edit, the
+# call left, VERIFIES today. That `bad` tree is held out of this row: an
+# xfail never excuses a bad tree that verifies (spec/pitfalls.md §1), so
+# it would fail the suite. Its line, once Kiln instantiates the
+# definition, is
+#   bad: mismatch derived_changed fr(X, D *)::<definition>
+# and the same pair is pinned as equal, the limit, by the digest rules pair
+# rules/wp158/friend-two-classes-rev; add bad/ (pre with mf(long) renamed
+# and nothing else) when that pair starts to differ.
+good: verified
+# pre-2: A<X> first: Kiln instantiates the definition and the wrong edit
+# is caught on the friend's definition unit.
+good-2: verified
+bad-2: mismatch derived_changed fr(X, D *)::<definition>

@@ -1,0 +1,5 @@
+# WP-158 fix round (the review's zz_rv158/nested-generic-conv): a generic lambda in a generic lambda, the inner converted.
+# The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
+# other overload: the instantiation's unit differs.
+exact derived
+derived-changed w()::local(0)::operator()<X>(X) const::local(0)::operator()<X>(X) const::<definition>

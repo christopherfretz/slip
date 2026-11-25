@@ -535,7 +535,9 @@ pub(crate) fn canonical_decl(w: &mut Walk<'_>, e: DeclId) -> DeclId {
         let names = w.names_off();
         w.unit.local.holder = Some(e);
         let mut s = Stream::new();
+        w.dropped += 1;
         w.decl_stream(&mut s, d, e);
+        w.dropped -= 1;
         w.names_end(names);
         w.unit = saved;
         let h = s.finish(UNIT_TAG);

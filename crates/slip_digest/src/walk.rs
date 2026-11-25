@@ -321,6 +321,10 @@ pub(crate) struct Walk<'a> {
     /// a stream written and dropped (a second walk, a mark, a trace)
     /// holds nothing.
     pub(crate) hold_pending: Option<Vec<Hold>>,
+    /// Streams being written that are dropped, nested (`demand::immediates`'
+    /// second walk, `units::canonical_decl`'s candidate streams): what they
+    /// meet is no kept unit's ([`Walk::in_own_stream`]).
+    pub(crate) dropped: u32,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -427,6 +431,7 @@ impl<'a> Walk<'a> {
             held_exprs: HashSet::new(),
             held_types: HashSet::new(),
             hold_pending: None,
+            dropped: 0,
             name_values: None,
             by_value: 0,
             in_constant: 0,
@@ -577,12 +582,10 @@ impl<'a> Walk<'a> {
     /// Records that a unit's stream holds function body `b`
     /// (`demand::unheld`, WP-158): only between [`Walk::hold_begin`] and
     /// [`Walk::hold_end`] (the run's loop, around a unit that is kept and
-    /// its resolved units), not while an owner is numbered, nor inside a
-    /// key or a type digest.
+    /// its resolved units), and only in its own stream
+    /// ([`Walk::in_own_stream`]).
     pub(crate) fn hold_body(&mut self, b: slip_kiln::kiln::ast::StmtId) {
-        if !crate::local::numbering_mode(self)
-            && self.in_key == 0
-            && self.type_nesting == 0
+        if self.in_own_stream()
             && let Some(p) = self.hold_pending.as_mut()
         {
             p.push(Hold::Body(b));
@@ -592,9 +595,7 @@ impl<'a> Walk<'a> {
     /// Records that a unit's stream holds default argument or default
     /// member initialiser `x` ([`Walk::hold_body`]'s conditions).
     pub(crate) fn hold_expr(&mut self, x: slip_kiln::kiln::ast::ExprId) {
-        if !crate::local::numbering_mode(self)
-            && self.in_key == 0
-            && self.type_nesting == 0
+        if self.in_own_stream()
             && let Some(p) = self.hold_pending.as_mut()
         {
             p.push(Hold::Expr(x));
@@ -605,13 +606,26 @@ impl<'a> Walk<'a> {
     /// indeterminate, its members unwritten ([`Walk::hold_body`]'s
     /// conditions).
     pub(crate) fn hold_type(&mut self, t: DeclId) {
-        if !crate::local::numbering_mode(self)
-            && self.in_key == 0
-            && self.type_nesting == 0
+        if self.in_own_stream()
             && let Some(p) = self.hold_pending.as_mut()
         {
             p.push(Hold::Type(t));
         }
+    }
+
+    /// Whether what is written now goes into the own stream of the unit
+    /// being written, the stream that is kept: at unit level
+    /// ([`Walk::unit_level`]), not while an owner is numbered, not in a
+    /// profile walk, not in a stream whose local state is put aside
+    /// (`local::detached`), not in a stream that is dropped
+    /// ([`Walk::dropped`]). Read by `emitted::in_place` (rule 1 of the
+    /// mark) and by [`Walk::hold_body`] and its siblings (WP-158).
+    pub(crate) fn in_own_stream(&self) -> bool {
+        !crate::local::numbering_mode(self)
+            && self.unit_level()
+            && self.unit.expr.profile.is_none()
+            && !self.unit.local.detached
+            && self.dropped == 0
     }
 
     /// Whether what is written now goes straight into a unit stream: not
@@ -781,6 +795,13 @@ pub(crate) fn run_kept<R>(
     // The `default_argument` units of local functions an instantiation
     // made (`demand::local_default_arguments`, WP-158): written once the
     // queue is empty, and the queue drained again for what they demand.
+    // The second drain is a defence, not a need found: every entity such
+    // a default refers to is queued already (an implicit instantiation is
+    // a derived unit from `units::collect`, and `local_default_arguments`
+    // scans every declaration, not the queue), so today one pass is the
+    // fixpoint and dropping the drain changes no test (review of WP-158,
+    // mutation MC). It is kept so that a unit only such a default demands
+    // (a `Ref` to an on-demand unit) is written all the same.
     let mut local_defaults = false;
     loop {
         if i == w.queue.len() {
