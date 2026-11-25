@@ -529,10 +529,17 @@ fn explicit_instantiation_unkept(w: &mut Walk<'_>, d: DeclId) -> bool {
     let types = &ast.types;
     let mut written: Vec<QualType> = Vec::new();
     if let Some(q) = ast.decls.get(d).ty() {
-        written.push(q);
+        // A function's own type is not one the directive spells as a
+        // whole: its result and parameter types are. Its exception
+        // specification is the specialisation's, substituted from the
+        // pattern (`noexcept(sizeof(T) > 1)` holds an operand once `T` is
+        // `int`), and its operands belong to the `exception_spec` unit
+        // (`spec/digest.md` §2.4), so the function type is not tested.
         if let TypeView::Function(p) = types.canonical_view(q) {
             written.push(p.ret());
             written.extend_from_slice(types.params(&p));
+        } else {
+            written.push(q);
         }
     }
     let lists: Vec<ArgListId> = ast.spec_info(d).map(|(_, i)| i.args).into_iter().collect();
