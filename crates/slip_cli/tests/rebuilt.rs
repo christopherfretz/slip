@@ -698,6 +698,59 @@ fn t_cli_6_a6b_installed_copy_is_stale_under_an_entity_rule() {
     assert_ne!(ran.verdict, RunVerdict::Verified, "{}", ran.text);
 }
 
+/// A7 (R3.3), the precompiled-header observer the snippet cannot make (it
+/// refuses `-include`): a build-written `pch.h` that includes owned
+/// `lib.h`, given with `-include`, beside an ordinary observer of the same
+/// header. Declared rebuilt, both verify (the key of `old::f` is the
+/// rule's in both); undeclared, the `-include` observer reads `f` as a
+/// dependency entity and is a `mismatch` while the ordinary one verifies.
+#[test]
+fn a7_precompiled_header_observer() {
+    let pch = "#pragma once\n#include \"lib.h\"\n";
+    let other_pre = "int other() { return old::f(); }\n";
+    let other_post = "int other() { return fresh::f(); }\n";
+    let main_pre = "#include \"lib.h\"\nint main() { return old::f(); }\n";
+    let main_post = "#include \"lib.h\"\nint main() { return fresh::f(); }\n";
+    let pre = [
+        ("s/lib.h", LIB_PRE),
+        ("s/main.cpp", main_pre),
+        ("s/other.cpp", other_pre),
+        ("b/pch.h", pch),
+    ];
+    let post = [("s/lib.h", LIB_POST), ("s/main.cpp", main_post), ("s/other.cpp", other_post)];
+    let observers: &[(&str, &[&str], &str)] = &[
+        ("s/main.cpp", &[], "s"),
+        ("s/other.cpp", &["-I{base}/s", "-include", "{base}/b/pch.h"], "b"),
+    ];
+
+    let t = Tree::new("a7-pch", &pre, &post);
+    let ran = run(&t, old_to_fresh(), t.files(&[], &["b/pch.h"]), &Form::TwoRoots, observers);
+    assert_eq!(ran.kinds[0].0, VerdictKind::Verified, "{:?}\n{}", ran.kinds, ran.text);
+    assert_eq!(ran.kinds[1].0, VerdictKind::Verified, "{:?}\n{}", ran.kinds, ran.text);
+    assert_eq!(ran.verdict, RunVerdict::Verified, "{}", ran.text);
+    let pchp = t.path("b/pch.h").display().to_string();
+    assert_eq!(
+        lines_with(&ran.text, "rebuilt "),
+        [format!("rebuilt {pchp} relied on by 1 observer(s)")],
+        "{}",
+        ran.text
+    );
+    drop(t);
+
+    let t = Tree::new("a7-pch-undeclared", &pre, &post);
+    let ran = run(&t, old_to_fresh(), t.files(&[], &[]), &Form::TwoRoots, observers);
+    assert_eq!(ran.kinds[0].0, VerdictKind::Verified, "{:?}\n{}", ran.kinds, ran.text);
+    assert_eq!(ran.kinds[1].0, VerdictKind::Mismatch, "{:?}\n{}", ran.kinds, ran.text);
+    // The cut is under the command's directory: the hint names `pch.h`.
+    let pchp = t.path("b/pch.h").display().to_string();
+    assert_eq!(lines_with(&ran.text, "hint:").len(), 1, "{}", ran.text);
+    assert!(
+        lines_with(&ran.text, "hint:")[0].starts_with(&format!("hint: {pchp} ")),
+        "{}",
+        ran.text
+    );
+}
+
 /// T-116 (pending): a definition written in a rebuilt file counts as
 /// defined in owned code (`docs/wp/WP-116.md`, "Out of scope").
 #[test]
