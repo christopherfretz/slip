@@ -1777,3 +1777,96 @@ fn s7_2_relative_to_in_another_case() {
     let text = fs::read_to_string(&patch).unwrap();
     assert!(text.starts_with("--- a.cc\n+++ a.cc\n"), "{text}");
 }
+
+/// §7.3 step 2 (WP-161): a journal cut short before its publish returned
+/// (a prefix of a whole one, bytes of no format) is removed by `apply
+/// --recover`, which says so and exits 0 with the tree untouched; until
+/// then, `--write` refuses the store as it refuses any journal.
+#[test]
+fn s7_3_recover_removes_an_interrupted_journal() {
+    let (fx, set, overlay_id) = agreed("interrupted", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay_id), State::Verified));
+    let overlay = fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap();
+    let overlay = Overlay::from_bytes(&overlay).unwrap();
+    let whole = journal_of(&fx, overlay_id, &overlay).to_bytes();
+    for cut in [whole[..whole.len() / 2].to_vec(), Vec::new(), b"anything".to_vec()] {
+        fx.put_journal(&cut);
+        let out = apply_write(&fx, &r, &[]);
+        out.expect(3);
+        assert!(out.stderr.contains("unfinished write of the working tree"), "{out:#?}");
+        let out = fx.slip(&["apply", "--recover"]);
+        out.expect(0);
+        assert_eq!(
+            out.lines(),
+            vec![
+                "recovered: the write was interrupted before any file was touched; the journal \
+                 is removed"
+            ],
+            "{out:#?}"
+        );
+        assert!(!fx.store().journal_path().exists());
+        assert!(fx.tree_is_pre());
+    }
+    // The store is usable again.
+    apply_write(&fx, &r, &[]).expect(0);
+    assert!(fx.tree_is_post());
+}
+
+/// `spec/exec.md` §2.1 "Which reads are checked" (WP-161): a plan stored
+/// under another plan's id is refused by every command that reads a plan
+/// by id, as a blob is (`Input`, "the file's content id is not its
+/// name").
+#[test]
+fn s2_1_a_plan_under_another_id_is_refused() {
+    let (fx, set, _) = agreed("plan-id", Fx::rename);
+    let store = fx.store();
+    let (plan, id) = fx.plan();
+    let mut other = plan.clone();
+    other.tool_slip = "another".into();
+    let other_id = store.publish_plan(&other.to_bytes()).unwrap();
+    fs::write(store.plan_path(&other_id), plan.to_bytes()).unwrap();
+    let (p, set) = (other_id.to_string(), set.to_string());
+    let out_file = fx.root.join("decl.out");
+    let from = fx.root.join("from.txt");
+    fs::write(&from, "").unwrap();
+    let (out_s, from_s) = (out_file.to_str().unwrap(), from.to_str().unwrap());
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["parse", "--plan", &p],
+        vec!["verify", "--plan", &p],
+        vec!["declare", "--plan", &p, "--from", from_s, "--out", out_s],
+        vec!["units", "--plan", &p],
+        vec!["map", "--plan", &p, "--from", "f", "--to", "g", "--owned", "src"],
+        vec!["rename", "--plan", &p, "--from", "f", "--to", "g", "--owned", "src"],
+        vec!["reduce", "--plan", &p, "--round", "1"],
+        vec!["check", "--plan", &p, "--round", "1", "--edits", &set],
+    ];
+    for args in commands {
+        let out = fx.slip(&args);
+        out.expect(3);
+        assert!(out.stderr.contains("the file's content id is not its name"), "{args:?}: {out:#?}");
+        assert!(out.stderr.contains(&p), "{args:?}: {out:#?}");
+    }
+    // The plan under its own id is read.
+    fx.reduce(id, ROUND, &[]).expect(0);
+}
+
+/// The same for declared changes: `check --declared <id>` refuses
+/// declared changes stored under another's id.
+#[test]
+fn s2_1_declared_changes_under_another_id_are_refused() {
+    let (fx, set, _) = agreed("declared-id", Fx::rename);
+    let store = fx.store();
+    let plan = store.find_plan("").unwrap()[0].to_string();
+    let none = Declared::none();
+    let none_id = store.publish_declared(&none.to_bytes()).unwrap();
+    let other = Declared::new(vec![], vec![Digest([9; 32])], vec![], vec![]).unwrap();
+    let other_id = store.publish_declared(&other.to_bytes()).unwrap();
+    assert_ne!(none_id, other_id);
+    fs::write(store.declared_path(&other_id), none.to_bytes()).unwrap();
+    let (set, d) = (set.to_string(), other_id.to_string());
+    let out =
+        fx.slip(&["check", "--plan", &plan, "--round", "1", "--edits", &set, "--declared", &d]);
+    out.expect(3);
+    assert!(out.stderr.contains("the file's content id is not its name"), "{out:#?}");
+    assert!(out.stderr.contains(&d), "{out:#?}");
+}

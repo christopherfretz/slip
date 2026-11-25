@@ -575,7 +575,17 @@ fn load_declared(store: &Store, x: &OsString) -> Result<(Digest, Declared), Comm
                 store.read_declared(id).map_err(|e| store_error(store, &e))?.ok_or_else(|| {
                     CommandError::Input(format!("{}: not in the store", path.display()))
                 })?;
-            decode(&bytes).map_err(|e| CommandError::Input(format!("{}: {e}", path.display())))
+            let d = decode(&bytes)
+                .map_err(|e| CommandError::Input(format!("{}: {e}", path.display())))?;
+            // Declared changes stored under another's id (`spec/exec.md`
+            // §2.1 "Which reads are checked").
+            if slip_model::formats::content_id(&bytes).ok() != Some(*id) {
+                return Err(CommandError::Input(format!(
+                    "{}: the file's content id is not its name",
+                    path.display()
+                )));
+            }
+            Ok(d)
         },
         &|bytes| {
             let d = decode(bytes)?;

@@ -494,8 +494,33 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
         let _ = writeln!(out, "recovered: no unfinished write");
         return Ok(status::OK);
     };
-    let j = slip_apply::journal::Journal::from_bytes(&bytes)
+    let read = slip_apply::journal::Journal::read(&bytes)
         .map_err(|m| Failure::Input(format!("{}: {m}", store.journal_path().display())))?;
+    let j = match read {
+        slip_apply::journal::Read::Whole(j) => j,
+        slip_apply::journal::Read::Interrupted(_) => {
+            // Cut short before its publish returned: no file was touched
+            // (§7.3 step 2). Read again by `discard_interrupted`, which
+            // removes it only if it is still interrupted.
+            match slip_apply::discard_interrupted(&journal) {
+                Ok(true) => {
+                    let _ = writeln!(
+                        out,
+                        "recovered: the write was interrupted before any file was touched; the \
+                         journal is removed"
+                    );
+                    return Ok(status::OK);
+                }
+                Ok(false) => {
+                    return Err(Failure::Input(format!(
+                        "{}: the journal changed while it was read; run --recover again",
+                        store.journal_path().display()
+                    )));
+                }
+                Err(e) => return Err(failure(write_error(&store, e))),
+            }
+        }
+    };
     let ownership = ownership_of_journal(&store, &j).map_err(|e| match e {
         Ok(m) => Failure::Input(m),
         Err(CommandError::Input(m)) => Failure::Input(format!(
@@ -506,6 +531,15 @@ fn recover(dir: &Path, out: &mut dyn Write, err: &mut dyn Write) -> commands::Re
     let recovered =
         slip_apply::recover(&ownership, &slip_apply::fs::DiskTree, &StoreBlobs(&store), &journal);
     let r = match recovered {
+        Ok(Some(r)) if r.interrupted => {
+            // Not reached: the journal read above was whole.
+            let _ = writeln!(
+                out,
+                "recovered: the write was interrupted before any file was touched; the journal \
+                 is removed"
+            );
+            return Ok(status::OK);
+        }
         Ok(None) => {
             let _ = writeln!(out, "recovered: no unfinished write");
             return Ok(status::OK);

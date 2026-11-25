@@ -124,53 +124,22 @@ impl std::fmt::Debug for StoreJournal<'_> {
     }
 }
 
-/// The sequence of a process's temporary journals.
-static JOURNAL_SEQ: AtomicU64 = AtomicU64::new(0);
-
 impl slip_apply::JournalStore for StoreJournal<'_> {
-    /// Atomic, durable and exclusive (`spec/landed/edits/WP-063.md` §6):
-    /// a temporary file in this process's scratch directory, named
-    /// `journal.<t>.<n>.tmp` with [`slip_exec::store::process_token`], written and
-    /// synced, hard-linked to the journal's name (which fails with
-    /// `AlreadyExists` if the name exists), the temporary removed and the
-    /// store's directory synced.
+    /// Atomic for its reader (`spec/edits.md` §7.3 step 2: a journal cut
+    /// short is told from a whole one), durable and exclusive: created in
+    /// place by [`Store::publish_journal`], which fails with
+    /// `AlreadyExists` if a journal exists.
     fn publish(&self, bytes: &[u8]) -> io::Result<()> {
-        let scratch = self.0.scratch_dir().map_err(to_io)?;
-        let n = JOURNAL_SEQ.fetch_add(1, Ordering::SeqCst);
-        // Never made again by a later process with this pid (whose scratch
-        // directory has the same name) while the journal, the temporary's
-        // old file, is alive (`spec/harness.md` §11).
-        let token = slip_exec::store::process_token();
-        let tmp = scratch.join(format!("journal.{token}.{n}.tmp"));
-        let written = (|| {
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-            f.write_all(bytes)?;
-            f.sync_all()?;
-            fs::hard_link(&tmp, self.0.journal_path())
-        })();
-        // The temporary is in the scratch directory, which the store
-        // removes when it is dropped: a failure to remove it here leaves
-        // nothing behind, and must not report a journal that is published
-        // as not published.
-        let _ = fs::remove_file(&tmp);
-        written?;
-        sync_dir(self.0.root())
+        self.0.publish_journal(bytes).map_err(to_io)
     }
 
     fn read(&self) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.0.journal_path()) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        }
+        self.0.read_journal().map_err(to_io)
     }
 
     /// Removes the journal and syncs the store's directory.
     fn remove(&self) -> io::Result<()> {
-        match fs::remove_file(self.0.journal_path()) {
-            Ok(()) => sync_dir(self.0.root()),
-            Err(e) => Err(e),
-        }
+        self.0.remove_journal().map_err(to_io)
     }
 }
 
@@ -185,15 +154,15 @@ impl slip_apply::Files for DiskFiles {
     }
 }
 
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    fs::File::open(dir)?.sync_all()
+}
+
 fn to_io(e: StoreError) -> io::Error {
     match e {
         StoreError::Io { error, .. } => error,
         e => io::Error::other(e.to_string()),
     }
-}
-
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    fs::File::open(dir)?.sync_all()
 }
 
 /// The request a round's map shards name (`spec/edits.md` §10.2), read
@@ -371,34 +340,26 @@ mod tests {
     use slip_exec::store::Access;
     use std::os::unix::fs::MetadataExt as _;
 
-    // The journal: a temporary in the scratch directory, linked to
-    // `write.journal`, unlinked. Beside the names an earlier process with
-    // this pid made there (`journal.<n>.tmp`), the publish succeeds and
-    // leaves them alone; the journal is then its file's one name, and the
-    // second publish is refused while it exists. Kills "a temporary name
-    // reused".
+    // The journal is created in place (spec/exec.md §2.1 "The journal"):
+    // no temporary in the scratch directory or `tmp/`, one name, the
+    // second publish refused while it exists, and the removal of none is
+    // `NotFound`.
     #[test]
-    fn the_journal_temporary_is_never_made_again() {
+    fn the_journal_is_created_in_place() {
         let d = std::env::temp_dir().join(format!("slip-cli-journal-unit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let store = Store::open(&d, Access::Exclusive).unwrap();
-        let scratch = store.scratch_dir().unwrap();
-        let next = JOURNAL_SEQ.load(Ordering::SeqCst);
-        for n in next..next + 8 {
-            fs::write(scratch.join(format!("journal.{n}.tmp")), "earlier\n").unwrap();
-        }
         let j = StoreJournal(&store);
+        assert_eq!(j.read().unwrap(), None);
         j.publish(b"journal one").unwrap();
         assert_eq!(j.read().unwrap().as_deref(), Some(&b"journal one"[..]));
         assert_eq!(fs::metadata(store.journal_path()).unwrap().nlink(), 1);
+        assert_eq!(fs::read_dir(d.join("tmp")).unwrap().count(), 0, "no temporary");
         let err = j.publish(b"journal two").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(j.read().unwrap().as_deref(), Some(&b"journal one"[..]));
-        for n in next..next + 8 {
-            let p = scratch.join(format!("journal.{n}.tmp"));
-            assert_eq!(fs::read_to_string(&p).unwrap(), "earlier\n");
-        }
         j.remove().unwrap();
+        assert_eq!(j.remove().unwrap_err().kind(), io::ErrorKind::NotFound);
         drop(store);
         let _ = fs::remove_dir_all(&d);
     }
