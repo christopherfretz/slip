@@ -1645,6 +1645,13 @@ another name of its old file is alive (`spec/exec.md` §2.1 "`tmp/`
 names"); which of its reads are checked against a digest is
 `spec/exec.md` §2.1 "Which reads are checked".
 
+On the workspace mount `unique-tmp-link` is not clean (WP-159): after a
+link and the unlink of its source, the new name can read as absent for a
+while, never as other bytes. The harness's trees do not depend on it;
+what it means for the store's lock and journal is
+`spec/landed/harness/WP-159.md` "A finding: a linked name read as
+absent", an open question.
+
 ## Tests
 
 - `xtask/tests/lint.rs` — §3: for each lint, a fixture tree that passes and
