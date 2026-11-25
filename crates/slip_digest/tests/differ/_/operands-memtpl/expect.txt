@@ -1,2 +1,6 @@
+# WP-156 (B3): the member template's partly substituted signature is in
+# its key (one-sided on each side); the class's definition lists the key.
 exact derived
-changed __placeholder__
+derived-changed i_M<n::S>::<definition>
+derived-added template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)
+derived-removed template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)

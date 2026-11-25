@@ -12,5 +12,5 @@ namespace n { struct S : Base {
   static int s();
 #endif
 }; }
-struct W { template <class T> explicit(sizeof(T::s()) != 1) W(T) {} };
+struct W { template <class T> explicit(sizeof(T::s()) != 1) W(T); };
 W w{n::S()};

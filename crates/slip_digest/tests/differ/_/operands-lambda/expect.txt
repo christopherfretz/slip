@@ -1,0 +1,8 @@
+# WP-156 (S7): a lambda in an operand, in a variable's, an alias's and a
+# function's operand unit.
+exact derived
+removed lib::make(lib::X)
+derived-changed h()::<operands>
+derived-changed l::<operands>
+derived-changed tag::<operands>
+derived-added make<lib::X>(lib::X)

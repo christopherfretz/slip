@@ -1,1 +1,2 @@
 indeterminate A
+indeterminate A::<operands>

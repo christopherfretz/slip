@@ -1,0 +1,5 @@
+# WP-156 (S7): a nested operand, its own entry.
+exact derived
+removed lib::make(lib::X)
+derived-changed n::<operands>
+derived-added make<lib::X>(lib::X)

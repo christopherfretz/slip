@@ -69,6 +69,8 @@ pub(crate) mod key_kind {
     pub(crate) const TEMPLATE_PARAM_OBJECT: u32 = 31;
     pub(crate) const USING_SHADOW: u32 = 32;
     pub(crate) const UNRESOLVED_IF_EXISTS: u32 = 33;
+    // 34: reserved.
+    pub(crate) const OPERANDS: u32 = 35;
 }
 
 /// §3.2 `Name`.
@@ -88,6 +90,8 @@ pub(crate) mod name {
     pub(crate) const PROPERTY: u32 = 13;
     pub(crate) const ORDER: u32 = 14;
     pub(crate) const PARAMETER: u32 = 15;
+    // 16: reserved.
+    pub(crate) const OPERANDS: u32 = 17;
 }
 
 /// §11.1 the resolved properties.

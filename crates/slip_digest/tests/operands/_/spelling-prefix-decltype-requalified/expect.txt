@@ -1,2 +1,2 @@
-operands-a g
+operands-a template <class> int g(type-parameter-0-0)
 operands-a h()

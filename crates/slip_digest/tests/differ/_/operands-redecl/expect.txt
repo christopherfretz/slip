@@ -1,2 +1,8 @@
+# WP-156 (B2): every declaration of the entity is read, the definition
+# that has no operand included: f, S::m, S::sv.
 exact derived
-changed __placeholder__
+removed lib::make(lib::X)
+derived-changed S::m()::<operands>
+derived-changed S::sv::<operands>
+derived-changed f()::<operands>
+derived-added make<lib::X>(lib::X)

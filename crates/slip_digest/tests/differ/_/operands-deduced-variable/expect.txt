@@ -1,0 +1,6 @@
+# WP-156 (S3): `v` and `v2` are declared with a placeholder: no operand
+# unit; `w`'s operand moves.
+exact derived
+removed lib::make(lib::X)
+derived-changed w::<operands>
+derived-added make<lib::X>(lib::X)

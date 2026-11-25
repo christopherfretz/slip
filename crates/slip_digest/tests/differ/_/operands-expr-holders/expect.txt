@@ -1,0 +1,19 @@
+# WP-156 (B4): the holders of a written type in an expression.
+exact derived
+removed lib::make(lib::X)
+derived-changed Fr2::<friend arr<char, 4>>::<operands>
+derived-changed e_alignof::<operands>
+derived-changed e_carr()::<operands>
+derived-changed e_compound::<operands>
+derived-changed e_fcast::<operands>
+derived-changed e_member(C)::<operands>
+derived-changed e_new::<operands>
+derived-changed e_qual::<operands>
+derived-changed e_qual_t::<operands>
+derived-changed e_scast::<operands>
+derived-changed e_sizeof::<operands>
+derived-changed e_trait::<operands>
+derived-changed e_typeid::<operands>
+derived-changed e_value::<operands>
+derived-changed wr::<operands>
+derived-added make<lib::X>(lib::X)

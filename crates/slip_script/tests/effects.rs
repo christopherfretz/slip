@@ -2393,6 +2393,7 @@ fn s7_6_render_names() {
         (Name::Property(7), "property(7)".to_owned()),
         (Name::Order, "order".to_owned()),
         (Name::Parameter(0), "parameter(0)".to_owned()),
+        (Name::Operands, "operands".to_owned()),
     ];
     for (name, written) in forms {
         let mut out = RunOutput::empty(Digest([0; 32]));

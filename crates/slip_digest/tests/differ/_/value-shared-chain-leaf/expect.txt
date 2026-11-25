@@ -1,3 +1,6 @@
+# WP-156: `std::meta::info` is `decltype(^^int)`; the reflection is
+# unsupported, so the alias's operand unit is indeterminate on both sides.
+indeterminate std::meta::info::<operands>
 changed a0
 changed x
 changed p0

@@ -1,0 +1,8 @@
+# WP-156 (B4): holders in instantiated declarations.
+exact derived
+derived-changed j_S<n::S>::sm::<operands>
+derived-changed j_S<n::S>::tm::<operands>
+derived-changed j_loc<n::S>()::<definition>::<operands>
+derived-changed j_nns<n::S>(n::S)::<operands>
+derived-changed j_sig<n::S>(n::S)::<operands>
+derived-changed j_vt<n::S>::<operands>

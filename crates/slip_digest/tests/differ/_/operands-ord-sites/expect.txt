@@ -1,2 +1,43 @@
+# WP-156: the review's pair `ord-sites` (lib::make against ::make<lib::X>). Every
+# row the review found equal although the binding moved is a finding of
+# the operand unit, but the array bounds (o_bound, o_param, o_local2: the
+# limit of spec/digest.md §2.3, B1).
 exact derived
-changed __placeholder__
+changed E::E(int)
+changed F::bf
+changed en
+changed o_C
+changed o_align
+changed o_attr
+changed o_case(int)
+changed o_dflt(int)
+changed o_ndflt
+added <static_assert>
+added o_req
+removed <static_assert>
+removed lib::make(lib::X)
+removed o_req
+derived-changed D::<operands>
+derived-changed F2::fld::<operands>
+derived-changed arr<int, 4>::<operands>
+derived-changed fr_f()::<operands>
+derived-changed o_alias::<operands>
+derived-changed o_cast::<operands>
+derived-changed o_decltype::<operands>
+derived-changed o_es<4>::<operands>
+derived-changed o_fp::<operands>
+derived-changed o_ft::<operands>
+derived-changed o_lambda::<operands>
+derived-changed o_local()::<operands>
+derived-changed o_local3()::<operands>
+derived-changed o_noexcept()::<operands>
+derived-changed o_param2(int)::<operands>
+derived-changed o_sizeof_type::<operands>
+derived-changed o_targ::<operands>
+derived-changed o_tdflt::<operands>
+derived-changed o_trailing()::<operands>
+derived-changed o_typedef::<operands>
+derived-changed o_typeof::<operands>
+derived-changed o_vt::<operands>
+derived-changed vt<104>::<operands>
+derived-added make<lib::X>(lib::X)

@@ -2,3 +2,4 @@
 # (digest-kinds §11.9); nothing else differs.
 exact derived
 derived-changed S<N::A>::<definition>
+derived-changed S<N::A>::<definition>::<operands>

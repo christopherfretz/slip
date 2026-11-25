@@ -1,2 +1,27 @@
+# WP-156: the review's pair `inst-sites` (n::S::s against Base::s), in
+# instantiated declarations. Limits (spec/digest.md §2.3): the array
+# bounds (i_par, i_Ca, i_body2: B1), the candidate that lost (i_lost: B7.1),
+# `explicit` of the constructor template's specialisation (i_W, which is
+# indeterminate on both sides: kiln/pattern-mem-initializers), and
+# the alias pattern at i_R<n::S> (WP-153's substitution units: i_v's site-8
+# operand is `n::S` on both sides).
 exact derived
-changed __placeholder__
+indeterminate template <class> i_W::i_W(type-parameter-0-0)
+derived-changed i_Cb<n::S>::bf
+derived-changed i_Ce<n::S>::i_Ce(int)
+derived-changed i_Cf<n::S>::f::<operands>
+derived-changed i_Cg<n::S>::g::<operands>
+derived-changed i_Cm<n::S>::mf()::<operands>
+derived-changed i_Cn<n::S>::ne()::<exception_spec>::<operands>
+derived-changed i_Ct<n::S>::type::<operands>
+derived-changed i_Cu<n::S>::al::<operands>
+derived-changed i_D<n::S>::<definition>::<operands>
+derived-changed i_M<n::S>::<definition>
+derived-changed i_body3<n::S>()::<definition>::<operands>
+derived-changed i_body<n::S>()::<definition>::<operands>
+derived-changed i_ne<n::S>(n::S)::<exception_spec>::<operands>
+derived-changed i_ret<n::S>(n::S)::<operands>
+derived-changed i_vt<n::S>::<operands>
+derived-changed template <class> void i_M2<n::S>::k(type-parameter-0-0, int)::<operands>
+derived-added template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)
+derived-removed template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)

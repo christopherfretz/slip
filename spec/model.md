@@ -659,6 +659,12 @@ group is `class`, `file`, `count`, `indeterminate` (`uv`), `digest`,
 `units`. `tu_digest` hashes the `list<GroupSum>`: the count, then per group
 `uv(class)`, `bytes(file)`, `uv(count)`, `uv(indeterminate)`, `digest`.
 `scheme` is `slip_model::digests::SCHEME`, 3 (WP-155; `digest.md` §11).
+A unit's key is `digest.md` §3's, with the kinds and name forms of
+`digest-kinds.md` §3.1 and §3.2: a reader decodes a key kind or name
+form by its number and refuses one the table does not list, a
+`reserved` row included (`KeyKind` 34, `Name` 16). WP-156 added
+`KeyKind` 35 and `Name` 17 (`operands`, the operand unit) under the
+same `scheme` (its question is the handback's, `docs/wp/WP-156.md`).
 
 **Invariants.** The section's payload starts at offset `P` (the `scheme`
 field).
@@ -1031,7 +1037,9 @@ none; detail: `none`; names: not asked for.
 walk's count of indeterminate keys by cause, `digest.indeterminate.<cause>`
 (`error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`,
 `visibility_by_use`, and while the walk has areas not yet written `pending` and
-`digest.indeterminate.pending.<area>`), each present only when not 0; and
+`digest.indeterminate.pending.<area>`), each present only when not 0;
+the operand units' `digest.operands.<name>` (WP-156, `digest.md` §12),
+each present only when not 0; and
 for the causes that carry a text (`unsupported`, `unaccounted`):
 
 ```

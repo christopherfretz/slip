@@ -1,2 +1,12 @@
+# WP-156: the review's pair `exprtargs`: expression template arguments in
+# a variable template-id, a function template-id, a concept-id and an
+# explicit specialisation's argument list (B4).
 exact derived
-changed __placeholder__
+changed o_c
+removed lib::make(lib::X)
+derived-changed o_c::<operands>
+derived-changed o_ct::<operands>
+derived-changed o_es<4>::<operands>
+derived-changed o_ft::<operands>
+derived-changed o_vt::<operands>
+derived-added make<lib::X>(lib::X)

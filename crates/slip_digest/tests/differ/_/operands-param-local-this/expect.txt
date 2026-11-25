@@ -1,0 +1,6 @@
+# WP-156 (S6): operands that name a parameter, a local and `this`.
+exact derived
+removed lib::make(lib::X)
+derived-changed C::g()::<operands>
+derived-changed f(lib::X)::<operands>
+derived-added make<lib::X>(lib::X)

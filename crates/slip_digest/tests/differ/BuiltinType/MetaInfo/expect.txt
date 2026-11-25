@@ -1,1 +1,4 @@
+# WP-156: `info`'s operand `^^int` is a reflection, unsupported: its
+# operand unit is indeterminate on both sides.
+indeterminate info::<operands>
 changed v

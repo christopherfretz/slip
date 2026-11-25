@@ -1,2 +1,3 @@
 indeterminate M
 indeterminate M::<friend It<type-parameter-0-0, 4UL>>
+indeterminate M::<friend It<type-parameter-0-0, 4UL>>::<operands>

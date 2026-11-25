@@ -36,7 +36,11 @@ make them fail (§14).
    a written form and that instantiation, mangling or code generation
    reads is therefore in the digest, unless writing it would make one of
    the edits excluded above a difference; the effect of each such field is
-   then written by the rows `digest-kinds.md` names beside it.
+   then written by the rows `digest-kinds.md` names beside it. What an
+   operand inside a written type binds (`decltype(make(x))`, an
+   expression template argument) is not spelling either, though the
+   type or value that holds it is all the unit writes: it is written in
+   the unit's operand unit (§2.4, WP-156).
 3. **Nothing local to a parse.** No arena index, interning order, address or
    hash-map order reaches the digest. Entities are named by keys (§3) or by
    their position inside a unit (§4.3).
@@ -398,10 +402,17 @@ name, each pinned by an equal pair whose comment names it
 | Limit | Why | Asked of Kiln |
 |---|---|---|
 | an array bound (`int buf[sizeof(make(x))]`) | Kiln keeps a constant bound as a value only, for every declarator; the site (3) is reserved | the bound as written (KR9 §5.11) |
-| an adjusted parameter of an instantiated function (`decltype(T::s()) q[2]` is `int *`) | the parameter has no written type after substitution | the written type (asked) |
 | a pack index after substitution (`T...[sizeof(make(x)) - 4]`) | absent after substitution; site 5 is reserved | (asked, low) |
 | `explicit(e)` of a function template specialisation | the stored value only; the pattern's own stream walks the written operand | |
 | a template candidate that lost to a non-template | no declaration in the parse: Kiln did not instantiate it (the compatibility level of `docs/wp/WP-155.md`) | whether it deduces there |
+
+An adjusted parameter of an instantiated function (`decltype(T::s())
+q[2]` is `int *`), named a limit by `docs/wp/WP-153.md` (B7.2), is
+closed at the pin: `ParamData::original_ty` keeps the type before
+adjustment after substitution too, and the walk reads it
+(`tests/differ/_/operands-adjusted-parameter`). So is the written type
+of a compound literal of array type (`compound_literal_written`,
+`digest-kinds.md`; `tests/differ/_/operands-expr-holders`).
 
 An operand that writes no reference (`noexcept(true)`, `array<char, 4>`)
 and an instantiation-dependent one (a pattern's own spellings hold it,
@@ -1957,6 +1968,11 @@ comparison of unit sets (`verify.md`).
 | `digest.bytes` | bytes of unit, type and key streams hashed |
 | `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, `visibility_by_use`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |
+| `digest.operands.units` | operand units (§2.4, WP-156). Present only when not 0, as each `digest.operands` counter |
+| `digest.operands.site.<n>` | written operands of site `n` (1, 2, 4, 6, 8; §2.4), nested ones included |
+| `digest.operands.unreferenced` | operands of sites 1, 2, 4 and 6 not written because their walk wrote no reference (§2.4 "What is written") |
+| `digest.operands.dependent` | instantiation-dependent operands, not written |
+| `digest.operands.deduced` | variables declared with a placeholder, whose type is not read (§2.4) |
 | `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
 
 These three count keys, each once, under the first cause the walk met
@@ -2039,6 +2055,14 @@ true by mechanism, not by review alone.
    (`demand::tests::unheld_reads_what_kiln_instantiated`) shows that the
    count reads Kiln's facts: with no unit written, it counts every
    instantiated body and default argument of the four shapes of WP-158.
+
+8. **Operand sites** (WP-156). The operand sites are a class of their
+   own (`digest-kinds.md` §11.11), listed by name: what a written type
+   holds as an expression. Each holder of §2.4 and each site is a
+   pair test of `crates/slip_digest/tests/differ/_/operands-*` (the name
+   moves, the operand unit differs) and a mutation of the package's
+   handback (the holder skipped, the test fails); a holder that a new
+   Kiln type adds is a row of §11.11 before the walk reads it.
 
 ## 14. What the tests must show
 

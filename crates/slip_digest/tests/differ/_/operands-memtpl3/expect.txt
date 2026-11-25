@@ -1,2 +1,6 @@
+# WP-156 (B3): as operands-memtpl, with a non-template overload the use
+# binds.
 exact derived
-changed __placeholder__
+derived-changed i_M<n::S>::<definition>
+derived-added template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)
+derived-removed template <class> decltype(S::s() , u) i_M<n::S>::g(type-parameter-0-0)

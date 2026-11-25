@@ -1,0 +1,4 @@
+# WP-156 (ruling 4's class): one of two operands replaced by its type:
+# the operand unit differs (its trace shows which operand).
+exact derived
+derived-changed f(int, int)::<operands>

@@ -1,0 +1,4 @@
+# WP-156: B7 item 2 is closed at the pin: the adjusted parameter's type
+# before adjustment is read.
+exact derived
+derived-changed p<n::S>(n::S, int *)::<operands>
