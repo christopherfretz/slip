@@ -1221,3 +1221,82 @@ fn s8_4_two_directories_concurrently() {
     assert_eq!(std::env::current_dir().unwrap(), before_cwd, "process current_dir must not change");
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// WP-148 item 3 (Kiln WP-2320): relative cost of `ParseOptions::written`
+// (`FrontEndOptions::written_refs` + `-fkiln-decl-extents`) vs default parse
+// on three large C++ inputs in the repository (debug build, relative ratios).
+#[test]
+#[ignore = "a measure: --ignored --nocapture"]
+fn measure_written_refs_cost() {
+    let repo = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+    let res_inc = repo.join("resource/include");
+    let res_inc_s = res_inc.to_str().unwrap().to_owned();
+    let cases: [(&str, PathBuf, Vec<String>); 3] = [
+        (
+            "resource/examples/swap_arguments.cpp",
+            repo.join("resource/examples"),
+            vec![
+                "c++".into(),
+                "-std=c++26".into(),
+                "-I".into(),
+                res_inc_s,
+                "swap_arguments.cpp".into(),
+            ],
+        ),
+        (
+            "kiln/tests/conformance/ext.gnu.builtins/overflow-constexpr.cpp",
+            repo.join("kiln/tests/conformance/ext.gnu.builtins"),
+            vec!["c++".into(), "-std=c++26".into(), "overflow-constexpr.cpp".into()],
+        ),
+        (
+            "crates/slip_digest/tests/equal/_/name-value-default-reach-large/a.cpp",
+            repo.join("crates/slip_digest/tests/equal/_/name-value-default-reach-large"),
+            vec!["c++".into(), "-std=c++20".into(), "a.cpp".into()],
+        ),
+    ];
+    for (label, dir, argv) in &cases {
+        let dir = std::fs::canonicalize(dir).unwrap();
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let obs = observer(&dir, &argv_refs);
+        let mut with_opt = ParseOptions::default();
+        with_opt.written = true;
+        // One warm-up each, then 3 alternating pairs.
+        let (s0, _) =
+            parse_observer_with(&obs, Phase::Map, 0, ParseOptions::default(), |_| ()).unwrap();
+        assert_eq!(s0.outcome.status, Status::Ok, "{label}: {:?}", s0.outcome);
+        let (s1, _) = parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
+        assert_eq!(s1.outcome.status, Status::Ok, "{label} (written): {:?}", s1.outcome);
+        assert_eq!(s0, s1, "{label}: shard must not depend on ParseOptions::written");
+        let mut without_ns = Vec::new();
+        let mut with_ns = Vec::new();
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            parse_observer_with(&obs, Phase::Map, 0, ParseOptions::default(), |_| ()).unwrap();
+            without_ns.push(t0.elapsed().as_nanos());
+            let t1 = std::time::Instant::now();
+            parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
+            with_ns.push(t1.elapsed().as_nanos());
+        }
+        without_ns.sort_unstable();
+        with_ns.sort_unstable();
+        let med_off = without_ns[1] as f64;
+        let med_on = with_ns[1] as f64;
+        let ratio = med_on / med_off;
+        let pct = (ratio - 1.0) * 100.0;
+        let tokens = s0
+            .counters
+            .iter()
+            .find(|c| c.name == "pp.tokens")
+            .map_or(0, |c| c.value);
+        let files = s0
+            .counters
+            .iter()
+            .find(|c| c.name == "inputs.files")
+            .map_or(0, |c| c.value);
+        println!(
+            "MEASURE {label}: files={files} tokens={tokens} ratio={ratio:.3}x ({pct:+.1}%) [raw medians: off={:.1}ms on={:.1}ms]",
+            med_off / 1e6,
+            med_on / 1e6,
+        );
+    }
+}

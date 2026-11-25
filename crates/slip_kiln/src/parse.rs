@@ -868,8 +868,13 @@ fn collect_inputs(
         if respelled {
             respelled_paths.insert(real.clone());
         }
-        // A `__has_include` hit is a buffer; an `#embed` resource is not.
-        if found[..buffers_end].iter().any(|(p, ..)| *p == real) {
+        // A `__has_include` hit is a buffer; an `#embed` resource is not,
+        // unless the same file was also `#include`d in this unit: if so,
+        // verify that the consulted bytes match the buffer Kiln read.
+        if let Some((_, _, _, Some(buf))) = found[..buffers_end].iter().find(|(p, ..)| *p == real) {
+            if let Some(bytes) = sm.original_bytes(*buf) {
+                verify_consulted_content(&real, &bytes, c.content)?;
+            }
             continue;
         }
         let (size, content) = match overlaid_bytes(overlay, overlaid_real, &real)? {
