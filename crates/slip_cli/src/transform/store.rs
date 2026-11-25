@@ -6,11 +6,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use slip_exec::store::{Object, Store, StoreError};
 use slip_model::transform::Transform;
-use slip_model::{Digest, Phase, Plan, RunRecord, Shard};
+use slip_model::{Digest, Observer, Phase, Plan, RunRecord, Shard};
 
 use super::{CommandError, read_checked, store_error};
 
@@ -278,6 +279,78 @@ pub fn selected_of_round(
     selected.sort_unstable();
     selected.dedup();
     Ok(selected)
+}
+
+/// `spec/edits.md` §8.2 (WP-076 decision 2, WP-157): the observer's map
+/// shard of the round, which every observer the round's map phase
+/// selected has, `ok` or not. None, or bytes that are not its shard
+/// (`verify_cmd::read_map_shard`), means that the phase did not finish
+/// for it (an interrupted `map`: its job cancelled or never run); it is
+/// not an unparsed observer, and the error is an input error naming its
+/// main file, whatever `--allow-unparsed` says. `check` and `reduce` both
+/// refuse the round with it.
+pub(crate) fn map_shard_of_round(
+    store: &Store,
+    plan_id: &Digest,
+    round: u64,
+    observer: &Observer,
+) -> Result<Shard, CommandError> {
+    let read = crate::verify_cmd::read_map_shard(store, plan_id, round, &observer.id)
+        .map_err(super::command_error)?;
+    match read {
+        Some(crate::verify_cmd::MapRead::Shard(s, _)) => Ok(*s),
+        found => Err(CommandError::Input(format!(
+            "{}: {} map shard of round {round}: the round's map phase did not finish for this \
+             observer (interrupted?); run `slip map` again",
+            lossy(&observer.main.path),
+            if found.is_none() { "no" } else { "an unusable" },
+        ))),
+    }
+}
+
+/// WP-157: the round's map phase finished, which is what an edit set
+/// promises (`spec/edits.md` §10.2): [`map_shard_of_round`] for every
+/// observer at `selected` (indices of `plan.observers`, ascending, from
+/// `selected_of_round`), on up to `threads` threads. The error is that of
+/// the least selected position that has one, whatever the threads.
+pub fn map_phase_finished(
+    store: &Store,
+    plan_id: Digest,
+    plan: &Plan,
+    round: u64,
+    selected: &[usize],
+    threads: usize,
+) -> Result<(), CommandError> {
+    let next = AtomicUsize::new(0);
+    // The least position found with an error, and its error.
+    let least: Mutex<Option<(usize, CommandError)>> = Mutex::new(None);
+    let work = || {
+        loop {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&i) = selected.get(k) else { return };
+            let found = least.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|l| l.0);
+            if found.is_some_and(|l| l < k) {
+                return;
+            }
+            if let Err(e) = map_shard_of_round(store, &plan_id, round, &plan.observers[i]) {
+                let mut l = least.lock().unwrap_or_else(PoisonError::into_inner);
+                if l.as_ref().is_none_or(|l| k < l.0) {
+                    *l = Some((k, e));
+                }
+                return;
+            }
+        }
+    };
+    std::thread::scope(|s| {
+        for _ in 1..threads.clamp(1, selected.len().max(1)) {
+            s.spawn(work);
+        }
+        work();
+    });
+    match least.into_inner().unwrap_or_else(PoisonError::into_inner) {
+        Some((_, e)) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// The path of `path` (bytes) for a message.
