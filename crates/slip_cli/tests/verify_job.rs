@@ -143,7 +143,7 @@ impl Tree {
     /// read-only; or, with `readonly`, these files of it read-only.
     fn files(&self, readonly: &[&str]) -> Ownership {
         let readonly = readonly.iter().map(|r| bytes(&self.subject.join(r))).collect();
-        Ownership { owned: vec![bytes(&self.subject)], readonly }
+        Ownership { owned: vec![bytes(&self.subject)], readonly, rebuilt: Vec::new() }
     }
 
     fn params(&self, declared: Declared) -> Params {
@@ -4287,4 +4287,240 @@ fn f6_embed_resolved_through_another_embed_dir() {
         assert_eq!(kind(&v), expect, "{post_bytes:?}: {}", reason(&v));
         assert_eq!(tree.truth_differs(&o, &m), expect == VerdictKind::Mismatch, "{post_bytes:?}");
     }
+}
+
+// §2.1 (WP-164): `still_there` and `as_recorded` resolve recorded paths
+// through `slip_spelling::real_path`, so on a folding volume a recorded
+// spelling that does not match disk is reported as moved (`still_there`) and
+// is not skipped as a subject file (`as_recorded`).
+#[test]
+fn s2_1_still_there_and_as_recorded_on_folding_volume() {
+    use slip_model::hash::content_digest;
+    let Some(root) = common::folding_volume("s2_1_still_there_and_as_recorded_on_folding_volume")
+    else {
+        return;
+    };
+    let tree = Tree::new_under(
+        &root,
+        "wp164-still-there",
+        "s",
+        "post-tree",
+        &[("a.cpp", "int f() { return 1; }\n")],
+    );
+    let o = tree.observer();
+    let (map, _) = {
+        tree.map(&o);
+        tree.stored_map(&o)
+    };
+
+    // 1. `still_there`: outside file `ext/H.h` recorded under `ext/h.h`.
+    let ext_disk = tree.base.join("ext/H.h");
+    let ext_bytes = b"int h;\n";
+    write(&ext_disk, std::str::from_utf8(ext_bytes).unwrap());
+    let ext_lower = tree.base.join("ext/h.h");
+    assert!(ext_lower.exists(), "the tree does not fold");
+    let mut pre = map.clone();
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&ext_lower),
+        size: ext_bytes.len() as u64,
+        content: content_digest(ext_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), moved(&ext_lower, &ext_disk));
+
+    // 2. `as_recorded`: subject file `s/Sub/x.h` recorded under `s/sub/x.h`.
+    // `under_subject` is true by identity, so only `as_recorded` returning
+    // false sends it to `still_there`.
+    let sub_disk = tree.subject.join("Sub/x.h");
+    let sub_bytes = b"int x;\n";
+    write(&sub_disk, std::str::from_utf8(sub_bytes).unwrap());
+    let sub_lower = tree.subject.join("sub/x.h");
+    assert!(sub_lower.exists(), "the tree does not fold");
+    let mut pre = map;
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&sub_lower),
+        size: sub_bytes.len() as u64,
+        content: content_digest(sub_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    assert_eq!(reason(&v), moved(&sub_lower, &sub_disk));
+}
+
+// §2.1 (WP-164): `negatives::record` resolves places through
+// `slip_spelling::real_path`, so on a folding volume a place in another case
+// still matches the on-disk-spelled input by path rather than falling back to
+// `by_id`'s first entry.
+#[test]
+fn s2_1_negatives_record_on_folding_volume() {
+    use slip_cli::negatives::record;
+    use slip_model::hash::content_digest;
+    let Some(root) = common::folding_volume("s2_1_negatives_record_on_folding_volume") else {
+        return;
+    };
+    let tree = Tree::new_under(
+        &root,
+        "wp164-neg-record",
+        "s",
+        "post-tree",
+        &[("a.cpp", "int f() { return 0; }\n")],
+    );
+    let disk = tree.base.join("Sub/a.h");
+    write(&disk, "int a;\n");
+    let upper = tree.base.join("Sub/A.h");
+    let lower = tree.base.join("sub/a.h");
+    assert!(upper.exists() && lower.exists(), "the tree does not fold");
+    let fref = |p: &Path| FileRef { path: bytes(p), size: 7, content: content_digest(b"int a;\n") };
+    // Sorted by bytes: `Sub/A.h` (index 0) < `Sub/a.h` (index 1).
+    let inputs = vec![fref(&upper), fref(&disk)];
+    assert!(inputs[0].path < inputs[1].path);
+    let found = record(vec![bytes(&lower)], &inputs).unwrap();
+    assert_eq!(found.places.len(), 1);
+    assert_eq!(found.places[0].input, 1, "must match on-disk spelling by path, not by_id[0]");
+}
+
+// §2.1 (WP-164): `negatives::found_moved` (`walk`) resolves both existing
+// paths and deepest existing prefixes through `slip_spelling::real_path`.
+#[test]
+fn s2_1_negatives_walk_on_folding_volume() {
+    use slip_cli::negatives::found_moved;
+    use slip_model::hash::content_digest;
+    use slip_model::{Found, FoundPlace};
+    let Some(root) = common::folding_volume("s2_1_negatives_walk_on_folding_volume") else {
+        return;
+    };
+    let tree = Tree::new_under(
+        &root,
+        "wp164-neg-walk",
+        "s",
+        "post-tree",
+        &[("a.cpp", "int f() { return 0; }\n")],
+    );
+    let sub_a = tree.base.join("Sub/a.h");
+    let other_b = tree.base.join("Other/b.h");
+    write(&sub_a, "int a;\n");
+    write(&other_b, "int b;\n");
+    let other_b_lower = tree.base.join("other/b.h");
+    assert!(other_b_lower.exists(), "the tree does not fold");
+    let image =
+        Image::new(vec![RootMap { subject: bytes(&tree.subject), post: bytes(&tree.post) }])
+            .unwrap();
+
+    // 1. Existing path: `other/b.h` leads to a different file, and the
+    // refusal names its on-disk spelling `Other/b.h`.
+    let inputs =
+        vec![FileRef { path: bytes(&sub_a), size: 7, content: content_digest(b"int a;\n") }];
+    let found = Found {
+        places: vec![FoundPlace { path: bytes(&other_b_lower), input: 0 }],
+        classes: Vec::new(),
+    };
+    let reason = found_moved(&mut image.resolver(), &found, &inputs).unwrap();
+    assert!(
+        reason.contains(&format!("now leads to {},", other_b.display())),
+        "expected on-disk spelling {}: {reason}",
+        other_b.display()
+    );
+
+    // 2. Deepest existing prefix: `Sub/gone.h` does not exist, and
+    // `sub/gone.h` walks its existing prefix `Sub` to match `Sub/gone.h`.
+    let sub_gone = tree.base.join("Sub/gone.h");
+    let sub_gone_lower = tree.base.join("sub/gone.h");
+    assert!(!sub_gone.exists());
+    let inputs = vec![FileRef { path: bytes(&sub_gone), size: 0, content: content_digest(b"") }];
+    let found = Found {
+        places: vec![FoundPlace { path: bytes(&sub_gone_lower), input: 0 }],
+        classes: Vec::new(),
+    };
+    assert_eq!(found_moved(&mut image.resolver(), &found, &inputs), None);
+}
+
+// §2.1 (WP-164 fix round 1): on an unlistable directory (`chmod 0o311`, with
+// a non-ASCII file name so `slip_spelling` must list it even on a trusted
+// non-folding volume), `still_there` reports `cannot be resolved` (naming the
+// listing error, not "is gone") and `as_recorded` returns `false` so a subject
+// file in an unlistable directory is refused rather than skipped.
+#[test]
+fn s2_1_still_there_and_as_recorded_on_unlistable_dir() {
+    use slip_model::hash::content_digest;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    let tree = Tree::new("wp164-unlistable", &[("a.cpp", "int f() { return 1; }\n")]);
+    let o = tree.observer();
+    tree.map(&o);
+    let (map, _) = tree.stored_map(&o);
+
+    // 1. Outside file in an unlistable directory: `still_there` reports the
+    // real_path error detail, not "is gone".
+    let ext_dir = tree.base.join("ext");
+    let ext_file = ext_dir.join("caf\u{e9}.h");
+    let ext_bytes = b"int h;\n";
+    write(&ext_file, std::str::from_utf8(ext_bytes).unwrap());
+    let _g1 = Restore(ext_dir.clone());
+    std::fs::set_permissions(&ext_dir, std::fs::Permissions::from_mode(0o311)).unwrap();
+    if std::fs::read_dir(&ext_dir).is_ok() {
+        eprintln!(
+            "s2_1_still_there_and_as_recorded_on_unlistable_dir: skipped: uid can list chmod 0311"
+        );
+        return;
+    }
+
+    let mut pre = map.clone();
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&ext_file),
+        size: ext_bytes.len() as u64,
+        content: content_digest(ext_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(
+        r.contains("cannot be resolved:") && r.contains("cannot be listed"),
+        "expected unlistable detail, got: {r}"
+    );
+    assert!(!r.contains("is gone since the map phase"), "{r}");
+
+    // 2. Subject file in an unlistable directory: `under_subject` is true by
+    // identity, and `as_recorded` returns false on the listing error so
+    // `left_behind` checks it via `still_there` and refuses instead of
+    // skipping.
+    let sub_dir = tree.subject.join("unlisted");
+    let sub_file = sub_dir.join("caf\u{e9}.h");
+    let sub_bytes = b"int x;\n";
+    write(&sub_file, std::str::from_utf8(sub_bytes).unwrap());
+    let _g2 = Restore(sub_dir.clone());
+    std::fs::set_permissions(&sub_dir, std::fs::Permissions::from_mode(0o311)).unwrap();
+
+    let mut pre = map;
+    let inputs = pre.inputs.as_mut().unwrap();
+    inputs.push(FileRef {
+        path: bytes(&sub_file),
+        size: sub_bytes.len() as u64,
+        content: content_digest(sub_bytes),
+    });
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    tree.put_map(&o, &pre);
+    let v = tree.verify(&o);
+    assert_eq!(kind(&v), VerdictKind::Unverifiable, "{}", reason(&v));
+    let r = reason(&v);
+    assert!(
+        r.contains("cannot be resolved:") && r.contains("cannot be listed"),
+        "expected unlistable detail, got: {r}"
+    );
 }

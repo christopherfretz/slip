@@ -1,0 +1,7 @@
+# A dependency entity: a difference.
+removed legacy::legacy_init()
+changed user()
+added acme::legacy_init()
+added acme (the dependency's part of acme)
+declares gen.h rule 1 mapped 1 left 0
+relied gen.h

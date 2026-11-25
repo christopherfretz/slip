@@ -1,0 +1,9 @@
+# Both read-only.
+removed user(legacy::Mine *)
+removed legacy
+removed legacy::Mine
+removed legacy::Mine::v
+added acme::Mine::v
+added user(acme::Mine *)
+added acme::Mine
+added acme

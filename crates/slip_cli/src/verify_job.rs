@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use slip_digest::map::{counters as walk_counters, with_input};
 use slip_digest::spelling::{Spelling, check_spellings};
@@ -28,7 +28,7 @@ use slip_digest::{
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
-use slip_model::agreement::{Binding, RuleUse};
+use slip_model::agreement::{Binding, Declares, RebuiltUse, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
@@ -37,6 +37,7 @@ use slip_model::keys::RuleTable;
 use slip_model::names::{NameNote, Names, NamesEntry};
 use slip_model::overlay::Overlay;
 use slip_model::spellings::{Failed, Span, Spellings};
+use slip_model::transform::{FileClass, Ownership, covers};
 use slip_model::verdict::{FindingKind, Verdict, VerdictKind};
 use slip_model::{Command, Counter, Digest, FileRef, Observer, Phase, Shard, Status};
 use slip_verify::compare::{
@@ -97,6 +98,7 @@ type Compared = (Result<Comparison, CompareError>, Option<locate::Side>);
 /// that is there but is not a valid shard of this observer, phase `map`
 /// and round `params.pre`; a parse that fails (`Image::parse`); a
 /// `CompareError` (step 5), with the observer's main file.
+#[allow(clippy::too_many_lines, reason = "the steps of §5.2 in their order, one guard each")]
 pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String> {
     if job.phase != Phase::Verify {
         return Err("the verify task runs phase verify only; the job is of phase map".to_owned());
@@ -131,10 +133,14 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         // `not_parsed`: the parse task's shard, no digests, no verdict.
         return Ok(shard);
     }
-    let Some((output, lookups)) = output else {
+    let Some((mut output, lookups)) = output else {
         return Err("the post-image parsed without error and the walk did not run".to_owned());
     };
+    // WP-118: what the walk says of the rebuilt files: section 33 from it
+    // (R6.4, R1.3), and guard RB below.
+    let walked_rebuilt = std::mem::take(&mut output.rebuilt);
     let mut post = Post::new(&mut shard, output, rules_id, !rules.is_empty());
+    post.rebuilt_use = rebuilt_section(&walked_rebuilt, files, &observer.command.directory);
     post.spellings = through.as_mut().and_then(|t| t.spellings.take());
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
@@ -156,6 +162,11 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     };
     let guards = step_2_guards(params, observer, &pre, post_inputs, &lookups, through.as_ref());
     if let Some(reason) = guards {
+        return unverifiable_now(post, shard, &reason);
+    }
+    // Guard RB (WP-118 R6.3): after the form's other guards, before
+    // `comparable`.
+    if let Some(reason) = guard_rb(&params.image, &walked_rebuilt.declares) {
         return unverifiable_now(post, shard, &reason);
     }
     if let Some(reason) = not_comparable(pre_digests, &post.digests) {
@@ -632,6 +643,8 @@ struct Post {
     /// Step 1's checks of §10.2 (section 26) and their counters of §10.4,
     /// with an overlay image that has obligations.
     spellings: Option<(Spellings, Vec<Counter>)>,
+    /// Section 33 (WP-118), when it is not empty.
+    rebuilt_use: Option<RebuiltUse>,
 }
 
 impl Post {
@@ -666,6 +679,7 @@ impl Post {
             unstable: 0,
             panicked: 0,
             spellings: None,
+            rebuilt_use: None,
         }
     }
 
@@ -699,6 +713,7 @@ impl Post {
             unstable,
             panicked,
             spellings,
+            rebuilt_use,
         } = self;
         let by_name = [
             ("verify.groups.differing", differing),
@@ -744,8 +759,95 @@ impl Post {
         out.verdict = Some(v);
         out.rule_use = rule_use;
         out.spellings = spellings;
+        out.rebuilt_use = rebuilt_use;
         out
     }
+}
+
+/// Section 33 (WP-118 §4.4) of an `ok` verify shard, from the walk's
+/// `rebuilt` (its files subject paths): `relied` and `declares` as the
+/// walk gave them, and the hints of R1.3. `None` when every list is
+/// empty (the section is not written).
+///
+/// A hint is a file that cut a chain (rule 3: the walk's `cutters`, which
+/// it records only when it counts rule use, so under a rule table that is
+/// not empty and in a parse that is `ok`, rule 1) that no entry of any
+/// list covers (rule 2) and that lies under the real path of the
+/// observer's command's `directory` (rule 4; the plan's command). A
+/// directory with no real path now gives no hint: a hint is advice, and
+/// fewer is the safe side. At most [`RebuiltUse::HINTS_MAX`], in path
+/// order, and the number left out.
+fn rebuilt_section(
+    walked: &slip_digest::RebuiltOutput,
+    files: Option<&Ownership>,
+    directory: &[u8],
+) -> Option<RebuiltUse> {
+    let directory = slip_spelling::real_path(Path::new(OsStr::from_bytes(directory)))
+        .ok()
+        .map(|p| p.into_os_string().into_vec());
+    let covered = |path: &[u8]| {
+        files.is_some_and(|o| {
+            o.owned.iter().chain(&o.readonly).chain(&o.rebuilt).any(|e| covers(e, path))
+        })
+    };
+    let mut hints: Vec<Vec<u8>> = match &directory {
+        None => Vec::new(),
+        Some(dir) => {
+            walked.cutters.iter().filter(|p| !covered(p) && covers(dir, p)).cloned().collect()
+        }
+    };
+    let more = hints.len().saturating_sub(RebuiltUse::HINTS_MAX) as u64;
+    hints.truncate(RebuiltUse::HINTS_MAX);
+    let section = RebuiltUse {
+        relied: walked.relied.iter().map(|&i| u64::from(i)).collect(),
+        declares: walked
+            .declares
+            .iter()
+            .map(|d| Declares {
+                file: d.file.clone(),
+                rule: d.rule as u64,
+                mapped: d.mapped,
+                left: d.left,
+                left_kept: d.left_kept,
+            })
+            .collect(),
+        hints,
+        hints_more: more,
+    };
+    (!section.is_empty()).then_some(section)
+}
+
+/// Guard RB (WP-118 R6.3): no `declares` row with `left > 0` names a file
+/// the image cannot give a post-image content of its own (a **frozen**
+/// file): with an overlay, every rebuilt file; in the tree form, a file
+/// whose subject path is under no subject root; with the identity, none.
+/// The reason of the first such row, in `(file, rule)` order (the walk's).
+fn guard_rb(image: &Image, declares: &[slip_digest::Declares]) -> Option<String> {
+    if image.is_identity() {
+        return None;
+    }
+    let overlay = image.overlay_of().is_some();
+    // An overlay image has no root maps (`Image::overlay` is its only
+    // constructor), so the tree half below alone would freeze every file
+    // of an overlay too: `overlay ||` states the overlay rule, and the
+    // two halves agree only while this holds (WP-118 reviews, G2).
+    debug_assert!(!overlay || image.maps().is_empty(), "an overlay image with root maps");
+    let frozen = |file: &[u8]| overlay || !image.maps().iter().any(|m| covers(&m.subject, file));
+    let d = declares.iter().find(|d| d.left > 0 && frozen(&d.file))?;
+    let (file, rule) = (show_path(&d.file), d.rule);
+    Some(if overlay {
+        format!(
+            "post-image: {file} is rebuilt and still declares an entity under the name rule \
+             {rule} says was left; an overlay holds no regenerated file (verify a post tree: \
+             slip verify --root … --post …)"
+        )
+    } else {
+        format!(
+            "post-image: {file} is rebuilt, is under no root of the image, and still declares \
+             an entity under the name rule {rule} says was left; give its directory as a root \
+             (--root <dir> --post <regenerated dir>)"
+        )
+    })
 }
 
 /// The eight kinds, in the order of `by_kind`, with their counter word.
@@ -873,7 +975,14 @@ fn image_guards(
     }
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
     if let Some(path) = drifted(&mut resolver, post_inputs, pre_inputs) {
-        return Some(format!("pre-image: {} changed since the map phase", show_path(path)));
+        // WP-118 R6.3: a rebuilt file regenerated in place, under no root.
+        let rebuilt = params.declared.files().is_some_and(|o| o.class(path) == FileClass::Rebuilt);
+        let suffix = if rebuilt {
+            " (a rebuilt file under no root: give its directory as a root)"
+        } else {
+            ""
+        };
+        return Some(format!("pre-image: {} changed since the map phase{suffix}", show_path(path)));
     }
     if let Some((path, how)) = left_behind(&mut resolver, post_inputs, pre_inputs) {
         return Some(how.reason(path));
@@ -952,6 +1061,16 @@ fn overlay_guards(
         return Some(OverlayGuard::O1(path.to_vec()).reason());
     }
     let overlay: &Overlay = loaded.overlay();
+    // O3 (WP-118 R6.3): no file of the overlay is rebuilt under the
+    // declared files; the first in path order (`files` is sorted).
+    if let Some(files) = params.declared.files().filter(|o| !o.rebuilt.is_empty())
+        && let Some(f) = overlay.files.iter().find(|f| files.class(&f.path) == FileClass::Rebuilt)
+    {
+        return Some(format!(
+            "post-image: the overlay names {}, a rebuilt file",
+            show_path(&f.path)
+        ));
+    }
     let pre_inputs = pre.shard.inputs.as_deref().unwrap_or_default();
     match overlay_inputs(pre_inputs, post_inputs, overlay) {
         Ok(()) => {}
@@ -1090,6 +1209,9 @@ enum Left {
     /// path: not the file the map parse read there (two inputs made one by
     /// a link, or a directory on the way replaced by a link).
     Moved(Vec<u8>),
+    /// The file exists, but `slip_spelling::real_path` could not resolve its
+    /// spelling on disk (e.g. an unlistable directory or ambiguous name).
+    Unresolvable(String),
     /// The file there has another size or content, or cannot be read.
     Changed,
 }
@@ -1106,6 +1228,9 @@ impl Left {
                 "pre-image: {path} now leads to {}, not the file the map parse read (run `slip parse` again)",
                 show_path(real)
             ),
+            Left::Unresolvable(detail) => {
+                format!("pre-image: {path} cannot be resolved: {detail} (run `slip parse` again)")
+            }
             Left::Changed => {
                 format!("pre-image: {path} changed since the map phase (run `slip parse` again)")
             }
@@ -1143,12 +1268,22 @@ fn left_behind<'a>(
 
 /// Whether `path`, a real path when the map parse recorded it, is still
 /// one: the path, or the nearest ancestor of it that exists, is its own
-/// real path now (no symbolic link has been made on the way since).
+/// real path now (no symbolic link has been made on the way since, and its
+/// spelling on disk matches). Any error from `real_path` (including an
+/// unlistable directory) returns `false`, so a subject file in an
+/// unlistable directory is checked rather than skipped.
 pub(crate) fn as_recorded(path: &[u8]) -> bool {
+    as_recorded_with(path, slip_spelling::real_path)
+}
+
+fn as_recorded_with(
+    path: &[u8],
+    real_path: impl Fn(&Path) -> Result<PathBuf, slip_spelling::SpellingError>,
+) -> bool {
     let mut at = Path::new(OsStr::from_bytes(path));
     loop {
         if at.symlink_metadata().is_ok() {
-            return std::fs::canonicalize(at).is_ok_and(|real| real == at);
+            return real_path(at).is_ok_and(|real| real == at);
         }
         match at.parent() {
             Some(up) => at = up,
@@ -1161,13 +1296,21 @@ pub(crate) fn as_recorded(path: &[u8]) -> bool {
 /// regular file (links followed now) whose real path is `f.path`, of `f`'s
 /// size and content digest.
 fn still_there(f: &FileRef) -> Result<(), Left> {
+    still_there_with(f, slip_spelling::real_path)
+}
+
+fn still_there_with(
+    f: &FileRef,
+    real_path: impl Fn(&Path) -> Result<PathBuf, slip_spelling::SpellingError>,
+) -> Result<(), Left> {
     let path = Path::new(OsStr::from_bytes(&f.path));
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => {
-            match std::fs::canonicalize(path) {
+            match real_path(path) {
                 Ok(real) if real == path => {}
                 Ok(real) => return Err(Left::Moved(real.into_os_string().into_vec())),
-                Err(_) => return Err(Left::Gone),
+                Err(e) if e.is_not_found() => return Err(Left::Gone),
+                Err(e) => return Err(Left::Unresolvable(e.detail())),
             }
             if m.len() != f.size {
                 return Err(Left::Changed);
@@ -1247,5 +1390,53 @@ mod tests {
         assert_eq!(err, format!("{e} (observer {}, main file /d/a\\xff.cpp)", observer.id));
         let ok = compare_groups(&[], &[], &Exemptions::from_declared(&Declared::none()));
         assert!(compared(ok, &observer).is_ok());
+    }
+
+    // §2.1 (WP-164 fix round 1): `still_there` carries non-not-found
+    // `real_path` error detail in `Left::Unresolvable` (not `Gone`), and
+    // `as_recorded` returns `false` on any `real_path` error.
+    #[test]
+    fn s2_1_real_path_error_paths() {
+        let base = std::env::var_os("SLIP_TEST_ROOT").filter(|v| !v.is_empty()).map_or_else(
+            || {
+                let exe = std::env::current_exe().unwrap();
+                exe.parent().and_then(Path::parent).and_then(Path::parent).unwrap().join("tmp")
+            },
+            PathBuf::from,
+        );
+        let dir = base.join(format!("wp164-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.h");
+        std::fs::write(&file, b"int x;\n").unwrap();
+        let f = FileRef {
+            path: file.as_os_str().as_bytes().to_vec(),
+            size: 7,
+            content: content_digest(b"int x;\n"),
+        };
+
+        let unlistable = |p: &Path| {
+            Err(slip_spelling::SpellingError::Unlistable {
+                path: p.as_os_str().as_bytes().to_vec(),
+                dir: dir.as_os_str().as_bytes().to_vec(),
+                error: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            })
+        };
+        let got = still_there_with(&f, unlistable).unwrap_err();
+        assert!(matches!(got, Left::Unresolvable(_)), "{got:?}");
+        let msg = got.reason(&f.path);
+        assert!(msg.contains("cannot be resolved:") && msg.contains("cannot be listed"), "{msg}");
+        assert!(!as_recorded_with(&f.path, unlistable));
+
+        let missing = |p: &Path| {
+            Err(slip_spelling::SpellingError::Missing {
+                path: p.as_os_str().as_bytes().to_vec(),
+                at: p.as_os_str().as_bytes().to_vec(),
+            })
+        };
+        assert_eq!(still_there_with(&f, missing), Err(Left::Gone));
+        assert!(!as_recorded_with(&f.path, missing));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -304,6 +304,29 @@ fn site_refused() {
     assert!(r.macro_site.is_some());
 }
 
+/// WP-118 R7: a `refuse` claim with reason `rebuilt` (a site in a rebuilt
+/// file) is `site_refused` with that reason, and in an indivisible request
+/// it refuses the set: the rename's other edits do not stand.
+#[test]
+fn site_refused_rebuilt() {
+    let mut request = rename();
+    request.ownership.rebuilt = vec![b"/s/gen".to_vec()];
+    let set = ok(
+        &request,
+        vec![
+            ShardB::new(0).seed(d(1)).claim(the_edit(A, 0, 1, "g").subjects(&[d(1)])),
+            ShardB::new(1)
+                .seed(d(1))
+                .claim(refuse("/s/gen/x.h", 0, 1).reason(Reason::Rebuilt).subjects(&[d(1)])),
+        ],
+        "site-refused-rebuilt",
+    );
+    let r = refusal_at(&set, Cause::SiteRefused, "/s/gen/x.h", 0, 1);
+    assert_eq!(r.reason, Reason::Rebuilt);
+    assert_eq!(set.state, SetState::Refused, "an indivisible set");
+    assert!(set.edits.is_empty());
+}
+
 /// §5.4 rows 6 and 7: `keep` only, `keep` and `unresolved`, `unresolved`
 /// only.
 #[test]
@@ -748,6 +771,23 @@ fn one_namespace_rule_is_accepted() {
     }
 }
 
+/// WP-118 R5.2: `declared` passes the request's three lists into the
+/// `DECL`'s `files`, so a rebuilt list gives another `rules_id`.
+#[test]
+fn declared_files_hold_the_rebuilt_list() {
+    let set = ok(
+        &script(),
+        vec![ShardB::new(0).renamed(namespace_rule("n", "m")).claim(the_edit(A, 0, 1, "x"))],
+        "declared-rebuilt",
+    );
+    let mut ownership = script().ownership;
+    let two = declared(&set, &ownership).unwrap().unwrap();
+    ownership.rebuilt = vec![b"/s/gen".to_vec()];
+    let three = declared(&set, &ownership).unwrap().unwrap();
+    assert_eq!(three.files(), Some(&ownership));
+    assert_ne!(two.rules_id(), three.rules_id());
+}
+
 // ---------------------------------------------------------------------------
 // §5.1, §4.7: Input errors, one each, naming the observer
 
@@ -962,6 +1002,14 @@ fn input_replace_not_owned() {
     // A keep there is fine.
     let s = ShardB::new(1).claim(keep("/s/ro/x.h", 0, 1)).build();
     assert!(run(&script(), &Store::new(vec![plain(0), s]), "input-owned-keep").is_ok());
+    // WP-118: nor in a rebuilt file (`is_owned` is false there); a keep
+    // there is fine.
+    let mut request = script();
+    request.ownership.rebuilt = vec![b"/s/gen".to_vec()];
+    let s = ShardB::new(1).claim(the_edit("/s/gen/x.h", 0, 1, "x")).build();
+    expect_input(vec![plain(0), s], &request, 1, "does not own");
+    let s = ShardB::new(1).claim(keep("/s/gen/x.h", 0, 1)).build();
+    assert!(run(&request, &Store::new(vec![plain(0), s]), "input-rebuilt-keep").is_ok());
 }
 
 /// §5.1: an identity rule (`spec/verify.md` §2.1, "One way to each key"),

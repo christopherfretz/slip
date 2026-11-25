@@ -49,6 +49,7 @@ use slip_model::keys::KeyKind;
 
 use crate::Cause;
 use crate::keys::{KeyRes, Role, info};
+use crate::owned::{At, Class};
 use crate::refs::{REF_NONE, REF_UNIT};
 use crate::stream::Stream;
 use crate::units::REDECL_LIMIT;
@@ -427,6 +428,7 @@ impl Walk<'_> {
             }
             return Reading::Plain;
         }
+        self.rebuilt_reference(d, ns);
         let (id, cause) = match self.key(ns) {
             KeyRes::Key { id, cause, .. } => (id, cause),
             KeyRes::None(_) => return Reading::Plain,
@@ -467,6 +469,26 @@ impl Walk<'_> {
         match self.ns_file_of(d) {
             Some(f) => self.file_read_only(f),
             None => false,
+        }
+    }
+
+    /// WP-118 R6.4: `d`, a reference to namespace `ns` that has readings
+    /// because the file it is written in is not read-only by its own path,
+    /// is recorded for `relied` when that file is rebuilt and not
+    /// read-only for its inclusion: read-only, it would have had one
+    /// reading. Only with the accounting on.
+    fn rebuilt_reference(&mut self, d: DeclId, ns: DeclId) {
+        if self.rule_use.is_none() {
+            return;
+        }
+        let Some(f) = self.ns_file_of(d) else { return };
+        if !matches!(self.file_class(f), Class::Rebuilt(_)) {
+            return;
+        }
+        let loc = self.sm.expansion_loc(self.ast.decls.get(d).loc());
+        if let Some(At::Clear { set, .. }) = self.read_only_at(loc) {
+            let set = self.owned_state.sets.get(set).to_vec();
+            crate::rule_use::ns_reference(self, ns, &set);
         }
     }
 
@@ -556,6 +578,9 @@ impl Walk<'_> {
                 named.entry((scope, file)).or_default().insert(t);
                 if let Some(n) = scope {
                     let own = !self.read_only_by_path(d);
+                    if own {
+                        self.rebuilt_reference(d, t);
+                    }
                     let v = dirs.entry(n).or_default();
                     if !v.contains(&(t, own)) {
                         v.push((t, own));

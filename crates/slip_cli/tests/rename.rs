@@ -427,6 +427,25 @@ fn s8_4_residue_in_a_file_no_observer_compiles() {
     assert_eq!(t.read("src/unused.cpp"), "int f(int);\nint z = f(1);\n");
 }
 
+// §8.4, WP-118 (design row 39; second review N-a, X12): a rebuilt file is
+// not scanned for residue: it is not owned, and its spelling is the
+// build's to change. `src/gen/unused.cpp` spells `f` as `unused.cpp`
+// does in the test above; declared rebuilt, it is no residue.
+#[test]
+fn s8_4_rebuilt_files_are_not_scanned() {
+    let t = Tree::three_files("residue-rebuilt");
+    t.write("src/gen/unused.cpp", "int f(int);\nint z = f(1);\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--rebuilt", "src/gen"]);
+    let unused = t.path("src/gen/unused.cpp").display().to_string();
+    assert!(!out.stdout.contains(&unused), "{out:?}");
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "{out:?}"
+    );
+}
+
 // §8.4: a mention is listed and changes no state.
 #[test]
 fn s8_4_a_mention() {
@@ -2076,4 +2095,77 @@ fn s10_1_rename_dependent_default_leaves_the_name() {
     // `--dependent leave` is the default spelled out: the same request.
     let given = rename_dependent(&t, &["--dependent", "leave"]);
     assert_eq!(given.id("transform"), out.id("transform"), "{given:?}");
+}
+
+// §2.1 (WP-164): `slip rename --relative-to` resolves through
+// `slip_spelling::real_path`, so on a folding volume a directory given in
+// another case than on disk still strips the prefix from detail lines.
+#[test]
+fn s2_1_rename_relative_to_in_another_case() {
+    let t = Tree::new_in(&common::folding_root(), "rename-rel-case");
+    t.write(
+        "src/main.cpp",
+        "namespace m { struct A {}; int h(A) { return 1; } }\ntemplate <class T> int call(T t) { \
+         return h(t); }\nint u() { return call(m::A()); }\n",
+    );
+    if common::folding_volume("s2_1_rename_relative_to_in_another_case").is_none() {
+        return;
+    }
+    assert!(t.path("SRC/main.cpp").exists(), "the tree does not fold");
+    t.db(&["src/main.cpp"]);
+    let plan = t.plan("store");
+    let out = t.slip(&[
+        "rename",
+        "--plan",
+        &plan,
+        "--from",
+        "m::h",
+        "--to",
+        "k",
+        "--owned",
+        "src",
+        "--store",
+        "store",
+        "--relative-to",
+        "SRC",
+    ]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.has_line("residue dependent: main.cpp:2:43"), "{out:?}");
+}
+
+// §2.1 (WP-164): `slip rename --relative-to` through a symbolic link gives
+// the target's real path, stripping it from detail lines and patches alike.
+#[test]
+fn s2_1_rename_relative_to_through_symlink() {
+    let t = dependent_tree("rename-rel-symlink");
+    std::os::unix::fs::symlink(t.path("src"), t.path("link")).unwrap();
+    let plan = t.plan("store");
+    let out = t.slip(&[
+        "rename",
+        "--plan",
+        &plan,
+        "--from",
+        "m::h",
+        "--to",
+        "k",
+        "--owned",
+        "src",
+        "--store",
+        "store",
+        "--relative-to",
+        "link",
+    ]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    assert!(out.has_line("residue dependent: main.cpp:2:43"), "{out:?}");
+
+    // And a verified rename with `--patch` through the same link.
+    let p = Tree::new("rename-rel-symlink-patch");
+    p.write("src/a.cpp", "int f() { return 1; }\nint bar() { return f(); }\n");
+    p.db(&["src/a.cpp"]);
+    std::os::unix::fs::symlink(p.path("src"), p.path("link")).unwrap();
+    let plan = p.plan("store");
+    let out = rename(&p, &plan, &["--patch", "out.patch", "--relative-to", "link"]);
+    assert_eq!(out.code(), Some(0), "{out:?}");
+    let patch = std::fs::read_to_string(p.path("out.patch")).unwrap();
+    assert!(patch.starts_with("--- a.cpp\n+++ a.cpp\n"), "{patch}");
 }

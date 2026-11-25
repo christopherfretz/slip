@@ -1,0 +1,9 @@
+# gen.h read-only: G is a dependency entity and keeps its key: a difference.
+removed legacy::G
+removed legacy
+removed legacy::G::v
+removed user(legacy::G *)
+added acme::G::v
+added acme::G
+added acme
+added user(acme::G *)

@@ -1079,6 +1079,7 @@ impl Resolver<'_> {
         let r = match slip_spelling::real_path(path) {
             Ok(r) => Some(r),
             Err(e) if e.is_not_found() => None,
+            // canonicalize: fallback on unlistable dir; regions by identity (WP-151 decision 2)
             Err(_) => std::fs::canonicalize(path).ok(),
         };
         self.canon.insert(path.to_path_buf(), r.clone());

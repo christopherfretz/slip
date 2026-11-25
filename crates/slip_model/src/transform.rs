@@ -6,7 +6,8 @@
 
 use crate::Digest;
 
-/// The files Slip may edit (`spec/edits.md` §2.1).
+/// The files Slip may edit, and which of the others the build compiles
+/// from source (`spec/edits.md` §2.1; `rebuilt`, WP-118).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ownership {
     /// Canonical absolute real paths ([`is_canonical`]) of directories or
@@ -14,6 +15,25 @@ pub struct Ownership {
     pub owned: Vec<Vec<u8>>,
     /// The same; sorted, no two equal, none also in `owned`.
     pub readonly: Vec<Vec<u8>>,
+    /// The same; sorted, no two equal, none also in `owned` or in
+    /// `readonly`, none `/` (WP-118). Not empty exactly in version 3 of
+    /// `TRFM` and `DECL`.
+    pub rebuilt: Vec<Vec<u8>>,
+}
+
+/// The class of a file (`spec/edits.md` §2.1, WP-118): the list of the
+/// longest entry covering its real path; a path no entry covers is
+/// read-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileClass {
+    /// May be edited; a rule may rename its entities.
+    Owned,
+    /// Not edited by Slip, and compiled from source in every binary that
+    /// holds its names: read-only for every writer, owned for the rules
+    /// (but for C language linkage, `spec/verify.md` §2.1).
+    Rebuilt,
+    /// Not edited; its entities keep their names.
+    ReadOnly,
 }
 
 /// `entry` is a canonical absolute path (`spec/edits.md` §2.1): it starts
@@ -51,19 +71,52 @@ pub fn covers(entry: &[u8], path: &[u8]) -> bool {
 }
 
 impl Ownership {
+    /// The class of `real_path` (`spec/edits.md` §2.1, WP-118 R5.2) and,
+    /// when an entry covers it, the index of the longest covering entry
+    /// in its own list. The three lists share no entry, and two entries
+    /// that cover one path and have one length are equal, so the longest
+    /// is unique. For a value that is not valid, a tie fails closed: the
+    /// first list in the order readonly, rebuilt, owned wins it (WP-118
+    /// review N1), so a path is never owned by an invalid value's tie.
+    pub fn class_of(&self, real_path: &[u8]) -> (FileClass, Option<usize>) {
+        let longest = |list: &[Vec<u8>]| {
+            let mut best: Option<(usize, usize)> = None;
+            for (i, e) in list.iter().enumerate() {
+                if covers(e, real_path) && best.is_none_or(|(len, _)| e.len() > len) {
+                    best = Some((e.len(), i));
+                }
+            }
+            best
+        };
+        let mut best: Option<(usize, FileClass, usize)> = None;
+        for (list, class) in [
+            (&self.readonly, FileClass::ReadOnly),
+            (&self.rebuilt, FileClass::Rebuilt),
+            (&self.owned, FileClass::Owned),
+        ] {
+            if let Some((len, i)) = longest(list)
+                && best.is_none_or(|(l, ..)| len > l)
+            {
+                best = Some((len, class, i));
+            }
+        }
+        match best {
+            None => (FileClass::ReadOnly, None),
+            Some((_, class, i)) => (class, Some(i)),
+        }
+    }
+
+    /// The class of `real_path` ([`Self::class_of`]).
+    pub fn class(&self, real_path: &[u8]) -> FileClass {
+        self.class_of(real_path).0
+    }
+
     /// `spec/edits.md` §2.1: some entry covers `real_path` and the longest
     /// entry covering it is in `owned`. A path no entry covers, and one
-    /// whose longest covering entry is in `readonly`, is read-only.
+    /// whose longest covering entry is in `readonly` or in `rebuilt`, is
+    /// not owned: every writer reads a rebuilt file as read-only.
     pub fn is_owned(&self, real_path: &[u8]) -> bool {
-        let longest =
-            |list: &[Vec<u8>]| list.iter().filter(|e| covers(e, real_path)).map(Vec::len).max();
-        match (longest(&self.owned), longest(&self.readonly)) {
-            (None, _) => false,
-            (Some(_), None) => true,
-            // `owned` and `readonly` share no entry, and two entries that
-            // cover one path and have one length are equal.
-            (Some(o), Some(r)) => o > r,
-        }
+        self.class(real_path) == FileClass::Owned
     }
 }
 
@@ -129,7 +182,8 @@ pub struct Script {
     pub depth: u64,
 }
 
-/// A transform request, kind `TRFM`, version 2 (`spec/edits.md` §3). Its
+/// A transform request, kind `TRFM`, version 2, or 3 when
+/// `ownership.rebuilt` is not empty (`spec/edits.md` §3, WP-118). Its
 /// content id is the request id a map job and a map shard name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Transform {

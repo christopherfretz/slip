@@ -219,7 +219,7 @@ fn headers_read_only(input: &Input<'_>) -> ReadOnlyFiles {
         .collect();
     readonly.sort();
     readonly.dedup();
-    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly };
+    let o = Ownership { owned: vec![ROOT.as_bytes().to_vec()], readonly, rebuilt: Vec::new() };
     let subject = |f| {
         let p = (input.subject_path)(f);
         if p.is_empty() { p } else { [format!("{ROOT}/").as_bytes(), &p].concat() }

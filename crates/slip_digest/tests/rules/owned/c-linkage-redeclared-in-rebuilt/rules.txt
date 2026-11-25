@@ -1,0 +1,2 @@
+rule function | c_linkage | id gen_init | disc-of pre gen_start() | c_linkage | id gen_start
+# WP-118 A14 (R2.2, per declaration): extern "C" gen_start declared in owned own.h and declared again in rebuilt gen.h: the entity is a dependency entity whichever declaration is in the rebuilt file, so the c_linkage rule matches nothing.

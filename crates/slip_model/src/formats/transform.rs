@@ -72,6 +72,13 @@ const SINCE: u32 = 2;
 /// The message of a version this reader no longer reads.
 const OLD_VERSION: &str = "container version older than supported";
 
+/// The version a request is written in (`spec/edits.md` §3, WP-118 R5.4):
+/// 3 exactly when `ownership.rebuilt` is not empty, so that a request that
+/// declares nothing rebuilt has the bytes and the id it had.
+fn version_of(t: &Transform) -> u32 {
+    if t.ownership.rebuilt.is_empty() { SINCE } else { Transform::VERSION }
+}
+
 // ---------------------------------------------------------------------------
 // Invariants
 
@@ -80,6 +87,9 @@ enum Loc {
     Owned,
     OwnedAt(usize),
     ReadonlyAt(usize),
+    /// `ownership.rebuilt` (version 3).
+    Rebuilt,
+    RebuiltAt(usize),
     Indivisible,
     Rename,
     Target,
@@ -95,6 +105,8 @@ impl Loc {
             Loc::Owned => format!("{S}.ownership.owned"),
             Loc::OwnedAt(i) => format!("{S}.ownership.owned[{i}]"),
             Loc::ReadonlyAt(i) => format!("{S}.ownership.readonly[{i}]"),
+            Loc::Rebuilt => format!("{S}.ownership.rebuilt"),
+            Loc::RebuiltAt(i) => format!("{S}.ownership.rebuilt[{i}]"),
             Loc::Indivisible => format!("{S}.indivisible"),
             Loc::Rename => format!("{S}.rename"),
             Loc::Target => format!("{S}.rename.target"),
@@ -111,8 +123,10 @@ fn first_not_ascending(list: &[Vec<u8>]) -> Option<usize> {
     (1..list.len()).find(|&i| list[i - 1] >= list[i])
 }
 
-/// The first violation, in field order (`spec/landed/edits/WP-060.md` §3).
-fn violation(t: &Transform) -> Option<(Loc, &'static str)> {
+/// The first violation, in field order (`spec/landed/edits/WP-060.md` §3;
+/// the rows of `rebuilt` after those of `readonly`, WP-118 R5.3), for a
+/// container of `version`.
+fn violation(t: &Transform, version: u32) -> Option<(Loc, &'static str)> {
     let o = &t.ownership;
     if o.owned.is_empty() {
         return Some((Loc::Owned, "owned is empty"));
@@ -131,6 +145,15 @@ fn violation(t: &Transform) -> Option<(Loc, &'static str)> {
     }
     if let Some(i) = o.readonly.iter().position(|r| o.owned.binary_search(r).is_ok()) {
         return Some((Loc::ReadonlyAt(i), "a readonly entry is also in owned"));
+    }
+    if let Some((i, what)) = rebuilt_violation(o) {
+        return Some((Loc::RebuiltAt(i), what));
+    }
+    if version >= 3 && o.rebuilt.is_empty() {
+        return Some((Loc::Rebuilt, V3_NO_REBUILT));
+    }
+    if version < 3 && !o.rebuilt.is_empty() {
+        return Some((Loc::RebuiltAt(0), V2_REBUILT));
     }
     let rename = t.kind == TransformKind::Rename;
     if rename && !t.indivisible {
@@ -164,6 +187,36 @@ fn violation(t: &Transform) -> Option<(Loc, &'static str)> {
     }
 }
 
+/// A version 3 container whose `rebuilt` list is empty: a second encoding
+/// of a version 2 value (WP-118 R5.4).
+pub(super) const V3_NO_REBUILT: &str = "a version 3 container has no rebuilt entry";
+/// A value written as version 2 with a rebuilt entry (only a value in
+/// memory can be one; no reader makes it).
+pub(super) const V2_REBUILT: &str = "a version 2 container has a rebuilt entry";
+
+/// The rows of `rebuilt` (WP-118 R5.3), in order, with the index of the
+/// entry: not canonical; not strictly ascending; `/`; also in `owned`;
+/// also in `readonly`. Shared with `DECL`'s `files`.
+pub(super) fn rebuilt_violation(o: &Ownership) -> Option<(usize, &'static str)> {
+    let r = &o.rebuilt;
+    if let Some(i) = r.iter().position(|e| !is_canonical(e)) {
+        return Some((i, NOT_CANONICAL));
+    }
+    if let Some(i) = first_not_ascending(r) {
+        return Some((i, "rebuilt is not strictly ascending"));
+    }
+    if let Some(i) = r.iter().position(|e| e.as_slice() == b"/") {
+        return Some((i, "a rebuilt entry is /"));
+    }
+    if let Some(i) = r.iter().position(|e| o.owned.binary_search(e).is_ok()) {
+        return Some((i, "a rebuilt entry is also in owned"));
+    }
+    if let Some(i) = r.iter().position(|e| o.readonly.binary_search(e).is_ok()) {
+        return Some((i, "a rebuilt entry is also in readonly"));
+    }
+    None
+}
+
 fn name_violation(name: &[u8]) -> Option<&'static str> {
     if !is_identifier(name) {
         Some("not an identifier [A-Za-z_][A-Za-z0-9_]*")
@@ -175,7 +228,7 @@ fn name_violation(name: &[u8]) -> Option<&'static str> {
 }
 
 pub(super) fn check(t: &Transform) -> std::result::Result<(), (String, &'static str)> {
-    violation(t).map_or(Ok(()), |(l, what)| Err((l.path(), what)))
+    violation(t, version_of(t)).map_or(Ok(()), |(l, what)| Err((l.path(), what)))
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +246,10 @@ pub(super) fn encode(t: &Transform, extras: &[Extra<'_>]) -> Vec<u8> {
     enc_enum(&mut e, t.kind);
     enc_list(&mut e, &t.ownership.owned);
     enc_list(&mut e, &t.ownership.readonly);
+    let version = version_of(t);
+    if version >= 3 {
+        enc_list(&mut e, &t.ownership.rebuilt);
+    }
     e.bool(t.indivisible);
     match &t.rename {
         None => {
@@ -216,7 +273,7 @@ pub(super) fn encode(t: &Transform, extras: &[Extra<'_>]) -> Vec<u8> {
             e.uv(s.steps).uv(s.bytes).uv(s.depth);
         }
     }
-    seal(Transform::KIND, Transform::VERSION, &[(TRANSFORM, e.as_bytes())], extras)
+    seal(Transform::KIND, version, &[(TRANSFORM, e.as_bytes())], extras)
 }
 
 #[derive(Default)]
@@ -224,6 +281,8 @@ struct Offsets {
     owned: usize,
     owned_at: Vec<usize>,
     readonly_at: Vec<usize>,
+    rebuilt: usize,
+    rebuilt_at: Vec<usize>,
     indivisible: usize,
     rename: usize,
     target: usize,
@@ -238,6 +297,8 @@ impl Offsets {
             Loc::Owned => self.owned,
             Loc::OwnedAt(i) => self.owned_at[i],
             Loc::ReadonlyAt(i) => self.readonly_at[i],
+            Loc::Rebuilt => self.rebuilt,
+            Loc::RebuiltAt(i) => self.rebuilt_at[i],
             Loc::Indivisible => self.indivisible,
             Loc::Rename => self.rename,
             Loc::Target => self.target,
@@ -265,6 +326,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)
     o.owned = d.offset();
     let owned = dec_bytes_list(&mut d, &mut o.owned_at)?;
     let readonly = dec_bytes_list(&mut d, &mut o.readonly_at)?;
+    o.rebuilt = d.offset();
+    let rebuilt =
+        if opened.version >= 3 { dec_bytes_list(&mut d, &mut o.rebuilt_at)? } else { Vec::new() };
     o.indivisible = d.offset();
     let indivisible = d.bool()?;
     o.rename = d.offset();
@@ -284,9 +348,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Transform, Vec<Extra<'_>>, Digest)
         Ok(Script { id, file, options, steps: d.uv()?, bytes: d.uv()?, depth: d.uv()? })
     })?;
     d.finish()?;
-    let t =
-        Transform { kind, ownership: Ownership { owned, readonly }, indivisible, rename, script };
-    if let Some((l, what)) = violation(&t) {
+    let ownership = Ownership { owned, readonly, rebuilt };
+    let t = Transform { kind, ownership, indivisible, rename, script };
+    if let Some((l, what)) = violation(&t, opened.version) {
         return Err(malformed(o.of(l), what));
     }
     Ok((t, opened.extras, opened.content_id))
@@ -302,15 +366,17 @@ fn json_list(list: &[Vec<u8>]) -> Value {
 }
 
 pub(super) fn render(t: &Transform, extras: &[Extra<'_>]) -> Value {
+    let version = version_of(t);
+    let mut ownership = vec![
+        ("owned", json_list(&t.ownership.owned)),
+        ("readonly", json_list(&t.ownership.readonly)),
+    ];
+    if version >= 3 {
+        ownership.push(("rebuilt", json_list(&t.ownership.rebuilt)));
+    }
     let transform = object(vec![
         ("kind", json_enum(t.kind)),
-        (
-            "ownership",
-            object(vec![
-                ("owned", json_list(&t.ownership.owned)),
-                ("readonly", json_list(&t.ownership.readonly)),
-            ]),
-        ),
+        ("ownership", object(ownership)),
         ("indivisible", Value::Bool(t.indivisible)),
         (
             "rename",
@@ -337,7 +403,7 @@ pub(super) fn render(t: &Transform, extras: &[Extra<'_>]) -> Value {
             }),
         ),
     ]);
-    render_container(Transform::KIND, Transform::VERSION, vec![("transform", transform)], extras)
+    render_container(Transform::KIND, version, vec![("transform", transform)], extras)
 }
 
 /// The request and the unknown ignorable sections of a JSON rendering.
@@ -360,10 +426,21 @@ pub(super) fn read(v: &Value) -> JResult<(Transform, OwnedExtras)> {
         read_record(section, &at, ["kind", "ownership", "indivisible", "rename", "script"])?;
     let kind = read_enum(kind, &at.key("kind"))?;
     let o_at = at.key("ownership");
-    let [owned, readonly] = read_record(ownership, &o_at, ["owned", "readonly"])?;
+    let (owned, readonly, rebuilt) = if s.version >= 3 {
+        let [owned, readonly, rebuilt] =
+            read_record(ownership, &o_at, ["owned", "readonly", "rebuilt"])?;
+        (owned, readonly, Some(rebuilt))
+    } else {
+        let [owned, readonly] = read_record(ownership, &o_at, ["owned", "readonly"])?;
+        (owned, readonly, None)
+    };
     let ownership = Ownership {
         owned: read_list(owned, &o_at.key("owned"), read_bytes)?,
         readonly: read_list(readonly, &o_at.key("readonly"), read_bytes)?,
+        rebuilt: match rebuilt {
+            Some(v) => read_list(v, &o_at.key("rebuilt"), read_bytes)?,
+            None => Vec::new(),
+        },
     };
     let indivisible = read_bool(indivisible, &at.key("indivisible"))?;
     let rename = read_opt(rename, &at.key("rename"), |v, at| {
@@ -389,7 +466,7 @@ pub(super) fn read(v: &Value) -> JResult<(Transform, OwnedExtras)> {
         })
     })?;
     let t = Transform { kind, ownership, indivisible, rename, script };
-    if let Some((l, what)) = violation(&t) {
+    if let Some((l, what)) = violation(&t, s.version) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });
     }
     Ok((t, s.extras))
