@@ -18,8 +18,11 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::rc::Rc;
 
-use slip_apply::journal::{Journal, JournalEntry, staged_name};
-use slip_apply::{Blobs, JournalStore, Recovered, Refused, Stat, Tree, WriteError, recover, write};
+use slip_apply::journal::{Journal, JournalEntry, Read, staged_name};
+use slip_apply::{
+    Blobs, JournalStore, Recovered, Refused, Stat, Tree, WriteError, discard_interrupted, recover,
+    write,
+};
 use slip_model::Digest;
 use slip_model::formats;
 use slip_model::hash::content_digest;
@@ -95,6 +98,12 @@ struct State {
     creator: (u32, u32),
     /// The inode the next create gives.
     next_ino: u64,
+    /// A publish writes this many bytes of the journal, then power is
+    /// lost (a crash before the publish returned).
+    torn: Option<usize>,
+    /// The journal reads as absent this many times (the hazard of
+    /// `spec/harness.md` §11 for a name just created).
+    journal_lies: u32,
 }
 
 #[derive(Clone)]
@@ -280,12 +289,23 @@ impl JournalStore for World {
             if s.journal.is_some() {
                 return Err(err(io::ErrorKind::AlreadyExists, "a journal exists"));
             }
+            if let Some(n) = s.torn {
+                s.journal = Some(bytes[..n.min(bytes.len())].to_vec());
+                s.dead = true;
+                return Err(err(io::ErrorKind::Other, "no power"));
+            }
             s.journal = Some(bytes.to_vec());
             Ok(())
         })
     }
     fn read(&self) -> io::Result<Option<Vec<u8>>> {
-        self.op("journal", b"", |s| Ok(s.journal.clone()))
+        self.op("journal", b"", |s| {
+            if s.journal_lies > 0 {
+                s.journal_lies -= 1;
+                return Ok(None);
+            }
+            Ok(s.journal.clone())
+        })
     }
     fn remove(&self) -> io::Result<()> {
         self.op("unjournal", b"", |s| {
@@ -697,6 +717,7 @@ fn s7_3_file_changed_after_the_commit_is_reported_and_left() {
         restored: vec![b"/w/a.cc".to_vec(), b"/w/sub/c.sh".to_vec()],
         left: vec![],
         reported: vec![b"/w/b.h".to_vec()],
+        interrupted: false,
     };
     assert_eq!(recover(&own_w(), &w, &w, &w), Ok(Some(want)));
     assert!(w.0.borrow().journal.is_some());
@@ -1299,16 +1320,136 @@ fn s7_3_write_refuses_bad_input() {
     assert_eq!(w.0.borrow().ops, 0);
 }
 
-// §7.3: `recover` refuses a malformed journal and touches nothing.
+// §7.3: `recover` refuses a malformed journal (whole, but its record
+// breaks a rule, or of a newer version) and touches nothing.
 #[test]
 fn s7_3_recover_refuses_a_malformed_journal() {
     let c = case();
-    let w = c.world.healthy();
-    for bytes in [&b""[..], b"garbage", &[0u8; 33]] {
-        w.0.borrow_mut().journal = Some(bytes.to_vec());
+    let mut empty = Journal::of_write(&c.overlay, c.id);
+    empty.files.clear();
+    let newer = {
+        let mut w = slip_model::container::Writer::new(*b"JRNL", 2);
+        w.section(1, &Journal::of_write(&c.overlay, c.id).record());
+        w.finish()
+    };
+    let unknown = {
+        let mut w = slip_model::container::Writer::new(*b"JRNL", 1);
+        w.section(1, &Journal::of_write(&c.overlay, c.id).record()).section(2, b"?");
+        w.finish()
+    };
+    for bytes in [empty.to_bytes(), newer, unknown] {
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
         assert!(matches!(recover(&own_w(), &w, &w, &w), Err(WriteError::Journal(_))));
+        assert!(matches!(discard_interrupted(&w), Err(WriteError::Journal(_))));
+        assert_eq!(w.0.borrow().journal.as_ref(), Some(&bytes), "kept");
+        assert!(w.0.borrow().log.iter().all(|(op, _)| *op == "journal"));
     }
-    assert!(w.0.borrow().log.iter().all(|(op, _)| *op == "journal"));
+}
+
+// §7.3 step 2: a journal that is not whole (empty, a prefix of one, a
+// byte changed, bytes of no format) was cut short before its publish
+// returned: `recover` removes it, says so, and touches nothing else. Kills
+// "recover reads a short journal as nothing to recover and leaves it".
+#[test]
+fn s7_3_recover_removes_an_interrupted_journal() {
+    let c = case();
+    let whole = Journal::of_write(&c.overlay, c.id).to_bytes();
+    let mut cut: Vec<Vec<u8>> = vec![b"garbage".to_vec(), vec![0; 33], vec![0; whole.len()]];
+    cut.extend((0..whole.len()).map(|n| whole[..n].to_vec()));
+    let mut flipped = whole.clone();
+    flipped[40] ^= 1;
+    cut.push(flipped);
+    // An earlier Slip's record, cut short.
+    let record = Journal::of_write(&c.overlay, c.id).record();
+    cut.push(record[..record.len() - 1].to_vec());
+    for bytes in cut {
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        let r = recover(&own_w(), &w, &w, &w);
+        assert_eq!(
+            r,
+            Ok(Some(Recovered { interrupted: true, ..Recovered::default() })),
+            "{} bytes",
+            bytes.len()
+        );
+        assert_eq!(w.0.borrow().journal, None, "{} bytes", bytes.len());
+        assert!(w.0.borrow().log.iter().all(|(op, _)| matches!(*op, "journal" | "unjournal")));
+        assert!(!image(&c, &w));
+        // The same through discard_interrupted.
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        assert_eq!(discard_interrupted(&w), Ok(true));
+        assert_eq!(w.0.borrow().journal, None);
+        assert_eq!(discard_interrupted(&w), Ok(false));
+    }
+    // A whole journal is not discarded; an earlier Slip's whole record is
+    // whole.
+    for bytes in [whole, record] {
+        let w = c.world.healthy();
+        w.0.borrow_mut().journal = Some(bytes.clone());
+        assert_eq!(discard_interrupted(&w), Ok(false));
+        assert_eq!(w.0.borrow().journal, Some(bytes.clone()));
+        recover_fully(&c, &w);
+    }
+}
+
+// §7.3 step 2: power lost during the publish, after any number of the
+// journal's bytes: no file of the tree was touched (the publish returns
+// before step 3), the journal left is interrupted, `recover` removes it,
+// and a write then succeeds.
+#[test]
+fn s7_3_a_torn_publish_leaves_an_interrupted_journal() {
+    let c = case();
+    let len = Journal::of_write(&c.overlay, c.id).to_bytes().len();
+    for n in 0..len {
+        let w = c.world.healthy();
+        w.0.borrow_mut().torn = Some(n);
+        assert!(run_write(&c, &w).is_err());
+        let publish = w.0.borrow().log.iter().position(|(op, _)| *op == "publish").unwrap();
+        assert!(
+            w.0.borrow().log[..publish]
+                .iter()
+                .all(|(op, _)| !matches!(*op, "create" | "rename" | "remove")),
+            "a tree operation before the publish"
+        );
+        assert_eq!(w.0.borrow().log.len(), publish + 1, "nothing after the lost power");
+        let w = w.healthy();
+        w.0.borrow_mut().torn = None;
+        let r = recover(&own_w(), &w, &w, &w).unwrap().unwrap();
+        assert!(r.interrupted, "{n} bytes");
+        assert_eq!(w.0.borrow().journal, None);
+        assert!(!image(&c, &w));
+        assert_eq!(run_write(&c, &w), Ok(3));
+        assert!(image(&c, &w));
+    }
+}
+
+// The hazard of `spec/harness.md` §11 on the journal: a journal that reads
+// as absent for a while. `write` still refuses (its publish is exclusive)
+// and touches nothing; `recover` finds nothing while it reads as absent,
+// then recovers.
+#[test]
+fn s7_3_a_journal_read_as_absent() {
+    let c = case();
+    for lies in 1..4 {
+        let w = c.world.healthy();
+        {
+            let mut s = w.0.borrow_mut();
+            s.journal = Some(Journal::of_write(&c.overlay, c.id).to_bytes());
+            s.journal_lies = lies;
+        }
+        assert!(matches!(run_write(&c, &w), Err(WriteError::Journal(_))));
+        assert!(
+            w.0.borrow().log.iter().all(|(op, _)| !matches!(*op, "create" | "rename" | "remove")),
+            "lies {lies}"
+        );
+        assert!(w.0.borrow().journal.is_some());
+        for _ in 1..lies {
+            assert_eq!(recover(&own_w(), &w, &w, &w), Ok(None));
+        }
+        recover_fully(&c, &w);
+    }
 }
 
 // The journal's record (§7.3 step 2): round trip, and every rule of its
@@ -1326,7 +1467,21 @@ fn s7_3_journal_record() {
     };
     let j = Journal { overlay: id, files: vec![entry(b"/a/b"), entry(b"/a/c")] };
     let bytes = j.to_bytes();
+    // A JRNL container, version 1, the record its section 1.
+    assert_eq!(&bytes[..8], &slip_model::container::MAGIC);
+    assert_eq!(&bytes[8..16], b"JRNL\x01\0\0\0");
+    let r = slip_model::container::Reader::open(&bytes, *b"JRNL", 1).unwrap();
+    assert_eq!(r.section(1), Some(&j.record()[..]));
     assert_eq!(Journal::from_bytes(&bytes), Ok(j.clone()));
+    assert_eq!(Journal::read(&bytes), Ok(Read::Whole(j.clone())));
+    // An earlier Slip's journal: the record alone.
+    assert_eq!(Journal::read(&j.record()), Ok(Read::Whole(j.clone())));
+    for n in 0..bytes.len() {
+        assert!(matches!(Journal::read(&bytes[..n]), Ok(Read::Interrupted(_))), "{n}");
+    }
+    for n in 0..j.record().len() {
+        assert!(matches!(Journal::read(&j.record()[..n]), Ok(Read::Interrupted(_))), "{n}");
+    }
     assert!(Journal::from_bytes(&bytes[..bytes.len() - 1]).is_err());
     assert!(Journal::from_bytes(&[bytes.clone(), vec![0]].concat()).is_err());
     let bad = |f: &dyn Fn(&mut Journal), what: &str| {
@@ -1384,19 +1539,16 @@ mod disk {
 
     impl JournalStore for Store {
         fn publish(&self, bytes: &[u8]) -> io::Result<()> {
-            // Exclusive: a hard link fails if the journal exists. The
-            // temporary's name is never used again: made again while the
-            // journal (its old file) exists, the journal could read as the
-            // new temporary on a mount that confuses the names of a
-            // hard-linked file (spec/harness.md §11.2, `tmp-again-after-link`).
-            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let tmp = self.0.join(format!("write.journal.{}.{n}.tmp", std::process::id()));
-            std::fs::write(&tmp, bytes)?;
-            std::fs::File::open(&tmp)?.sync_all()?;
-            let linked = std::fs::hard_link(&tmp, self.0.join("write.journal"));
-            std::fs::remove_file(&tmp)?;
-            linked?;
+            // As the store does (spec/exec.md §2.1 "The journal"):
+            // created exclusively in place, written, synced, the directory
+            // synced.
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.0.join("write.journal"))?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
             std::fs::File::open(&self.0)?.sync_all()
         }
         fn read(&self) -> io::Result<Option<Vec<u8>>> {

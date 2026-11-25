@@ -13,7 +13,7 @@ use slip_model::overlay::{Content, Overlay};
 use slip_model::transform::{Ownership, is_canonical};
 use slip_spelling::{Id, Lookup, SpellingError};
 
-use crate::journal::{Journal, JournalEntry, parent};
+use crate::journal::{Journal, JournalEntry, Read, parent};
 
 /// What `write` needs to know of a path (`Tree::stat`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,11 +172,14 @@ pub enum WriteError {
 
 /// What `recover` did, by path: restored to the pre-image, left (already
 /// the pre-image), reported (neither image; left, and the journal kept).
+/// `interrupted`: the journal was interrupted (§7.3 step 2) and removed;
+/// nothing else was done, and the lists are empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Recovered {
     pub restored: Vec<Vec<u8>>,
     pub left: Vec<Vec<u8>>,
     pub reported: Vec<Vec<u8>>,
+    pub interrupted: bool,
 }
 
 /// The path `Io` errors of the journal name.
@@ -771,7 +774,14 @@ pub fn recover(
     let Some(bytes) = journal.read().map_err(|e| io_error(JOURNAL_PATH, &e, true))? else {
         return Ok(None);
     };
-    let j = Journal::from_bytes(&bytes).map_err(WriteError::Journal)?;
+    let j = match Journal::read(&bytes).map_err(WriteError::Journal)? {
+        Read::Whole(j) => j,
+        Read::Interrupted(_) => {
+            // Cut short before its publish returned: no file was touched.
+            remove_journal(journal).map_err(|e| io_error(JOURNAL_PATH, &e, true))?;
+            return Ok(Some(Recovered { interrupted: true, ..Recovered::default() }));
+        }
+    };
     let mut spelling = Spelling::new(tree);
     spelling.entries(ownership, true)?;
     let mut missing = BTreeSet::new();
@@ -789,4 +799,20 @@ pub fn recover(
         return Err(WriteError::Refused(Refused::JournalNotOwned(f.path.clone())));
     }
     restore(&j, &missing, tree, blobs, journal).map(Some).map_err(|(p, e)| io_error(&p, &e, true))
+}
+
+/// Removes the journal if it is interrupted (§7.3 step 2): `true`. A whole
+/// journal, or none: `false`, nothing done. A malformed one: `Journal`,
+/// kept.
+pub fn discard_interrupted(journal: &dyn JournalStore) -> Result<bool, WriteError> {
+    let Some(bytes) = journal.read().map_err(|e| io_error(JOURNAL_PATH, &e, true))? else {
+        return Ok(false);
+    };
+    match Journal::read(&bytes).map_err(WriteError::Journal)? {
+        Read::Whole(_) => Ok(false),
+        Read::Interrupted(_) => {
+            remove_journal(journal).map_err(|e| io_error(JOURNAL_PATH, &e, true))?;
+            Ok(true)
+        }
+    }
 }
