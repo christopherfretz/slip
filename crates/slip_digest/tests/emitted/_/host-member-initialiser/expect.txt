@@ -1,0 +1,4 @@
+# The default member initialiser's unit (the field the instantiation
+# made holds its initialiser there, digest-kinds §11.4).
+marked-a A<int>::x::<default_argument 0>
+marked-a U<int>::x::<default_argument 0>

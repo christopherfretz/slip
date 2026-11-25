@@ -214,6 +214,7 @@ mod decl_class;
 mod decl_func;
 mod decl_scope;
 mod demand;
+mod emitted;
 mod enclosing;
 mod expr;
 mod expr_core;

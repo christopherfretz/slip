@@ -68,6 +68,10 @@ pub(crate) struct Written {
     /// name is not one a namespace has. `names::names` reports a view unit
     /// as `<denotes> (the owned part of <namespace>)` (WP-140 review F4).
     pub denotes: Option<String>,
+    /// Whether the unit holds the definition of an entity the translation
+    /// unit emits unreferenced (`emitted.rs`, WP-155): `Unit::EMITTED`,
+    /// part of no digest.
+    pub emitted: bool,
 }
 
 /// Every declaration that is the first of a unit, in arena order
@@ -585,8 +589,9 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
     let content = matches!(info(w.ast.decls.get(e).kind()).role, Role::Content(_));
     let outside = !content && outside_only(w, e);
     let read = if outside { canonical_decl(w, e) } else { w.representative(e) };
-    let hashed = if content {
-        w.content_hash(e)
+    let (hashed, emits) = if content {
+        let h = w.content_hash(e);
+        (h, w.content_emits.get(&e).cloned().unwrap_or_default())
     } else {
         // `local::stream_source`, which numbering an owner reads from.
         let from = if outside { read } else { read_decl(w, e) };
@@ -598,11 +603,12 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         // The list comes after the unit stream, whose end is `enclosing`
         // (digest-kinds §1.7, §4.4 "Spellings" item 6).
         crate::own_spelling::write_unit_list(w, &mut s);
+        let emits = std::mem::take(&mut w.unit.emits);
         w.unit = saved;
         #[cfg(test)]
         tests::count_read(e);
         let h = s.finish(UNIT_TAG);
-        w.hashed(h)
+        (w.hashed(h), emits)
     };
     let (key, kind, key_cause) = match w.key(e) {
         KeyRes::Key { id, kind, cause } => (id, kind, cause),
@@ -637,6 +643,8 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         }
     };
     let entity = Some(e);
+    // Rule 1 of the mark "emitted unreferenced" (`emitted.rs`, WP-155).
+    let emitted = crate::emitted::written(w, e, emits);
     Some(Written {
         entity,
         read: Some(read),
@@ -652,6 +660,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         collided: false,
         view: None,
         denotes: None,
+        emitted,
     })
 }
 
@@ -886,6 +895,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         default_argument: None,
         view: None,
         denotes: None,
+        emitted: false,
     }
 }
 

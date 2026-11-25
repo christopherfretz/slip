@@ -9,7 +9,7 @@ use crate::hash::tagged_digest;
 use crate::wire::Encoder;
 
 /// The digest scheme this crate reads and writes (`Digests::scheme`).
-pub const SCHEME: u64 = 2;
+pub const SCHEME: u64 = 3;
 
 /// Tag of a group's digest: `H("slip.group.v1", list<Unit>)`.
 pub const GROUP_TAG: &str = "slip.group.v1";
@@ -36,16 +36,29 @@ pub struct Unit {
     /// The entity's mapped `KeyId` (`spec/digest.md` §3.4).
     pub key: Digest,
     pub digest: Digest,
-    /// Bit 0: indeterminate. Other bits are zero.
+    /// Bit 0: indeterminate. Bit 1: emitted unreferenced (WP-155). Other
+    /// bits are zero.
     pub flags: u64,
 }
 
 impl Unit {
     /// The flag of a unit whose digest cannot be trusted (`spec/digest.md` §10).
     pub const INDETERMINATE: u64 = 1;
+    /// The flag of a unit that holds the definition of an entity the
+    /// translation unit emits whether or not anything refers to it
+    /// (`spec/digest.md` §11, `spec/verify.md` §4 step 3; WP-155). Part
+    /// of no unit's digest; part of its group's.
+    pub const EMITTED: u64 = 2;
+    /// Every flag bit a unit may carry.
+    pub const FLAGS: u64 = Unit::INDETERMINATE | Unit::EMITTED;
 
     pub fn is_indeterminate(&self) -> bool {
         self.flags & Unit::INDETERMINATE != 0
+    }
+
+    /// Whether the unit carries [`Unit::EMITTED`].
+    pub fn is_emitted(&self) -> bool {
+        self.flags & Unit::EMITTED != 0
     }
 }
 
@@ -100,12 +113,13 @@ pub struct Digests {
 }
 
 /// `H("slip.group.v1", list<Unit>)` over units sorted and without
-/// duplicates, which the caller ensures.
+/// duplicates, which the caller ensures. A unit's flags are hashed
+/// without bit 1 (`Unit::EMITTED`, WP-155): the mark is part of no digest.
 pub fn group_digest(units: &[Unit]) -> Digest {
     let mut e = Encoder::new();
     e.count(units.len());
     for unit in units {
-        e.digest(&unit.key).digest(&unit.digest).uv(unit.flags);
+        e.digest(&unit.key).digest(&unit.digest).uv(unit.flags & !Unit::EMITTED);
     }
     tagged_digest(GROUP_TAG, e.as_bytes())
 }

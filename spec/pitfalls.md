@@ -73,7 +73,7 @@ expect.txt      what each tree must give
   - `mismatch <kind> <entity>`: the state is `mismatch` and the report
     has a finding of that kind whose `name` is `<entity>`. With
     ` @ <file>:<line>` the finding's `where.post` (`where.pre` for
-    `removed`, and for a `changed` of `verify.md` §4 step 4 whose
+    `removed` and `derived_only_pre`, and for a `changed` of `verify.md` §4 step 4 whose
     entity the subject declares and the tree derives) must be that
     file, relative to the tree, and that line ("Places" below).
     A tree may have several such lines (`bad-4:` twice): every one must
@@ -265,6 +265,7 @@ Setting: one entity is renamed in place; `declared.txt` is one `relocate`.
 | R21 | A local class renamed whose name the program reads (`__PRETTY_FUNCTION__` in a member). Nothing declared: a local type is no unit and its name is not digested (`digest.md` §4.3) | where nothing reads the name, renamed: `verified` | renamed where it is read | `good-2: none`; `mismatch changed` the function |
 | R22 | An elaborated-type-specifier left after a class rename declares a new class: `struct Old *` in a namespace-scope function's parameter ([basic.scope.pdecl]/7), or `friend struct Old;` ([namespace.memdef]/3), which befriends the new class instead. The class analogue of R11's left friend | renamed | left | `mismatch indeterminate` the class, no place (the stale class and the renamed one have one key), and `mismatch changed` the user: the caller that now takes another overload, or the member whose access probe now fails in substitution |
 | R23 | A pragma that names the renamed function left: `#pragma weak f`, `#pragma redefine_extname f sym`. The front end attaches the attribute to the declaration the pragma names, so this is not `verify.md` §8's names in strings | the pragma renamed | left | `mismatch changed` the renamed function (it loses `weak` or its symbol name). `redefine_extname` applies to C language linkage, whose renaming waits on the rule of `verify.md` §2.3 |
+| R24 | The rename changes what an unevaluated operand instantiates (WP-155, `verify.md` §4 step 3): `T::s()` in a default template argument, a substitution that fails, a partial specialisation that does not match, or `decltype`, found the member template `n::S::s` and instantiated it (its return type is deduced from its body), and that body instantiated `Reg<int>::r`, whose initialiser prints before `main`. Renamed, `T::s()` finds `Base::s`: every declared unit is the same | — | renamed (`bad` to `bad-4`, one per form); subjects 5 to 8 the mirror, `h` renamed `s`; subject 9 the member template a `constructor` function, subject 10 `used` | `good: none` each; `mismatch derived_only_pre Reg<int>::r::<definition>` (subjects 1 to 4), `derived_only_post` (5 to 8), `derived_only_pre n::S::s<int>()::<definition>` (9, 10). Each `bad` tree verified before WP-155 (review of WP-153, part A) |
 
 ## 4. Edits that rename nothing
 
@@ -296,6 +297,7 @@ layout only.
 | E21 | Reordering `#include`s where the preprocessor decides: a `#define` that a later header tests; a header moved into a `#pragma pack` region; include guards replaced by `#pragma once` where another header tests the guard macro. Distinct from E04: no lookup differs, the tokens do | an include nothing tests moved; a header moved across a `#pragma pack` region without entering it; `#pragma once` for a guard nothing tests | the other | `mismatch changed` the entity the tokens make: the typedef and its user, the packed class, the function |
 | E22 | Spellings taken as equivalent that are not, one subject each: `S() {}` to `S() = default;`; `0` to `nullptr`; `push_back(5)` to `emplace_back(5)` with an explicit constructor; `for (auto x : a)` to `for (auto &x : a)`; a cast to an rvalue removed from the `return` of a reference parameter; `enum` to `enum class`, its uses qualified; a cast to an rvalue added to the `return` of a local, which disables the named return value optimisation | — | respelled | `good: none` each; `mismatch changed` the user, and the class or the enumeration where it is the one respelled |
 | E23 | Reordering base classes: initialisation order ([class.base.init]/13.2) and layout follow the base-specifier-list. Name lookup does not ([class.member.lookup]) | — | reordered | `good: none`: the base order is the class; `mismatch changed` the class |
+| E24 | Qualifying a call stops argument-dependent lookup, so a template it found, viable but beaten by the non-template the call keeps, is no longer considered; its default argument had instantiated `Tr<lib::X>::r`, whose initialiser prints before `main` (WP-155, `verify.md` §4 step 3) | subject 2: the candidate instantiated only a trait's `static constexpr` member, which nothing emits | `f(x, 0)` to `::f(x, 0)` | `good: none`; `mismatch derived_only_pre Tr<lib::X>::r::<definition>`; `good-2: verified` |
 
 ## 5. What a row is for
 

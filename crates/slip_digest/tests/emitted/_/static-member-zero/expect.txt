@@ -1,0 +1,2 @@
+# Since the fix round (rule 2): `= 0` and `&Z<int>::z` are plainly
+# constant; nothing is marked.

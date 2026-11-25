@@ -183,7 +183,10 @@ fn write_part(
     let saved = w.take_unit();
     let mut stream = Stream::new();
     body(w, &mut stream);
+    let emits = std::mem::take(&mut w.unit.emits);
     w.unit = saved;
+    // Rule 1 of the mark "emitted unreferenced" (`emitted.rs`, WP-155).
+    let emitted = crate::emitted::written(w, e, emits);
     let finished = stream.finish(UNIT_TAG);
     let h = w.hashed(finished);
     let disc_digest = disc.map(|n| {
@@ -224,6 +227,7 @@ fn write_part(
         collided: false,
         view: None,
         denotes: None,
+        emitted,
     }
 }
 

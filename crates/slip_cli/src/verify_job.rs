@@ -217,7 +217,7 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
                 (post.unstable, post.panicked) = locate::unplaced(pre_side.as_ref(), &post_side);
             }
             _ => {
-                post.by_kind = [0; 6];
+                post.by_kind = [0; 8];
                 v = unverifiable("post-image: changed during the job", pre.id, rules_id);
             }
         }
@@ -619,7 +619,7 @@ struct Post {
     /// `verify.reparsed`.
     reparsed: u64,
     /// The findings of each kind, by [`kind_index`].
-    by_kind: [u64; 6],
+    by_kind: [u64; 8],
     /// Step 1's names digests, and from step 2 the notes (§4.4, WP-112).
     names: Names,
     /// Step 1's names digests with each key's file and name, by key.
@@ -653,7 +653,7 @@ impl Post {
             digests: output.digests,
             differing: 0,
             reparsed: 0,
-            by_kind: [0; 6],
+            by_kind: [0; 8],
             names: Names {
                 units: output
                     .name_strings
@@ -705,6 +705,9 @@ impl Post {
             ("verify.findings", v.total),
             ("verify.derived.only_pre", v.only_pre),
             ("verify.derived.only_post", v.only_post),
+            // WP-155: the one-sided derived keys step 3 found emitted.
+            ("verify.derived.only_pre.emitted", by_kind[kind_index(FindingKind::DerivedOnlyPre)]),
+            ("verify.derived.only_post.emitted", by_kind[kind_index(FindingKind::DerivedOnlyPost)]),
             ("verify.exemptions.used", v.used.len() as u64),
             ("verify.reparsed", reparsed),
         ];
@@ -745,14 +748,16 @@ impl Post {
     }
 }
 
-/// The six kinds, in the order of `by_kind`, with their counter word.
-const KINDS: [(FindingKind, &str); 6] = [
+/// The eight kinds, in the order of `by_kind`, with their counter word.
+const KINDS: [(FindingKind, &str); 8] = [
     (FindingKind::Changed, "changed"),
     (FindingKind::Removed, "removed"),
     (FindingKind::Added, "added"),
     (FindingKind::Indeterminate, "indeterminate"),
     (FindingKind::DerivedChanged, "derived_changed"),
     (FindingKind::DerivedIndeterminate, "derived_indeterminate"),
+    (FindingKind::DerivedOnlyPre, "derived_only_pre"),
+    (FindingKind::DerivedOnlyPost, "derived_only_post"),
 ];
 
 fn kind_index(kind: FindingKind) -> usize {

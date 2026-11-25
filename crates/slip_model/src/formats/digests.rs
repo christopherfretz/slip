@@ -126,8 +126,11 @@ pub(super) fn violation(d: &Digests, status_ok: bool) -> Option<(Loc, &'static s
     }
     // 6c.
     for (i, _, units) in listed() {
-        if let Some(j) = units.iter().position(|u| u.flags & !Unit::INDETERMINATE != 0) {
-            return Some((Loc::UnitFlags(i, j), "unit flags have a bit other than bit 0 set"));
+        if let Some(j) = units.iter().position(|u| u.flags & !Unit::FLAGS != 0) {
+            return Some((
+                Loc::UnitFlags(i, j),
+                "unit flags have a bit other than bits 0 and 1 set",
+            ));
         }
     }
     // 6d.

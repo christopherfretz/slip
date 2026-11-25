@@ -30,21 +30,28 @@ pub enum FindingKind {
     DerivedChanged = 4,
     /// A derived unit both images have, indeterminate in either.
     DerivedIndeterminate = 5,
+    /// A derived unit marked emitted unreferenced in the pre-image only
+    /// (`spec/verify.md` §4 step 3; WP-155).
+    DerivedOnlyPre = 6,
+    /// A derived unit marked emitted unreferenced in the post-image only.
+    DerivedOnlyPost = 7,
 }
 
 impl FindingKind {
     /// The place of the kind in the order of findings (`spec/verify.md` §6):
     /// `changed` 0, `removed` 1, `added` 2, `derived_changed` 3,
-    /// `indeterminate` 4, `derived_indeterminate` 5. Not the kind's number
-    /// in the format.
+    /// `derived_only_pre` 4, `derived_only_post` 5, `indeterminate` 6,
+    /// `derived_indeterminate` 7. Not the kind's number in the format.
     pub fn rank(self) -> u8 {
         match self {
             FindingKind::Changed => 0,
             FindingKind::Removed => 1,
             FindingKind::Added => 2,
             FindingKind::DerivedChanged => 3,
-            FindingKind::Indeterminate => 4,
-            FindingKind::DerivedIndeterminate => 5,
+            FindingKind::DerivedOnlyPre => 4,
+            FindingKind::DerivedOnlyPost => 5,
+            FindingKind::Indeterminate => 6,
+            FindingKind::DerivedIndeterminate => 7,
         }
     }
 }
