@@ -63,7 +63,7 @@ use slip_kiln::kiln::ast::types::{
     ArgView, ExcSpec, Nns, TemplateArg, TemplateName, TypeOfOperand, TypeView,
 };
 use slip_kiln::kiln::ast::{
-    Ast, ArgListId, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
+    ArgListId, Ast, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
 };
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
@@ -305,6 +305,14 @@ pub(crate) fn number(w: &mut Walk<'_>) {
 /// ([`PLACEHOLDER`]), an explicit instantiation of a function, variable
 /// or member ([`EXPLICIT_INSTANTIATION`]), a declarator's qualifier
 /// ([`QUALIFIER`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per declaration kind, exhaustive (WP-156 fix round 1)"
+)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "the kinds that hold no written type are listed apart, by reason"
+)]
 fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
     let ast = w.ast;
     let n = ast.decls.get(d);
@@ -321,8 +329,7 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
             if explicit_instantiation_unkept(w, d) {
                 out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
             }
-            if ast.decls.function(d).is_some_and(|f| f.spec.return_deduced()) && tu(w).placeholder
-            {
+            if ast.decls.function(d).is_some_and(|f| f.spec.return_deduced()) && tu(w).placeholder {
                 out.push(Op::Unkept(PLACEHOLDER));
             }
             if let Some(q) = n.ty() {
@@ -336,7 +343,9 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
             }
         }
         DeclKind::ParmVar => param(w, d, out),
-        DeclKind::Var | DeclKind::VarTemplateSpecialization | DeclKind::VarTemplatePartialSpecialization => {
+        DeclKind::Var
+        | DeclKind::VarTemplateSpecialization
+        | DeclKind::VarTemplatePartialSpecialization => {
             if explicit_instantiation_unkept(w, d) {
                 out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
             }
@@ -772,14 +781,15 @@ fn holds(ast: &Ast, q: QualType, memo: &mut HashMap<TypeId, bool>, depth: u32) -
     let types = &ast.types;
     let not_dep = |e: ExprId| !ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION);
     let h = match types.view(t) {
-        TypeView::Decltype { expr, .. } | TypeView::TypeOf { operand: TypeOfOperand::Expr(expr), .. } => {
+        TypeView::Decltype { expr, .. }
+        | TypeView::TypeOf { operand: TypeOfOperand::Expr(expr), .. } => {
             not_dep(expr) && !literal(ast, expr)
         }
         TypeView::TemplateSpecialization { args: l, alias, .. } => {
             (alias && !types.flags(t).is_instantiation_dependent()) || args_hold(ast, l, memo, d)
         }
-        TypeView::Auto { args: Some(l), .. } => args_hold(ast, l, memo, d),
-        TypeView::DependentTemplateSpecialization { args: l, .. } => args_hold(ast, l, memo, d),
+        TypeView::Auto { args: Some(l), .. }
+        | TypeView::DependentTemplateSpecialization { args: l, .. } => args_hold(ast, l, memo, d),
         TypeView::Function(p) => {
             holds(ast, p.ret(), memo, d)
                 || types.params(&p).iter().any(|&x| holds(ast, x, memo, d))
@@ -844,11 +854,14 @@ fn nns_holds(ast: &Ast, n: NnsId, memo: &mut HashMap<TypeId, bool>, depth: u32) 
     }
     match ast.types.nns_view(n) {
         Nns::Type { prefix, ty, .. } => {
-            prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1)) || holds(ast, ty, memo, depth + 1)
+            prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1))
+                || holds(ast, ty, memo, depth + 1)
         }
         Nns::Namespace { prefix, .. }
         | Nns::NamespaceAlias { prefix, .. }
-        | Nns::Identifier { prefix, .. } => prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1)),
+        | Nns::Identifier { prefix, .. } => {
+            prefix.is_some_and(|p| nns_holds(ast, p, memo, depth + 1))
+        }
         Nns::Splice(_) => true,
         Nns::Global => false,
     }
@@ -969,6 +982,7 @@ fn push(w: &mut Walk<'_>, op: Op, out: &mut Vec<Op>) {
 /// (the module documentation; modelled on Kiln's
 /// `TypeContext::written_exprs`, which also follows a deduced type and
 /// reads array bounds).
+#[allow(clippy::match_same_arms, reason = "one arm per TypeView variant, each with its reason")]
 pub(crate) fn scan(w: &mut Walk<'_>, q: QualType, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
@@ -1150,6 +1164,14 @@ fn target<'w>(w: &'w mut Walk<'_>) -> &'w mut Vec<Op> {
 
 /// The hook of `expr::write_node`: the holders of expression `e`, met in
 /// a unit's own stream.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per expression kind, exhaustive (WP-156 fix round 1)"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "e expression, n node, k kind, x arena, as own_spelling"
+)]
 pub(crate) fn expr_node(w: &mut Walk<'_>, e: ExprId) {
     if !collecting(w) {
         return;
@@ -1549,8 +1571,7 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
     };
     w.unit.operands.writing -= 1;
     let nested = std::mem::replace(&mut w.unit.operands.nested, saved).unwrap_or_default();
-    let written =
-        site == ALIAS_ARGS || site == UNKEPT || w.op_refs != refs || es.cause().is_some();
+    let written = site == ALIAS_ARGS || site == UNKEPT || w.op_refs != refs || es.cause().is_some();
     let mine = std::mem::replace(&mut w.names, outer_names);
     if written && let (Some(outer), Some(mine)) = (w.names.as_mut(), mine) {
         for &b in mine.as_bytes() {

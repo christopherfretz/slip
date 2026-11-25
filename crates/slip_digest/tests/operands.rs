@@ -78,12 +78,7 @@ fn one(dir: &Path) -> Result<(), String> {
     let mut problems = Vec::new();
     for (side, d) in [("A", &a), ("B", &b)] {
         for (counter, want) in &counts {
-            let got = d
-                .output
-                .counters
-                .iter()
-                .find(|c| &c.name == counter)
-                .map_or(0, |c| c.value);
+            let got = d.output.counters.iter().find(|c| &c.name == counter).map_or(0, |c| c.value);
             if got != *want {
                 problems.push(format!("side {side}: counter `{counter}` is {got}, not {want}"));
             }
