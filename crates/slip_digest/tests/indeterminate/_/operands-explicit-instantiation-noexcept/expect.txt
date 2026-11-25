@@ -1,0 +1,3 @@
+indeterminate g1<int>(int)::<operands>
+indeterminate g3<long>(long)::<operands>
+indeterminate G6<int>::f()::<operands>
