@@ -6,20 +6,85 @@ run also writes `bench/results/llvm.rename.<target>.json`; this file
 states what that file does not (the host, the front-end configuration,
 the comparison with demo-2.md §2) and quotes what is read from it.
 
-Every value below is to be filled by the run. Nothing here has been run.
+Every value marked "to be filled by the run" waits for a run that meets
+demo-2.md §1. One attempt has been made (run 1, attempt a, below): it
+ended `not_verified`, for two reasons that are both recorded under
+"Findings", and no run has been accepted yet.
 
 ## Common to the four runs
 
 | Field | Value |
 |---|---|
-| Host: cores, memory, the container's memory limit | to be filled by the run |
-| Jobserver tokens (`scripts/jobserver.sh`) | to be filled by the run |
-| Corpus: name, pin, observers in the plan | to be filled by the run |
-| Volume of the corpus directory (folds case or not; `inputs.respelled` seen) | to be filled by the run |
+| Host: cores, memory, the container's memory limit | attempt 1a: 24 cores; memory budget reported by `slip` 27,058,293,965 bytes (the container's limit is 28 GB) |
+| Jobserver tokens (`scripts/jobserver.sh`) | attempt 1a: 6, the run at `-j 4` |
+| Corpus: name, pin, observers in the plan | attempt 1a: `llvm`, `llvmorg-19.1.7`, 4,061 |
+| Volume of the corpus directory (folds case or not; `inputs.respelled` seen) | attempt 1a: a read-only copy on the container's own disk (does not fold case); `inputs.respelled` not seen |
 
 ## Run 1 — §2.1, a function in a header everything includes
 
 `llvm::getAsUnsignedInteger` to `parseAsUnsignedInteger`.
+
+### Attempt a (2026-11-25): `not_verified`, not accepted
+
+Started before the precondition of demo-2.md §1 held ("every `ok` unit
+has digests with no indeterminate unit, or each remaining cause is
+listed"): the run is recorded for what it measured and found, not as
+run 1.
+
+| Field | Value |
+|---|---|
+| Date (UTC, start and end) | 2026-11-25T01:58:32Z to 2026-11-25T07:31:58Z |
+| Slip: version and commit | `0.0.0`, `52c1bc18` (release build; store version 1) |
+| Kiln: version and the pin's commit | `1.3.0`, `4a83f6e3c` |
+| Command | `SLIP_CORPUS_DIR=<copy> xtask corpus rename llvm --from llvm::getAsUnsignedInteger --to parseAsUnsignedInteger --kind function -j 4 --slip <release slip>` (no `--accept`, no `--build`) |
+| Exit status | 1 (`corpus rename: FAILED (state)`) |
+| Wall time of the whole command | 20,005.2 s (5 h 33 min) |
+
+```
+plan 27a4c3c6689c5049f3470838dbfc3a0fd391c5e6d57104bd84f673c5ae930cc7
+observers 4061
+transform e9bf07830b1f0b9d3f2fd60f768677750c222ba661a65e0f33b692c4347b35f6
+round 1
+map: selected 4061, ok 4059, not ok 2, failed runs 0
+edits 3a6e79c0c0623ac37ad0eb39c4e0eebf4d1d6196d9282566c049bd639d8d7dbc
+state accepted
+edit 28 in 11 file(s); shared 4; most observers 3924; nested 0
+kept 0; unresolved 0
+declared 5dfadb48dbab898464821adcacd2064b4d9ba1c8d5ebb17f0402d6545544a3ae: rules 1, exempt 0
+overlay 20af7b432c4372d8898a233207dcf639debe643401cb6d98bb0ff131d2f99db8: files 11, spellings 26
+check state: FAIL (state not_verified, expected verified or verified_with_residue)
+check determinism: not run (an earlier check failed)
+check accept: not run (an earlier check failed)
+check build: not run (an earlier check failed)
+check back: not run (an earlier check failed)
+corpus rename: FAILED (state)
+```
+
+Result id `17664749773303131137c3dc18ddfc8c36b912c6efe8aeaa1852eef3fbd6a581`.
+No patch was written.
+
+| Quantity | Value |
+|---|---|
+| Wall time per step | plan 0.5 s; map 4,000.0 s; reduce 1.1 s; apply 0.0 s; verify 15,995.4 s; scan 2.4 s; conclude 0.0 s; write 0.0 s |
+| Coordinator's peak resident size | 47.3 MiB through verify; 124.5 MiB from scan |
+| Map | `peak_rss_max` 833,961,984; `peak_rss_sum` 1,775,890,432; 4 workers at once; 24 cores; CPU 13,097.7 s |
+| Verify | `peak_rss_max` 1,638,559,744; `peak_rss_sum` 3,097,112,576; 4 workers at once; 24 cores; CPU 59,708.3 s |
+| `reduce.*` | claims 7,964 (all `replace`); sites 28; edits 28; shared 4; `max_observers` 3,924; files 11; `failed_runs` 0; rules 1; shards 4,059; unparsed 2 |
+| Tally of verdicts; stale observers; unused rules | selected 4,061; unparsed 2; verified 63; mismatch 3,996; unchanged 0; stale 0; unused rules 0 |
+| Spelling obligations | 26; passed 23; failed 3 |
+| Residue by category; mentions | `not_planned` 7; `mention` 1; `dependent` 0; `not_compiled` 0 |
+| `not_plain_at_macro` | 0 |
+
+Against demo-2.md §2.1: 28 tokens in 11 files (expected about 28 in
+12); the declaration in `StringRef.h` one edit claimed by 3,924
+observers; residue `not_planned` at Mips (1), Sparc (2), `mlir` (1),
+`lldb` (1), `clang-tools-extra` (2) and the mention at
+`StringRef.cpp:491:10`, as predicted; the state `not_verified` where
+`verified_with_residue` was expected. The two observers not parsed
+are `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
+`ClangObjectiveCFuzzer.cpp` (`unknown type name 'uint8_t'`).
+
+### The run
 
 | Field | Value |
 |---|---|
@@ -229,4 +294,37 @@ made.
 ## Findings
 
 Every prediction of demo-2.md §2 that did not hold, with what differed
-(WP-079 "Tests"): to be filled by the run.
+(WP-079 "Tests").
+
+**Run 1, attempt a.** The plan, the map, the reduction, the edit set
+and the residue are as demo-2.md §2.1 predicts. The state is
+`not_verified` for two reasons, neither a wrong answer:
+
+1. **The precondition was not met.** 3,996 of 4,059 observers have a
+   mismatch made only of `indeterminate` (and derived) findings, in the
+   thousands per large unit: the base image has units whose digest is
+   not determined (causes seen: `kiln.pattern_mem_initializers`,
+   `spelling.fold_operator`, `spelling.friend_name`,
+   `spelling.destructor_name`, and units with errors). A unit that is
+   indeterminate before the change cannot be compared after it, and
+   Slip says so. `verified` over the whole corpus waits for the
+   packages that close those causes (`docs/wp/WP-163.md`,
+   `docs/wp/WP-156.md`, `docs/wp/WP-143.md`, `docs/wp/WP-138.md`,
+   `docs/wp/WP-154.md`).
+2. **One observer where the declared rule is not applied.** In
+   `llvm/lib/Target/AArch64/AArch64RegisterInfo.cpp` the three spelling
+   obligations fail with `denotes_other` (`StringRef.h:467:13`,
+   `MIRYamlMapping.h:154:9` and `:170:9`: "meant 3fab1885d5fb1942,
+   found llvm::parseAsUnsignedInteger(...)"). That unit first reaches
+   `StringRef.h` through
+   `build/lib/Target/AArch64/AArch64GenRegisterInfo.inc`, a generated
+   file outside the owned root; by the per-inclusion rule of
+   `spec/verify.md` §2.1 the header is then read-only in that unit, the
+   function is a dependency's entity there, and the rule is not
+   applied to it. The answer is loud (the rule is only ever withheld)
+   and is the specification as written; it is wrong for every code
+   base whose build generates files that include owned headers. The
+   package is `docs/wp/WP-118.md` (a `rebuilt` class of file).
+
+Not a prediction of §2 but found by the attempt: at `-j 4` the verify
+phase took 4.4 hours against 67 minutes for the map phase.
