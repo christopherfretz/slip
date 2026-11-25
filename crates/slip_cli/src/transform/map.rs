@@ -145,7 +145,11 @@ pub fn rename_request(
     let mut request = Transform {
         kind: TransformKind::Rename,
         // A placeholder, for checking the names alone.
-        ownership: Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new() },
+        ownership: Ownership {
+            owned: vec![b"/".to_vec()],
+            readonly: Vec::new(),
+            rebuilt: Vec::new(),
+        },
         indivisible: true,
         rename: Some(Rename {
             target,
@@ -163,7 +167,7 @@ pub fn rename_request(
             String::from_utf8_lossy(value)
         )));
     }
-    request.ownership = commands::ownership(&options.owned, &options.readonly)
+    request.ownership = commands::ownership(&options.owned, &options.readonly, &options.rebuilt)
         .map_err(command_error)?
         .ok_or_else(|| CommandError::Usage("a transform needs `--owned`".to_owned()))?;
     request.validate().map_err(|e| CommandError::Input(format!("the request: {e}")))?;

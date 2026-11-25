@@ -992,6 +992,7 @@ fn s2_1_refused_rule_is_an_input_error() {
     .with_files(Some(Ownership {
         owned: vec![f.root.to_str().unwrap().as_bytes().to_vec()],
         readonly: vec![],
+        rebuilt: Vec::new(),
     }));
     assert_eq!(declared.rules().refused(), Some((1, RULE_ON_SPECIALISATION)));
     std::fs::write(f.path("r.decl"), declared.to_bytes()).unwrap();
@@ -1071,7 +1072,10 @@ fn s8_8_declare_output() {
             d.rules_id()
         )
     );
-    assert_eq!(d.files(), Some(&Ownership { owned: vec![real_path(&f, "s")], readonly: vec![] }));
+    assert_eq!(
+        d.files(),
+        Some(&Ownership { owned: vec![real_path(&f, "s")], readonly: vec![], rebuilt: Vec::new() })
+    );
 }
 
 /// The one line of an error of §2.3: `slip: <text file>:<line>: <error>:
@@ -1395,6 +1399,7 @@ fn s8_8_declare_files() {
     let files = Ownership {
         owned: vec![real_path(&f, "s")],
         readonly: vec![real_path(&f, "s/a.h"), real_path(&f, "s/u1.cpp")],
+        rebuilt: Vec::new(),
     };
     assert_eq!(read(&f).files(), Some(&files));
 
@@ -2276,9 +2281,12 @@ fn s2_1_declared_files_spelled_on_disk() {
     f.both("caf\u{e9}/y.h", "int y;\n");
     let plan = f.parse();
     let path = |rel: &str| f.path("s").join(rel).as_os_str().as_encoded_bytes().to_vec();
-    let decl = |readonly: Vec<u8>| {
+    // One entry, read-only or (WP-118 second review SF4) rebuilt.
+    let decl = |entry: Vec<u8>, list: &str| {
         let owned = vec![f.path("s").as_os_str().as_encoded_bytes().to_vec()];
-        let files = Ownership { owned, readonly: vec![readonly] };
+        let (readonly, rebuilt) =
+            if list == "rebuilt" { (vec![], vec![entry]) } else { (vec![entry], vec![]) };
+        let files = Ownership { owned, readonly, rebuilt };
         // A declaration with files has a rule (`DECL`'s invariant): one of
         // a namespace no unit has.
         let id = |s: &str| Name::Identifier(s.as_bytes().to_vec());
@@ -2299,31 +2307,37 @@ fn s2_1_declared_files_spelled_on_disk() {
     args.extend(["--declared", "d.decl"]);
     let lossy = |b: Vec<u8>| String::from_utf8(b).unwrap();
 
-    decl(path("dep"));
+    decl(path("dep"), "readonly");
     let (out, report) = f.verify_report(&plan, &args);
     assert_verdict(&out, &report, "verified");
 
     let before = published();
-    decl(path("nope"));
-    let out = f.verify(&plan, &args);
-    assert_eq!(out.code(), Some(3), "{out:?}");
-    let line = format!(
-        "slip: d.decl: ownership: the readonly entry {} does not exist",
-        lossy(path("nope"))
-    );
-    assert_eq!(out.stderr_lines(), [line.as_str()], "{out:?}");
-    assert_eq!(published(), before, "nothing published");
+    for list in ["readonly", "rebuilt"] {
+        decl(path("nope"), list);
+        let out = f.verify(&plan, &args);
+        assert_eq!(out.code(), Some(3), "{out:?}");
+        let line = format!(
+            "slip: d.decl: ownership: the {list} entry {} does not exist",
+            lossy(path("nope"))
+        );
+        assert_eq!(out.stderr_lines(), [line.as_str()], "{out:?}");
+        assert_eq!(published(), before, "nothing published");
+    }
 
     if common::folding_volume("s2_1_declared_files_spelled_on_disk").is_none() {
         return;
     }
     assert!(std::fs::metadata(f.path("s/DEP")).is_ok(), "the folding root does not fold");
-    for (asked, disk) in [("DEP", "dep"), ("cafe\u{301}", "caf\u{e9}")] {
-        decl(path(asked));
+    for (asked, disk, list) in [
+        ("DEP", "dep", "readonly"),
+        ("cafe\u{301}", "caf\u{e9}", "readonly"),
+        ("DEP", "dep", "rebuilt"),
+    ] {
+        decl(path(asked), list);
         let out = f.verify(&plan, &args);
         assert_eq!(out.code(), Some(3), "{out:?}");
         let line = format!(
-            "slip: d.decl: ownership: the readonly entry {} is not spelled as on disk ({})",
+            "slip: d.decl: ownership: the {list} entry {} is not spelled as on disk ({})",
             lossy(path(asked)),
             lossy(path(disk))
         );

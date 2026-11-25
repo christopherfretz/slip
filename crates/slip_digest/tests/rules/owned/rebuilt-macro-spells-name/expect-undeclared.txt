@@ -1,0 +1,8 @@
+# gen.h read-only: Mine spelled in a read-only file, a dependency entity: a difference.
+removed user(legacy::Mine *)
+removed legacy::Mine
+removed legacy::Mine::v
+added acme::Mine::v
+added acme::Mine
+added user(acme::Mine *)
+added acme (the dependency's part of acme)

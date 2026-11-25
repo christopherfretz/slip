@@ -1,0 +1,2 @@
+rule function | c_linkage | id gen_init | disc-of pre gen_start() | c_linkage | id gen_start
+# WP-118 A5 (R2.2): rebuilt gen.h declares extern "C" gen_start, regenerated as gen_init. A C-linkage entity declared in a rebuilt file is a dependency entity: the rule matches nothing, a difference. Owned, it is renamable (expect-as-owned.txt).

@@ -1,0 +1,4 @@
+spec: edits.md §9.5 rebuilt (WP-118 R7; rebuilt_declaration_is_a_site: a declaration in a rebuilt file is a refused site, `rebuilt`, and no read_only flag)
+from: n::f
+to: g
+kind: function

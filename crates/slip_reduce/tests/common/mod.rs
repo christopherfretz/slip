@@ -47,7 +47,11 @@ pub fn content(path: &[u8]) -> Digest {
 }
 
 fn ownership() -> Ownership {
-    Ownership { owned: vec![b"/s".to_vec()], readonly: vec![b"/s/ro".to_vec()] }
+    Ownership {
+        owned: vec![b"/s".to_vec()],
+        readonly: vec![b"/s/ro".to_vec()],
+        rebuilt: Vec::new(),
+    }
 }
 
 /// A programmable transform's request: owns `/s` but `/s/ro`, divisible.
@@ -594,6 +598,7 @@ impl ShardB {
             names: None,
             negatives: None,
             found: None,
+            rebuilt_use: None,
         }
     }
 }
