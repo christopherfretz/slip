@@ -459,6 +459,37 @@ fn t_cli_3b_overlay_frozen_rebuilt_file_still_declares() {
     assert!(ran.json.contains("\"left\":1,\"left_kept\":1}"), "{}", ran.json);
 }
 
+/// T-cli-3 (b), the overlay half of RB alone (review S3): the rebuilt
+/// `gen.h` lies inside the subject tree (`s/gen.h`, a rebuilt entry under
+/// the owned `s`), not in a build directory beside it. The overlay form
+/// holds no regenerated file wherever it lies: `unverifiable` with RB's
+/// overlay reason.
+#[test]
+fn t_cli_3b_overlay_rebuilt_file_inside_the_subject() {
+    let main_pre = "#include \"lib.h\"\n#include \"gen.h\"\nint main() { old::G g; (void)g; return old::f(); }\n";
+    let main_post = "#include \"lib.h\"\n#include \"gen.h\"\nint main() { old::G g; (void)g; return fresh::f(); }\n";
+    let pre = [("s/lib.h", LIB_PRE), ("s/main.cpp", main_pre), ("s/gen.h", GEN_PRE)];
+    let post = [("s/lib.h", LIB_POST), ("s/main.cpp", main_post)];
+    let observers: &[(&str, &[&str], &str)] = &[("s/main.cpp", &[], "s")];
+    let t = Tree::new("t3b-inside", &pre, &post);
+    let form = Form::Overlay(&["s/lib.h", "s/main.cpp"]);
+    let ran = run(&t, old_to_fresh(), t.files(&[], &["s/gen.h"]), &form, observers);
+    let genp = t.path("s/gen.h").display().to_string();
+    assert_eq!(
+        ran.kinds[0],
+        (
+            VerdictKind::Unverifiable,
+            format!(
+                "post-image: {genp} is rebuilt and still declares an entity under the name rule \
+                 0 says was left; an overlay holds no regenerated file (verify a post tree: slip \
+                 verify --root … --post …)"
+            )
+        ),
+        "{}",
+        ran.text
+    );
+}
+
 /// T-cli-3 (c): the tree form with the build directory under no root: the
 /// rebuilt file is frozen, RB's second reason.
 #[test]
@@ -796,6 +827,48 @@ fn r2_2_declare_c_linkage_redeclared_in_a_rebuilt_file() {
     );
 }
 
+/// R2.2 through `slip declare`, by the spelling location (WP-118 review
+/// N2): a rebuilt `gen.h` macro spells `extern "C" int gen_start();` and
+/// owned `a.cpp` expands it, the only declaration. The name token is
+/// spelled in the rebuilt file, so R2.2's own message, not the general
+/// one. (Kills D3, `c_linkage_in_rebuilt` ignoring the spelling
+/// location, which changes only this message.)
+#[test]
+fn r2_2_declare_c_linkage_spelled_in_a_rebuilt_macro() {
+    let t = Cli::new("r22s");
+    t.write("b/gen.h", "#pragma once\n#define DECL_INIT extern \"C\" int gen_start();\n");
+    t.write(
+        "src/a.cpp",
+        "#include \"../b/gen.h\"\nDECL_INIT\nint user() { return gen_start(); }\n",
+    );
+    t.db(&["src/a.cpp"]);
+    let plan = t.plan();
+    t.write("decl.txt", "relocate gen_start() => :: gen_init\n");
+    let out = t.slip(&[
+        "declare",
+        "--plan",
+        &plan,
+        "--from",
+        "decl.txt",
+        "--out",
+        "decl.bin",
+        "--owned",
+        "src",
+        "--rebuilt",
+        "b",
+        "--store",
+        "store",
+    ]);
+    assert_ne!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        out.stderr.contains(
+            "dependency entity: `gen_start()` is a dependency entity: it has C language linkage \
+             and is declared in a rebuilt file"
+        ),
+        "{out:?}"
+    );
+}
+
 /// T-116 (pending): a definition written in a rebuilt file counts as
 /// defined in owned code (`docs/wp/WP-116.md`, "Out of scope").
 #[test]
@@ -1005,7 +1078,7 @@ fn t_cli_4_rename_refused_in_a_rebuilt_file() {
 }
 
 /// T-cli-7: the command line. A1b (one path in two lists, also through a
-/// link), A1d (`--rebuilt /`), `--rebuilt` without `--owned`, an entry
+/// link; `--owned` and `--rebuilt` too), A1d (`--rebuilt /`), `--rebuilt` without `--owned`, an entry
 /// that does not exist, and `declare`'s warning.
 #[test]
 fn t_cli_7_the_command_line() {
@@ -1036,6 +1109,15 @@ fn t_cli_7_the_command_line() {
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert!(
         out.stderr.contains(&format!("{genp}: given as --readonly and as --rebuilt")),
+        "{out:?}"
+    );
+
+    // WP-118 review N3 (C4): one path as --owned and as --rebuilt.
+    let out = map(&["--rebuilt", "src"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(
+        out.stderr
+            .contains(&format!("{}: given as --owned and as --rebuilt", t.path("src").display())),
         "{out:?}"
     );
 
