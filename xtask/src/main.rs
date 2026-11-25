@@ -47,6 +47,8 @@ fn main() -> ExitCode {
         Some("invariants") => xtask::invariants::main(&root, rest),
         Some("demo") => xtask::demo::main(&root, rest),
         Some("fscheck") => xtask::fscheck::main(rest),
+        // The other process of `fscheck`'s row `create-new-xproc`.
+        Some("fscheck-reader") => xtask::fscheck::reader_main(rest),
         Some("api-table") => xtask::api_table::main(&root, rest),
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");

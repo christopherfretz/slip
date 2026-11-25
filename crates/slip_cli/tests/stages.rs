@@ -1256,6 +1256,39 @@ fn s10_5_journal_refused_by_reduce_and_apply() {
     assert!(fx.tree_is_pre());
 }
 
+/// Review 2 of WP-161, finding 1: a store of version 1 (an earlier
+/// Slip's) is refused, status 3, by `apply --recover` and by `reduce`;
+/// when it holds `write.journal` the message says an unfinished write is
+/// recorded there and to finish it with the earlier Slip's `apply
+/// --recover`, then use a new store. Nothing in it is changed.
+#[test]
+fn s2_an_earlier_store_with_an_unfinished_write() {
+    let (fx, _set, _overlay) = agreed("earlier-journal", Fx::rename);
+    let plan = fx.store().find_plan("").unwrap()[0];
+    fs::write(fx.store_dir().join("VERSION"), "1\n").unwrap();
+    let journal = fx.store_dir().join("write.journal");
+    for with_journal in [false, true] {
+        if with_journal {
+            fs::write(&journal, b"an earlier Slip's journal").unwrap();
+        }
+        for out in [fx.slip(&["apply", "--recover"]), fx.reduce(plan, ROUND, &[])] {
+            out.expect(3);
+            assert!(out.stderr.contains("store version 1: written by an earlier Slip"), "{out:#?}");
+            let told =
+                out.stderr.contains("an unfinished write of the working tree is recorded there")
+                    && out.stderr.contains("`slip apply --recover` of the Slip that wrote it")
+                    && out.stderr.contains(&journal.display().to_string());
+            assert_eq!(told, with_journal, "{out:#?}");
+            assert!(out.stderr.contains("use a new store"), "{out:#?}");
+            assert!(!out.stdout.contains("recovered"), "{out:#?}");
+        }
+        assert_eq!(fs::read_to_string(fx.store_dir().join("VERSION")).unwrap(), "1\n");
+        assert_eq!(journal.exists(), with_journal);
+        assert!(fx.tree_is_pre());
+    }
+    assert_eq!(fs::read(&journal).unwrap(), b"an earlier Slip's journal");
+}
+
 /// The journal of a write of the agreed overlay, and the post-image
 /// blobs, as `write` publishes them before it stages anything.
 fn journal_of(fx: &Fx, overlay_id: Digest, overlay: &Overlay) -> Journal {
@@ -1776,4 +1809,117 @@ fn s7_2_relative_to_in_another_case() {
     out.expect(0);
     let text = fs::read_to_string(&patch).unwrap();
     assert!(text.starts_with("--- a.cc\n+++ a.cc\n"), "{text}");
+}
+
+/// §7.3 step 2 (WP-161): a journal cut short before its publish returned
+/// (a prefix of a whole one, shorter than the head or than its declared
+/// total) is removed by `apply --recover`, which says so and why and exits
+/// 0 with the tree untouched; until then, `--write` refuses the store as it
+/// refuses any journal. A damaged whole one is kept.
+#[test]
+fn s7_3_recover_removes_an_interrupted_journal() {
+    let (fx, set, overlay_id) = agreed("interrupted", Fx::rename);
+    let r = fx.publish_result(&fx.result(set, Some(overlay_id), State::Verified));
+    let overlay = fx.store().read_object(Object::Overlay, &overlay_id).unwrap().unwrap();
+    let overlay = Overlay::from_bytes(&overlay).unwrap();
+    let whole = journal_of(&fx, overlay_id, &overlay).to_bytes();
+    for cut in [whole[..whole.len() / 2].to_vec(), Vec::new(), whole[..20].to_vec()] {
+        fx.put_journal(&cut);
+        let out = apply_write(&fx, &r, &[]);
+        out.expect(3);
+        assert!(out.stderr.contains("unfinished write of the working tree"), "{out:#?}");
+        let out = fx.slip(&["apply", "--recover"]);
+        out.expect(0);
+        let lines = out.lines();
+        assert_eq!(lines.len(), 1, "{out:#?}");
+        assert!(
+            lines[0].starts_with(
+                "recovered: the write was interrupted before any file was touched (the journal is "
+            ) && lines[0].ends_with("); the journal is removed"),
+            "{out:#?}"
+        );
+        assert!(!fx.store().journal_path().exists());
+        assert!(fx.tree_is_pre());
+    }
+    // A whole-length journal with a bit flipped, or a short file that is
+    // no journal's start, is damaged, not cut short: `--recover` refuses
+    // it, names the file, keeps it, and never says that no file was
+    // touched (spec/edits.md §10.4).
+    let mut flipped = whole.clone();
+    flipped[whole.len() - 40] ^= 1;
+    for bad in [flipped, b"anything".to_vec()] {
+        fx.put_journal(&bad);
+        let out = fx.slip(&["apply", "--recover"]);
+        out.expect(3);
+        assert!(out.stderr.contains("write.journal"), "{out:#?}");
+        assert!(out.stderr.contains("damaged, not cut short: it is kept"), "{out:#?}");
+        assert!(
+            !out.stdout.contains("no file") && !out.stdout.contains("before any file"),
+            "{out:#?}"
+        );
+        assert_eq!(fs::read(fx.store().journal_path()).unwrap(), bad);
+        fs::remove_file(fx.store().journal_path()).unwrap();
+    }
+    // The store is usable again.
+    apply_write(&fx, &r, &[]).expect(0);
+    assert!(fx.tree_is_post());
+}
+
+/// `spec/exec.md` §2.1 "Which reads are checked" (WP-161): a plan stored
+/// under another plan's id is refused by every command that reads a plan
+/// by id, as a blob is (`Input`, "the file's content id is not its
+/// name").
+#[test]
+fn s2_1_a_plan_under_another_id_is_refused() {
+    let (fx, set, _) = agreed("plan-id", Fx::rename);
+    let store = fx.store();
+    let (plan, id) = fx.plan();
+    let mut other = plan.clone();
+    other.tool_slip = "another".into();
+    let other_id = store.publish_plan(&other.to_bytes()).unwrap();
+    fs::write(store.plan_path(&other_id), plan.to_bytes()).unwrap();
+    let (p, set) = (other_id.to_string(), set.to_string());
+    let out_file = fx.root.join("decl.out");
+    let from = fx.root.join("from.txt");
+    fs::write(&from, "").unwrap();
+    let (out_s, from_s) = (out_file.to_str().unwrap(), from.to_str().unwrap());
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["parse", "--plan", &p],
+        vec!["verify", "--plan", &p],
+        vec!["declare", "--plan", &p, "--from", from_s, "--out", out_s],
+        vec!["units", "--plan", &p],
+        vec!["map", "--plan", &p, "--from", "f", "--to", "g", "--owned", "src"],
+        vec!["rename", "--plan", &p, "--from", "f", "--to", "g", "--owned", "src"],
+        vec!["reduce", "--plan", &p, "--round", "1"],
+        vec!["check", "--plan", &p, "--round", "1", "--edits", &set],
+    ];
+    for args in commands {
+        let out = fx.slip(&args);
+        out.expect(3);
+        assert!(out.stderr.contains("the file's content id is not its name"), "{args:?}: {out:#?}");
+        assert!(out.stderr.contains(&p), "{args:?}: {out:#?}");
+    }
+    // The plan under its own id is read.
+    fx.reduce(id, ROUND, &[]).expect(0);
+}
+
+/// The same for declared changes: `check --declared <id>` refuses
+/// declared changes stored under another's id.
+#[test]
+fn s2_1_declared_changes_under_another_id_are_refused() {
+    let (fx, set, _) = agreed("declared-id", Fx::rename);
+    let store = fx.store();
+    let plan = store.find_plan("").unwrap()[0].to_string();
+    let none = Declared::none();
+    let none_id = store.publish_declared(&none.to_bytes()).unwrap();
+    let other = Declared::new(vec![], vec![Digest([9; 32])], vec![], vec![]).unwrap();
+    let other_id = store.publish_declared(&other.to_bytes()).unwrap();
+    assert_ne!(none_id, other_id);
+    fs::write(store.declared_path(&other_id), none.to_bytes()).unwrap();
+    let (set, d) = (set.to_string(), other_id.to_string());
+    let out =
+        fx.slip(&["check", "--plan", &plan, "--round", "1", "--edits", &set, "--declared", &d]);
+    out.expect(3);
+    assert!(out.stderr.contains("the file's content id is not its name"), "{out:#?}");
+    assert!(out.stderr.contains(&d), "{out:#?}");
 }

@@ -12,14 +12,23 @@
 //! the store relies on must have none; the others are the patterns the
 //! harness and the store do not use, run to show why.
 //!
+//! The row `create-new-xproc` runs a second process, this program's
+//! `fscheck-reader`: this process creates a claim and a file (synced; every
+//! 1,000th round 16 MiB, a large write's journal; every eighth round
+//! 256 KiB, as a journal; else 32 bytes, as a lock) and asks
+//! the reader, over a pipe, to list the claim and read the file whole; then
+//! it removes both and asks the reader not to list the claim. A reply other
+//! than `ok` is its wrong read (`spec/exec.md` §2.1 "The lock").
+//!
 //! The row `inode-stable` is of another kind (§11.5): it creates files,
 //! reads their device and inode numbers, waits and reads them again. A
 //! file whose numbers changed is its **wrong read**: the front end
 //! identifies a file by them, so an overlay entry keyed at one moment
 //! misses the file loaded at the next.
 
+use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -70,8 +79,20 @@ pub const ROWS: &[Row] = &[
     Row { name: "tmp-again-after-rename", relied: true, what: "T renamed to D; T created again" },
     Row {
         name: "unique-tmp-link",
-        relied: true,
+        relied: false,
         what: "T linked to L and unlinked; T's name never used again",
+    },
+    Row {
+        name: "create-new-read",
+        relied: true,
+        what: "L created exclusively, written, synced, read; a claim listed and removed",
+    },
+    Row {
+        name: "create-new-xproc",
+        relied: true,
+        what: "a claim and a file (16 MiB every 1,000th round, 256 KiB every 8th) created \
+               and synced; \
+               another process lists the claim and reads the file whole",
     },
     Row {
         name: "inode-stable",
@@ -79,6 +100,21 @@ pub const ROWS: &[Row] = &[
         what: "a file created fresh keeps its device and inode numbers for 2 s",
     },
 ];
+
+/// The size of the file of `create-new-xproc` every eighth round: a
+/// journal's of a large write.
+pub const XPROC_BIG: usize = 256 * 1024;
+
+/// The size of the file of `create-new-xproc` every
+/// [`XPROC_HUGE_EVERY`]th round (round 0 among them): a journal's at the
+/// scale of a write of about 100,000 files.
+pub const XPROC_HUGE: usize = 16 * 1024 * 1024;
+
+/// How often a round of `create-new-xproc` writes [`XPROC_HUGE`] bytes.
+pub const XPROC_HUGE_EVERY: u64 = 1_000;
+
+/// Its size in the other rounds: a lock's.
+pub const XPROC_SMALL: usize = 32;
 
 /// The files of `inode-stable` created before its wait.
 pub const INODE_BATCH: u64 = 1_000;
@@ -119,6 +155,10 @@ pub struct Request {
     pub dir: PathBuf,
     pub rounds: u64,
     pub rows: Vec<Row>,
+    /// The other process of `create-new-xproc`: its program and leading
+    /// arguments (the directory is appended). `None`: this program's
+    /// `fscheck-reader` (its name as started).
+    pub reader: Option<Vec<OsString>>,
 }
 
 /// The rounds of a row when `--rounds` is not given.
@@ -127,7 +167,7 @@ pub const DEFAULT_ROUNDS: u64 = 20_000;
 const USAGE: &str = "usage: cargo xtask fscheck <dir> [--rounds <n>] [--row <name>]…\n\
 rows: link-unlink-create link-rename-over copy-unlink-create copy-rename-over\n      \
 fresh-beside-links link-read-both tmp-again-after-link tmp-again-after-rename\n      \
-unique-tmp-link inode-stable";
+unique-tmp-link create-new-read create-new-xproc inode-stable";
 
 /// Parses the arguments after `fscheck`; `Err` is a usage error's message.
 pub fn parse(args: &[String]) -> Result<Request, String> {
@@ -176,7 +216,7 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
     } else {
         ROWS.iter().filter(|r| rows.contains(r)).copied().collect()
     };
-    Ok(Request { dir, rounds: rounds.unwrap_or(DEFAULT_ROUNDS), rows })
+    Ok(Request { dir, rounds: rounds.unwrap_or(DEFAULT_ROUNDS), rows, reader: None })
 }
 
 /// `cargo xtask fscheck …`: 0 when every row run that is relied on has no
@@ -224,7 +264,8 @@ pub fn run_with(
     print(&format!("fscheck: {}: {} rounds per row", request.dir.display(), request.rounds));
     let mut failed = Vec::new();
     for row in &request.rows {
-        match run_row_with(&request.dir, *row, request.rounds, read, ident) {
+        let reader = request.reader.clone().unwrap_or_else(own_reader);
+        match run_row_in(&request.dir, *row, request.rounds, (read, ident), &reader) {
             Ok(o) => {
                 print(&line(&o));
                 if let Some(first) = &o.first {
@@ -277,6 +318,26 @@ pub fn run_row_with(
     read: Reader<'_>,
     ident: Identity<'_>,
 ) -> Result<Outcome, String> {
+    run_row_in(dir, row, rounds, (read, ident), &own_reader())
+}
+
+/// `fscheck-reader` of this program, by its name as started (on the
+/// workspace mount `/proc/self/exe` can read `… (deleted)`).
+fn own_reader() -> Vec<OsString> {
+    let exe = std::env::args_os()
+        .next()
+        .or_else(|| std::env::current_exe().ok().map(Into::into))
+        .unwrap_or_else(|| "xtask".into());
+    vec![exe, "fscheck-reader".into()]
+}
+
+fn run_row_in(
+    dir: &Path,
+    row: Row,
+    rounds: u64,
+    (read, ident): (Reader<'_>, Identity<'_>),
+    reader: &[OsString],
+) -> Result<Outcome, String> {
     let base = dir.join(format!("fscheck.{}.{}", std::process::id(), row.name));
     if fs::symlink_metadata(&base).is_ok() {
         fs::remove_dir_all(&base).map_err(|e| at(&base, &e))?;
@@ -286,7 +347,23 @@ pub fn run_row_with(
     }
     let mut probe = Probe { read, wrong: 0, first: None };
     let t0 = Instant::now();
-    if row.name == "inode-stable" {
+    if row.name == "create-new-xproc" {
+        let mut other = match Other::start(reader, &base.join("tmp")) {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&base);
+                return Err(e);
+            }
+        };
+        for i in 0..rounds {
+            if let Err(e) = xproc_round(&base.join("tmp"), i, &mut other, &mut probe) {
+                probe.fail(format!("round {i}: a step failed: {e}"));
+            }
+        }
+        if let Err(e) = other.end() {
+            probe.fail(e);
+        }
+    } else if row.name == "inode-stable" {
         let mut i = 0;
         while i < rounds {
             let n = INODE_BATCH.min(rounds - i);
@@ -341,6 +418,37 @@ impl Probe<'_> {
     }
 }
 
+impl Probe<'_> {
+    /// Counts a wrong read, `what` if it is the first.
+    fn fail(&mut self, what: String) {
+        self.wrong += 1;
+        if self.first.is_none() {
+            self.first = Some(what);
+        }
+    }
+
+    /// Lists `dir` and counts a wrong read if `name` is in it and should
+    /// not be, or is not and should.
+    fn listed(&mut self, dir: &Path, name: &str, want: bool) {
+        let got = fs::read_dir(dir).map(|entries| {
+            entries.filter_map(Result::ok).any(|e| e.file_name().to_str() == Some(name))
+        });
+        if got.as_ref().ok() == Some(&want) {
+            return;
+        }
+        self.wrong += 1;
+        if self.first.is_none() {
+            let shown = match got {
+                Ok(true) => "lists".to_owned(),
+                Ok(false) => "does not list".to_owned(),
+                Err(e) => format!("could not be listed ({e}); it should list"),
+            };
+            let should = if want { "it should" } else { "it should not" };
+            self.first = Some(format!("{} {shown} {name}; {should}", dir.display()));
+        }
+    }
+}
+
 fn at(path: &Path, e: &io::Error) -> String {
     format!("{}: {e}", path.display())
 }
@@ -359,6 +467,14 @@ fn create(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut f =
         fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, &e))?;
     f.write_all(bytes).map_err(|e| at(path, &e))
+}
+
+/// Creates `path`, which must not exist, with `bytes`, and syncs it (the
+/// store's lock and journal, `spec/exec.md` §2.1).
+fn create_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut f =
+        fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| at(path, &e))?;
+    f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| at(path, &e))
 }
 
 fn link(from: &Path, to: &Path) -> Result<(), String> {
@@ -539,7 +655,186 @@ fn round(base: &Path, row: &str, i: u64, p: &mut Probe<'_>) -> Result<(), String
             unlink(&t)?;
             p.check(&l, &pre);
         }
+        "create-new-read" => create_new_read(&tree, &tmp, k, i, &pre, p)?,
         other => unreachable!("no row `{other}`"),
     }
     Ok(())
+}
+
+/// One round of `create-new-read`: the store's lock (`spec/exec.md` §2.1
+/// "The lock"): a stale lock removed and the name created again in
+/// place, written, synced and read by name; a claim of a name never used
+/// before created, seen by a listing, removed, and no longer seen. The
+/// journal is the lock's first half.
+fn create_new_read(
+    tree: &Path,
+    tmp: &Path,
+    slot: u64,
+    round: u64,
+    pre: &[u8],
+    probe: &mut Probe<'_>,
+) -> Result<(), String> {
+    let lock = tree.join(format!("lock{slot}"));
+    let claim = format!("{round}.claim");
+    let made = tmp.join(&claim);
+    unlink(&lock)?;
+    create_synced(&lock, pre)?;
+    probe.check(&lock, pre);
+    create(&made, b"")?;
+    probe.listed(tmp, &claim, true);
+    fs::remove_file(&made).map_err(|e| at(&made, &e))?;
+    probe.listed(tmp, &claim, false);
+    probe.check(&lock, pre);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// create-new-xproc
+
+/// The other process of `create-new-xproc`, and its pipes.
+struct Other {
+    child: std::process::Child,
+    to: std::process::ChildStdin,
+    from: BufReader<std::process::ChildStdout>,
+}
+
+impl Other {
+    fn start(reader: &[OsString], dir: &Path) -> Result<Other, String> {
+        let (program, args) = reader.split_first().ok_or("no reader program")?;
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .arg(dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("the reader {}: {e}", Path::new(program).display()))?;
+        let to = child.stdin.take().ok_or("the reader's stdin")?;
+        let from = BufReader::new(child.stdout.take().ok_or("the reader's stdout")?);
+        Ok(Other { child, to, from })
+    }
+
+    /// Sends `line` and returns the reply.
+    fn ask(&mut self, line: &str) -> Result<String, String> {
+        writeln!(self.to, "{line}")
+            .and_then(|()| self.to.flush())
+            .map_err(|e| format!("the reader: {e}"))?;
+        let mut reply = String::new();
+        match self.from.read_line(&mut reply) {
+            Ok(0) => Err("the reader ended".to_owned()),
+            Ok(_) => Ok(reply.trim_end().to_owned()),
+            Err(e) => Err(format!("the reader: {e}")),
+        }
+    }
+
+    fn end(self) -> Result<(), String> {
+        let Other { mut child, to, from } = self;
+        drop(to);
+        drop(from);
+        match child.wait() {
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => Err(format!("the reader ended with {s}")),
+            Err(e) => Err(format!("the reader: {e}")),
+        }
+    }
+}
+
+/// The bytes of round `i`'s file: `size` bytes of `i` mod 251.
+fn xproc_bytes(i: u64, size: usize) -> Vec<u8> {
+    vec![u8::try_from(i % 251).unwrap_or(0); size]
+}
+
+/// One round of `create-new-xproc` in `dir`.
+fn xproc_round(dir: &Path, i: u64, other: &mut Other, p: &mut Probe<'_>) -> Result<(), String> {
+    let size = if i.is_multiple_of(XPROC_HUGE_EVERY) {
+        XPROC_HUGE
+    } else if i.is_multiple_of(8) {
+        XPROC_BIG
+    } else {
+        XPROC_SMALL
+    };
+    let claim = dir.join(format!("{i}.claim"));
+    let file = dir.join(format!("j{i}"));
+    create(&claim, b"")?;
+    create_synced(&file, &xproc_bytes(i, size))?;
+    fs::File::open(dir).and_then(|d| d.sync_all()).map_err(|e| at(dir, &e))?;
+    let made = other.ask(&format!("made {i} {size}"))?;
+    if made != "ok" {
+        p.fail(format!("round {i}, after the creation: the other process: {made}"));
+    }
+    fs::remove_file(&claim).map_err(|e| at(&claim, &e))?;
+    fs::remove_file(&file).map_err(|e| at(&file, &e))?;
+    let gone = other.ask(&format!("gone {i}"))?;
+    if gone != "ok" {
+        p.fail(format!("round {i}, after the removal: the other process: {gone}"));
+    }
+    Ok(())
+}
+
+/// `xtask fscheck-reader [--short-at <i>] <dir>`: the other process of
+/// `create-new-xproc`. Reads `made <i> <size>` (lists `<dir>`, which must
+/// list `<i>.claim`; reads `<dir>/j<i>`, which must be `size` bytes of `i`
+/// mod 251) and `gone <i>` (`<i>.claim` must not be listed) from stdin, and
+/// answers each with `ok` or `wrong <what>`. `--short-at <i>` drops the
+/// last byte of round `i`'s read: a test's planted short read.
+pub fn reader_main(args: &[String]) -> ExitCode {
+    let (short, dir) = match args {
+        [flag, i, dir] if flag == "--short-at" => (i.parse::<u64>().ok(), dir),
+        [dir] => (None, dir),
+        _ => {
+            eprintln!("usage: xtask fscheck-reader [--short-at <i>] <dir>");
+            return ExitCode::from(2);
+        }
+    };
+    let dir = Path::new(dir);
+    let mut out = io::stdout();
+    for line in io::stdin().lock().lines() {
+        let Ok(line) = line else { return ExitCode::FAILURE };
+        let reply = reader_reply(dir, &line, short);
+        if writeln!(out, "{reply}").and_then(|()| out.flush()).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn reader_reply(dir: &Path, line: &str, short: Option<u64>) -> String {
+    let words: Vec<&str> = line.split(' ').collect();
+    let listed = |name: &str| {
+        fs::read_dir(dir)
+            .map(|e| e.filter_map(Result::ok).any(|e| e.file_name().to_str() == Some(name)))
+    };
+    match words[..] {
+        ["made", i, size] => {
+            let (Ok(i), Ok(size)) = (i.parse::<u64>(), size.parse::<usize>()) else {
+                return format!("wrong: `{line}`");
+            };
+            match listed(&format!("{i}.claim")) {
+                Ok(true) => {}
+                Ok(false) => return format!("wrong: {i}.claim not listed"),
+                Err(e) => return format!("wrong: {}: {e}", dir.display()),
+            }
+            let file = dir.join(format!("j{i}"));
+            match fs::read(&file) {
+                Ok(mut got) => {
+                    if short == Some(i) {
+                        got.pop();
+                    }
+                    if got.len() != size {
+                        format!("wrong: {} read {} bytes, not {size}", file.display(), got.len())
+                    } else if got != xproc_bytes(i, size) {
+                        format!("wrong: {} read other bytes", file.display())
+                    } else {
+                        "ok".to_owned()
+                    }
+                }
+                Err(e) => format!("wrong: {} read an error: {e}", file.display()),
+            }
+        }
+        ["gone", i] => match listed(&format!("{i}.claim")) {
+            Ok(false) => "ok".to_owned(),
+            Ok(true) => format!("wrong: {i}.claim still listed after its removal"),
+            Err(e) => format!("wrong: {}: {e}", dir.display()),
+        },
+        _ => format!("wrong: `{line}`"),
+    }
 }

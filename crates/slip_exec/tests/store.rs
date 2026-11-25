@@ -46,6 +46,14 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(d)
 }
 
+/// The lock's text is a whole line of process `pid`'s (§2.1 "The lock":
+/// `<pid> <nonce>\n`).
+fn is_lock_of(text: &str, pid: u32) -> bool {
+    text.strip_suffix('\n')
+        .and_then(|l| l.split_once(' '))
+        .is_some_and(|(p, n)| p == pid.to_string() && n.parse::<u64>().is_ok())
+}
+
 fn d(n: u8) -> Digest {
     Digest([n; 32])
 }
@@ -148,7 +156,7 @@ fn s2_open_initialises_absent_directory() {
     let s = scratch("absent");
     let root = s.join("a").join("b");
     let store = Store::open(&root, Access::Shared).unwrap();
-    assert_eq!(fs::read_to_string(root.join("VERSION")).unwrap(), "1\n");
+    assert_eq!(fs::read_to_string(root.join("VERSION")).unwrap(), "2\n");
     assert_eq!(names(&root), ["VERSION", "declared", "logs", "plans", "runs", "shards", "tmp"]);
     assert!(names(&root.join("tmp")).is_empty());
     assert_eq!(store.root(), root);
@@ -158,7 +166,7 @@ fn s2_open_initialises_absent_directory() {
 fn s2_open_initialises_empty_directory() {
     let s = scratch("empty");
     let store = Store::open(&s, Access::Exclusive).unwrap();
-    assert_eq!(fs::read_to_string(s.join("VERSION")).unwrap(), "1\n");
+    assert_eq!(fs::read_to_string(s.join("VERSION")).unwrap(), "2\n");
     drop(store);
     // Reopening an initialised store works, in either mode.
     drop(Store::open(&s, Access::Shared).unwrap());
@@ -185,12 +193,72 @@ fn s2_open_refuses_unrecognised_directory() {
 #[test]
 fn s2_open_refuses_other_version() {
     let s = scratch("version");
-    for text in ["2\n", "1", "1\n\n", ""] {
+    for text in ["1\n", "3\n", "2", "2\n\n", ""] {
         fs::write(s.join("VERSION"), text).unwrap();
-        match Store::open(&s, Access::Shared) {
-            Err(StoreError::Version(v)) => assert_eq!(v, text),
-            other => panic!("expected Version for {text:?}, got {other:?}"),
+        for access in [Access::Shared, Access::Exclusive] {
+            match Store::open(&s, access) {
+                Err(e @ StoreError::Version(_)) => {
+                    let StoreError::Version(v) = &e else { unreachable!() };
+                    assert_eq!(v, text);
+                    // A store of version 1: an earlier Slip's (WP-161).
+                    let earlier = e.to_string().contains("written by an earlier Slip");
+                    assert_eq!(earlier, text == "1\n", "{e}");
+                }
+                other => panic!("expected Version for {text:?}, got {other:?}"),
+            }
         }
+    }
+    assert_eq!(names(&s), ["VERSION"]);
+}
+
+/// One way to open a store.
+type Opener = fn(&Path) -> Result<Store, StoreError>;
+
+// Review 2 of WP-161, finding 1: a store of version 1 holding
+// `write.journal` (an earlier Slip's unfinished write) is refused with a
+// message that says so and what to do; the journal is not read, and
+// nothing is written or removed, in either mode and through recovery's
+// opener. Without the journal the message is the plain one.
+#[test]
+fn s2_open_refuses_an_earlier_store_with_an_unfinished_write() {
+    let s = scratch("earlier-journal");
+    fs::write(s.join("VERSION"), "1\n").unwrap();
+    // Unreadable bytes, and a directory: only the name's existence counts.
+    for journal in [&b"\xff not a journal"[..], b""] {
+        let path = s.join("write.journal");
+        fs::write(&path, journal).unwrap();
+        let opens: [Opener; 3] = [
+            |d| Store::open(d, Access::Shared),
+            |d| Store::open(d, Access::Exclusive),
+            Store::open_for_recovery,
+        ];
+        for open in opens {
+            match open(&s) {
+                Err(err @ StoreError::EarlierUnfinishedWrite(_)) => {
+                    let StoreError::EarlierUnfinishedWrite(named) = &err else { unreachable!() };
+                    assert_eq!(named, &path);
+                    let m = err.to_string();
+                    assert!(m.contains("store version 1"), "{m}");
+                    assert!(m.contains("an unfinished write of the working tree"), "{m}");
+                    assert!(m.contains("`slip apply --recover` of the Slip that wrote it"), "{m}");
+                    assert!(m.ends_with("then use a new store"), "{m}");
+                }
+                other => panic!("expected EarlierUnfinishedWrite, got {other:?}"),
+            }
+        }
+        assert_eq!(fs::read(&path).unwrap(), journal);
+        assert_eq!(names(&s), ["VERSION", "write.journal"]);
+    }
+    fs::remove_file(s.join("write.journal")).unwrap();
+    fs::create_dir(s.join("write.journal")).unwrap();
+    assert!(matches!(
+        Store::open(&s, Access::Exclusive),
+        Err(StoreError::EarlierUnfinishedWrite(_))
+    ));
+    fs::remove_dir(s.join("write.journal")).unwrap();
+    match Store::open_for_recovery(&s) {
+        Err(StoreError::Version(v)) => assert_eq!(v, "1\n"),
+        other => panic!("expected Version, got {other:?}"),
     }
     assert_eq!(names(&s), ["VERSION"]);
 }
@@ -569,16 +637,19 @@ fn s2_busy_while_a_live_process_holds_the_lock() {
     drop(Store::open(&s, Access::Shared).unwrap());
     let (holder, out) = hold_lock(&s);
     let pid = holder.0.id();
-    assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), format!("{pid}\n"));
+    let line = fs::read_to_string(s.join("lock")).unwrap();
+    assert!(is_lock_of(&line, pid), "{line:?}");
     match Store::open(&s, Access::Exclusive) {
-        Err(StoreError::Busy { pid: p, lock }) => {
+        Err(e @ StoreError::Busy { holder: Some(p), .. }) => {
             assert_eq!(p, pid);
+            assert!(e.to_string().contains(&format!("process {pid} holds")), "{e}");
+            let StoreError::Busy { lock, .. } = e else { unreachable!() };
             assert_eq!(lock, s.join("lock"));
         }
         other => panic!("expected Busy, got {other:?}"),
     }
     // The failed open did not disturb the lock, and Shared still works.
-    assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), format!("{pid}\n"));
+    assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), line);
     let shared = Store::open(&s, Access::Shared).unwrap();
     shared.publish_plan(&plan("x").to_bytes()).unwrap();
     drop(shared);
@@ -594,7 +665,7 @@ fn s2_busy_within_one_process() {
     let s = scratch("busy-self");
     let first = Store::open(&s, Access::Exclusive).unwrap();
     match Store::open(&s, Access::Exclusive) {
-        Err(StoreError::Busy { pid, .. }) => assert_eq!(pid, std::process::id()),
+        Err(StoreError::Busy { holder, .. }) => assert_eq!(holder, Some(std::process::id())),
         other => panic!("expected Busy, got {other:?}"),
     }
     assert!(s.join("lock").exists(), "the refused open must not remove the holder's lock");
@@ -619,7 +690,7 @@ fn s2_dead_lock_taken_over_and_stale_tmp_removed() {
     fs::write(tmp.join(format!("{me}.999999.tmp")), "live").unwrap();
     fs::write(tmp.join("foreign"), "?").unwrap();
     let store = Store::open(&s, Access::Exclusive).unwrap();
-    assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), format!("{me}\n"));
+    assert!(is_lock_of(&fs::read_to_string(s.join("lock")).unwrap(), me));
     let mut expect = vec![format!("{me}.999999.tmp"), "foreign".to_owned()];
     expect.sort();
     assert_eq!(names(&tmp), expect);
@@ -758,4 +829,280 @@ fn s2_lock_of_another_process_survives_drop() {
     fs::write(s.join("lock"), "1\n").unwrap();
     drop(store);
     assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), "1\n");
+}
+
+// ---------------------------------------------------------------------------
+// The lock created in place (§2.1 "The lock", WP-161)
+
+// What a creator leaves if it dies between the creation of the lock and
+// its write (empty, or digits without the newline) is taken over.
+#[test]
+fn s2_empty_or_partial_lock_taken_over() {
+    let me = std::process::id();
+    for left in ["", "123", "4294967295", "123 ", "123 456"] {
+        let s = scratch("partial-lock");
+        drop(Store::open(&s, Access::Shared).unwrap());
+        fs::write(s.join("lock"), left).unwrap();
+        let store = Store::open(&s, Access::Exclusive).unwrap();
+        assert!(is_lock_of(&fs::read_to_string(s.join("lock")).unwrap(), me), "{left:?}");
+        drop(store);
+        assert!(!s.join("lock").exists());
+    }
+}
+
+// A claim of another live process is a contender: the open is `Busy` with
+// no holder (the claim's process is not one), makes no lock, and leaves no
+// claim of its own.
+#[test]
+fn s2_a_live_claim_is_busy() {
+    let s = scratch("live-claim");
+    drop(Store::open(&s, Access::Shared).unwrap());
+    // Process 1 is alive wherever this runs.
+    fs::write(s.join("tmp").join("1.0.0.claim"), "").unwrap();
+    match Store::open(&s, Access::Exclusive) {
+        Err(StoreError::Busy { holder: None, .. }) => {}
+        other => panic!("expected Busy with no holder, got {other:?}"),
+    }
+    assert!(!s.join("lock").exists());
+    assert_eq!(names(&s.join("tmp")), ["1.0.0.claim"]);
+    // A dead process's claim is not a contender, and is cleaned.
+    fs::remove_file(s.join("tmp").join("1.0.0.claim")).unwrap();
+    let dead = dead_pid();
+    fs::write(s.join("tmp").join(format!("{dead}.0.0.claim")), "").unwrap();
+    let store = Store::open(&s, Access::Exclusive).unwrap();
+    assert!(names(&s.join("tmp")).is_empty());
+    drop(store);
+}
+
+/// Re-executed as a racer: waits for `<dir>/go`, opens the store named by
+/// the variable exclusively, prints `locked <pid>` (then holds the lock
+/// until its stdin ends), `busy <holder>` (`busy none` when none is
+/// known) or `error <error>`.
+const RACER: &str = "SLIP_EXEC_STORE_LOCK_RACER";
+
+#[test]
+fn lock_racer() {
+    let Some(dir) = std::env::var_os(RACER) else { return };
+    let dir = PathBuf::from(dir);
+    let deadline = Instant::now() + HOLDER_DEADLINE;
+    while !dir.join("go").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    match Store::open(&dir, Access::Exclusive) {
+        Ok(store) => {
+            println!("locked {}", std::process::id());
+            std::io::stdout().flush().unwrap();
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            drop(store);
+        }
+        Err(StoreError::Busy { holder, .. }) => {
+            println!("busy {}", holder.map_or_else(|| "none".to_owned(), |p| p.to_string()));
+        }
+        Err(e) => println!("error {e}"),
+    }
+    std::io::stdout().flush().unwrap();
+}
+
+/// Starts `n` racers on `dir`, lets them go, and returns their first
+/// lines; the racers are reaped once their stdin is closed.
+fn race(dir: &Path, n: usize) -> Vec<String> {
+    let _ = fs::remove_file(dir.join("go"));
+    let mut racers: Vec<Holder> = (0..n)
+        .map(|_| {
+            // Its name as started: `/proc/self/exe` can read `… (deleted)`
+            // on the workspace mount (`spec/harness.md` §11.5).
+            let exe: PathBuf = std::env::args_os()
+                .next()
+                .map_or_else(|| std::env::current_exe().unwrap(), PathBuf::from);
+            let spawn = || {
+                Command::new(&exe)
+                    .args(["--exact", "lock_racer", "--nocapture", "--test-threads=1"])
+                    .env(RACER, dir)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+            };
+            // The workspace mount sometimes reads a name as absent for a
+            // moment (`spec/harness.md` §11): the test binary's own, here.
+            let mut tries = 0;
+            let child = loop {
+                match spawn() {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound && tries < 20 => {
+                        eprintln!("spawn of {} failed: {e}; again", exe.display());
+                        tries += 1;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    r => break r.unwrap(),
+                }
+            };
+            Holder(child)
+        })
+        .collect();
+    let (tx, rx) = channel();
+    for r in &mut racers {
+        let out = r.0.stdout.take().unwrap();
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let line = BufReader::new(out)
+                .lines()
+                .map_while(Result::ok)
+                // libtest may print `test lock_racer ... ` before it.
+                .find_map(|l| {
+                    ["locked ", "busy ", "error "]
+                        .iter()
+                        .find_map(|p| l.find(p))
+                        .map(|at| l[at..].to_owned())
+                });
+            let _ = tx.send(line.unwrap_or_else(|| "ended".to_owned()));
+        });
+    }
+    fs::write(dir.join("go"), "").unwrap();
+    let mut lines = Vec::new();
+    for _ in 0..n {
+        lines.push(rx.recv_timeout(HOLDER_DEADLINE).expect("a racer said nothing in time"));
+    }
+    for mut r in racers {
+        drop(r.0.stdin.take());
+        let deadline = Instant::now() + HOLDER_DEADLINE;
+        while r.0.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "a racer did not exit in time");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    lines
+}
+
+// Openers racing for a stale lock (a dead pid's, or an empty one): never
+// two hold it; when none does (each met the other's claim every round),
+// the store is free for the next open.
+#[test]
+fn s2_openers_racing_for_a_stale_lock() {
+    let s = scratch("race");
+    drop(Store::open(&s, Access::Shared).unwrap());
+    let dead = dead_pid();
+    for round in 0..6 {
+        let stale = if round % 2 == 0 { format!("{dead}\n") } else { String::new() };
+        fs::write(s.join("lock"), &stale).unwrap();
+        let lines = race(&s, 4);
+        let locked = lines.iter().filter(|l| l.starts_with("locked ")).count();
+        assert!(locked <= 1, "round {round}: {lines:?}");
+        assert!(
+            lines.iter().all(|l| l.starts_with("locked ") || l.starts_with("busy ")),
+            "round {round}: {lines:?}"
+        );
+        // Every racer has closed: the store is free.
+        assert!(!s.join("lock").exists(), "round {round}: {lines:?}");
+        drop(Store::open(&s, Access::Exclusive).unwrap());
+    }
+    let _ = fs::remove_file(s.join("go"));
+}
+
+// A close that read its lock as absent leaves it (the hazard of
+// `spec/harness.md` §11; made here by writing the line back): other
+// processes are `Busy` naming this one, and this process's next exclusive
+// open takes it back (its take is no longer held).
+#[test]
+fn s2_reopen_after_a_close_that_left_the_lock() {
+    let s = scratch("reopen");
+    let me = std::process::id();
+    let first = Store::open(&s, Access::Exclusive).unwrap();
+    let line = fs::read_to_string(s.join("lock")).unwrap();
+    drop(first);
+    fs::write(s.join("lock"), &line).unwrap();
+    let lines = race(&s, 1);
+    assert_eq!(lines, [format!("busy {me}")]);
+    let store = Store::open(&s, Access::Exclusive).unwrap();
+    let again = fs::read_to_string(s.join("lock")).unwrap();
+    assert!(is_lock_of(&again, me) && again != line, "{again:?}");
+    // Held again: a second open of this process is Busy.
+    assert!(matches!(
+        Store::open(&s, Access::Exclusive),
+        Err(StoreError::Busy { holder: Some(p), .. }) if p == me
+    ));
+    drop(store);
+    assert!(!s.join("lock").exists());
+    // A lock of this process's pid of the form before nonces is never
+    // taken back by it.
+    fs::write(s.join("lock"), format!("{me}\n")).unwrap();
+    assert!(matches!(
+        Store::open(&s, Access::Exclusive),
+        Err(StoreError::Busy { holder: Some(p), .. }) if p == me
+    ));
+    assert_eq!(fs::read_to_string(s.join("lock")).unwrap(), format!("{me}\n"));
+    fs::remove_file(s.join("lock")).unwrap();
+    let _ = fs::remove_file(s.join("go"));
+}
+
+// Finding 1 of the review of WP-161: one process opens one store through
+// two spellings of its path (a symbolic link here; a bind mount or a
+// case-insensitive file system make others). The second open is `Busy`
+// naming this process and leaves the lock; another process is `Busy`
+// too; the first's close frees the store. And after a close that left the
+// lock, the next open through the other spelling takes it back.
+#[test]
+fn s2_two_spellings_of_one_store_in_one_process() {
+    let s = scratch("two-spellings");
+    let me = std::process::id();
+    let real = s.join("store");
+    let linked = s.join("link");
+    drop(Store::open(&real, Access::Shared).unwrap());
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+    for (one, two) in [(&real, &linked), (&linked, &real)] {
+        let first = Store::open(one, Access::Exclusive).unwrap();
+        let line = fs::read_to_string(real.join("lock")).unwrap();
+        match Store::open(two, Access::Exclusive) {
+            Err(StoreError::Busy { holder: Some(p), .. }) => assert_eq!(p, me),
+            other => panic!("{}: expected Busy, got {other:?}", two.display()),
+        }
+        assert_eq!(fs::read_to_string(real.join("lock")).unwrap(), line);
+        assert_eq!(race(&real, 1), [format!("busy {me}")]);
+        assert_eq!(fs::read_to_string(real.join("lock")).unwrap(), line);
+        drop(first);
+        assert!(!real.join("lock").exists());
+        // Free for another process.
+        assert!(race(&real, 1)[0].starts_with("locked "));
+        assert!(!real.join("lock").exists());
+    }
+    // A leftover: the close left the lock (written back by hand). The next
+    // open, through the other spelling, takes it back.
+    let first = Store::open(&real, Access::Exclusive).unwrap();
+    let line = fs::read_to_string(real.join("lock")).unwrap();
+    drop(first);
+    fs::write(real.join("lock"), &line).unwrap();
+    assert_eq!(race(&real, 1), [format!("busy {me}")]);
+    let again = Store::open(&linked, Access::Exclusive).unwrap();
+    let text = fs::read_to_string(real.join("lock")).unwrap();
+    assert!(is_lock_of(&text, me) && text != line, "{text:?}");
+    drop(again);
+    assert!(!real.join("lock").exists());
+    let _ = fs::remove_file(real.join("go"));
+}
+
+// The journal is created in place: an existing one is `AlreadyExists` and
+// left as it was; it reads back; its removal of none is `NotFound`.
+#[test]
+fn s2_journal_created_in_place() {
+    use std::os::unix::fs::MetadataExt as _;
+    let s = scratch("journal");
+    let store = Store::open(&s, Access::Exclusive).unwrap();
+    assert_eq!(store.read_journal().unwrap(), None);
+    store.publish_journal(b"one").unwrap();
+    assert_eq!(fs::metadata(store.journal_path()).unwrap().nlink(), 1);
+    assert_eq!(store.read_journal().unwrap().as_deref(), Some(&b"one"[..]));
+    match store.publish_journal(b"two") {
+        Err(StoreError::Io { error, .. }) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        }
+        other => panic!("expected AlreadyExists, got {other:?}"),
+    }
+    assert_eq!(store.read_journal().unwrap().as_deref(), Some(&b"one"[..]));
+    assert!(names(&s.join("tmp")).is_empty(), "no temporary");
+    store.remove_journal().unwrap();
+    assert_eq!(store.read_journal().unwrap(), None);
+    match store.remove_journal() {
+        Err(StoreError::Io { error, .. }) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
 }

@@ -363,6 +363,14 @@ pub(crate) fn load_plan(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
             .ok_or_else(|| Failure::Input(format!("{}: the plan has gone", path.display())))?;
         let plan = Plan::from_bytes(&bytes)
             .map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
+        // A plan stored under another plan's id (`spec/exec.md` §2.1
+        // "Which reads are checked").
+        if formats::content_id(&bytes).ok() != Some(id) {
+            return Err(Failure::Input(format!(
+                "{}: the file's content id is not its name",
+                path.display()
+            )));
+        }
         return Ok((plan, id));
     }
     let path = PathBuf::from(x);
