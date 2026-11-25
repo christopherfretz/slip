@@ -159,6 +159,13 @@ fn hints_printed_for_mismatch_or_stale_observers_only() {
     add(&mut r, 0, &with(run.ok(0xa0, v, &[], &[used(0, 0, 1)]), hint()));
     assert_eq!(count(&r, State::Verified), 1);
     assert_eq!(lines(&r, "hint:").len(), 1);
+    // Unverifiable (WP-118 review S5): the cut did not make the verdict,
+    // so no line; the JSON still has the hint.
+    let mut r = run.report();
+    add(&mut r, 0, &with(run.unverifiable(0xa1, "post-image: x"), hint()));
+    assert_eq!(count(&r, State::Unverifiable), 1);
+    assert!(lines(&r, "hint:").is_empty(), "{:?}", lines(&r, "hint:"));
+    assert!(json(&r).contains(r#""hints":[{"file":"/b/u.cpp""#), "{}", json(&r));
 }
 
 fn count(r: &Report, st: State) -> u64 {
