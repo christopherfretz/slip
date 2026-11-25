@@ -602,7 +602,10 @@ fn first_of(table: &WrittenRefs, at: usize, e: &Entry) -> (Loc, bool) {
     let (mut first, mut link, mut at) = (e.range.lo, e.qualifier.link(), at);
     loop {
         match link {
-            QualLink::None => return (first, false),
+            // A `decltype(...)::` or splice specifier has no entry (Kiln
+            // WP-2828 links it as `Specifier`; at `4a83f6e3c` the link was
+            // `None`): it ends the chain, as `WrittenRef::first` says.
+            QualLink::None | QualLink::Specifier => return (first, false),
             QualLink::Global => return (first, true),
             QualLink::Entry(q) if q.index() < at => {
                 let qe = table.get(q);

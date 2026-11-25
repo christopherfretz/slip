@@ -776,6 +776,7 @@ Derived from a node's operands by Kiln when the node is built.
 | `UnresolvedUsing` | flag | out | - | stored discriminant; `TypeView` has a variant of the same name |
 | `Paren` | flag | out | - | stored discriminant; `TypeView` has a variant of the same name |
 | `DependentAddrSpace` | flag | out | - | stored discriminant; `TypeView` has a variant of the same name |
+| `Decayed` | flag | out | - | stored discriminant; `TypeView` has a variant of the same name |
 
 ### `kiln_ast::types::context::TypeView`
 
@@ -920,6 +921,9 @@ Derived from a node's operands by Kiln when the node is built.
 | `Splice` | type | unsupported | - | reflection (§12) |
 | `Splice.operand` | value | unsupported | - | reflection (§12) |
 | `Splice.designated` | type | unsupported | - | reflection (§12) |
+| `Decayed` | written | out | - | sugar (Kiln WP-2720, `kiln_ast/src/types/context.rs:219`): a parameter type adjusted from an array type whose bound is an instantiation-dependent expression; canonical is the adjusted pointer type. The declared array type keeps the bound as written, which §4.4 "Spellings" rule 2 reads |
+| `Decayed.original` | written | out | - | sugar: the declared array type |
+| `Decayed.adjusted` | written | out | - | sugar: the adjusted pointer type |
 
 ### `kiln_ast::types::kinds::BuiltinType`
 
@@ -1995,6 +1999,8 @@ properties of the command line, and a digest is relative to its command
 | `opts` | flag | out | - | command line |
 | `exhausted` | bookkeeping | out | - | the arena overflowed; the parse has failed |
 | `vla_star_bound` | bookkeeping | out | - | the shared bound expression of `[*]`, a C construct |
+| `pack_bounds` | bookkeeping | out | - | the constant array bounds as written that hold an unexpanded pack (Kiln WP-2720, `kiln_ast/src/types/context.rs:285`): the array type's `TypeFlags` carry it |
+| `inst_bounds` | bookkeeping | out | - | the constant array bounds as written that are instantiation-dependent (Kiln WP-2720, `context.rs:292`): the array type's `TypeFlags` carry it, and §4.4 "Spellings" rule 7 reads the bound itself (`ConstArray` `size_expr`) |
 | `param_abis` | bookkeeping | out | - | storage of `FuncProto` `abis` |
 
 ### `kiln_ast::types::context::TypeOptions`
@@ -2558,6 +2564,7 @@ A variable's stream also holds its language linkage (`ScopeData`,
 | `0-exception-var` | flag | in | bit |  |
 | `0-cxx-for-range` | flag | in | bit |  |
 | `0-inline-implied` | flag | in | bit | as `0-inline` |
+| `0-placeholder` | written | out | - | bits 14-15: the placeholder (`auto`, `decltype(auto)`, `__auto_type`) the type was deduced from (Kiln WP-3583, `kiln_ast/src/decl.rs:1102`, `VarPlaceholder`): the deduced type is the fact (the declaration's type row), and an undeduced placeholder is in the type (`TypeView` `Auto`). Reading it is `docs/wp/WP-156.md`'s |
 
 ### `kiln_ast::decl::VarStorage`
 
@@ -2899,6 +2906,56 @@ The value `Ast::linkage` returns, written in the row `enclosing` of §1.7.
 | `Type.ty` | type | in | type |  |
 | `Type.owned_tag` | written | out | - | the tag a `friend struct X;` itself declares; `ty` names it and the tag is a unit of its own |
 
+### `kiln_ast::friend_form::FriendForm`
+
+`kind=struct; pin=schema`
+
+A friend's written form (Kiln WP-3164, `kiln_ast/src/friend_form.rs:113`,
+Kiln `spec/ast.md` §23): kept for a friend named by a qualified name, a
+template-id, a constructor, destructor or conversion function, or a
+class friend with a template-head of its own. What the friend declares
+is the friend declaration, its target (`FriendTarget`) and the class's
+`friends` row; the form is how it was written. Where the written form
+can hold an operand the target does not (an instantiation-dependent
+qualifier or argument in templated code), the friend is indeterminate,
+`spelling/friend-name` (§4.4 "Spellings"); reading the form there is
+`docs/wp/WP-126.md`'s.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `kind` | written | out | - | which form was written: it follows from the name and the target |
+| `flags` | written | out | - | `FriendFormFlags` |
+| `name` | written | out | - | the befriended name as written; the target is the fact |
+| `name_loc` | location | out | - |  |
+| `qualifier` | written | out | - | the qualifier as written, sugar kept; the target is the fact |
+| `qualifier_loc` | location | out | - |  |
+| `args` | written | out | - | a template-id's arguments as written; the target, a specialisation, holds the converted ones |
+| `entity` | entity | out | - | what the written name refers to, when it is not the target: a candidate per specialisation; the friend declaration and its target are written |
+| `found` | entity | out | - | the function templates lookup of a template-id's name found ([temp.friend]/1.3): the target is the specialisation chosen |
+| `heads` | written | out | - | the friend's own template-heads, which the friend declaration holds and its unit writes |
+| `requires` | child | out | - | the friend's trailing requires-clause, which the friend declaration holds (`TemplateTables` `trailing_requires`) |
+
+### `kiln_ast::friend_form::FriendFormFlags`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `0` | written | out | - | a leading `::`, a `template` keyword, a friend of every specialisation (its own head deduces the qualifier's arguments, which the friend declaration's head holds), matched per specialisation, accepted with clang's `-Wunsupported-friend` warning: the form, read with `FriendForm` |
+
+### `kiln_ast::friend_form::FriendFormKind`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Function` | flag | out | - | read with `FriendForm` |
+| `Specialization` | flag | out | - | read with `FriendForm` |
+| `Constructor` | flag | out | - | read with `FriendForm` |
+| `Destructor` | flag | out | - | read with `FriendForm` |
+| `Conversion` | flag | out | - | read with `FriendForm` |
+| `Class` | flag | out | - | read with `FriendForm` |
+
 ### 5.7 Cold maps and the arena
 
 `ColdMap` is Kiln's sparse side table; each field of `ColdDeclData` is one
@@ -2955,6 +3012,9 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `init_fp` | flag | in | record FpOverride? | the floating-point pragma state a constructor's member initialisers, a field's default member initialiser or a parameter's default argument were parsed in, when it is not the command line's: code generation emits the initialiser under it, not under the state of the place that uses it |
 | `closure_owner` | entity | in | keyed | the declaration whose text holds a closure's lambda-expression when that is not the closure's context: the parent of the closure's key (§10.4, digest §4.3); `docs/wp/WP-040.md` implements it, and until then a closure is `Pending(Area::Local)` |
 | `written_ns` | entity | out | - | the namespace opening a namespace-scope declaration belongs to when it is not `ctx` (Kiln WP-2725, `kiln_ast/src/decl.rs:1786`): the latest opening when a qualified declarator's qualifier named the namespace, the one an explicit specialisation of a function template is written in. Its one reader is code generation's walk for visibility (`kiln_codegen/src/visibility.rs:455-464`), and what that walk gives is the row `enclosing` (§1.7 item 3), which starts at the same opening |
+| `shadow_named` | entity | out | - | the using-shadow a using-declaration's lookup found when it found one (Kiln WP-3401, `kiln_ast/src/decl.rs:1889`): the declaration the using-declaration introduces is its target, which each shadow's key holds (§5.2); the shadow it was found through is how the name was reached (digest §1 rule 2), as `oper_lookups`' `found` |
+| `friend_form` | bookkeeping | out | - | index of the friend's written form in `DeclArena` `friend_forms` (Kiln WP-3164, `decl.rs:1921`); the form's rows are `FriendForm`'s |
+| `subst_failed` | flag | unsupported | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`): read by `docs/wp/WP-136.md`. Kiln sets it only on a declaration with `DeclFlags` `0-invalid` (`decl.rs:393-400`), which makes the walk indeterminate (`Cause::Error`) wherever it is read, so it needs no reading of its own |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -2970,6 +3030,23 @@ an `extern` variable declared in a block, and for a member defined
 outside its class or its namespace. A function defined in the class that befriends it
 differs from one only declared there by this row, which is why
 `FriendKind` needs no variant for it.
+
+### `kiln_ast::decl::SubstFailedKind`
+
+`kind=enum; pin=schema`
+
+What failed to form in a declaration Kiln made invalid while its errors
+were trapped (Kiln WP-3281, `kiln_ast/src/decl.rs:401`). Read only with
+`ColdDeclData` `subst_failed` (`unsupported`, `docs/wp/WP-136.md`).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `FunctionSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `ExplicitSpecifier` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `VariablePartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `ClassPartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `LocalOfFailedSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `OtherTrapped` | flag | out | - | read with `ColdDeclData` `subst_failed` |
 
 ### `kiln_ast::decl::DeclArena`
 
@@ -2998,6 +3075,8 @@ differs from one only declared there by this row, which is why
 | `fn_def_insts` | bookkeeping | demand | - | §11: function definitions in the order they were instantiated |
 | `cold` | bookkeeping | out | - | the cold maps: `ColdDeclData` |
 | `ty_journal` | bookkeeping | out | - | the log of in-place type rewrites |
+| `friend_forms` | bookkeeping | out | - | arena of friends' written forms (Kiln WP-3164, `kiln_ast/src/decl.rs:2062`): reached through `ColdDeclData` `friend_form` |
+| `friend_form_decls` | bookkeeping | out | - | the friend of each `friend_forms` row: the inverse of `ColdDeclData` `friend_form` |
 
 ### `kiln_ast::journal::Journal`
 
@@ -4493,6 +4572,42 @@ from where the use is and what the enclosing function is called (digest
 Each row of `ColdExprData` is written for every expression, whatever its
 kind; an expression with no entry writes the encoding's empty form (§2.1).
 
+### `kiln_ast::expr::SrcLocRole`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `File` | flag | out | - | read with `StringMaker` |
+| `FileName` | flag | out | - | read with `StringMaker` |
+| `Function` | flag | out | - | read with `StringMaker` |
+| `PrettyFunction` | flag | out | - | read with `StringMaker` |
+
+### `kiln_ast::expr::StringMaker`
+
+`kind=enum; pin=schema`
+
+Read only with `ColdExprData` `string_maker` (`out`).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `SourceLoc` | value | out | - | a source-location builtin's string (Kiln WP-3000, `kiln_ast/src/expr.rs:1736`) |
+| `SourceLoc.role` | value | out | - | which value of the use: `SourceLocValues` holds them, symbolic |
+| `SourceLoc.decl` | entity | out | - | the declaration the use is evaluated in: `SourceLocValues` `ctx` |
+| `Reflection` | value | out | - | a string of reflection (§12) |
+| `ContractSite` | value | out | - | a contract violation's string: the contract's site, `ContractSite` |
+
+### `kiln_ast::expr::UseImmediate`
+
+`kind=struct; pin=schema`
+
+One element of `ColdExprData` `use_imm` (Kiln WP-3278, `expr.rs:1706`).
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `invocation` | child | out | - | the immediate invocation of the shared default argument or initialiser: written with it |
+| `value` | value | out | - | its value at the use: symbolic, as `use_imm` |
+
 ### `kiln_ast::expr::ColdExprData`
 
 `kind=struct; pin=schema`
@@ -4508,10 +4623,13 @@ kind; an expression with no entry writes the encoding's empty form (§2.1).
 | `array_trait` | value | in | record ArrayTraitExtra? |  |
 | `trait_rhs_loc` | location | out | - |  |
 | `source_loc` | value | symbolic | - | the rows of `SourceLocValues` |
+| `string_maker` | value | out | - | what made a string object Kiln made itself, keyed by its `StringLiteral` (Kiln WP-3000, WP-3280, `kiln_ast/src/expr.rs:1530`): a source-location value's role and the declaration it is evaluated in, reflection, a contract's site. The object's content is the fact, written as a string by the rows of `Entry`; which object one use shares with another follows from the role and the declaration, which `source_loc` (symbolic) and the using unit hold |
 | `default_imm` | value | demand | - | §11.4 |
+| `use_imm` | value | symbolic | - | the value at one use of each immediate invocation of a default argument or default member initialiser with source-location values (Kiln WP-3278, `expr.rs:1546`; CWG 2631): each is a function of where the use is and the declaration it is in, which are `source_loc`'s symbolic values |
 | `union_field` | entity | in | ref |  |
 | `cast_written-unresolved-construct` | type | in | type? | on a `CXXUnresolvedConstructExpr`: the type as written, which instantiation and mangling use |
 | `cast_written-cast` | type | in | type? | on an explicit cast: the type as written, with the qualifiers and the reference the node's type drops. Partial ordering, the search for unexpanded packs and the normal form of a constraint read it |
+| `compound_literal_written` | written | out | - | the type a compound literal wrote when its node's type is not it (Kiln WP-3589, `expr.rs:1559`): `(T[]){1, 2}`, whose node type is `T[2]`. The node's type is what code generation reads; reading the written type is `docs/wp/WP-156.md`'s (operand units) |
 | `offsetof_pattern-type` | type | in | type? | a value-dependent `OffsetOfExpr`: the operand type |
 | `offsetof_pattern-components` | name | in | enum OffsetofComponent* | its designator as written |
 | `offsetof_layout` | value | in | enum OffsetofStep* |  |
@@ -5129,6 +5247,60 @@ declaration; on a declaration written in source, an entry naming a
 friend's pattern (a declaration lexically in a class and semantically in
 a namespace), which an instantiation set there, is written absent.
 
+### `kiln_ast::templates::PatternMemInits`
+
+`kind=struct; pin=schema`
+
+A pattern constructor's ctor-initializer as written (Kiln WP-3026,
+WP-3200, `kiln_ast/src/templates.rs:293`). Read only with
+`TemplateTables` `pattern_mem_inits` (`unsupported`, `docs/wp/WP-124.md`
+item 5), so no row below reaches a stream.
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `colon` | location | out | - |  |
+| `failed` | flag | out | - | read with `pattern_mem_inits` |
+| `inits` | child | out | - | read with `pattern_mem_inits` |
+
+### `kiln_ast::templates::PatternMemInit`
+
+`kind=struct; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `id` | entity | out | - | read with `pattern_mem_inits` |
+| `loc` | location | out | - |  |
+| `end` | location | out | - |  |
+| `pack_expansion` | flag | out | - | read with `pattern_mem_inits` |
+| `init` | child | out | - | read with `pattern_mem_inits` |
+
+### `kiln_ast::templates::PatternMemInitId`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Member` | entity | out | - | read with `pattern_mem_inits` |
+| `Member.0` | entity | out | - | read with `pattern_mem_inits` |
+| `Type` | entity | out | - | read with `pattern_mem_inits` |
+| `Type.ty` | type | out | - | read with `pattern_mem_inits` |
+| `Type.ident` | name | out | - | read with `pattern_mem_inits` |
+| `Ident` | name | out | - | read with `pattern_mem_inits` |
+| `Ident.0` | name | out | - | read with `pattern_mem_inits` |
+
+### `kiln_ast::templates::PatternMemInitArgs`
+
+`kind=enum; pin=schema`
+
+| Row | Class | Decision | Encoding | Note |
+|---|---|---|---|---|
+| `Paren` | child | out | - | read with `pattern_mem_inits` |
+| `Paren.args` | child | out | - | read with `pattern_mem_inits` |
+| `Paren.lparen` | location | out | - |  |
+| `Paren.rparen` | location | out | - |  |
+| `List` | child | out | - | read with `pattern_mem_inits` |
+| `List.0` | child | out | - | read with `pattern_mem_inits` |
+
 ### `kiln_ast::templates::TemplateTables`
 
 `kind=struct; pin=schema`
@@ -5143,6 +5315,7 @@ a namespace), which an instantiation set there, is written absent.
 | `defaults` | value | in | enum ArgView? | by parameter; rule above |
 | `inherited_defaults` | bookkeeping | out | - | which earlier parameter owns the default `defaults` writes |
 | `trailing_requires` | child | in | child? | by function; also in the key as a profile (§3.3) |
+| `pattern_mem_inits` | child | unsupported | - | the ctor-initializer of a constructor definition in a template, as written (Kiln WP-3026, WP-3200, `kiln_ast/src/templates.rs:396`): reading it is `docs/wp/WP-124.md` item 5. Every constructor definition that has an entry is indeterminate (`kiln/pattern-mem-initializers`, `decl_class.rs` `mem_inits_outside_ast`, the condition under which Kiln keeps the list here and not in `ctor_inits`) |
 | `expr_targs` | value | in | enum ArgView*? | the explicit template arguments of a dependent or unresolved name |
 | `expr_nns` | name | in | enum Nns? | the qualifier of a dependent or unresolved name |
 | `oper_lookups` | entity | in | record OperLookups | the definition-context lookup set of a dependent operator expression (rule below) |
@@ -5150,11 +5323,13 @@ a namespace), which an instantiation set there, is written absent.
 | `size_of_pack_origin` | entity | in | ref | the pack a substituted `sizeof...` named: the literal still mangles by it |
 | `size_of_pack_partial` | value | in | enum ArgView*? | the partly substituted arguments of a `sizeof...`: mangled |
 | `pack_index_origin` | flag | in | bool | the expression is the selected element of a substituted `pack...[i]`; the pattern's expression it maps to belongs to the template's unit |
+| `pack_index_written` | written | out | - | the substituted index of the selected element a `pack...[i]` became (Kiln WP-3582, `templates.rs:425`): the written form clang keeps; the element is the fact (`pack_index_origin`, and the element itself). Reading it is `docs/wp/WP-156.md`'s |
 | `member_op_loc` | location | out | - |  |
 | `pseudo_dtor_name` | name | in | sym? | the identifier after `~` that named no type at the definition |
 | `pseudo_dtor_first-type` | type | in | type? | the first type-name of `p->S::F::~Q()` |
 | `pseudo_dtor_first-position` | location | out | - |  |
 | `template_kw` | written | out | - | the `template` keyword after a qualifier: read by the printer only |
+| `unresolved_found` | entity | out | - | per element of an `UnresolvedLookupExpr`'s declarations, the using-shadow it was found through (Kiln WP-3400, `templates.rs:449`): the element's target is written (`UnresolvedLookupExpr.b`, a shadow written as its target); the shadow is how the name was reached (digest §1 rule 2), as `oper_lookups`' `found` |
 | `ttp_owner` | entity | in | ref | by parameter: the template whose head declares a concept template parameter, its mangling parent |
 | `member_like_friend` | entity | in | ref | by friend function template: the class specialisation that is its mangling scope |
 | `pattern_next` | bookkeeping | out | - | state of the builder |

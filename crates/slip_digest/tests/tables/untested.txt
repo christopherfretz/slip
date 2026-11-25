@@ -8,6 +8,14 @@
 # operand type, so two designators of one type differing in one node's kind alone
 # are not valid C++ (WP-066). OffsetofNode/Index.position: the n-th index node
 # reads the n-th index expression, so no pair moves it alone (WP-066).
+# FriendForm/kind, FriendForm/name, FriendForm/heads: the friend's kind, name
+# and template heads follow from the declaration it befriends, whose own rows
+# read them, so no valid pair changes the form's copy alone (WP-163).
+# TemplateTables/pack_index_written: the written index is also the pattern's
+# index expression, which is `in`, so no pair changes the copy alone (WP-163).
+# TypeView/Decayed{,.original,.adjusted}: a parameter's adjusted type follows
+# from its declared type, which the parameter's own rows read; the node is sugar
+# no pair changes alone (WP-163; read by differ/_/spelling-decayed-parameter).
 AddrSpace/0
 ArgView/Null
 ArgView/Pack
@@ -75,6 +83,9 @@ ExprOperand/Profile
 ExprOperand/Profile.0
 FnSpec/0-immediate-escalating
 FpOptions/rounding_math
+FriendForm/heads
+FriendForm/kind
+FriendForm/name
 FuncInfo/0-no-proto
 FuncInfo/0-regparm
 FuncInfo/0-sme
@@ -148,6 +159,7 @@ TemplateName/TemplateTemplateParm.pack
 TemplateName/Using
 TemplateName/Using.shadow
 TemplateName/Using.underlying
+TemplateTables/pack_index_written
 Thunk/method
 Thunk/ret
 Thunk/this
@@ -194,6 +206,9 @@ TypeView/CanonTemplateTypeParm
 TypeView/CanonTemplateTypeParm.depth
 TypeView/CanonTemplateTypeParm.index
 TypeView/CanonTemplateTypeParm.pack
+TypeView/Decayed
+TypeView/Decayed.adjusted
+TypeView/Decayed.original
 TypeView/Decltype.expr
 TypeView/Decltype.underlying
 TypeView/DeducedTemplateSpecialization

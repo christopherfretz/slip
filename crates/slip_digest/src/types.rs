@@ -525,6 +525,9 @@ impl Walk<'_> {
             TypeView::Attributed { kind: _, modified: _, equivalent: _ } => {
                 s.tag(type_view::ATTRIBUTED).indeterminate(sugar("TypeView/Attributed"));
             }
+            TypeView::Decayed { original: _, adjusted: _ } => {
+                s.tag(type_view::DECAYED).indeterminate(sugar("TypeView/Decayed"));
+            }
             TypeView::Splice { operand: _, designated: _ } => {
                 s.tag(type_view::SPLICE).indeterminate(Cause::Unsupported("TypeView/Splice"));
             }

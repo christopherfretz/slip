@@ -1207,6 +1207,15 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         dump_pp_record_source_order,
         working_directory,
         work_dir,
+        written_ref_keys,
+        fn_names,
+        dump_fn_names,
+        dump_friend_forms,
+        builtin_literals,
+        imacros,
+        iprefix,
+        prefixed_dirs,
+        verify_subst_failed,
     } = a;
     macro_rules! io {
         ($($field:ident),* $(,)?) => {
@@ -1308,6 +1317,23 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         dump_pp_record_source_order,
         working_directory,
         work_dir,
+        // Kiln 60fb5ab9d: two tables recorded for a tooling client (the
+        // substitution keys, `-fkiln-written-ref-keys`, WP-3540; the
+        // function-name spans, `-fkiln-fn-names`, WP-3280), the builtin-macro
+        // literal table (`-fkiln-builtin-literals`, WP-2821), two dumps
+        // (`-fkiln-dump-fn-names`, `-fkiln-dump-friend-forms`, WP-3164), a
+        // report of the silent-failure marks (`-fkiln-verify-subst-failed`,
+        // WP-3281), and files and search paths read (`-imacros`,
+        // `-iprefix`, `-iwithprefix`/`-iwithprefixbefore`, WP-2822).
+        written_ref_keys,
+        fn_names,
+        dump_fn_names,
+        dump_friend_forms,
+        builtin_literals,
+        verify_subst_failed,
+        imacros,
+        iprefix,
+        prefixed_dirs,
     );
     // The parts of three option groups that are files or reports; their
     // limits and the sanitizer set are the language's.

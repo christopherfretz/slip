@@ -395,6 +395,8 @@ fn rebuild_var_spec(spec: VarSpec) -> VarSpec {
         .with_exception_var(spec.is_exception_var())
         .with_cxx_for_range(spec.is_cxx_for_range())
         .with_inline_implied(spec.is_inline_implied())
+        // `0-placeholder` (`out`, Kiln WP-3583): accounted for, not written.
+        .with_placeholder(spec.placeholder())
 }
 
 /// `ParamData` (§5.4) of the parameter `d`.
@@ -775,7 +777,8 @@ pub(crate) mod tests {
             .with_nrvo(true)
             .with_exception_var(true)
             .with_cxx_for_range(true)
-            .with_inline_implied(true);
+            .with_inline_implied(true)
+            .with_placeholder(slip_kiln::kiln::ast::decl::VarPlaceholder::GnuAutoType);
         assert_eq!(super::rebuild_var_spec(v).bits(), v.bits());
     }
 

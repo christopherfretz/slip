@@ -395,6 +395,11 @@ fn ty(w: &mut Walk<'_>, s: &mut Stream, q: QualType, own_fn: Option<DeclId>) {
         TypeView::QualifiedArray { quals: _, base } => ty(w, s, QualType::unqual(base), None),
         TypeView::Paren(x) => ty(w, s, x, own_fn),
         TypeView::Attributed { kind: _, modified, equivalent: _ } => ty(w, s, modified, own_fn),
+        // A parameter type adjusted from an array whose bound is an
+        // instantiation-dependent expression (Kiln WP-2720): the declared
+        // array type holds the bound as written (rule 7); the adjusted
+        // pointer has lost it.
+        TypeView::Decayed { original, adjusted: _ } => ty(w, s, original, None),
         TypeView::ConstantArray(a) => {
             let slip_kiln::kiln::ast::types::ConstArray { elem, size: _, size_expr } = a;
             ty(w, s, elem, None);

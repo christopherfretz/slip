@@ -205,6 +205,13 @@ fn takes_part(role: Role) -> bool {
         | Role::Designator
         // The qualified declarator-id of a redeclaration (Kiln WP-1932).
         | Role::Redecl => true,
+        // An operator token and a ud-suffix naming the function overload
+        // resolution selected (Kiln WP-2820 F1, `60fb5ab9d`): Kiln recorded
+        // neither at `4a83f6e3c`, and what the check does with them is the
+        // reading of these roles a later package decides
+        // (`docs/wp/WP-096.md` "For Kiln" 4, `spec/api.md` §6.7). Left out,
+        // the check sees what it saw at the old pin.
+        Role::Operator | Role::UdSuffix => false,
     }
 }
 
