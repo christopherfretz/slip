@@ -197,6 +197,35 @@ entity that also has written declarations (a friend's definition) is the
 class specialisation's: its friend unit refers to the entity, and the
 definition is the entity's resolved unit `definition`.
 
+**Every instantiation has a unit** (WP-158). Every function body and
+every default argument or default member initialiser that Kiln
+instantiated in this parse is in the stream of a derived unit, whatever
+made the front end instantiate it: a call, an unevaluated operand
+(`decltype`, `sizeof`, `noexcept`, a requires-expression), a conversion
+(a closure to a function pointer), a deduced return type, an address
+taken. Its key, group and cause are those above: the body is the
+`definition` of its specialisation, or written in place in the unit of
+the local type's owner; the default is a `default_argument` unit
+(§4.3). The rule is checked against what Kiln instantiated, not against
+the units the walk chose: the counter `digest.instantiated.unheld`
+(§12) counts
+
+- the bodies of the functions in Kiln's list of instantiated function
+  definitions (`DeclArena::fn_def_insts`), and of every function
+  declaration with a body that an instantiation made (its own
+  specialisation or member-specialisation kind, else the kind of the
+  context it is declared in: a local class's member, a lambda's call
+  operator in an instantiated body);
+- the default arguments of the parameters of those function
+  declarations, and the default member initialisers of fields an
+  instantiation made;
+
+that no unit's stream wrote, leaving out a declaration in a dependent
+context (a pattern, written as one) and one inside a local type that a
+stream met and could not number (§4.3 "What these rules do not yet
+show": the unit that holds it is indeterminate, unequal to everything).
+It is 0 over every fixture (§13 item 7) and is reported on the corpus.
+
 An implicit member that Kiln has declared but nothing references is not a
 unit: whether Kiln declared it depends on which lookups happened. What such
 a member would be is determined by its class, whose unit holds the facts
@@ -823,7 +852,18 @@ is the owner of what its own body or initialiser declares.
   operator or conversion function, an implicit member defined on use.
   Such a unit is keyed under the local type and is no part of the
   stream that holds the type, so a use never changes a declared unit
-  (§1 rule 5).
+  (§1 rule 5). A specialisation is one whatever made Kiln instantiate it
+  (§2.2 "Every instantiation has a unit"): a call, a conversion of the
+  closure to a function pointer, an unevaluated operand (WP-158).
+- An instantiated default argument of a local function that is no unit
+  (a local class's member, the call operator of a lambda that is not
+  generic, in an instantiated body) is a `default_argument` unit
+  (`digest-kinds.md` §11.4), keyed `parameter(i)` under the function's
+  key (the members of a local type have ordinary keys), derived, origin
+  file the function's (WP-158). The function's own stream, written in
+  place, writes the parameter's default as absent, as for every
+  instantiated declaration; without the unit the expression would be in
+  no stream.
 - A local alias or typedef is not digested: the types it names appear
   canonically wherever it is used.
 
@@ -1513,6 +1553,16 @@ are marked (below), not the format; no baseline of scheme 3 was recorded,
 so it shares the number. WP-141 landed beside it saying "`scheme` stays
 2" (`spec/landed/digest/WP-141.md`): written before this move, it reads
 as "no move of its own"; its changes are under 3 for the same reason.
+WP-158 (§2.2 "Every instantiation has a unit") changes no existing
+unit's stream, key or table row; it adds units (a local specialisation
+reached without a call, an instantiated default argument of a local
+function) that the stream of no unit held before. That closes wrong
+equals (an instantiation that binds otherwise and that no unit held
+compared equal), the case this rule moves the number for; but no
+baseline of scheme 3 is recorded (the shard goldens of `crates/slip_model`
+are unchanged by it, `bench/baselines` was last recorded under WP-050,
+and the corpus invariants are recorded by the supervisor at the merge,
+who confirms none was), so it shares the number 3.
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.
@@ -1689,6 +1739,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived` | derived units |
 | `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
 | `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
+| `digest.instantiated.unheld` | function bodies, default arguments and default member initialisers Kiln instantiated that no unit's stream holds (§2.2 "Every instantiation has a unit", WP-158); always present, 0 over every fixture |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |
@@ -1768,6 +1819,15 @@ true by mechanism, not by review alone.
    invisible to 3 and 4. Mutation tests (§14) and, when Kiln provides it, a
    public table of operand roles (`docs/design/05-kiln-interface.md` KR5)
    cover it; until then every such word is listed in "Open questions".
+7. **Every instantiation has a unit.** The counter
+   `digest.instantiated.unheld` (§2.2, §12) is 0 for both sides of every
+   fixture the digest's tests parse (`tests/common`, beside
+   `digest.emitted.unplaced`): what Kiln instantiated is read from Kiln,
+   so a route by which an instantiation gets no unit fails the suite on
+   the first fixture that takes it. A unit test
+   (`demand::tests::unheld_reads_what_kiln_instantiated`) shows that the
+   count reads Kiln's facts: with no unit written, it counts every
+   instantiated body and default argument of the four shapes of WP-158.
 
 ## 14. What the tests must show
 
