@@ -804,7 +804,7 @@ impl Walk<'_> {
             self.write_canonical_args(s, l);
             self.spelling_off -= 1;
             let marked = self.left_out != left_out;
-            crate::own_spelling::left_out_of_args(self, s, l, marked);
+            crate::own_spelling::left_out_of_args(self, s, l, None, marked);
         } else {
             self.write_canonical_args(s, l);
         }

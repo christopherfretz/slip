@@ -412,7 +412,11 @@ fn partial_spec_info(w: &mut Walk<'_>, s: &mut Stream, x: &PartialSpecInfo) {
     let marked = w.left_out != before;
     w.restore_types(types);
     w.unit = saved;
-    crate::own_spelling::left_out_of_args(w, s, x.args, marked);
+    // The list as written against the canonical one (rule 12): Kiln
+    // WP-3016/3142 keeps it for a partial specialisation of a class and of
+    // a variable template.
+    let written = w.ast.templates.args_as_written(x.partial).map(|l| (l, x.canonical));
+    crate::own_spelling::left_out_of_args(w, s, x.args, written, marked);
 }
 
 /// `ref` to a declaration of a pattern (§9): `Ref::none` for one that has

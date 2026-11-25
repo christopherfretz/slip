@@ -432,6 +432,29 @@ fn a_converted_argument_with_no_written_form_is_a_cause() {
     });
 }
 
+/// Rule 12's check for a converted value looks inside a pack (WP-163 fix
+/// round 2): Kiln converts no dependent pack's arguments today, but a
+/// specialisation's own list holds its pack converted (`V<int, 1, 2>`:
+/// a pack of two values), which `holds_value` must see.
+#[test]
+fn a_converted_value_inside_a_pack_is_seen() {
+    use slip_kiln::kiln::ast::types::ArgView;
+    let src = "template<class, int...> struct V {};\n\
+               V<int, 1, 2> v;\n";
+    crate::decl_func::tests::with_walk(src, |w| {
+        let v = crate::decl_func::tests::named(w, "v", DeclKind::Var)[0];
+        let q = w.ast.decls.get(v).ty().expect("a type");
+        let TypeView::Record(r) = w.ast.types.view(w.ast.types.canonical(q).ty()) else {
+            panic!("a record");
+        };
+        let (_, info) = w.ast.spec_info(r).expect("a specialisation");
+        let l = info.args;
+        assert!(w.ast.types.args(l).iter().any(|a| matches!(a.view(), ArgView::Pack(_))));
+        assert!(!w.ast.types.args(l).iter().any(|a| matches!(a.view(), ArgView::Value { .. })));
+        assert!(super::holds_value(w, l));
+    });
+}
+
 /// Rule 4: a use through an alias writes the alias's `Ref`, not its set:
 /// adding a declaration the alias finds changes the alias's unit and not
 /// its user's.

@@ -1556,7 +1556,8 @@ The rest of profile mode:
      is in the `TemplateSpecialization` sugar (`args`, its canonical form
      `underlying`): every position whose written argument is an expression
      and whose canonical argument is a converted value
-     (`own_spelling::converted_positions`) is read as rule 7 reads an
+     (`own_spelling::converted_args`, the one reader of such a list) is
+     read as rule 7 reads an
      instantiation-dependent one, its profile a `Profile` entry, then the
      expression as written (rule 1), so two template-ids naming different
      entities of one value differ in the units that write them (member,
@@ -1570,7 +1571,22 @@ The rest of profile mode:
      (`own_spelling::CONVERTED_ARGUMENT`): which entity was written is
      not known. No source the tests hold reaches it through a unit; the
      walk test `a_converted_argument_with_no_written_form_is_a_cause`
-     meets it through a canonical type.
+     meets it through a canonical type. The same reader takes two more
+     places (fix round 2): a partial specialisation's own list, of a
+     class or a variable template, is read from Kiln's list as written
+     (`args_as_written`, Kiln WP-3016/3142) against its canonical list,
+     position by position (`differ/_/converted-arg-partial-own*`); and a
+     declaration written outside a partial specialisation it is a member
+     of (an out-of-line member function, static data member or nested
+     class, `template<class T> void P<T, n::k>::f() {}`), whose
+     canonical arguments hold a converted value, has its qualifier's
+     template-id in no list Kiln keeps: the unit is
+     `spelling/converted-argument` (`own_spelling::out_of_line_member`,
+     `indeterminate/_/converted-arg-out-of-line-*`), never equal. The
+     profile holds the written expression's form, so a redundant
+     parenthesis (`It<T, (n::k)>` against `It<T, n::k>`) is a difference:
+     a known false mismatch, the loud direction, and the profile of the
+     pin before (`differ/_/converted-arg-paren`).
   A key reads no spelling: two declarations are one entity by
   [temp.over.link] whatever their found sets, and a difference in the
   sets is a difference of the units. No hazard of first spellings is
@@ -5372,7 +5388,7 @@ item 5), so no row below reaches a stream.
 | `ref_var_insts` | bookkeeping | demand | - | §11: the variables instantiated at a reference, with the declaration each is emitted beside |
 | `moved_class_insts` | bookkeeping | out | - | the classes whose members are emitted at an explicit instantiation definition that follows a declaration; both are `SpecInfo` `kind`, of which the last is written |
 | `written_args` | written | out | - | how many arguments were written before defaults filled the rest: text made from a name (digest §9) |
-| `args_as_written` | written | out | - | the arguments of an explicit specialisation or instantiation as written: text made from a name (digest §9); `SpecInfo` `args` is the fact |
+| `args_as_written` | written | out | - | the arguments of an explicit specialisation or instantiation as written: text made from a name (digest §9); `SpecInfo` `args` is the fact. A partial specialisation's list as written is read for its left-out facts (§4.4 "Spellings", rule 12), not as a fact of the record |
 | `late_explicit_insts` | bookkeeping | out | - | functions explicitly instantiated before their template was defined: emitted at the end of the translation unit |
 | `late_explicit_set` | bookkeeping | out | - | the same functions as a set |
 | `preferred_named` | written | out | - | which specialisations print by their template's `preferred_name`: the attribute is written with the template, and the rest is text made from a name (digest §9) |
