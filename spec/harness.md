@@ -289,14 +289,16 @@ The environment is a parameter, so tests never read the host's own.
 
 A transform test is a directory: an input tree, a transform, and the
 expected result (post-image, report, exit status) as golden files; §6.2
-gives the format. Outcomes follow Kiln's model: `PASS`, `FAIL`, `XFAIL`
-(`xfail: <reason>` required), `XPASS` (fails the gate), `ERROR`
+gives the format. Outcomes follow Kiln's model: `PASS`, `FAIL`, `SKIP`
+(a test's declared `require:` host capability is unavailable; does not
+fail the gate unless `SLIP_REQUIRE_ALL=1`, which turns it into `ERROR`),
+`XFAIL` (`xfail: <reason>` required), `XPASS` (fails the gate), `ERROR`
 (the test itself is wrong: a bad directive, a pre-image the front end or
 clang rejects), `KILLED` (a run ended by a signal or its timeout, §6.3;
-fails the gate, never masked by `xfail`). There is no `SKIP` of a whole
-transform test: a test always runs, and what it cannot check for lack of
-a capability is an oracle skipped (§6.4), counted and named. Unknown
-directives are errors. Every test names the spec section it covers.
+fails the gate, never masked by `xfail`). A test without a `require:`
+directive always runs, and what it cannot check for lack of a capability
+is an oracle skipped (§6.4), counted and named. Unknown directives are
+errors. Every test names the spec section it covers.
 
 **Golden files.** A golden is the JSON rendering (`spec/model.md` §10) or the
 exact bytes of an output. `--bless` rewrites goldens and prints each path it
@@ -390,6 +392,8 @@ and lines starting with `#` are skipped:
 | `owned`, `readonly` | paths relative to the tree; may repeat | `owned: .`, and `readonly: dep` if `pre/dep` exists |
 | `allow` | `residue`, `unparsed`, `partial` or `errors`: the run is given `--allow-<value>`; may repeat | none |
 | `oracle` | `no-<oracle> <reason>` turns one oracle of §6.4 off for this test | all on |
+| `require` | `case-insensitive`: a host or volume capability the test needs (may repeat; no duplicates); if unavailable, the test is `SKIP` (or `ERROR` under `SLIP_REQUIRE_ALL=1`) | none |
+| `symlink` | `<link> -> <target>`: a symbolic link the runner creates in the work tree before each run (relative `<link>` not colliding with `pre/` or another symlink, relative `<target>` staying inside the tree and passing through no other declared symlink; never stored in git; may repeat) | none |
 | `post` | `none`: the run may write and writes nothing (below) | absent |
 | `timeout` | the seconds each invocation (of `slip`, and of clang by the clang oracle) may take, 1 to 86400 | 600 |
 | `xfail` | the reason the test is expected to fail | absent |
@@ -408,9 +412,11 @@ says `post: none` (its run writes nothing, and the expected post-image is
 `pre/`); either is required, and both are an error. `post: none` is
 checked again against the run's record (§6.3 step 4): it is for a result
 that does not permit writing, or whose overlay changes no file. A test that may not
-write has no `post/` and no `post: none`. No entry of a test, nor
-anything under `pre/` or `post/`, is a symbolic link (a `post/` that is
-one would lead `--bless` out of the test); each is an error of the test.
+write has no `post/` and no `post: none`. No entry of a test, nor anything under `pre/` or `post/`, is a symbolic
+link in git (a `post/` that is one would lead `--bless` out of the
+test); each is an error of the test. Tests that need symbolic links
+declare them with `symlink: <link> -> <target>` in `test.txt`, and the
+runner creates them in the work tree.
 
 ### 6.3 Running
 
@@ -428,9 +434,13 @@ test is an error.
 
 For each test, in byte order of paths:
 
-1. `pre/` is copied to a fresh **tree** under the work base (§11.5), and a
-   fresh store is made beside it. Nothing is written into the test's own
-   directory except by `--bless`.
+1. `pre/` is copied to a fresh **tree** under the work base (§11.5),
+   every `symlink:` directive is created inside it (and included in the
+   expected pre-image; `--bless` accepts those symlinks unchanged), and a
+   fresh store is made beside it. For a test with `require:
+   case-insensitive`, the runner probes whether the work directory's
+   volume folds case, and skips the test (`SKIP`) if it does not. Nothing
+   is written into the test's own directory except by `--bless`.
 2. `slip <run> --db <database> --owned … --readonly … --store <store>
    --relative-to <tree> --write -j 2` and the `allow` options. `--write` is
    always given: a result that does not permit it must leave the tree
@@ -495,9 +505,11 @@ names them)` when an oracle was turned off by `oracle:` or skipped.
 `--verbose` prints, under each test, `  <area>/<name>: oracle <name>
 off|skipped: <reason>` for each. Exit status 1 if the gate would fail.
 
-**`SLIP_REQUIRE_ALL=1`** (§1 principle 3): a test that passes with its
-clang oracle skipped for want of a compiler (not for `--no-clang`) is an
-`ERROR`, "the clang oracle was skipped: no compiler (SLIP_REQUIRE_ALL=1)".
+**`SLIP_REQUIRE_ALL=1`** (§1 principle 3): a test skipped for an
+unavailable `require:` capability (`SKIP`) is an `ERROR` (`<reason>
+(SLIP_REQUIRE_ALL=1)`), and a test that passes with its clang oracle
+skipped for want of a compiler (not for `--no-clang`) is an `ERROR`,
+"the clang oracle was skipped: no compiler (SLIP_REQUIRE_ALL=1)".
 It is for a host that has every capability and must show it: a release
 candidate's gate.
 
@@ -520,7 +532,7 @@ themselves.
 |---|---|---|
 | `determinism` | always | a second run in a fresh store with `-j 1` gives the same exit status, transform, edit set, declared, overlay and result ids, the same standard output, and the same written tree |
 | `verify` | the result record's state is `verified` or `verified_with_residue` | this is corpus invariant (c): the run itself verified the post-image. The oracle adds that `slip check` over the run's own edit set, in the same store, gives the same result id, whose record is the run's, with the printed state the record's |
-| `back` | the tree was written | the inverse transform (for `rename --from a::f --to g`: `rename --from a::g --to f`) on the written tree, with a fresh store, ends in the same state and leaves the tree byte-identical to `pre/` |
+| `back` | the tree was written | the inverse transform (for `rename --from a::f --to g`: `rename --from a::g --to f`) on the written tree, with a fresh store, ends in the same state modulo residue on one side (`verified` and `verified_with_residue` both accept each other) and leaves the tree byte-identical to `pre/` |
 | `clang` | the tree was written, and a clang is available | every command of the test, with the compiler replaced by clang and `-fsyntax-only`, exits 0 on the pre-image (else `ERROR`) and on the written tree; on the written tree each command also writes the files it read (`-MD -MF`), and a file the run changed that no command read is a `FAIL`, "post-image not compiled: <file>" |
 | `mutation` | the result record's state is `verified` or `verified_with_residue` | each mutated edit set, given to `slip check`, does **not** verify (below) |
 
@@ -531,6 +543,16 @@ An oracle that does not run, for any reason but `oracle: no-<name>`, is
 oracles only once it is the verified overlay's (§6.3 step 4), so `clang`,
 `back` and `determinism` (whose tree must equal it) judge the image that
 was verified.
+
+**Back.** Residue need not be symmetric between the old and new names (an
+`#if 0` branch or an uninstantiated template may spell only the old name,
+giving `verified_with_residue` forward and `verified` backward), so the
+oracle accepts `verified` and `verified_with_residue` in either direction
+while still rejecting any other state mismatch (`not_verified`, `refused`,
+`incomplete`). When `name_taken` is not symmetric (`spec/edits.md` §9.5,
+for example a derived class declaring the old name where the inverse
+rename is refused `name_taken`), a test turns the oracle off with
+`oracle: no-back <reason>` citing `spec/edits.md` §9.5.
 
 **Clang.** The compiler is `$SLIP_CLANG` if set, else `clang++-19`, else
 `clang++` on `PATH`. If there is none the oracle is skipped, the runner

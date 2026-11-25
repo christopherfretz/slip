@@ -321,6 +321,9 @@ fn normal(mut s: EditSet) -> EditSet {
     }
     for r in &mut s.refusals {
         r.first.clear();
+        if let Some(d) = &mut r.display {
+            d.clear();
+        }
     }
     for r in &mut s.reports {
         r.first.clear();

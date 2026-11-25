@@ -1,0 +1,6 @@
+# Two observers include one header by case-only spellings on a case-folding volume: one real file, edited once and verified (edits §2.1, harness §6.2).
+spec: edits §2.1
+spec: harness §6.2
+run: rename --from a::f --to g
+state: verified
+require: case-insensitive

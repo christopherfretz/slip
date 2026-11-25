@@ -74,7 +74,7 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
                  \"basis\": {}, \"state\": \"refused\", \"files\": [], \"subjects\": [], \
                  \"rules\": [], \"edits\": [], \"groups\": [], \"changed\": [], \"kept\": [], \
                  \"unresolved\": [], \"refusals\": [{{\"cause\": \"no_observer\", \"file\": null, \
-                 \"lo\": 0, \"hi\": 0, \"reason\": \"none\", \"subject\": null, \"macro\": null, \
+                 \"lo\": 0, \"hi\": 0, \"reason\": \"none\", \"subject\": null, \"display\": null, \"macro\": null, \
                  \"other\": null, \"observers\": 0, \"first\": []}}], \"reports\": [], \
                  \"failures\": [], \"unparsed\": [], \"counters\": [], \"instances\": []}}",
                 h(1),
@@ -112,8 +112,12 @@ fn valid(kind: [u8; 4], n: u8) -> Vec<u8> {
         ),
         _ => panic!("no object of this kind"),
     };
-    // RSLT is at version 2 (WP-111), TRFM and EDTS at 2 (WP-139), OVLY at 1.
-    let version = if kind == *b"OVLY" { 1 } else { 2 };
+    // RSLT is at version 2 (WP-111), TRFM at 2 (WP-139), EDTS at 3 (WP-160), OVLY at 1.
+    let version = match &kind {
+        b"OVLY" => 1,
+        b"EDTS" => 3,
+        _ => 2,
+    };
     let text =
         format!("{{\"kind\": \"{k}\", \"version\": {version}, \"sections\": {{{section}}}}}");
     undump(&json::parse(text.as_bytes()).unwrap()).unwrap()

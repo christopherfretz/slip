@@ -256,9 +256,12 @@ pub fn edit_set_head_details(
             line.extend_from_slice(format!(" {}", r.reason.name()).as_bytes());
         }
         line.push(b':');
-        let display = r
-            .subject
-            .map(|s| displays.get(&s).map_or_else(|| s.to_string(), |d| printable(d.as_bytes())));
+        let display = r.subject.map(|s| {
+            r.display
+                .as_deref()
+                .or_else(|| displays.get(&s).copied())
+                .map_or_else(|| s.to_string(), |d| printable(d.as_bytes()))
+        });
         if let Some(file) = r.file {
             line.push(b' ');
             line.extend_from_slice(&places.place(file, r.lo));

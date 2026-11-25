@@ -825,11 +825,13 @@ pub fn reduce(
         hi: 0,
         reason: Reason::None,
         subject: None,
+        display: None,
         macro_site: None,
         other: None,
         observers: 0,
         first: Vec::new(),
     };
+    let display = |id: Digest| subjects.get(&id).map(|s| s.display.clone());
     let mut refusals = Vec::new();
     if no_observer {
         refusals.push(alone(Cause::NoObserver));
@@ -843,6 +845,7 @@ pub fn reduce(
     for (cause, subject, obs) in &subject_refusals {
         refusals.push(Refusal {
             subject: *subject,
+            display: subject.and_then(&display),
             observers: obs.len() as u64,
             first: first(obs, &observers),
             ..alone(*cause)
@@ -858,6 +861,7 @@ pub fn reduce(
             hi: r.site.2,
             reason: r.reason,
             subject: r.subject,
+            display: r.subject.and_then(&display),
             macro_site: r.macro_site.clone(),
             other: r.other.as_ref().map(place),
             observers: r.obs.len() as u64,

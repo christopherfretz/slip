@@ -211,6 +211,8 @@ pub struct Refusal {
     /// For `site_refused`; else `none`.
     pub reason: Reason,
     pub subject: Option<KeyId>,
+    /// The subject's display name (§6), when `subject` is present.
+    pub display: Option<String>,
     /// `macro` in the spec.
     pub macro_site: Option<MacroSite>,
     /// For `contested` by another range, `overlap` and `buried`: the least

@@ -1,0 +1,5 @@
+# A GNU address-of-label (`&&f`) named like the old name, and its label, are kept (edits §4.2).
+spec: edits §4.2
+run: rename --from a::f --to g
+state: verified
+xfail: WP-160 Kiln request (record label uses in written_refs): `&&f` is not recorded in written_refs or decl_extents, so it is not claimed keep and is reported as residue `not_compiled` (edits §8.4)

@@ -191,12 +191,23 @@ fn back(ctx: &Ctx<'_>, ran: &Ran) -> Result<Vec<String>, Outcome> {
     let args = cmdline::transform(ctx, &inverse, &store, 2);
     let back = ctx.slip(&args)?;
     let mut f = Vec::new();
-    if back.lines.state != ran.lines.state {
+    let back_state = back.lines.state.as_deref();
+    let fwd_state = ran.lines.state.as_deref();
+    // `spec/harness.md` §6.4: the inverse ends in the same state modulo
+    // residue on one side (`verified` and `verified_with_residue` match;
+    // any other difference fails).
+    let state_ok = back_state == fwd_state
+        || matches!(
+            (back_state, fwd_state),
+            (Some("verified"), Some("verified_with_residue"))
+                | (Some("verified_with_residue"), Some("verified"))
+        );
+    if !state_ok {
         f.push(format!(
             "back: `{}` ends in state {}, the run in {}",
             inverse.join(" "),
-            back.lines.state.as_deref().unwrap_or("none"),
-            ran.lines.state.as_deref().unwrap_or("none")
+            back_state.unwrap_or("none"),
+            fwd_state.unwrap_or("none")
         ));
     }
     let got = ctx.read_tree().map_err(Outcome::Error)?;

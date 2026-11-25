@@ -216,9 +216,13 @@ impl Raw {
 }
 
 /// The version this crate writes of a kind of this file: `RSLT` is at 2
-/// (WP-111), `EDTS` at 2 (WP-139), the others at 1.
+/// (WP-111), `EDTS` at 3 (WP-160), the others at 1.
 fn version_of(kind: [u8; 4]) -> u32 {
-    if kind == *b"RSLT" || kind == *b"EDTS" { 2 } else { 1 }
+    match &kind {
+        b"RSLT" => 2,
+        b"EDTS" => 3,
+        _ => 1,
+    }
 }
 
 #[allow(clippy::too_many_lines, reason = "one statement per field of spec/edits.md §6")]
@@ -331,6 +335,10 @@ fn raw_set(x: &EditSet) -> Raw {
         r.e.uv(f.reason as u64);
         r.mark(format!("{at}.subject"));
         r.opt_digest(f.subject.as_ref());
+        r.mark(format!("{at}.display"));
+        r.opt(f.display.as_ref(), |r, s| {
+            r.e.str(s);
+        });
         r.mark(format!("{at}.macro"));
         r.macro_site(f.macro_site.as_ref());
         r.mark(format!("{at}.other"));
@@ -647,6 +655,7 @@ fn refusal(cause: Cause, file: Option<u64>, lo: u64, hi: u64) -> Refusal {
         hi,
         reason: if cause == Cause::SiteRefused { Reason::MacroBody } else { Reason::None },
         subject: None,
+        display: None,
         macro_site: None,
         other: None,
         observers: 0,
@@ -728,9 +737,14 @@ fn sample() -> EditSet {
         kept: vec![place(0, 30, 33), place(1, 6, 7)],
         unresolved: vec![place(2, 1, 4)],
         refusals: vec![
-            Refusal { subject: Some(d(0x12)), ..refusal(Cause::MixedSet, Some(0), 50, 55) },
+            Refusal {
+                subject: Some(d(0x12)),
+                display: Some("n::other".to_owned()),
+                ..refusal(Cause::MixedSet, Some(0), 50, 55)
+            },
             Refusal {
                 subject: Some(d(0x10)),
+                display: Some("n::f".to_owned()),
                 macro_site: Some(MacroSite { name_start: 40, name: b"N".to_vec() }),
                 observers: 1,
                 first: vec![d(0xa1)],
@@ -1059,7 +1073,7 @@ fn run() -> TransformRun {
 // Hand-written files (spec/model.md §2, §5; spec/edits.md §6, §7.1, §8.5,
 // §10.6), derived from the grammar and commented per field.
 
-const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  02 00 00 00"; // magic, EDTS, version 2
+const HEADER_EDTS: &str = "53 4c 49 50 1a 0a 00 00  45 44 54 53  03 00 00 00"; // magic, EDTS, version 3
 const HEADER_OVLY: &str = "53 4c 49 50 1a 0a 00 00  4f 56 4c 59  01 00 00 00"; // magic, OVLY, version 1
 const HEADER_RSLT: &str = "53 4c 49 50 1a 0a 00 00  52 53 4c 54  02 00 00 00"; // magic, RSLT, version 2
 const HEADER_RUNT: &str = "53 4c 49 50 1a 0a 00 00  52 55 4e 54  01 00 00 00"; // magic, RUNT, version 1
@@ -1601,7 +1615,19 @@ fn json_members() {
     );
     assert_eq!(
         keys(&first("refusals")),
-        ["cause", "file", "lo", "hi", "reason", "subject", "macro", "other", "observers", "first"]
+        [
+            "cause",
+            "file",
+            "lo",
+            "hi",
+            "reason",
+            "subject",
+            "display",
+            "macro",
+            "other",
+            "observers",
+            "first"
+        ]
     );
     assert_eq!(keys(&first("reports")), ["report", "observers", "first"]);
     assert_eq!(keys(&first("failures")), ["failure", "observers", "first"]);
@@ -2419,7 +2445,37 @@ fn set_refusal_fields() {
         );
     }
     for c in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
-        one(Refusal { subject: Some(d(0x10)), ..valid(c) }).validate().unwrap();
+        one(Refusal { subject: Some(d(0x10)), display: Some("n::f".to_owned()), ..valid(c) })
+            .validate()
+            .unwrap();
+    }
+    // `display` only when `subject` is present, and equal to the subject's
+    // display in `subjects` when both are present.
+    for c in alone {
+        let what = rejected(
+            &one(Refusal { display: Some("a::f".to_owned()), ..valid(c) }),
+            "sections.set.refusals[0].display",
+        );
+        assert_eq!(what, "a refusal without a subject has a display");
+    }
+    for c in Cause::ALL.into_iter().filter(|c| c.is_of_site()) {
+        let what = rejected(
+            &one(Refusal { subject: None, display: Some("a::f".to_owned()), ..valid(c) }),
+            "sections.set.refusals[0].display",
+        );
+        assert_eq!(what, "a refusal without a subject has a display");
+    }
+    for c in Cause::ALL.into_iter().filter(|&c| subject_cause(c) || c.is_of_site()) {
+        let what = rejected(
+            &one(Refusal { subject: Some(d(0x10)), display: Some("other".to_owned()), ..valid(c) }),
+            "sections.set.refusals[0].display",
+        );
+        assert_eq!(what, "a refusal's display differs from its subject's display", "{c:?}");
+        // A subject not in `EditSet.subjects` (e.g. an unselected follower)
+        // may carry its own display.
+        one(Refusal { subject: Some(d(0x99)), display: Some("unselected".to_owned()), ..valid(c) })
+            .validate()
+            .unwrap();
     }
     // A macro only for a refusal of a site.
     let m = Some(MacroSite { name_start: 1, name: b"M".to_vec() });
@@ -2492,12 +2548,13 @@ fn set_refusal_fields() {
             x.validate().unwrap_or_else(|e| panic!("{c:?}: {e}"));
         }
     }
-    // The rules in order, for one refusal: file, subject, macro, other, observers.
+    // The rules in order, for one refusal: file, subject, display, macro, other, observers.
     let r = Refusal {
         file: Some(0),
         lo: 1,
         hi: 2,
         subject: Some(d(0x10)),
+        display: Some("a::f".to_owned()),
         macro_site: m.clone(),
         other: Some(place(0, 5, 6)),
         observers: 1,
@@ -2508,6 +2565,8 @@ fn set_refusal_fields() {
     let r = Refusal { file: None, lo: 0, hi: 0, ..r };
     rejected(&one(r.clone()), "sections.set.refusals[0].subject");
     let r = Refusal { subject: None, ..r };
+    rejected(&one(r.clone()), "sections.set.refusals[0].display");
+    let r = Refusal { display: None, ..r };
     rejected(&one(r.clone()), "sections.set.refusals[0].macro");
     let r = Refusal { macro_site: None, ..r };
     rejected(&one(r.clone()), "sections.set.refusals[0].other");
@@ -3367,16 +3426,17 @@ fn set_instances() {
     x.validate().unwrap();
 }
 
-// spec/edits.md §6 (WP-139): `EDTS` is at version 2, which has
-// `instances`; version 1 is refused, from bytes (`UnsupportedVersion` at
-// the version field) and from JSON (at `version`).
+// spec/edits.md §6 (WP-160): `EDTS` is at version 3, which adds
+// `Refusal.display`; older versions (1, 2) and newer (4) are refused, from
+// bytes (`UnsupportedVersion` at the version field) and from JSON (at
+// `version`).
 #[test]
 fn set_version_1_is_refused() {
     let bytes = small_set_bytes();
-    assert_eq!(&bytes[12..16], &[2, 0, 0, 0]);
+    assert_eq!(&bytes[12..16], &[3, 0, 0, 0]);
     EditSet::from_bytes(&bytes).unwrap();
     let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
-    for v in [1u32, 3] {
+    for v in [1u32, 2, 4] {
         let mut w = Writer::new(*b"EDTS", v);
         w.section(1, payload);
         assert_eq!(
@@ -3385,7 +3445,9 @@ fn set_version_1_is_refused() {
             "{v}"
         );
     }
-    let mut j = small_set().to_json();
-    set(&mut j, &["version"], Value::Int(1));
-    assert_eq!(EditSet::from_json(&j).unwrap_err().path, "version");
+    for v in [1i128, 2, 4] {
+        let mut j = small_set().to_json();
+        set(&mut j, &["version"], Value::Int(v));
+        assert_eq!(EditSet::from_json(&j).unwrap_err().path, "version");
+    }
 }

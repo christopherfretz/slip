@@ -216,13 +216,15 @@ fn gen_set(r: &mut Lcg) -> EditSet {
                 [r.index(4)];
             let file = (r.below(2) == 0).then(|| r.below(n));
             let (lo, hi) = if file.is_some() { (r.below(8), 8 + r.below(8)) } else { (0, 0) };
+            let subject = (r.below(2) == 0).then(|| d(0x10));
             Refusal {
                 cause,
                 file,
                 lo,
                 hi,
                 reason: if cause == Cause::SiteRefused { Reason::Pasted } else { Reason::None },
-                subject: (r.below(2) == 0).then(|| d(0x10)),
+                subject,
+                display: subject.filter(|_| r.below(2) == 0).map(|_| "a::f".to_owned()),
                 macro_site: None,
                 other: None,
                 observers: 0,

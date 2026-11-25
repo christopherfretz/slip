@@ -1,4 +1,4 @@
-# `t.f()` in a template no observer instantiates: no evidence, `unresolved`, residue `dependent`; the rest is renamed and verifies, written under `allow: residue`. `other` names the new name the same way, so that the inverse rename (the back oracle) has residue of its own.
+# `t.f()` in a template no observer instantiates: no evidence, `unresolved`, residue `dependent`; the rest is renamed and verifies, written under `allow: residue`.
 spec: edits §9.4
 spec: edits §8.4
 run: rename --from a::S::f --to g --dependent offer

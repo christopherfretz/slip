@@ -178,7 +178,10 @@ fn mixed_follower() {
         "mixed-follower",
     );
     assert_eq!(causes(&set), vec![Cause::MixedFollower]);
-    assert_eq!((set.refusals[0].subject, set.refusals[0].observers), (Some(d(3)), 1));
+    assert_eq!(
+        (set.refusals[0].subject, set.refusals[0].display.as_deref(), set.refusals[0].observers),
+        (Some(d(3)), Some("follower"), 1)
+    );
     assert_eq!(set.state, SetState::Refused);
 }
 
@@ -199,8 +202,8 @@ fn mixed_set() {
         "mixed-set",
     );
     assert_eq!(causes(&set), vec![Cause::MixedSet, Cause::MixedSet]);
-    refusal_at(&set, Cause::MixedSet, A, 0, 1);
-    refusal_at(&set, Cause::MixedSet, A, 5, 6);
+    assert_eq!(refusal_at(&set, Cause::MixedSet, A, 0, 1).display.as_deref(), Some("seed"));
+    assert_eq!(refusal_at(&set, Cause::MixedSet, A, 5, 6).display.as_deref(), Some("seed"));
     assert_eq!(edits(&set), vec![e(A, 10, 11)], "the other edit is not in a group with them");
 }
 

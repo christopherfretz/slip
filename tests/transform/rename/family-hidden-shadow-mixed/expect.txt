@@ -16,4 +16,4 @@ kept 2; unresolved 0
 refused mixed_follower 1
 result <id>
 state refused
-refusal mixed_follower: <id> (1 observer(s), first a.cpp)
+refusal mixed_follower: n::D::f (1 observer(s), first a.cpp)

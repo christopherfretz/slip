@@ -130,6 +130,68 @@ pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates the test's declared symbolic links (`spec/harness.md` §6.2) in
+/// `root`, creating any missing parent directories. No hard link is made.
+pub fn apply_symlinks(root: &Path, symlinks: &[super::test_file::Symlink]) -> io::Result<()> {
+    for s in symlinks {
+        let p = root.join(&s.link);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(&s.target, &p)?;
+    }
+    Ok(())
+}
+
+/// `pre` with the test's declared symbolic links (and any parent directories
+/// they need) added.
+pub fn with_symlinks(pre: &Files, symlinks: &[super::test_file::Symlink]) -> Files {
+    let mut out = pre.clone();
+    for s in symlinks {
+        if let Some((dir, _)) = s.link.rsplit_once('/') {
+            let mut prefix = String::new();
+            for part in dir.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(part);
+                out.entry(prefix.clone()).or_insert(Entry::Dir);
+            }
+        }
+        out.insert(s.link.clone(), Entry::Symlink(PathBuf::from(&s.target)));
+    }
+    out
+}
+
+/// Whether the volume holding `dir` folds ASCII case: probes `dir` if it
+/// exists, else its deepest existing ancestor (without creating `dir`), by
+/// creating a uniquely-named file, checking whether the upper-case spelling
+/// names the same `(dev, ino)`, and removing the file by explicit path.
+pub fn folds_case(dir: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let probe_dir = dir
+        .ancestors()
+        .find(|p| p.is_dir())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no existing ancestor directory"))?;
+    let tag =
+        format!(".slip-case-probe.{}.{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed));
+    let lower = probe_dir.join(format!("{tag}.a"));
+    let upper = probe_dir.join(format!("{tag}.A"));
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&lower)?;
+    let res = (|| -> io::Result<bool> {
+        let ml = std::fs::symlink_metadata(&lower)?;
+        match std::fs::symlink_metadata(&upper) {
+            Ok(mu) => Ok(ml.dev() == mu.dev() && ml.ino() == mu.ino()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    })();
+    let _ = std::fs::remove_file(&lower);
+    res
+}
+
 /// The first difference of `actual` from `expected`, in byte order of
 /// paths: `file <p> differs (first at byte <k>)`, `file <p> mode <m>,
 /// expected <m>`, `<kind> <p> added`, `<kind> <p> missing`, `<kind> <p> is

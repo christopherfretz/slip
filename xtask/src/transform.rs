@@ -32,7 +32,7 @@ pub mod run;
 pub mod test_file;
 pub mod tree;
 
-pub use test_file::{Allow, Expected, Oracle, Test, parse_test};
+pub use test_file::{Allow, Capability, Expected, Oracle, Symlink, Test, parse_test};
 
 use slip_exec::jobserver::Pool;
 use std::ffi::{OsStr, OsString};
@@ -42,12 +42,15 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The outcome of one test (§6). `Fail`, `Error`, `XPass` and `Killed` fail
-/// the gate; `XFail` does not.
+/// the gate; `XFail` and `Skip` do not (`Skip` becomes `Error` under
+/// `SLIP_REQUIRE_ALL=1`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Pass,
     /// The message names every difference found (the first of each kind).
     Fail(String),
+    /// A test whose declared `require:` capability is unavailable.
+    Skip(String),
     /// An `xfail` test failed.
     XFail,
     /// An `xfail` test passed.
@@ -65,6 +68,7 @@ impl Outcome {
         match self {
             Outcome::Pass => "PASS",
             Outcome::Fail(_) => "FAIL",
+            Outcome::Skip(_) => "SKIP",
             Outcome::XFail => "XFAIL",
             Outcome::XPass => "XPASS",
             Outcome::Error(_) => "ERROR",
@@ -346,15 +350,18 @@ fn print_outcomes(
     reports: Vec<Option<Ran>>,
 ) -> bool {
     let require_all = std::env::var_os("SLIP_REQUIRE_ALL").is_some_and(|v| v == "1");
-    let mut counts = [0usize; 6];
+    let mut counts = [0usize; 7];
     let mut clang_skipped = 0;
     let (mut off, mut skipped) = (0usize, 0usize);
     let mut gate = true;
     for (dir, r) in selected.iter().zip(reports) {
         let Some((mut report, work)) = r else { continue };
         // spec/harness.md §1 principle 3: a skip for want of a capability
-        // (here the clang oracle's compiler, not `--no-clang`) is an ERROR
-        // under SLIP_REQUIRE_ALL=1.
+        // (a `require:` capability or the clang oracle's compiler, not
+        // `--no-clang`) is an ERROR under SLIP_REQUIRE_ALL=1.
+        if require_all && let Outcome::Skip(reason) = &report.outcome {
+            report.outcome = Outcome::Error(format!("{reason} (SLIP_REQUIRE_ALL=1)"));
+        }
         if require_all && report.clang_skipped && !opts.no_clang && report.outcome == Outcome::Pass
         {
             report.outcome = Outcome::Error(
@@ -370,16 +377,19 @@ fn print_outcomes(
         counts[match o {
             Outcome::Pass => 0,
             Outcome::Fail(_) => 1,
-            Outcome::XFail => 2,
-            Outcome::XPass => 3,
-            Outcome::Error(_) => 4,
-            Outcome::Killed(_) => 5,
+            Outcome::Skip(_) => 2,
+            Outcome::XFail => 3,
+            Outcome::XPass => 4,
+            Outcome::Error(_) => 5,
+            Outcome::Killed(_) => 6,
         }] += 1;
         clang_skipped += usize::from(report.clang_skipped);
         gate &= !o.fails_gate();
         let message = match o {
             Outcome::Pass => None,
-            Outcome::Fail(m) | Outcome::Error(m) | Outcome::Killed(m) => Some(m.clone()),
+            Outcome::Fail(m) | Outcome::Skip(m) | Outcome::Error(m) | Outcome::Killed(m) => {
+                Some(m.clone())
+            }
             Outcome::XFail | Outcome::XPass => Some(format!(
                 "xfail: {}",
                 parse_test(dir).ok().and_then(|t| t.xfail).unwrap_or_default()
@@ -400,7 +410,7 @@ fn print_outcomes(
             }
         }
         if let Some(w) = work {
-            let keep = !matches!(o, Outcome::Pass | Outcome::XFail);
+            let keep = !matches!(o, Outcome::Pass | Outcome::Skip(_) | Outcome::XFail);
             if keep {
                 println!("  kept {}", w.display());
             } else if let Err(e) = tree::remove(&w) {
@@ -408,7 +418,7 @@ fn print_outcomes(
             }
         }
     }
-    let names = ["passed", "failed", "xfail", "xpass", "error", "killed"];
+    let names = ["passed", "failed", "skipped", "xfail", "xpass", "error", "killed"];
     let mut parts = Vec::new();
     for (k, (n, name)) in counts.iter().zip(names).enumerate() {
         if k < 2 || *n > 0 {

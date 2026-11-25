@@ -1,5 +1,6 @@
-# `--kind function` for a name that is a variable: the variable is not of an allowed kind, so the run is refused and nothing is written.
+# `--kind function` for a name that is a variable: the variable is not of an allowed kind, so the run is refused `subject_unsupported` and nothing is written.
 spec: edits §9.1
+spec: edits §10.1
 spec: edits §5.2
 run: rename --from a::v --to w --kind function
 state: refused

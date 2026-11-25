@@ -1,6 +1,6 @@
 {
   "kind": "EDTS",
-  "version": 2,
+  "version": 3,
   "sections": {
     "set": {
       "scheme": 1,
@@ -130,6 +130,7 @@
           "hi": 0,
           "reason": "none",
           "subject": null,
+          "display": null,
           "macro": null,
           "other": null,
           "observers": 0,
@@ -142,6 +143,7 @@
           "hi": 0,
           "reason": "none",
           "subject": "1010101010101010101010101010101010101010101010101010101010101010",
+          "display": null,
           "macro": null,
           "other": null,
           "observers": 0,
@@ -154,6 +156,7 @@
           "hi": 0,
           "reason": "none",
           "subject": null,
+          "display": null,
           "macro": null,
           "other": null,
           "observers": 0,

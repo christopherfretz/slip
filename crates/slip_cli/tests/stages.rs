@@ -198,6 +198,7 @@ struct S {
     reports: Vec<ShardReport>,
     /// WP-139: `(path, lo, spec, display, binds the subject)`.
     instances: Vec<(&'static str, u64, Option<Digest>, &'static str, bool)>,
+    extra_subjects: Vec<Subject>,
     failed: bool,
     transform: Option<Digest>,
     edits: bool,
@@ -209,6 +210,7 @@ impl S {
             claims,
             reports: Vec::new(),
             instances: Vec::new(),
+            extra_subjects: Vec::new(),
             failed: false,
             transform: None,
             edits: true,
@@ -427,14 +429,17 @@ impl Fx {
             subjects: if s.failed {
                 vec![]
             } else {
-                vec![Subject {
+                let mut subjects = vec![Subject {
                     id: K,
                     rule: None,
                     role: Role::Seed,
                     of: vec![],
                     flags: 0,
                     display: "f".to_owned(),
-                }]
+                }];
+                subjects.extend(s.extra_subjects.iter().cloned());
+                subjects.sort_by_key(|s| s.id);
+                subjects
             },
             links: vec![],
             claims: if s.failed { vec![] } else { claims },
@@ -1938,6 +1943,48 @@ fn s2_1_declared_changes_under_another_id_are_refused() {
     out.expect(3);
     assert!(out.stderr.contains("the file's content id is not its name"), "{out:#?}");
     assert!(out.stderr.contains(&d), "{out:#?}");
+}
+
+/// §6 & §10.5 (WP-160 item 2): a `mixed_follower` refusal names an unselected
+/// follower that is not in `EditSet.subjects`, carries its joined display in
+/// `Refusal.display`, and prints that display instead of its 64-hex key.
+#[test]
+fn s10_5_mixed_follower_refusal_prints_display() {
+    let fx = Fx::new("mixed-follower");
+    let other = Digest([0x55; 32]);
+    let follower = Digest([0x66; 32]);
+    let mut a = S::new(vec![put("h.h", F_H, "g"), put("a.cc", F_A, "g")]);
+    a.extra_subjects = vec![
+        Subject {
+            id: other,
+            rule: None,
+            role: Role::Candidate,
+            of: vec![],
+            flags: 0,
+            display: "b::f".to_owned(),
+        },
+        Subject {
+            id: follower,
+            rule: None,
+            role: Role::Follower,
+            of: vec![K, other],
+            flags: 0,
+            display: "c::f".to_owned(),
+        },
+    ];
+    let b = S::new(vec![put("h.h", F_H, "g"), put("b.cc", F_B[0], "g")]);
+    let (_, _, out) = fx.reduced(&fx.rename(), &[("a.cc", a), ("b.cc", b)]);
+    out.expect(1);
+    assert_eq!(out.value("state"), Some("refused"));
+    let set = fx.edit_set(out.digest("edits"));
+    assert!(set.subjects.iter().all(|s| s.id != follower), "unselected follower stays out");
+    assert_eq!(set.refusals.len(), 1);
+    assert_eq!(set.refusals[0].subject, Some(follower));
+    assert_eq!(set.refusals[0].display.as_deref(), Some("c::f"));
+    let want =
+        format!("refusal mixed_follower: c::f (1 observer(s), first {})", fx.src("a.cc").display());
+    assert!(out.lines().contains(&want.as_str()), "want {want:?}: {out:#?}");
+    assert!(!out.stdout.contains(&follower.to_string()), "must not print raw key: {out:#?}");
 }
 
 // ---------------------------------------------------------------------------
