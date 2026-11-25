@@ -1,23 +1,24 @@
-# zz review probe
+# N48: the holders of a written type that WP-156's first delivery did not read (its review's W1 to W11; fix round 1), N47's shape. Read: the name binds otherwise, `derived_changed`. Not kept by Kiln (subjects 3, 7, 8, 10): the operand unit fails closed on both trees, `derived_indeterminate` (`kiln/...`, `docs/requests/KT1-written-placeholder-and-qualifier.md`).
 good: verified
-bad: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad: mismatch derived_changed legacy::P::<operands> @ main.cpp:9
 good-2: verified
-bad-2: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
-good-3: verified
-bad-3: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-2: mismatch derived_changed legacy::E::<operands> @ main.cpp:9
+good-3: mismatch derived_indeterminate legacy::v::<operands> @ main.cpp:9
+bad-3: mismatch derived_indeterminate legacy::v::<operands> @ main.cpp:9
 good-4: verified
-bad-4: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-4: mismatch derived_changed legacy::o::<operands> @ main.cpp:9
 good-5: verified
-bad-5: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-5: mismatch derived_changed legacy::va(int, ...)::<operands> @ main.cpp:9
 good-6: verified
-bad-6: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
-good-7: verified
-bad-7: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
-good-8: verified
-bad-8: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-6: mismatch derived_changed legacy::U::<using W2<sizeof (make(0))>::f>::<operands> @ main.cpp:9
+good-7: mismatch derived_indeterminate legacy::Q<4>::s::<operands> @ main.cpp:10
+bad-7: mismatch derived_indeterminate legacy::Q<4>::s::<operands> @ main.cpp:10
+good-8: mismatch derived_indeterminate legacy::ft<4>()::<operands> @ main.cpp:9
+bad-8: mismatch derived_indeterminate legacy::ft<4>()::<operands> @ main.cpp:9
 good-9: verified
-bad-9: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
-good-10: verified
-bad-10: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-9: mismatch derived_changed legacy::r::<operands> @ main.cpp:9
+good-10: mismatch derived_indeterminate legacy::g()::<operands> @ main.cpp:9
+bad-10: mismatch derived_indeterminate legacy::g()::<operands> @ main.cpp:9
 good-11: verified
-bad-11: mismatch derived_changed legacy::zz::<operands> @ main.cpp:9
+bad-11: mismatch derived_changed template <class> void legacy::pf(type-parameter-0-0, Wr<int>)::<operands> @ main.cpp:10
+bad-11: mismatch derived_changed template <class> void legacy::f22(type-parameter-0-0, typename In<type-parameter-0-0>::t)::<operands> @ main.cpp:12

@@ -21,3 +21,7 @@ template <class T> struct Q2 { static int s; };
 template <class T> int Q2<T>::s = 1;
 template <class T> using A2 = Q2<T>;
 template <> int A2<decltype(make(0))>::s = 5;
+namespace ns {
+template <int N> struct Q4 { static int s; };
+template <> int Q4<sizeof(make(0))>::s = 5;
+}

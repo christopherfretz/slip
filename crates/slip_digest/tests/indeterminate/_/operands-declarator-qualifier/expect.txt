@@ -1,3 +1,4 @@
 indeterminate Q<4>::s::<operands>
 indeterminate Pl::s::<operands>
 indeterminate Q2<int>::s::<operands>
+indeterminate ns::Q4<4>::s::<operands>

@@ -526,7 +526,18 @@ fn explicit_instantiation_unkept(w: &mut Walk<'_>, d: DeclId) -> bool {
             written.extend_from_slice(types.params(&p));
         }
     }
-    let mut lists: Vec<ArgListId> = ast.spec_info(d).map(|(_, i)| i.args).into_iter().collect();
+    let lists: Vec<ArgListId> = ast.spec_info(d).map(|(_, i)| i.args).into_iter().collect();
+    args_unkept(w, lists, written)
+}
+
+/// Whether a template-id whose converted arguments are `lists` (Kiln
+/// keeps them without what was written), or a declarator whose types are
+/// `written`, may have spelt an operand: a non-type argument (its value
+/// alone is kept), or a type that is (canonically) a type of the arena
+/// that holds an operand ([`Tu::held`]).
+fn args_unkept(w: &mut Walk<'_>, mut lists: Vec<ArgListId>, mut written: Vec<QualType>) -> bool {
+    let ast = w.ast;
+    let types = &ast.types;
     let mut value = false;
     let mut n = 0;
     while let Some(l) = lists.pop() {
@@ -576,7 +587,11 @@ fn qualifier_unkept(w: &mut Walk<'_>, d: DeclId) -> bool {
 }
 
 /// Whether context `c`, or a class around it up to `stop`, is a class of
-/// [`Tu::named`].
+/// [`Tu::named`], a specialisation of a class template of
+/// [`Tu::aliased`], or a class template specialisation whose arguments
+/// may have been spelt with an operand ([`args_unkept`]): a qualifier
+/// that names a specialisation is a template-id, and Kiln leaves no type
+/// for one written in a declarator (`template <> int Q<sizeof(f(x))>::s`).
 fn in_named_class(w: &mut Walk<'_>, mut c: Option<DeclId>, stop: Option<DeclId>) -> bool {
     let ast = w.ast;
     let mut classes = Vec::new();
@@ -591,11 +606,19 @@ fn in_named_class(w: &mut Walk<'_>, mut c: Option<DeclId>, stop: Option<DeclId>)
     if classes.is_empty() {
         return false;
     }
-    let tu = tu(w);
-    classes.iter().any(|&x| {
-        tu.named.contains(&x)
-            || ast.spec_info(x).is_some_and(|(_, i)| tu.aliased.contains(&ast.first(i.template)))
-    })
+    for x in classes {
+        let tu = tu(w);
+        let spec = ast.spec_info(x).map(|(_, i)| (ast.first(i.template), i.args));
+        if tu.named.contains(&x) || spec.is_some_and(|(t, _)| tu.aliased.contains(&t)) {
+            return true;
+        }
+        if let Some((_, l)) = spec
+            && args_unkept(w, vec![l], Vec::new())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The translation unit's facts ([`Tu`]), computed on first use.
