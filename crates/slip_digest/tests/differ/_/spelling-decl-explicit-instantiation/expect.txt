@@ -1,3 +1,0 @@
-added Bq<8>::g()
-added f(long)
-removed Bq<4>::g()

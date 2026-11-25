@@ -60,7 +60,9 @@ use slip_kiln::kiln::ast::expr::{
 };
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TemplateArg, TypeOfOperand, TypeView};
-use slip_kiln::kiln::ast::{Ast, ArgListId, DeclId, ExprId, NnsId, QualType, TypeId};
+use slip_kiln::kiln::ast::{
+    Ast, ArgListId, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
+};
 use slip_model::Digest;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent};
@@ -183,6 +185,10 @@ pub(crate) struct Tu {
     /// `decltype` or `typeof` of an expression, not instantiation-dependent:
     /// what a declarator's qualifier with an operand can name.
     named: HashSet<DeclId>,
+    /// The canonical types of the types in the arena that hold an operand
+    /// ([`holds`]), not instantiation-dependent: what an explicit
+    /// instantiation's written argument or declarator may have spelt.
+    held: HashSet<TypeId>,
 }
 
 /// Whether the walk collects operands now: the unit has an operand unit
@@ -295,7 +301,7 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         | DeclKind::CXXDestructor
         | DeclKind::CXXConversion
         | DeclKind::CXXDeductionGuide => {
-            if own_explicit_instantiation(w, d) {
+            if explicit_instantiation_unkept(w, d) {
                 out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
             }
             if ast.decls.function(d).is_some_and(|f| f.spec.return_deduced()) && tu(w).placeholder
@@ -314,7 +320,7 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         }
         DeclKind::ParmVar => param(w, d, out),
         DeclKind::Var | DeclKind::VarTemplateSpecialization | DeclKind::VarTemplatePartialSpecialization => {
-            if own_explicit_instantiation(w, d) {
+            if explicit_instantiation_unkept(w, d) {
                 out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
             }
             if ast.decls.var(d).is_some_and(|v| v.spec.placeholder() != VarPlaceholder::None) {
@@ -357,7 +363,7 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         DeclKind::CXXRecord
         | DeclKind::ClassTemplateSpecialization
         | DeclKind::ClassTemplatePartialSpecialization => {
-            if own_explicit_instantiation(w, d) && ast.templates.args_as_written(d).is_none() {
+            if ast.templates.args_as_written(d).is_none() && explicit_instantiation_unkept(w, d) {
                 // A member class's (`template struct Q<…>::In;`).
                 out.push(Op::Unkept(EXPLICIT_INSTANTIATION));
             }
@@ -424,7 +430,7 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         | DeclKind::ConstevalBlock => {}
     }
     if let Some(i) = ast.template_info(d).copied() {
-        head(w, d, out);
+        head(w, i.params, out, 0);
         if params && let Some(p) = i.pattern {
             signature(w, p, true, out);
         }
@@ -434,14 +440,17 @@ fn signature(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
     }
 }
 
-/// The operands of template `d`'s head: each non-type parameter's type,
-/// each default type argument, and a template template parameter's own
-/// head. A default non-type argument is walked by the unit's own stream
+/// The operands of template parameter list `l` (a template's head, or a
+/// template template parameter's): each non-type parameter's type, each
+/// default type argument, and a template template parameter's own list.
+/// A default non-type argument is walked by the unit's own stream
 /// (`templ::head`).
-fn head(w: &mut Walk<'_>, d: DeclId, out: &mut Vec<Op>) {
+fn head(w: &mut Walk<'_>, l: TemplateParamListId, out: &mut Vec<Op>, depth: u32) {
+    if depth > MAX_DEPTH {
+        return;
+    }
     let ast = w.ast;
-    let Some(i) = ast.template_info(d).copied() else { return };
-    let list = ast.templates.param_list(i.params);
+    let list = ast.templates.param_list(l);
     let ps: Vec<DeclId> = ast.lists.iter::<DeclId>(list.params).collect();
     for p in ps {
         match ast.decls.get(p).kind() {
@@ -451,8 +460,8 @@ fn head(w: &mut Walk<'_>, d: DeclId, out: &mut Vec<Op>) {
                 }
             }
             DeclKind::TemplateTemplateParm => {
-                if p != d {
-                    head(w, p, out);
+                if let Some(inner) = ast.template_parm(p).and_then(|i| i.params) {
+                    head(w, inner, out, depth + 1);
                 }
             }
             _ => {}
@@ -474,6 +483,54 @@ fn own_explicit_instantiation(w: &Walk<'_>, d: DeclId) -> bool {
         Some((x, SpecKind::ExplicitInstantiationDeclaration | SpecKind::ExplicitInstantiationDefinition))
             if x == ast.first(d)
     )
+}
+
+/// Whether `d` is named by an explicit instantiation of its own whose
+/// written parts may hold an operand Kiln does not keep: its qualifier
+/// names a class of [`Tu::named`]; it is a template's specialisation with
+/// a non-type argument (whose expression is not kept) or a type argument
+/// of [`Tu::held`]; its type, a parameter's or its return type is of
+/// [`Tu::held`] (its declarator's spelling).
+fn explicit_instantiation_unkept(w: &mut Walk<'_>, d: DeclId) -> bool {
+    let ast = w.ast;
+    if !own_explicit_instantiation(w, d) {
+        return false;
+    }
+    let ctx = ast.decls.get(d).ctx();
+    if in_named_class(w, ctx, None) {
+        return true;
+    }
+    let types = &ast.types;
+    let mut written: Vec<QualType> = Vec::new();
+    if let Some(q) = ast.decls.get(d).ty() {
+        written.push(q);
+        if let TypeView::Function(p) = types.canonical_view(q) {
+            written.push(p.ret());
+            written.extend_from_slice(types.params(&p));
+        }
+    }
+    let mut lists: Vec<ArgListId> = ast.spec_info(d).map(|(_, i)| i.args).into_iter().collect();
+    let mut value = false;
+    let mut n = 0;
+    while let Some(l) = lists.pop() {
+        n += 1;
+        if n > MAX_DEPTH {
+            return true;
+        }
+        for a in types.args(l) {
+            match a.view() {
+                ArgView::Type(t) => written.push(t),
+                ArgView::Pack(p) => lists.push(p),
+                ArgView::Value { .. } | ArgView::Expr { .. } | ArgView::Profile(_) => value = true,
+                ArgView::Null | ArgView::Template(_) | ArgView::TemplateExpansion { .. } => {}
+            }
+        }
+    }
+    if value {
+        return true;
+    }
+    let held = &tu(w).held;
+    written.iter().any(|&q| held.contains(&types.canonical(q).ty()))
 }
 
 /// Whether declaration `d` is written outside its class, inside a class
@@ -538,6 +595,9 @@ fn tu_of(ast: &Ast) -> Tu {
         if types.flags(t).is_instantiation_dependent() {
             continue;
         }
+        if holds(ast, QualType::unqual(t), &mut memo, 0) {
+            out.held.insert(types.canonical(QualType::unqual(t)).ty());
+        }
         match types.view(t) {
             TypeView::Auto { args: Some(l), .. } => {
                 if !out.placeholder && args_hold(ast, l, &mut memo, 0) {
@@ -549,8 +609,11 @@ fn tu_of(ast: &Ast) -> Tu {
                     named(ast, t, &mut out);
                 }
             }
-            TypeView::Decltype { .. } | TypeView::TypeOf { operand: TypeOfOperand::Expr(_), .. } => {
-                named(ast, t, &mut out);
+            TypeView::Decltype { expr, .. }
+            | TypeView::TypeOf { operand: TypeOfOperand::Expr(expr), .. } => {
+                if !literal(ast, expr) {
+                    named(ast, t, &mut out);
+                }
             }
             _ => {}
         }
@@ -603,6 +666,14 @@ fn literal(ast: &Ast, mut e: ExprId) -> bool {
             K::ImplicitCastExpr | K::ParenExpr | K::ConstantExpr | K::UnaryOperator => {
                 e = ast.exprs.operand(e);
             }
+            // `sizeof(0)`, `sizeof(int)`, as `std::size_t` is declared.
+            K::UnaryExprOrTypeTraitExpr => match ast.exprs.trait_type_arg(e) {
+                Some(t) => return matches!(ast.types.view(t.ty()), TypeView::Builtin(_)),
+                None => match ExprId::try_new(ast.exprs.get(e).a()) {
+                    Some(x) => e = x,
+                    None => return false,
+                },
+            },
             _ => return false,
         }
     }
@@ -624,7 +695,7 @@ fn holds(ast: &Ast, q: QualType, memo: &mut HashMap<TypeId, bool>, depth: u32) -
     let not_dep = |e: ExprId| !ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION);
     let h = match types.view(t) {
         TypeView::Decltype { expr, .. } | TypeView::TypeOf { operand: TypeOfOperand::Expr(expr), .. } => {
-            not_dep(expr)
+            not_dep(expr) && !literal(ast, expr)
         }
         TypeView::TemplateSpecialization { args: l, alias, .. } => {
             (alias && !types.flags(t).is_instantiation_dependent()) || args_hold(ast, l, memo, d)

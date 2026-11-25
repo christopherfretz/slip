@@ -1,0 +1,1 @@
+indeterminate ft<4>()::<operands>

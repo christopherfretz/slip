@@ -1,0 +1,6 @@
+# WP-156 fix round 1 (S1, mutation 31): the walk stops at a substituted
+# parameter's replacement, whichever specialisation named `fe<int>` first
+# (a sugared explicit argument or `int`): `fe<int>` has no operand unit on
+# either side. Only the order of initialisation differs.
+exact derived
+changed <order>

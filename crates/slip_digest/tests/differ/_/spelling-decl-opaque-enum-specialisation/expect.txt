@@ -1,5 +1,0 @@
-added Bq<8>::F
-added Bq<8>::F::x
-added f(long)
-removed Bq<4>::F
-removed Bq<4>::F::x
