@@ -1441,16 +1441,16 @@ fn s7_1_two_hard_links_edited_under_their_names_refused_by_reduce() {
 #[test]
 fn s7_1_two_hard_links_refused_by_the_overlay_builder() {
     let tree = Tree::new("hard-links-build");
-    let r = tree.map_and_reduce();
+    let reduced = tree.map_and_reduce();
     let (h, d) = (tree.subject.join("h.h"), tree.subject.join("d.h"));
-    let paths: Vec<Vec<u8>> = r.set.files.iter().map(|f| f.path.clone()).collect();
+    let paths: Vec<Vec<u8>> = reduced.set.files.iter().map(|f| f.path.clone()).collect();
     assert!(paths.contains(&bytes(&h)) && paths.contains(&bytes(&d)), "{paths:?}");
     std::fs::remove_file(&d).unwrap();
     std::fs::hard_link(&h, &d).unwrap();
     let mut sunk = 0;
-    let e = slip_apply::build_into(
-        &r.set,
-        r.set_id,
+    let err = slip_apply::build_into(
+        &reduced.set,
+        reduced.set_id,
         &slip_cli::transform::store::DiskFiles,
         &mut |_, _| {
             sunk += 1;
@@ -1459,6 +1459,6 @@ fn s7_1_two_hard_links_refused_by_the_overlay_builder() {
     )
     .unwrap_err();
     let both = format!("{} and {} are one file", d.display(), h.display());
-    assert!(matches!(&e, slip_apply::ApplyError::Invalid(m) if m.contains(&both)), "{e:?}");
+    assert!(matches!(&err, slip_apply::ApplyError::Invalid(m) if m.contains(&both)), "{err:?}");
     assert_eq!(sunk, 0, "nothing handed to the sink");
 }
