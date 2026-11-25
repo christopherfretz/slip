@@ -1,5 +1,5 @@
 indeterminate v::<operands>
 indeterminate g()::<operands>
-indeterminate h()::<operands>
-indeterminate n::<operands>
-indeterminate w::<operands>
+indeterminate t()::<operands>
+indeterminate n2::<operands>
+indeterminate z3::<operands>
