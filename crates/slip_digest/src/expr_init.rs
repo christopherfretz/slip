@@ -1692,10 +1692,14 @@ mod tests {
                         found
                     },
                 );
-                if let Ok(found) = found {
-                    for f in found {
-                        println!("{dir} {}: {f}", if b { "B" } else { "A" });
+                match found {
+                    Ok(found) => {
+                        for f in found {
+                            println!("{dir} {}: {f}", if b { "B" } else { "A" });
+                        }
                     }
+                    Err(e) if e.contains("panicked:") => panic!("{dir}: {e}"),
+                    Err(_) => {}
                 }
             }
         }

@@ -1358,6 +1358,35 @@ fn test_threads() -> usize {
     }
 }
 
+/// Parses one pair-test side with Kiln's tables, skipping unparseable sides
+/// while propagating callback and front-end panics.
+fn run_pair_side<R>(side: &Side, label: &str, f: impl FnOnce(&Parsed<'_>) -> R) -> Option<R> {
+    let files: Vec<(&str, &str)> =
+        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
+    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
+    let extra = Extra { args: &args, target: side.target.as_deref() };
+    match parse_with_tables(&snippet, &extra, f) {
+        Ok(got) => Some(got),
+        Err(e) if e.contains("panicked:") => panic!("{label}: {e}"),
+        Err(_) => None,
+    }
+}
+
+#[test]
+#[should_panic(expected = "the callback panicked:")]
+fn wp168_pair_side_propagates_callback_panic() {
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), "int x = 1;\n".to_owned())],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let _ = run_pair_side(&side, "wp168-sentinel", |_| {
+        assert_eq!(1, 2, "wp168 subject_references sentinel");
+    });
+}
+
 #[test]
 fn wp085_test9_property_over_digest_pair_tests() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests");
@@ -1383,23 +1412,12 @@ fn wp085_test9_property_over_digest_pair_tests() {
                         let Some(dir) = dirs.get(k) else { break };
                         let label = dir.strip_prefix(&tests).unwrap_or(dir).display().to_string();
                         for (i, side) in pair_sides(dir, &support).iter().enumerate() {
-                            let files: Vec<(&str, &str)> =
-                                side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
-                            let snippet = Snippet {
-                                files: &files,
-                                main: "main.cpp",
-                                include: &[""],
-                                std: &side.std,
-                            };
-                            let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
-                            let extra = Extra { args: &args, target: side.target.as_deref() };
                             let label = format!("{label} side {i}");
-                            let got = parse_with_tables(&snippet, &extra, |p| {
+                            if let Some(got) = run_pair_side(side, &label, |p| {
                                 let owned = |_: &[u8]| false;
                                 let s = KilnSubject::from_snippet(p, &owned).expect("tables");
                                 property(&s, &label)
-                            });
-                            if let Ok(got) = got {
+                            }) {
                                 t.add(got);
                             }
                         }
@@ -1787,6 +1805,32 @@ fn name_rule_disagreements(unit: &slip_kiln::Unit<'_>, label: &str) -> (u64, Vec
     (names.len() as u64, out)
 }
 
+/// Parses one tree observer with Kiln's tables, returning `None` when the
+/// front end rejected the unit while propagating worker and callback panics.
+fn run_tree_side<R: Send>(
+    tree: &Tree,
+    observer: &slip_model::Observer,
+    label: &str,
+    f: impl FnOnce(&slip_kiln::Unit<'_>) -> R + Send,
+) -> Option<R> {
+    match tree.parse(observer, &written_options(), f) {
+        Ok((_, Some(v))) => Some(v),
+        Ok((_, None)) => None,
+        Err(e) => panic!("{label}: {e}"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "wp168 tree_side sentinel")]
+fn wp168_tree_side_propagates_callback_panic() {
+    let tree = Tree::new(&common::work_root(), "wp168-tree-side", &[("main.cpp", b"int x = 1;\n")])
+        .expect("tree");
+    let observer = tree.observer("main.cpp", "c++20", &[]);
+    let _ = run_tree_side(&tree, &observer, "wp168-sentinel", |_| {
+        assert_eq!(1, 2, "wp168 tree_side sentinel");
+    });
+}
+
 #[test]
 fn wp085_one_name_rule_with_sites_over_digest_pair_tests() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests");
@@ -1820,14 +1864,14 @@ fn wp085_one_name_rule_with_sites_over_digest_pair_tests() {
             let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
             let observer = tree.observer("main.cpp", &side.std, &args);
             let label = format!("{label} side {i}");
-            match tree.parse(&observer, &written_options(), |u| name_rule_disagreements(u, &label))
+            if let Some((n, bad)) =
+                run_tree_side(&tree, &observer, &label, |u| name_rule_disagreements(u, &label))
             {
-                Ok((_, Some((n, bad)))) => {
-                    units += 1;
-                    names += n;
-                    failures.extend(bad);
-                }
-                _ => skipped += 1,
+                units += 1;
+                names += n;
+                failures.extend(bad);
+            } else {
+                skipped += 1;
             }
         }
     }
