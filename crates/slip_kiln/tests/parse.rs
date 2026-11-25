@@ -1283,16 +1283,8 @@ fn measure_written_refs_cost() {
         let med_on = with_ns[1] as f64;
         let ratio = med_on / med_off;
         let pct = (ratio - 1.0) * 100.0;
-        let tokens = s0
-            .counters
-            .iter()
-            .find(|c| c.name == "pp.tokens")
-            .map_or(0, |c| c.value);
-        let files = s0
-            .counters
-            .iter()
-            .find(|c| c.name == "inputs.files")
-            .map_or(0, |c| c.value);
+        let tokens = s0.counters.iter().find(|c| c.name == "pp.tokens").map_or(0, |c| c.value);
+        let files = s0.counters.iter().find(|c| c.name == "inputs.files").map_or(0, |c| c.value);
         println!(
             "MEASURE {label}: files={files} tokens={tokens} ratio={ratio:.3}x ({pct:+.1}%) [raw medians: off={:.1}ms on={:.1}ms]",
             med_off / 1e6,
