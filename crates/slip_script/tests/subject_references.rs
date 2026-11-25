@@ -1750,8 +1750,11 @@ fn decl_ident(ast: &slip_kiln::kiln::ast::Ast, d: slip_kiln::kiln::ast::DeclId) 
 /// disagreements.
 fn name_rule_disagreements(unit: &slip_kiln::Unit<'_>, label: &str) -> (u64, Vec<String>) {
     use slip_kiln::sites::{Located, Sites};
-    let ownership =
-        slip_model::transform::Ownership { owned: vec![b"/".to_vec()], readonly: Vec::new() };
+    let ownership = slip_model::transform::Ownership {
+        owned: vec![b"/".to_vec()],
+        readonly: Vec::new(),
+        rebuilt: Vec::new(),
+    };
     let sites = Sites::new(unit, &ownership);
     let ast = unit.ast();
     let sm = unit.sm();

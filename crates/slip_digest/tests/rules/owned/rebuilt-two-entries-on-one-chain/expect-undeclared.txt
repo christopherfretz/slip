@@ -1,0 +1,9 @@
+# Both read-only: mid.h read-only by the chain.
+removed user(legacy::Mine *, other::D *)
+removed legacy
+removed legacy::Mine
+removed legacy::Mine::v
+added acme::Mine::v
+added user(acme::Mine *, other::D *)
+added acme::Mine
+added acme

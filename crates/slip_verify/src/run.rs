@@ -48,6 +48,47 @@ const TEXT_MAX: usize = 100;
 /// note (§7.1, WP-112).
 const NAMES_CHANGED: &str = "names_changed";
 
+/// How many `rebuilt file` lines the text shows (WP-118 R7.3).
+const REBUILT_FILE_MAX: usize = 100;
+
+/// How many `hint:` lines the text shows (WP-118 R1.3).
+const HINT_MAX: usize = 20;
+
+/// Each hinted file with its positions (and their main files) that did
+/// not verify.
+type Shown<'a> = Vec<(&'a Vec<u8>, Vec<(&'a u64, &'a Vec<u8>)>)>;
+
+/// The fold of section 33 (`rebuilt_use`, WP-118 R7.3) over every `ok`
+/// verify shard the state table accepts with a verdict, whatever the
+/// verdict (an entry only `unverifiable` observers relied on is not
+/// unused).
+#[derive(Clone, Debug, Default)]
+struct RebuiltFold {
+    /// `Declared.files.rebuilt`, in its order.
+    entries: Vec<Vec<u8>>,
+    /// Per entry: the observers whose `relied` names it.
+    relied: Vec<u64>,
+    /// By `(file, rule)`: the observers with the row, and each count the
+    /// greatest over them.
+    declares: BTreeMap<(Vec<u8>, u64), DeclaresRow>,
+    /// By hinted file: the plan positions whose shard hints it, with
+    /// their main files.
+    hints: BTreeMap<Vec<u8>, BTreeMap<u64, Vec<u8>>>,
+    /// The plan positions with a hint whose state is `mismatch`.
+    mismatch: BTreeSet<u64>,
+    /// The command directory of the positions with a hint
+    /// ([`Report::directory_at`]).
+    directories: BTreeMap<u64, Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DeclaresRow {
+    observers: u64,
+    mapped: u64,
+    left: u64,
+    left_kept: u64,
+}
+
 /// The state of one selected observer (§7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum State {
@@ -511,6 +552,8 @@ pub struct Report {
     /// The notes `names_changed` of the `verified` and `mismatch` shards,
     /// by key.
     names: BTreeMap<Digest, NameGroup>,
+    /// Section 33's fold (WP-118).
+    rebuilt: RebuiltFold,
 }
 
 impl Report {
@@ -523,6 +566,9 @@ impl Report {
             .map(|&k| (k, 0))
             .collect();
         let rules = declared.rules().rules().len();
+        let entries = declared.files().map(|f| f.rebuilt.clone()).unwrap_or_default();
+        let rebuilt =
+            RebuiltFold { relied: vec![0; entries.len()], entries, ..RebuiltFold::default() };
         Report {
             header,
             rules,
@@ -555,7 +601,24 @@ impl Report {
             strict_names: false,
             names: BTreeMap::new(),
             identities: None,
+            rebuilt,
         }
+    }
+
+    /// The command directory of the observer at plan position `position`
+    /// (its plan command's `directory`), for the `hint:` line (WP-118
+    /// R1.3). Kept only for a position whose shard hinted a file: a caller
+    /// may call it for every position, after its [`Report::add_at`].
+    pub fn directory_at(&mut self, position: u64, directory: &[u8]) {
+        if self.rebuilt.hints.values().any(|p| p.contains_key(&position)) {
+            self.rebuilt.directories.insert(position, directory.to_vec());
+        }
+    }
+
+    /// Whether the report has the `"rebuilt"` member (WP-118 R7.3):
+    /// `Declared.files.rebuilt` is not empty or a hint exists.
+    fn has_rebuilt(&self) -> bool {
+        !self.rebuilt.entries.is_empty() || !self.rebuilt.hints.is_empty()
     }
 
     /// Before the first `add`: `--strict-names` (§7.1, WP-112). Each note
@@ -723,6 +786,25 @@ impl Report {
                 }
                 None => {}
             }
+            if let Some(r) = &s.rebuilt_use {
+                // WP-118 R7.3: an index out of range for the run's
+                // `Declared` makes the shard not this run's (the run is
+                // `incomplete`, the shard named), never an index taken
+                // modulo anything.
+                let entries = self.rebuilt.entries.len() as u64;
+                if let Some(i) = r.relied.iter().find(|&&i| i >= entries) {
+                    return Err(format!(
+                        "the shard's rebuilt_use names rebuilt entry {i}; the run has {entries}"
+                    ));
+                }
+                let n = self.rules as u64;
+                if let Some(d) = r.declares.iter().find(|d| d.rule >= n) {
+                    return Err(format!(
+                        "the shard's rebuilt_use names rule {}; the run has {n}",
+                        d.rule
+                    ));
+                }
+            }
             match (&s.spellings, self.has_obligations()) {
                 (None, true) => return Err("the shard has no spellings".to_owned()),
                 (Some(_), false) => {
@@ -847,6 +929,9 @@ impl Report {
         let strict = if self.strict_names { notes.len() as u64 } else { 0 };
         let state = if strict > 0 { State::Mismatch } else { judged.state };
         self.states[state.index()] += 1;
+        if state == State::Mismatch && self.rebuilt.hints.values().any(|p| p.contains_key(&index)) {
+            self.rebuilt.mismatch.insert(index);
+        }
         self.any_bad |= matches!(state, State::Mismatch | State::NotParsed);
         self.all_good &= matches!(state, State::Verified | State::Unchanged);
 
@@ -1078,6 +1163,26 @@ impl Report {
                 if let Some(n) = usize::try_from(k).ok().and_then(|k| self.kept_seen.get_mut(k)) {
                     *n += 1;
                 }
+            }
+        }
+        // WP-118 R7.3: section 33, whatever the verdict.
+        if let Some(r) = &s.rebuilt_use {
+            let fold = &mut self.rebuilt;
+            for &i in &r.relied {
+                // Checked against the list by `ours`.
+                if let Some(n) = usize::try_from(i).ok().and_then(|i| fold.relied.get_mut(i)) {
+                    *n += 1;
+                }
+            }
+            for d in &r.declares {
+                let row = fold.declares.entry((d.file.clone(), d.rule)).or_default();
+                row.observers += 1;
+                row.mapped = row.mapped.max(d.mapped);
+                row.left = row.left.max(d.left);
+                row.left_kept = row.left_kept.max(d.left_kept);
+            }
+            for h in &r.hints {
+                fold.hints.entry(h.clone()).or_default().insert(index, main.to_vec());
             }
         }
         Ok(())
@@ -1340,6 +1445,9 @@ impl Report {
         if self.has_rules() {
             members.push(("agreement", self.agreement_json()));
         }
+        if self.has_rebuilt() {
+            members.push(("rebuilt", self.rebuilt_json()));
+        }
         if self.has_obligations() {
             members.push(("spellings", self.spellings_json()));
         }
@@ -1411,6 +1519,131 @@ impl Report {
             ("stale", Value::Array(stale)),
             ("unused", Value::Array(self.unused().into_iter().map(uv).collect())),
         ])
+    }
+
+    /// WP-118 R7.3 `rebuilt`: every entry in its order with the observers
+    /// that relied on it; the `declares` rows by `(file, rule)`, each count
+    /// the greatest over observers; the hints by file, each with the
+    /// observers that hinted it and the first of them by plan position.
+    fn rebuilt_json(&self) -> Value {
+        let f = &self.rebuilt;
+        let entries = f
+            .entries
+            .iter()
+            .zip(&f.relied)
+            .map(|(e, &n)| obj(vec![("path", bytes(e)), ("observers", uv(n))]))
+            .collect();
+        let declares = f
+            .declares
+            .iter()
+            .map(|((file, rule), d)| {
+                obj(vec![
+                    ("file", bytes(file)),
+                    ("rule", uv(*rule)),
+                    ("observers", uv(d.observers)),
+                    ("mapped", uv(d.mapped)),
+                    ("left", uv(d.left)),
+                    ("left_kept", uv(d.left_kept)),
+                ])
+            })
+            .collect();
+        let hints = f
+            .hints
+            .iter()
+            .map(|(file, at)| {
+                let (first, main) =
+                    at.iter().next().map_or((None, &[][..]), |(p, m)| (Some(*p), &m[..]));
+                let directory =
+                    first.and_then(|p| f.directories.get(&p)).map_or(&[][..], |d| &d[..]);
+                obj(vec![
+                    ("file", bytes(file)),
+                    ("directory", bytes(directory)),
+                    ("observers", uv(at.len() as u64)),
+                    ("first", bytes(main)),
+                ])
+            })
+            .collect();
+        obj(vec![
+            ("entries", Value::Array(entries)),
+            ("declares", Value::Array(declares)),
+            ("hints", Value::Array(hints)),
+        ])
+    }
+
+    /// The lines of WP-118 R7.3 and R1.3: per entry `rebuilt … relied on`
+    /// or `unused rebuilt`; per `declares` row with `left > 0` a `rebuilt
+    /// file` line, at most [`REBUILT_FILE_MAX`]; per hinted file a `hint:`
+    /// line over the observers that are `mismatch` or stale for a rule,
+    /// and only those, at most [`HINT_MAX`].
+    ///
+    /// The transform commands print the same lines ([`Report::rebuilt_lines`]).
+    fn rebuilt_text(&self, out: &mut String) {
+        if !self.has_rebuilt() {
+            return;
+        }
+        let f = &self.rebuilt;
+        for (e, &n) in f.entries.iter().zip(&f.relied) {
+            if n > 0 {
+                let _ = writeln!(out, "rebuilt {} relied on by {n} observer(s)", path(e));
+            } else {
+                let _ = writeln!(out, "unused rebuilt {}", path(e));
+            }
+        }
+        let left: Vec<_> = f.declares.iter().filter(|(_, d)| d.left > 0).collect();
+        for ((file, rule), d) in left.iter().take(REBUILT_FILE_MAX) {
+            let what = if d.left == 1 { "entity" } else { "entities" };
+            let _ = writeln!(
+                out,
+                "rebuilt file {} still declares {} {what} under the name rule {rule} says was left (not regenerated)",
+                path(file),
+                d.left
+            );
+        }
+        if left.len() > REBUILT_FILE_MAX {
+            let _ = writeln!(
+                out,
+                "rebuilt file: {} more (see the report)",
+                left.len() - REBUILT_FILE_MAX
+            );
+        }
+        let stale: BTreeSet<u64> = self.stale.keys().map(|&(_, p)| p).collect();
+        let shown: Shown<'_> = f
+            .hints
+            .iter()
+            .map(|(file, at)| {
+                let bad = at
+                    .iter()
+                    .filter(|(p, _)| f.mismatch.contains(p) || stale.contains(p))
+                    .collect::<Vec<_>>();
+                (file, bad)
+            })
+            .filter(|(_, bad)| !bad.is_empty())
+            .collect();
+        for (file, bad) in shown.iter().take(HINT_MAX) {
+            let (p, main) = bad[0];
+            let directory = f.directories.get(p).map_or(&[][..], |d| &d[..]);
+            let _ = writeln!(
+                out,
+                "hint: {} is read-only, is under the build directory {}, and makes code of the run read-only in {} observer(s) (first {}); if the build writes it again from source, pass --rebuilt {} (only if no binary outside this run was compiled against it)",
+                path(file),
+                path(directory),
+                bad.len(),
+                path(main),
+                path(file)
+            );
+        }
+        if shown.len() > HINT_MAX {
+            let _ = writeln!(out, "hint: {} more (see the report)", shown.len() - HINT_MAX);
+        }
+    }
+
+    /// The lines of WP-118 R7.3 and R1.3 alone (empty when the report has
+    /// no `"rebuilt"` member), for the transform commands' output
+    /// (`spec/edits.md` §10.5, after the `agreement:` line).
+    pub fn rebuilt_lines(&self) -> String {
+        let mut out = String::new();
+        self.rebuilt_text(&mut out);
+        out
     }
 
     /// The failed obligations of §10.5, in the obligations' order:
@@ -1540,6 +1773,7 @@ impl Report {
         }
         self.names_text(&mut out);
         self.agreement_text(&mut out);
+        self.rebuilt_text(&mut out);
         self.spellings_text(&mut out);
         out
     }

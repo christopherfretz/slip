@@ -573,6 +573,7 @@ the same bytes.
 | 29 | rule_use | no | `RuleUse` (`verify.md` §9.1), with `kept_via` and `kept` (WP-111); phase `verify` |
 | 31 | found | no | `Found` (§8.8): each place where the map parse found a file, with the input it led to, and the classes of `inputs` that were one file; phase `map` |
 | 32 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, instances, or its failure); phase `map` |
+| 33 | rebuilt_use | no | `RebuiltUse` (`verify.md` §9.1): what the walk said of the run's rebuilt entries, and the files that cut an include chain (WP-118); phase `verify`, status `ok` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -604,7 +605,7 @@ list: nothing about a failed observer is deterministic.
 A reserved id (16, 18, 20) or a retired one (17, 25) is a critical id no
 reader knows: a file with one is `UnknownSection`. Ids 22, 23 and 30 are
 not assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work
-package WP-117, 29 by WP-111, 31 by WP-135 and 32 by WP-139, without a change of the
+package WP-117, 29 by WP-111, 31 by WP-135, 32 by WP-139 and 33 by WP-118, without a change of the
 shard's version: a reader that predates one refuses a shard that has it
 (the ids are critical), and a shard without them reads as before (a map
 shard without `negatives` is then refused by the verify task's guard N1,
@@ -614,10 +615,11 @@ section whose payload changes takes a new id and the old one is retired,
 so that a reader never meets a payload it does not know under an id it
 knows (WP-111: 25 to 29; WP-139: 17 to 32, when `Edits` gained
 `instances`, `edits.md` §4.5). An `edits` section
-in a shard of phase `verify`, or a `binding`, `rule_use` or `spellings`
-section in a shard of phase `map`, is `Malformed` at the first byte of
-the section's payload, JSON path `sections.<name>`. So are `edits`,
-`rule_use` and `spellings` in a shard whose status is not `ok`, and
+in a shard of phase `verify`, or a `binding`, `rule_use`, `spellings`
+or `rebuilt_use` section in a shard of phase `map`, is `Malformed` at
+the first byte of the section's payload, JSON path `sections.<name>`.
+So are `edits`, `rule_use`, `spellings` and `rebuilt_use` in a shard
+whose status is not `ok`, and
 `binding` in one whose status is `failed` (only). The phase is checked
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
@@ -635,7 +637,8 @@ is: a shard with `digests` and without `names` is `Malformed` at the
 first byte of the `digests` payload, JSON path `sections.names` (a pre
 shard of an older build fails closed, not as "no note"); its own rows
 (§8.7) are checked after those of `spellings`, before `rule_use`'s and
-`negatives`'s.
+`negatives`'s. Those of `rebuilt_use` (33, `verify.md` §9.1) are
+checked after `rule_use`'s and before `negatives`'s.
 
 ### 8.1 Invariants
 

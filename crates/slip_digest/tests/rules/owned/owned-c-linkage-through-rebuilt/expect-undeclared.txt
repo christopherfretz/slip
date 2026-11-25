@@ -1,0 +1,4 @@
+# gen.h read-only: own.h read-only by the include chain, a difference.
+changed user()
+removed gen_start()
+added gen_init()

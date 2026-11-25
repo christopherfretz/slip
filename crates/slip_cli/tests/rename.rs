@@ -427,6 +427,25 @@ fn s8_4_residue_in_a_file_no_observer_compiles() {
     assert_eq!(t.read("src/unused.cpp"), "int f(int);\nint z = f(1);\n");
 }
 
+// §8.4, WP-118 (design row 39; second review N-a, X12): a rebuilt file is
+// not scanned for residue: it is not owned, and its spelling is the
+// build's to change. `src/gen/unused.cpp` spells `f` as `unused.cpp`
+// does in the test above; declared rebuilt, it is no residue.
+#[test]
+fn s8_4_rebuilt_files_are_not_scanned() {
+    let t = Tree::three_files("residue-rebuilt");
+    t.write("src/gen/unused.cpp", "int f(int);\nint z = f(1);\n");
+    let plan = t.plan("store");
+    let out = rename(&t, &plan, &["--rebuilt", "src/gen"]);
+    let unused = t.path("src/gen/unused.cpp").display().to_string();
+    assert!(!out.stdout.contains(&unused), "{out:?}");
+    assert_eq!(
+        out.value("residue:"),
+        Some("dependent 0, not_compiled 0, not_planned 0; mentions 0"),
+        "{out:?}"
+    );
+}
+
 // §8.4: a mention is listed and changes no state.
 #[test]
 fn s8_4_a_mention() {

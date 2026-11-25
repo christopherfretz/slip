@@ -640,6 +640,8 @@ fn s8_8_declare_options() {
             "--owned",
             "/s/a",
             "--readonly=/s/a/dep",
+            "--rebuilt",
+            "/s/a/build",
             "--owned",
             "/s/b",
             "--root",
@@ -661,6 +663,7 @@ fn s8_8_declare_options() {
             out: "d.decl".into(),
             owned: vec!["/s/a".into(), "/s/b".into()],
             readonly: vec!["/s/a/dep".into()],
+            rebuilt: vec!["/s/a/build".into()],
             image: image(&[("/s", "/p")]),
             store: "s".into(),
             only: vec![b"a".to_vec(), b"b".to_vec()],
@@ -672,11 +675,16 @@ fn s8_8_declare_options() {
         (d.store, d.image, d.limit),
         (PathBuf::from(DEFAULT_STORE), ImageArgs::default(), None)
     );
-    assert!(d.owned.is_empty() && d.readonly.is_empty());
+    assert!(d.owned.is_empty() && d.readonly.is_empty() && d.rebuilt.is_empty());
     // `--readonly` carves out of what `--owned` gives (`spec/edits.md` §2.1).
     assert_eq!(
         usage_error(&["declare", "--plan", "p", "--from", "t", "--out", "o", "--readonly", "/d"]),
         "`--readonly` needs `--owned`"
+    );
+    // WP-118 R1.1: `--rebuilt` too.
+    assert_eq!(
+        usage_error(&["declare", "--plan", "p", "--from", "t", "--out", "o", "--rebuilt", "/d"]),
+        "`--rebuilt` needs `--owned`"
     );
     assert_eq!(usage_error(&["declare", "--from", "t", "--out", "o"]), "`declare` needs `--plan`");
     assert_eq!(usage_error(&["declare", "--plan", "p", "--out", "o"]), "`declare` needs `--from`");

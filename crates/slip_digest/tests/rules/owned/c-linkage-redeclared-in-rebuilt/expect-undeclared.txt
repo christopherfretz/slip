@@ -1,0 +1,4 @@
+# The same difference.
+changed user()
+removed gen_start()
+added gen_init()

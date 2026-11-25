@@ -1,0 +1,5 @@
+# gen.h rebuilt, regenerated with a member added: a difference.
+changed legacy::G
+added acme::G::w
+declares gen.h rule 1 mapped 2 left 0
+relied gen.h

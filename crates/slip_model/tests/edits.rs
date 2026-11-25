@@ -582,6 +582,7 @@ fn map_shard(edits: Edits) -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -642,6 +643,7 @@ fn small() -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -1009,7 +1011,8 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 12), // reason
+        (187, 0, 12), // reason (12 unlisted; 13 is `rebuilt`, WP-118)
+        (187, 0, 14), // reason, the first after `rebuilt`
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -1074,7 +1077,8 @@ fn edits_unlisted_values() {
 // the last, 12, is Malformed (`edits_unlisted_values`). `directive` (10)
 // was added by WP-068, `instantiated` (11) by WP-139. (WP-139's fix round
 // added `no_holder` as 12 and its second review dropped it before any
-// release: 12 is unlisted again.)
+// release: 12 is unlisted again.) `rebuilt` (13) was added by WP-118,
+// 12 left unlisted.
 #[test]
 fn edits_reason_values() {
     let all = [
@@ -1089,6 +1093,7 @@ fn edits_reason_values() {
         (Reason::MixedInstances, 9, "mixed_instances"),
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
+        (Reason::Rebuilt, 13, "rebuilt"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");
@@ -1933,6 +1938,7 @@ fn ownership(owned: &[&[u8]], readonly: &[&[u8]]) -> Ownership {
     Ownership {
         owned: owned.iter().map(|p| p.to_vec()).collect(),
         readonly: readonly.iter().map(|p| p.to_vec()).collect(),
+        rebuilt: Vec::new(),
     }
 }
 
@@ -2074,6 +2080,12 @@ fn raw_transform(t: &Transform) -> (Vec<u8>, Vec<(String, usize)>) {
     r.e.uv(t.kind as u64);
     list(&mut r, &format!("{S}.ownership.owned"), &t.ownership.owned);
     list(&mut r, &format!("{S}.ownership.readonly"), &t.ownership.readonly);
+    // Version 3 (WP-118 R5.4): `rebuilt` after `readonly`, exactly when
+    // it is not empty.
+    let version = if t.ownership.rebuilt.is_empty() { 2 } else { 3 };
+    if version == 3 {
+        list(&mut r, &format!("{S}.ownership.rebuilt"), &t.ownership.rebuilt);
+    }
     r.mark(format!("{S}.indivisible"));
     r.e.bool(t.indivisible);
     r.mark(format!("{S}.rename"));
@@ -2093,7 +2105,7 @@ fn raw_transform(t: &Transform) -> (Vec<u8>, Vec<(String, usize)>) {
         }
         r.e.uv(s.steps).uv(s.bytes).uv(s.depth);
     });
-    let mut w = Writer::new(*b"TRFM", 2);
+    let mut w = Writer::new(*b"TRFM", version);
     w.section(1, r.e.as_bytes());
     (w.finish(), r.marks)
 }
@@ -2367,16 +2379,21 @@ fn transform_structural() {
 // spec/edits.md §3 (WP-139): `TRFM` is at version 2, which has the
 // rename's `dependent`; version 1 is refused, from bytes
 // (`UnsupportedVersion` at the version field) and from JSON (at
-// `version`); version 3 is newer than supported. `refuse` round-trips.
+// `version`); version 4 is newer than supported (3 is read since WP-118,
+// and a version 2 payload under it is not a version 3 one). `refuse`
+// round-trips.
 #[test]
 fn transform_version_1_is_refused() {
     let bytes = rename_bytes();
     let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
-    for v in [1u32, 3] {
+    for v in [1u32, 4] {
         let mut w = Writer::new(*b"TRFM", v);
         w.section(1, payload);
         assert_eq!(error(Transform::from_bytes(&w.finish())), (ErrorKind::UnsupportedVersion, 12));
     }
+    let mut w = Writer::new(*b"TRFM", 3);
+    w.section(1, payload);
+    assert_eq!(error(Transform::from_bytes(&w.finish())).0, ErrorKind::Malformed);
     let mut j = rename_request().to_json();
     set(&mut j, &["version"], Value::Int(1));
     assert_eq!(Transform::from_json(&j).unwrap_err().path, "version");
@@ -2400,4 +2417,182 @@ fn s10_5_enumeration_names() {
     assert_eq!(Severity::Error.name(), "error");
     assert_eq!(FailureKind::Uncaught.name(), "uncaught");
     assert_eq!(FailureKind::HostFailure.name(), "host_failure");
+}
+
+// ---------------------------------------------------------------------------
+// WP-118: the third list, `rebuilt` (R5.2 to R5.5)
+
+fn three(owned: &[&[u8]], readonly: &[&[u8]], rebuilt: &[&[u8]]) -> Ownership {
+    Ownership {
+        rebuilt: rebuilt.iter().map(|p| p.to_vec()).collect(),
+        ..ownership(owned, readonly)
+    }
+}
+
+// R5.2: the class is the list of the longest covering entry; no entry is
+// read-only; the index of the entry is returned; `is_owned` is
+// `class == Owned`. The attacks A1, A1c, A9 and the component rule.
+#[test]
+fn class_of_three_lists() {
+    use slip_model::transform::FileClass::{Owned, ReadOnly, Rebuilt};
+    // No entry covers it.
+    let o = three(&[b"/s"], &[], &[]);
+    assert_eq!(o.class_of(b"/t/x.h"), (ReadOnly, None));
+    // Each list alone.
+    assert_eq!(o.class_of(b"/s/x.h"), (Owned, Some(0)));
+    let o = three(&[b"/s"], &[b"/r"], &[b"/b"]);
+    assert_eq!(o.class_of(b"/r/x.h"), (ReadOnly, Some(0)));
+    assert_eq!(o.class_of(b"/b/x.h"), (Rebuilt, Some(0)));
+    assert_eq!(o.class(b"/b"), Rebuilt);
+    assert!(!o.is_owned(b"/b/x.h"), "a rebuilt file is not owned");
+    // The index in its list.
+    let o = three(&[b"/s"], &[], &[b"/a", b"/b/gen", b"/c"]);
+    assert_eq!(o.class_of(b"/b/gen/x.h"), (Rebuilt, Some(1)));
+    // By component: `/b/gen` does not cover `/b/generated`.
+    assert_eq!(o.class_of(b"/b/generated/x.h"), (ReadOnly, None));
+    // A1: `rebuilt /b`, `readonly /b/_deps`.
+    let o = three(&[b"/s"], &[b"/b/_deps"], &[b"/b"]);
+    assert_eq!(o.class(b"/b/_deps/inc/d.h"), ReadOnly);
+    assert_eq!(o.class(b"/b/gen/x.h"), Rebuilt);
+    // A1c: `rebuilt /b/gen` under `readonly /b`.
+    let o = three(&[b"/s"], &[b"/b"], &[b"/b/gen"]);
+    assert_eq!(o.class(b"/b/gen/x.h"), Rebuilt);
+    assert_eq!(o.class(b"/b/other.h"), ReadOnly);
+    // A9: `rebuilt /s`, `owned /s/src`.
+    let o = three(&[b"/s/src"], &[], &[b"/s"]);
+    assert_eq!(o.class(b"/s/src/a.cc"), Owned);
+    assert!(o.is_owned(b"/s/src/a.cc"));
+    assert_eq!(o.class(b"/s/gen/x.h"), Rebuilt);
+    // Owned inside rebuilt inside owned.
+    let o = three(&[b"/s", b"/s/b/mine"], &[], &[b"/s/b"]);
+    assert_eq!(o.class(b"/s/b/mine/x.h"), Owned);
+    assert_eq!(o.class(b"/s/b/x.h"), Rebuilt);
+    assert_eq!(o.class(b"/s/x.h"), Owned);
+    // WP-118 review N1: a tie, only from a value that is not valid (one
+    // entry in two lists), fails closed: read-only, then rebuilt, then
+    // owned.
+    let o = three(&[b"/s/g"], &[b"/s/g"], &[b"/s/g"]);
+    assert_eq!(o.class_of(b"/s/g/x.h"), (ReadOnly, Some(0)));
+    let o = three(&[b"/s/g"], &[], &[b"/s/g"]);
+    assert_eq!(o.class_of(b"/s/g/x.h"), (Rebuilt, Some(0)));
+    assert!(!o.is_owned(b"/s/g/x.h"));
+}
+
+fn rename_request_v3() -> Transform {
+    Transform { ownership: three(&[b"/s"], &[b"/s/gen"], &[b"/s/b"]), ..rename_request() }
+}
+
+// R5.4: version 3, byte for byte, for a rebuilt list (the version 2 bytes
+// of `transform_bytes_exact` are kept for none); round trips, JSON with
+// the member, `dump`/`undump` keeping the version; R5.5: the request id
+// differs.
+#[test]
+fn transform_v3_bytes_and_round_trip() {
+    let t = rename_request_v3();
+    let bytes = reseal(hex(&[
+        "53 4c 49 50 1a 0a 00 00  54 52 46 4d  03 00 00 00", // magic, TRFM, version 3
+        "01 1f",                                             // transform, 31 bytes:
+        "01",                                                //   rename
+        "01  02 2f 73",                                      //   owned ["/s"]
+        "01  06 2f 73 2f 67 65 6e",                          //   readonly ["/s/gen"]
+        "01  04 2f 73 2f 62",                                //   rebuilt ["/s/b"]
+        "01",                                                //   indivisible
+        "01",                                                //   rename:
+        "02  01 6e  01 66",                                  //     target ["n", "f"]
+        "01",                                                //     function
+        "01 67",                                             //     new_name "g"
+        "00",                                                //     dependent offer
+        "00",                                                //   no script
+        "00",                                                // end
+        RENAME_TRAILER,
+    ]));
+    assert_eq!(t.to_bytes(), bytes);
+    assert_eq!(raw_transform(&t).0, bytes);
+    assert_eq!(Transform::from_bytes(&bytes).unwrap(), t);
+    t.validate().unwrap();
+    let text = dump(&bytes).unwrap();
+    assert!(text.contains("\"version\": 3"), "{text}");
+    assert!(text.contains("\"rebuilt\": ["), "{text}");
+    assert_eq!(Transform::from_json(&parse(&text)).unwrap(), t);
+    assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+    // Version 2, as before, without the member.
+    let two = dump(&rename_request().to_bytes()).unwrap();
+    assert!(two.contains("\"version\": 2") && !two.contains("rebuilt"), "{two}");
+    assert_eq!(rename_request().to_bytes(), rename_bytes());
+    assert_ne!(content_id(&bytes).unwrap(), content_id(&rename_bytes()).unwrap());
+    // A script request with a list.
+    let mut s = script_request();
+    s.ownership.rebuilt = vec![b"/s/b".to_vec()];
+    assert_eq!(Transform::from_bytes(&s.to_bytes()).unwrap(), s);
+    assert_eq!(Transform::from_json(&s.to_json()).unwrap(), s);
+}
+
+// R5.3: each row of `rebuilt`, in order after the rows of the other two
+// lists, at its offset and its JSON path, by `validate` too.
+#[test]
+fn transform_v3_rebuilt_rules() {
+    let with = |owned: &[&[u8]], readonly: &[&[u8]], rebuilt: &[&[u8]]| Transform {
+        ownership: three(owned, readonly, rebuilt),
+        ..rename_request()
+    };
+    let at = |i: usize| format!("sections.transform.ownership.rebuilt[{i}]");
+    for bad in [&b"b"[..], b"/s/b/", b"/s//b", b"/s/./b", b"/s\0"] {
+        let what = refused(&with(&[b"/s"], &[], &[b"/a", bad]), &at(1));
+        assert_eq!(what, "not a canonical absolute path");
+    }
+    assert_eq!(
+        refused(&with(&[b"/s"], &[], &[b"/u", b"/t"]), &at(1)),
+        "rebuilt is not strictly ascending"
+    );
+    assert_eq!(
+        refused(&with(&[b"/s"], &[], &[b"/t", b"/t"]), &at(1)),
+        "rebuilt is not strictly ascending"
+    );
+    // A1d.
+    assert_eq!(refused(&with(&[b"/s"], &[], &[b"/"]), &at(0)), "a rebuilt entry is /");
+    assert_eq!(
+        refused(&with(&[b"/s"], &[b"/t"], &[b"/s"]), &at(0)),
+        "a rebuilt entry is also in owned"
+    );
+    // A1b.
+    assert_eq!(
+        refused(&with(&[b"/s"], &[b"/b/gen"], &[b"/b/gen"]), &at(0)),
+        "a rebuilt entry is also in readonly"
+    );
+    // In order: `/` before also-in-owned before also-in-readonly; the
+    // other lists' rows first.
+    assert_eq!(refused(&with(&[b"/"], &[b"/s"], &[b"/", b"/s"]), &at(0)), "a rebuilt entry is /");
+    assert_eq!(
+        refused(&with(&[b"/s"], &[b"/t"], &[b"/s", b"/t"]), &at(0)),
+        "a rebuilt entry is also in owned"
+    );
+    refused(&with(&[b"/s"], &[b"/u", b"/t"], &[b"x"]), "sections.transform.ownership.readonly[1]");
+}
+
+// R5.4: a version 3 container whose `rebuilt` is empty is a second
+// encoding of a version 2 value: refused at the list, in bytes and JSON;
+// a version 2 JSON with the member is refused.
+#[test]
+fn transform_v3_without_rebuilt_is_refused() {
+    let bytes = rename_bytes();
+    let payload = &bytes[payload_at(&bytes, 1)..bytes.len() - 33];
+    // The list goes after readonly: payload offset 13 (container 31).
+    let mut p3 = payload.to_vec();
+    p3.insert(13, 0);
+    let mut w = Writer::new(*b"TRFM", 3);
+    w.section(1, &p3);
+    let v3 = w.finish();
+    let e = Transform::from_bytes(&v3).unwrap_err();
+    assert_eq!((e.kind, e.offset), (ErrorKind::Malformed, 31), "{e}");
+    assert_eq!(e.what, "a version 3 container has no rebuilt entry");
+    let mut j = rename_request_v3().to_json();
+    set(&mut j, &["sections", "transform", "ownership", "rebuilt"], Value::Array(vec![]));
+    let je = Transform::from_json(&j).unwrap_err();
+    assert_eq!(
+        (je.path.as_str(), je.message.as_str()),
+        ("sections.transform.ownership.rebuilt", "a version 3 container has no rebuilt entry")
+    );
+    let mut j = rename_request_v3().to_json();
+    set(&mut j, &["version"], Value::Int(2));
+    assert!(Transform::from_json(&j).is_err());
 }

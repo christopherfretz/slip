@@ -1,0 +1,3 @@
+# Equal: a type in an extern "C" block has no language linkage, so R2.2 does not make it read-only.
+relied gen.h
+declares gen.h rule 1 mapped 2 left 0

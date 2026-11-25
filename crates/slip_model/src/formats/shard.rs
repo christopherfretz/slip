@@ -14,7 +14,7 @@ use super::common::{
 };
 use super::{
     At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
-    negatives, open, read_container, render_container, seal, spellings, verdict,
+    negatives, open, read_container, rebuilt_use, render_container, seal, spellings, verdict,
 };
 
 const HEADER: u64 = 1;
@@ -30,6 +30,7 @@ const SPELLINGS: u64 = spellings::ID;
 const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
 const FOUND: u64 = found::ID;
+const REBUILT_USE: u64 = rebuilt_use::ID;
 
 use super::MESSAGE_MAX;
 
@@ -53,6 +54,7 @@ enum Loc {
     NoNames,
     Negatives(negatives::Loc),
     Found(found::Loc),
+    RebuiltUse(rebuilt_use::Loc),
 }
 
 impl Loc {
@@ -72,6 +74,7 @@ impl Loc {
             Loc::NoNames => "sections.names".to_owned(),
             Loc::Negatives(l) => l.path(),
             Loc::Found(l) => l.path(),
+            Loc::RebuiltUse(l) => l.path(),
         }
     }
 }
@@ -161,6 +164,13 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::Agreement(l), what));
     }
+    // WP-118: after `rule_use`'s (`spec/model.md` §8, the order of
+    // invariants).
+    if let Some(r) = &s.rebuilt_use
+        && let Some((l, what)) = rebuilt_use::violation(r, phase, status)
+    {
+        return Some((Loc::RebuiltUse(l), what));
+    }
     if let Some(n) = &s.negatives
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
     {
@@ -186,6 +196,15 @@ pub(super) fn check(s: &Shard) -> std::result::Result<(), (String, &'static str)
 
 // ---------------------------------------------------------------------------
 // Binary
+
+/// The bytes of an optional section, encoded by `f` when present.
+fn section<T>(x: Option<&T>, f: impl Fn(&mut Encoder, &T)) -> Option<Vec<u8>> {
+    x.map(|x| {
+        let mut e = Encoder::new();
+        f(&mut e, x);
+        e.into_bytes()
+    })
+}
 
 pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
     let mut header = Encoder::new();
@@ -213,78 +232,25 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         sections.push((INPUTS, inputs));
     }
     sections.push((COUNTERS, counters.as_bytes()));
-    let digests = s.digests.as_ref().map(|d| {
-        let mut e = Encoder::new();
-        digests::encode(&mut e, d);
-        e.into_bytes()
-    });
-    if let Some(digests) = &digests {
-        sections.push((DIGESTS, digests));
-    }
-    let verdict = s.verdict.as_ref().map(|v| {
-        let mut e = Encoder::new();
-        verdict::encode(&mut e, v);
-        e.into_bytes()
-    });
-    if let Some(verdict) = &verdict {
-        sections.push((VERDICT, verdict));
-    }
-    let binding = s.binding.as_ref().map(|b| {
-        let mut e = Encoder::new();
-        agreement::encode_binding(&mut e, b);
-        e.into_bytes()
-    });
-    if let Some(binding) = &binding {
-        sections.push((BINDING, binding));
-    }
-    let spellings = s.spellings.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        spellings::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(spellings) = &spellings {
-        sections.push((SPELLINGS, spellings));
-    }
-    let names = s.names.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        names::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(names) = &names {
-        sections.push((NAMES, names));
-    }
-    let negatives = s.negatives.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        negatives::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(negatives) = &negatives {
-        sections.push((NEGATIVES, negatives));
-    }
-    let rule_use = s.rule_use.as_ref().map(|r| {
-        let mut e = Encoder::new();
-        agreement::encode_rule_use(&mut e, r);
-        e.into_bytes()
-    });
-    if let Some(rule_use) = &rule_use {
-        sections.push((RULE_USE, rule_use));
-    }
-    let found = s.found.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        found::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(found) = &found {
-        sections.push((FOUND, found));
-    }
-    // Id 32 since WP-139 (17 retired), so after `found`.
-    let edits = s.edits.as_ref().map(|x| {
-        let mut e = Encoder::new();
-        edits::encode(&mut e, x);
-        e.into_bytes()
-    });
-    if let Some(edits) = &edits {
-        sections.push((EDITS, edits));
+    // The optional sections, in the order of their ids: `edits` is id 32
+    // since WP-139 (17 retired), so after `found`; `rebuilt_use` is id 33
+    // (WP-118), after `edits`.
+    let optional = [
+        (DIGESTS, section(s.digests.as_ref(), digests::encode)),
+        (VERDICT, section(s.verdict.as_ref(), verdict::encode)),
+        (BINDING, section(s.binding.as_ref(), agreement::encode_binding)),
+        (SPELLINGS, section(s.spellings.as_ref(), spellings::encode)),
+        (NAMES, section(s.names.as_ref(), names::encode)),
+        (NEGATIVES, section(s.negatives.as_ref(), |e, x| negatives::encode(e, x))),
+        (RULE_USE, section(s.rule_use.as_ref(), agreement::encode_rule_use)),
+        (FOUND, section(s.found.as_ref(), found::encode)),
+        (EDITS, section(s.edits.as_ref(), edits::encode)),
+        (REBUILT_USE, section(s.rebuilt_use.as_ref(), rebuilt_use::encode)),
+    ];
+    for (id, bytes) in &optional {
+        if let Some(bytes) = bytes {
+            sections.push((*id, bytes));
+        }
     }
     seal(Shard::KIND, Shard::VERSION, &sections, extras)
 }
@@ -306,8 +272,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         Shard::KIND,
         Shard::VERSION,
         [
-            HEADER, OUTCOME, INPUTS, COUNTERS, DIGESTS, VERDICT, BINDING, SPELLINGS, NAMES,
-            NEGATIVES, RULE_USE, FOUND, EDITS,
+            HEADER,
+            OUTCOME,
+            INPUTS,
+            COUNTERS,
+            DIGESTS,
+            VERDICT,
+            BINDING,
+            SPELLINGS,
+            NAMES,
+            NEGATIVES,
+            RULE_USE,
+            FOUND,
+            EDITS,
+            REBUILT_USE,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -328,6 +306,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         rule_use,
         found,
         edits,
+        rebuilt_use,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -435,6 +414,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (rebuilt_use, rebuilt_use_at) = match rebuilt_use {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = rebuilt_use::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -452,6 +439,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         names,
         negatives,
         found,
+        rebuilt_use,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -490,6 +478,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             Loc::Found(l) => found_at
                 .as_ref()
                 .map_or_else(|| unreachable!("a found violation without found"), |o| o.of(l)),
+            Loc::RebuiltUse(l) => rebuilt_use_at.as_ref().map_or_else(
+                || unreachable!("a rebuilt_use violation without rebuilt_use"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }
@@ -499,7 +491,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 13] = [
+const SECTION_NAMES: [SectionName; 14] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -513,6 +505,7 @@ const SECTION_NAMES: [SectionName; 13] = [
     SectionName { id: RULE_USE, name: "rule_use", required: false },
     SectionName { id: FOUND, name: "found", required: false },
     SectionName { id: EDITS, name: "edits", required: false },
+    SectionName { id: REBUILT_USE, name: "rebuilt_use", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -571,6 +564,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.edits {
         sections.push(("edits", edits::render(x)));
     }
+    if let Some(x) = &s.rebuilt_use {
+        sections.push(("rebuilt_use", rebuilt_use::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -594,6 +590,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         rule_use,
         found,
         edits,
+        rebuilt_use,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -640,6 +637,8 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let negatives =
         negatives.map(|v| negatives::read(v, &sections.key("negatives"))).transpose()?;
     let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
+    let rebuilt_use =
+        rebuilt_use.map(|v| rebuilt_use::read(v, &sections.key("rebuilt_use"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -657,6 +656,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         names,
         negatives,
         found,
+        rebuilt_use,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

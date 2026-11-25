@@ -1,0 +1,2 @@
+relocate legacy => :: acme
+# WP-118 A11 (row 22): a dependency macro whose body spells the name, invoked in rebuilt gen.h: the name token is spelled in a read-only file, so the entity is a dependency entity, as when invoked in an owned file.

@@ -103,6 +103,7 @@ fn ok_shard(job: &Job) -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 

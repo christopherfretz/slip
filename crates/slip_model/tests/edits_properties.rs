@@ -40,6 +40,7 @@ fn map_shard(edits: Edits) -> Shard {
         names: None,
         negatives: None,
         found: None,
+        rebuilt_use: None,
     }
 }
 
@@ -520,7 +521,11 @@ fn corrupted_edits_sections() {
 fn corrupted_transform_requests() {
     let t = Transform {
         kind: TransformKind::Rename,
-        ownership: Ownership { owned: vec![b"/s".to_vec()], readonly: vec![b"/s/gen".to_vec()] },
+        ownership: Ownership {
+            owned: vec![b"/s".to_vec()],
+            readonly: vec![b"/s/gen".to_vec()],
+            rebuilt: Vec::new(),
+        },
         indivisible: true,
         rename: Some(Rename {
             target: vec![b"n".to_vec(), b"f".to_vec()],
