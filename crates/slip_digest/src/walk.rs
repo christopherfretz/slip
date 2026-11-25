@@ -305,6 +305,17 @@ pub(crate) struct Walk<'a> {
     /// The declarations the second way marked an entity for, as `hosts`
     /// holds them.
     pub hosts_hit: HashSet<DeclId>,
+    /// The function bodies a unit's stream wrote, and the default
+    /// arguments and default member initialisers (`Walk::hold_body`,
+    /// `Walk::hold_expr`): what `demand::unheld` checks Kiln's
+    /// instantiations against (WP-158).
+    pub held_bodies: HashSet<slip_kiln::kiln::ast::StmtId>,
+    pub held_exprs: HashSet<slip_kiln::kiln::ast::ExprId>,
+    /// The local types a unit's stream met and could not number, so wrote
+    /// as indeterminate without their members (`local::local_type`): what
+    /// they enclose is in that unit, which is unequal to everything
+    /// (`Walk::hold_type`, `demand::unheld`).
+    pub held_types: HashSet<DeclId>,
     /// The objects of the store that hold values of digest §9 (the
     /// source-location strings and objects), built when a constant first
     /// needs it (`value.rs`, WP-104).
@@ -407,6 +418,9 @@ impl<'a> Walk<'a> {
             content_emits: HashMap::new(),
             emits_placed: HashSet::new(),
             hosts_hit: HashSet::new(),
+            held_bodies: HashSet::new(),
+            held_exprs: HashSet::new(),
+            held_types: HashSet::new(),
             name_values: None,
             by_value: 0,
             in_constant: 0,
@@ -524,6 +538,32 @@ impl<'a> Walk<'a> {
     /// name one (§4.2). The caller puts it back.
     pub(crate) fn take_expr_state(&mut self) -> ExprState {
         std::mem::take(&mut self.unit.expr)
+    }
+
+    /// Records that a unit's stream holds function body `b`
+    /// (`demand::unheld`, WP-158): not while an owner is numbered, nor
+    /// inside a key or a type digest.
+    pub(crate) fn hold_body(&mut self, b: slip_kiln::kiln::ast::StmtId) {
+        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
+            self.held_bodies.insert(b);
+        }
+    }
+
+    /// Records that a unit's stream holds default argument or default
+    /// member initialiser `x` ([`Walk::hold_body`]'s conditions).
+    pub(crate) fn hold_expr(&mut self, x: slip_kiln::kiln::ast::ExprId) {
+        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
+            self.held_exprs.insert(x);
+        }
+    }
+
+    /// Records that a unit's stream met local type `t` and wrote it as
+    /// indeterminate, its members unwritten ([`Walk::hold_body`]'s
+    /// conditions).
+    pub(crate) fn hold_type(&mut self, t: DeclId) {
+        if !crate::local::numbering_mode(self) && self.in_key == 0 && self.type_nesting == 0 {
+            self.held_types.insert(t);
+        }
     }
 
     /// Whether what is written now goes straight into a unit stream: not
@@ -683,7 +723,19 @@ pub(crate) fn run_kept<R>(
     // are fed to as well.
     let mut fed: Vec<(usize, Digest)> = Vec::new();
     let mut i = 0;
-    while i < w.queue.len() {
+    // The `default_argument` units of local functions an instantiation
+    // made (`demand::local_default_arguments`, WP-158): written once the
+    // queue is empty, and the queue drained again for what they demand.
+    let mut local_defaults = false;
+    loop {
+        if i == w.queue.len() {
+            if local_defaults {
+                break;
+            }
+            local_defaults = true;
+            crate::demand::local_default_arguments(&mut w, &mut written);
+            continue;
+        }
         let (e, class) = w.queue[i];
         i += 1;
         let saved = w.names_start();
@@ -718,6 +770,12 @@ pub(crate) fn run_kept<R>(
     let unplaced = crate::emitted::unplaced(&mut w);
     counters
         .push(slip_model::Counter { name: "digest.emitted.unplaced".to_owned(), value: unplaced });
+    // What Kiln instantiated that no unit holds (`demand::unheld`,
+    // WP-158), always counted.
+    counters.push(slip_model::Counter {
+        name: "digest.instantiated.unheld".to_owned(),
+        value: crate::demand::unheld(&w),
+    });
     crate::ns_refs::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);

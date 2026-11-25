@@ -416,6 +416,9 @@ pub(crate) fn param_data(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
     // declaration of the function that is not instantiated and not at
     // block scope gives (§2.3).
     let (instantiated, default) = written_default(w, d);
+    if let Some(x) = default {
+        w.hold_expr(x);
+    }
     if !instantiated && default.is_none() && flags & ParamData::DEFAULT_ARG_PENDING != 0 {
         s.indeterminate(DEFAULT_ARG_MISSING);
     }
@@ -636,6 +639,7 @@ pub(crate) fn var_definition(w: &mut Walk<'_>, s: &mut Stream, e: DeclId, def: D
 fn write_body(w: &mut Walk<'_>, s: &mut Stream, body: Option<StmtId>) {
     s.opt(body.is_some());
     if let Some(b) = body {
+        w.hold_body(b);
         crate::stmt::child(w, s, b);
     }
 }

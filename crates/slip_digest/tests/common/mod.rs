@@ -468,6 +468,13 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     if unplaced.is_none_or(|c| c.value != 0) {
         return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
     }
+    // WP-158 (`spec/digest.md` §13): every function body and default
+    // argument Kiln instantiated is held by a unit, in every fixture of
+    // every runner.
+    let unheld = output.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
+    if unheld.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.instantiated.unheld is {unheld:?}, not 0"));
+    }
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",

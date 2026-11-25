@@ -212,6 +212,19 @@ fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
         // (`__va_list_tag`), a unit only when referred to.
         return Some(UnitClass::OnDemand);
     }
+    // A specialisation under a local type (a generic lambda's call
+    // operator for given arguments): what it would be were the type not
+    // local, a derived unit whenever Kiln made it, whatever demanded it
+    // (`spec/digest.md` §2.2, §4.3; WP-158). Before `in_builtin`, which
+    // reads a closure type, `IMPLICIT`, as a builtin's implicit class and
+    // made such a specialisation a unit only if a `Ref` named it: a
+    // conversion to a function pointer or an unevaluated operand writes
+    // none.
+    if w.is_local(e)
+        && let Some((_, i)) = ast.spec_info(e)
+    {
+        return spec_class(i.kind);
+    }
     if in_builtin(w, e) {
         return Some(UnitClass::OnDemand);
     }
@@ -667,7 +680,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
 /// The fallback key of a unit whose key cannot be formed: its own key
 /// kind, parent the nearest enclosing entity with a key (else `root`),
 /// name `content`, discriminator the unit's digest.
-fn fallback_key(
+pub(crate) fn fallback_key(
     w: &mut Walk<'_>,
     e: DeclId,
     digest: Digest,
@@ -853,7 +866,14 @@ fn denoted(
 pub(crate) fn apply_taints(w: &Walk<'_>, written: &mut [Written]) {
     for &(scope, cause) in &w.taints {
         let target = scope
-            .and_then(|s| written.iter().position(|u| u.entity == Some(s)))
+            // Not a part keyed under a local function, which has no unit of
+            // its own (`demand::local_default_arguments`): the taint goes
+            // where it went before those parts existed.
+            .and_then(|s| {
+                written
+                    .iter()
+                    .position(|u| u.entity == Some(s) && !(u.owner.is_some() && w.is_local(s)))
+            })
             .or_else(|| written.iter().position(|u| u.kind == KeyKind::Order));
         if let Some(i) = target {
             written[i].cause = Some(merge(written[i].cause, cause));

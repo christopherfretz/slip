@@ -922,6 +922,174 @@ fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec
     }
 }
 
+/// The `default_argument` units of every local function that is no unit
+/// and whose declaration an instantiation made (a member of a local class,
+/// or the call operator of a lambda that is not generic, in an
+/// instantiated function body), appended to `out` (WP-158; digest-kinds
+/// §11.4). Kiln instantiates such a default argument with the body that
+/// declares the function (`kiln_sema/src/templ/subst/decls.rs`
+/// `defer_default_args_to`, in local scope), and the parameter holds it
+/// (`ParamData` `default_arg`); the function's own stream, written in
+/// place in its owner's, writes the row absent, as for every instantiated
+/// declaration (`decl_func::written_default`). The unit is that of
+/// [`default_arguments`]: parent the function's key (a member of a local
+/// type has an ordinary key under it, digest §4.3), name `parameter(i)`,
+/// derived, the function's origin file. Run once, after every unit is
+/// written.
+pub(crate) fn local_default_arguments(w: &mut Walk<'_>, out: &mut Vec<Written>) {
+    let ast = w.ast;
+    for d in ast.decls.ids() {
+        if ast.first(d) != d || !is_local_default_holder(w, d) {
+            continue;
+        }
+        let owner = local_owner(w, d);
+        local_parts(w, d, &owner, out);
+    }
+}
+
+/// `digest.instantiated.unheld` (WP-158, `spec/digest.md` §2.2, §12,
+/// §13): what Kiln instantiated in this parse that no unit's stream
+/// holds. Read from Kiln, not from the units the walk chose:
+///
+/// - **bodies**: every function definition in Kiln's list of
+///   instantiated definitions (`DeclArena::fn_def_insts`, which Sema
+///   appends to when it finishes instantiating a function's body), and
+///   every function declaration with a body that an instantiation made
+///   (`templ::made_by_instantiation`: its own `SpecInfo` or
+///   `MemberSpecInfo` kind, else the kind governing its lexical context,
+///   which reaches a local class's member and a lambda's call operator
+///   in an instantiated body); its body (`FunctionData` `body`) must have
+///   been written by some unit (`Walk::hold_body`);
+/// - **default arguments**: every parameter that holds one
+///   (`ParamData` `default_arg`) of a function declaration an
+///   instantiation made, and every field an instantiation made
+///   (`Ast::instantiated_from`) that holds a default member initialiser
+///   (`FieldData` `init`); the expression must have been written by some
+///   unit (`Walk::hold_expr`).
+///
+/// A declaration in a dependent context (`DeclFlags::DEPENDENT_CTX`) is
+/// left out: it is a pattern, written as one. So is one inside a local
+/// type that a unit's stream met but could not number (digest §4.3, the
+/// closure of a lambda in an instantiated default argument): the stream
+/// writes the type as indeterminate and not its members, so the unit
+/// that holds them is unequal to everything (`Walk::hold_type`), which
+/// is the known limit of §4.3, not a missing unit. Zero on every fixture
+/// (`tests/common/mod.rs`); a non-zero count names a route by which an
+/// instantiation has no unit.
+pub(crate) fn unheld(w: &Walk<'_>) -> u64 {
+    let ast = w.ast;
+    let mut bodies: std::collections::HashSet<DeclId> =
+        ast.decls.fn_def_insts().iter().map(|&(d, _)| d).collect();
+    let mut n = 0u64;
+    // Inside a local type a stream wrote as indeterminate (its members
+    // unwritten): held by that unit, unequal to everything.
+    let in_held_type = |d: DeclId| {
+        let mut c = ast.decls.get(d).ctx();
+        while let Some(p) = c {
+            if w.held_types.contains(&ast.first(p)) {
+                return true;
+            }
+            c = ast.decls.get(p).ctx();
+        }
+        false
+    };
+    for d in ast.decls.ids() {
+        if ast.decls.get(d).has(DeclFlags::DEPENDENT_CTX) || in_held_type(d) {
+            bodies.remove(&d);
+            continue;
+        }
+        if let Some(f) = ast.decls.function(d) {
+            if !crate::templ::made_by_instantiation(w, d) {
+                continue;
+            }
+            if f.body.is_some() {
+                bodies.insert(d);
+            }
+            for p in ast.lists.iter::<DeclId>(f.params) {
+                if let Some(x) = ast.decls.param(p).and_then(|q| q.default_arg)
+                    && !w.held_exprs.contains(&x)
+                {
+                    n += 1;
+                }
+            }
+        } else if let Some(f) = ast.decls.field(d)
+            && let Some(x) = f.init
+            && ast.instantiated_from(d).is_some()
+            && !w.held_exprs.contains(&x)
+        {
+            n += 1;
+        }
+    }
+    for d in bodies {
+        if let Some(b) = ast.decls.function(d).and_then(|f| f.body)
+            && !w.held_bodies.contains(&b)
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The `default_argument` units of the local function `e` under `owner`
+/// ([`local_owner`]), appended to `out`: what [`local_default_arguments`]
+/// writes for it (`trace.rs` writes them again).
+pub(crate) fn local_parts(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    default_arguments(w, e, owner, out);
+}
+
+/// Whether `e` (a first declaration) is a function [`local_default_arguments`]
+/// writes `default_argument` units for: local (not a block-scope extern),
+/// no unit, made by instantiation (`decl_func::instantiated_decl`), with a
+/// parameter of an instantiated declaration that holds a default
+/// argument.
+pub(crate) fn is_local_default_holder(w: &Walk<'_>, e: DeclId) -> bool {
+    let ast = w.ast;
+    if ast.decls.function(e).is_none() || !w.is_local(e) || w.is_local_extern(e) {
+        return false;
+    }
+    let decls: Vec<DeclId> =
+        w.redecls(e).into_iter().filter(|&x| crate::decl_func::instantiated_decl(w, x)).collect();
+    let holds = decls.iter().any(|&x| {
+        ast.decls.function(x).is_some_and(|f| {
+            ast.lists
+                .iter::<DeclId>(f.params)
+                .any(|p| ast.decls.param(p).is_some_and(|q| q.default_arg.is_some()))
+        })
+    });
+    holds && crate::units::unit_class(w, e).is_none()
+}
+
+/// The unit a local function's `default_argument` units are keyed under
+/// ([`local_default_arguments`]): no unit is written for it; it gives the
+/// parts their parent key (the function's, or a fallback under its
+/// nearest keyed context when it has none, whose cause the parts carry,
+/// `write_part`), their origin file and the declaration they are read
+/// from.
+pub(crate) fn local_owner(w: &mut Walk<'_>, e: DeclId) -> Written {
+    let (key, kind) = match w.key(e) {
+        KeyRes::Key { id, kind, .. } => (id, kind),
+        KeyRes::None(_) => crate::units::fallback_key(w, e, slip_model::Digest([0; 32]))
+            .map_or((slip_model::Digest([0; 32]), KeyKind::Function), |(id, kind, _)| (id, kind)),
+    };
+    Written {
+        entity: Some(e),
+        read: Some(crate::units::read_decl(w, e)),
+        key,
+        kind,
+        digest: slip_model::Digest([0; 32]),
+        cause: None,
+        class: GroupClass::Derived,
+        file: crate::units::origin_file(w, e),
+        resolved: None,
+        default_argument: None,
+        owner: None,
+        collided: false,
+        view: None,
+        denotes: None,
+        emitted: false,
+    }
+}
+
 /// One `default_argument` unit: the expression `x`, walked as an
 /// initialiser is, with parameter j of the function (each declaration's
 /// parameter j, `params[j]`) the local entity of ordinal j, as the
@@ -942,6 +1110,7 @@ fn default_argument(
     let u = write_default_argument(w, e, owner, index, |w, s| {
         number_params(w, params);
         w.unit.expr.imms = Some(Vec::new());
+        w.hold_expr(x);
         crate::expr::child(w, s, x);
         values = w.unit.expr.imms.take().unwrap_or_default();
     });
