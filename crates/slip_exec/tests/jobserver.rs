@@ -5,6 +5,8 @@
 //! explicit values.
 #![cfg(unix)]
 
+mod common;
+
 use slip_exec::jobserver::{
     self, DEFAULT_FIFO, DEFAULT_POOL_SIZE, Kind, Pool, RefillReport, Token, fifo_from_makeflags,
 };
@@ -33,7 +35,7 @@ fn scratch(tag: &str) -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     let dir =
-        std::env::temp_dir().join(format!("slip-exec-jobserver-{}-{tag}-{n}", std::process::id()));
+        common::work_root().join(format!("slip-exec-jobserver-{}-{tag}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

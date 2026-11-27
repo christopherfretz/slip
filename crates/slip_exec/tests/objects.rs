@@ -5,6 +5,8 @@
 //! process is started.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -39,8 +41,7 @@ impl Drop for Scratch {
 fn scratch(tag: &str) -> Scratch {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let d =
-        std::env::temp_dir().join(format!("slip-exec-objects-{}-{tag}-{n}", std::process::id()));
+    let d = common::work_root().join(format!("slip-exec-objects-{}-{tag}-{n}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(&d).unwrap();
     Scratch(d)
