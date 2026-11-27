@@ -4,6 +4,8 @@
 //! every exit path by `Child`'s `Drop`, and only those are ever signalled.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use slip_exec::process::{
     self, Child, Io, Killed, Limits, ProcSampler, SAMPLE_INTERVAL, Sample, Sampler,
 };
@@ -33,8 +35,7 @@ impl Drop for Scratch {
 fn scratch(tag: &str) -> Scratch {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let d =
-        std::env::temp_dir().join(format!("slip-exec-process-{}-{tag}-{n}", std::process::id()));
+    let d = common::work_root().join(format!("slip-exec-process-{}-{tag}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     Scratch(d)

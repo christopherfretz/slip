@@ -10,6 +10,8 @@
 //! deadline.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use slip_exec::jobserver::{self, Pool};
 use slip_exec::process::{Child, Io, Limits};
 use slip_exec::signals::{self, Timing};
@@ -220,7 +222,7 @@ fn run(case: &Case) -> Outcome {
         if case.dead_reader { "-dead" } else { "" },
         if case.twice { "-twice" } else { "" },
     );
-    let dir = std::env::temp_dir().join(format!("slip-exec-signal-{tag}"));
+    let dir = common::work_root().join(format!("slip-exec-signal-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut g = Guard { probe: None, dir: dir.clone() };
