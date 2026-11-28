@@ -4726,3 +4726,119 @@ fn wp144_existing_local_two_observers_verified() {
     );
     assert_eq!(report.verdict(), RunVerdict::Verified);
 }
+
+// WP-144 W1 (regression test; also kills R4): a probe that aborts at
+// `DEPTH_LIMIT` (because `probe_memos` starts empty while the main walk's
+// `type_memo` was warmed by `w1..w70`) must NOT answer "not existing" and
+// let a colliding `legacy::x(T70) -> acme::x(T70)` verify. Instead, `x`'s
+// key receives the probe-abort cause (`walk/depth`), making `b.cpp`
+// indeterminate (`Unverifiable`) and the run `NotVerified`.
+#[test]
+fn wp144_probe_abort_at_depth_limit_is_not_verified() {
+    use slip_cli::image::Side;
+    use slip_verify::run::{Header, MapShard, Report, RunVerdict};
+    use std::fmt::Write as _;
+
+    let mut common = String::from("template<class T> struct S{};\ntypedef S<int> T1;\n");
+    for i in 2..=70 {
+        writeln!(common, "typedef S<T{}> T{i};", i - 1).unwrap();
+    }
+    for i in 1..=70 {
+        writeln!(common, "void w{i}(T{i});").unwrap();
+    }
+    let mut ys = String::new();
+    for i in 1..=70 {
+        writeln!(ys, "  void y{i}(T{i});").unwrap();
+    }
+
+    let a_pre = format!(
+        "{common}namespace legacy {{\n{ys}}}\nnamespace acme {{\n  inline int x(T70) {{ return 1; }}\n}}\n"
+    );
+    let a_post =
+        format!("{common}namespace acme {{\n{ys}  inline int x(T70) {{ return 1; }}\n}}\n");
+    let b_pre = format!(
+        "{common}namespace legacy {{\n  inline int x(T70) {{ return 3; }}\n  int g() {{ return 2; }}\n}}\n"
+    );
+    let b_post = format!(
+        "{common}namespace acme {{\n  inline int x(T70) {{ return 3; }}\n  int g() {{ return 2; }}\n}}\n"
+    );
+
+    let tree = Tree::new("wp144-w1-depth", &[("a.cpp", &a_pre), ("b.cpp", &b_pre)]);
+    write(&tree.post.join("a.cpp"), &a_post);
+    write(&tree.post.join("b.cpp"), &b_post);
+    let oa = tree.observer_of("a.cpp", &[]);
+    let ob = tree.observer_of("b.cpp", &[]);
+    tree.map(&oa);
+    tree.map(&ob);
+    let (ma, first_map_id) = tree.stored_map(&oa);
+    let (mb, second_map_id) = tree.stored_map(&ob);
+
+    // Pre-image key of `acme::x(T70)` from `a.cpp`.
+    let x_key = tree
+        .image()
+        .parse(&oa, Side::Pre, Phase::Map, 0, |input| {
+            slip_digest::records::records(
+                input,
+                &RuleTable::empty(),
+                slip_digest::ReadOnly::EVERY_FILE,
+                &[],
+                &[],
+            )
+            .unwrap()
+        })
+        .unwrap()
+        .1
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name.starts_with("acme::x("))
+        .expect("acme::x(T70)")
+        .id;
+
+    let declared = Declared::new(vec![rename_ns("acme", "legacy")], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(&[])))
+        .with_existing(vec![x_key], vec![])
+        .unwrap();
+    declared.validate().unwrap();
+    let params = tree.params(declared.clone());
+    let va = tree.verify_with(&oa, &params).unwrap();
+    let vb = tree.verify_with(&ob, &params).unwrap();
+
+    // `a.cpp` warmed `probe_memos` via `y1..y70` in `acme`, so `a.cpp` verifies.
+    assert_eq!(kind(&va), VerdictKind::Verified, "{}", reason(&va));
+    // `b.cpp` must NOT verify: probing `acme::x(T70)` aborts at `DEPTH_LIMIT`,
+    // giving `x`'s key `walk/depth` (indeterminate -> Mismatch with Indeterminate finding).
+    assert_ne!(kind(&vb), VerdictKind::Verified, "W1: b.cpp must not verify!");
+    assert_eq!(kind(&vb), VerdictKind::Mismatch, "{}", reason(&vb));
+    assert!(
+        vb.verdict.as_ref().unwrap().findings.iter().any(|f| f.kind == FindingKind::Indeterminate),
+        "expected Indeterminate finding in b.cpp, got: {:?}",
+        vb.verdict
+    );
+
+    let header = Header {
+        plan: Digest([7; 32]),
+        round: 1,
+        declared: params.declared_id,
+        rules: declared.rules_id(),
+        image: Vec::new(),
+        limit: 64,
+        locate: 16,
+        plan_observers: 2,
+        run: Vec::new(),
+    };
+    let mut report = Report::new(header, &declared);
+    report.add(
+        &oa.id,
+        &oa.main.path,
+        Some(&va),
+        Some(MapShard::Read { status: ma.outcome.status, id: first_map_id }),
+    );
+    report.add(
+        &ob.id,
+        &ob.main.path,
+        Some(&vb),
+        Some(MapShard::Read { status: mb.outcome.status, id: second_map_id }),
+    );
+    assert_eq!(report.verdict(), RunVerdict::NotVerified);
+}

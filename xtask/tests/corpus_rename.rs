@@ -550,6 +550,7 @@ impl World {
                 negatives: Some(Vec::new()),
                 found: None,
                 rebuilt_use: None,
+                existing_use: None,
             };
             let bytes = sh.to_bytes();
             let sid = id(&bytes);

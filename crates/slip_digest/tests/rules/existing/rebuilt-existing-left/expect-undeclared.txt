@@ -1,0 +1,3 @@
+# With gen.h read-only, y is a dependency entity (not counted).
+use 1 via 1 direct 0
+use 2 via 1 direct 0

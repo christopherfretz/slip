@@ -1298,3 +1298,22 @@ fn rules_id_v4() {
         .unwrap();
     assert_ne!(x.rules_id(), z.rules_id());
 }
+
+// WP-144 (S6): binary and JSON goldens for `DECL` version 4 (`declared-v4.bin`,
+// `declared-v4.json`), with both `existing` and `existing_local`.
+#[test]
+fn golden_declared_v4_binary_and_json() {
+    let x = golden_declared()
+        .with_files(Some(files3()))
+        .with_existing(vec![d(10), d(11)], vec![local(12, "/src/a.cpp"), local(12, "/src/b.cpp")])
+        .unwrap();
+    x.validate().unwrap();
+    let bytes = x.to_bytes();
+    assert_eq!(bytes[12..16], 4u32.to_le_bytes());
+    golden("declared-v4.bin", &bytes);
+    let text = dump(&bytes).unwrap();
+    golden("declared-v4.json", text.as_bytes());
+    assert_eq!(Declared::from_bytes(&bytes).unwrap(), x);
+    assert_eq!(Declared::from_json(&parse(&text)).unwrap(), x);
+    assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+}

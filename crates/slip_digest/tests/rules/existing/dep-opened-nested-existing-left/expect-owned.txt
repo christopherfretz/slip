@@ -1,0 +1,2 @@
+# Every file owned: Dep in outer::inner is not existing, still left -> direct 2.
+use 1 via 1 direct 2

@@ -1,0 +1,6 @@
+# S7: owned+staying acme and moved modern in separate headers write distinct Ref::part
+# views (false vs true), killing both whole_reading (R10d) and notes (R10e).
+added <using_directive acme (the part the rule leaves)>
+added <using_directive modern (the part the rule moves)>
+removed <using_directive acme>
+use 1 via 1 direct 1

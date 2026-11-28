@@ -1419,3 +1419,119 @@ fn s7_1_strict_names_after_add_panics() {
     r.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
     r.strict_names();
 }
+
+// ---------------------------------------------------------------------------
+// §9.1 section 34 `existing_use` bounds check (WP-144 S5 / R14)
+
+#[test]
+fn wp144_existing_use_out_of_range_fails_shard() {
+    use slip_model::ExistingUse;
+    use slip_model::declared::ExistingLocal;
+    use slip_model::keys::{KeyKind, Name, Parent, Rule};
+    use slip_model::transform::Ownership;
+
+    let ns_rule = Rule {
+        parent: Parent::Root,
+        kind: KeyKind::Namespace,
+        name: Name::Identifier(b"acme".to_vec()),
+        disc: None,
+        to_parent: Parent::Root,
+        to_name: Name::Identifier(b"legacy".to_vec()),
+    };
+    let decl_one = Declared::new(vec![ns_rule], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(Ownership {
+            owned: vec![b"/src".to_vec()],
+            readonly: vec![],
+            rebuilt: vec![],
+        }))
+        .with_existing(
+            vec![key(1)],
+            vec![ExistingLocal { key: key(2), file: b"/src/a.cpp".to_vec() }],
+        )
+        .unwrap();
+    let rules_id = decl_one.rules_id();
+    let make_header = |rules: Digest, n: u64| Header { rules, ..header(vec![], n) };
+    let make_shard = |obs: u8, rules: Digest, has_rules: bool, eu: ExistingUse| {
+        let mut v = verified_verdict(&[]);
+        v.rules = rules;
+        let mut s = ok_shard(obs, v, None);
+        if has_rules {
+            s.rule_use = Some(slip_model::RuleUse { rules, uses: Vec::new(), kept: Vec::new() });
+        }
+        s.existing_use = Some(eu);
+        s.validate().expect("valid shard");
+        s
+    };
+
+    // Control: in-bounds indices (0 < 1) are accepted and verify.
+    let mut r = Report::new(make_header(rules_id, 1), &decl_one);
+    r.add(
+        &d(1),
+        b"/src/a.cpp",
+        Some(&make_shard(1, rules_id, true, ExistingUse { existing: vec![0], local: vec![0] })),
+        MAP_OK,
+    );
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(r.states()[at(State::Verified)], 1);
+
+    // Out-of-range `existing` index (1 >= 1): shard rejected as Failed -> Incomplete.
+    let mut r = Report::new(make_header(rules_id, 1), &decl_one);
+    r.add(
+        &d(1),
+        b"/src/a.cpp",
+        Some(&make_shard(1, rules_id, true, ExistingUse { existing: vec![1], local: vec![] })),
+        MAP_OK,
+    );
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    assert_eq!(r.states()[at(State::Failed)], 1);
+    let err = r.error_lines();
+    assert!(
+        err.contains("the shard's existing_use names existing entry 1; the run has 1"),
+        "{err}"
+    );
+
+    // Out-of-range `local` index (1 >= 1): shard rejected as Failed -> Incomplete.
+    let mut r = Report::new(make_header(rules_id, 1), &decl_one);
+    r.add(
+        &d(1),
+        b"/src/a.cpp",
+        Some(&make_shard(1, rules_id, true, ExistingUse { existing: vec![], local: vec![1] })),
+        MAP_OK,
+    );
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    assert_eq!(r.states()[at(State::Failed)], 1);
+    let err = r.error_lines();
+    assert!(
+        err.contains("the shard's existing_use names existing_local entry 1; the run has 1"),
+        "{err}"
+    );
+
+    // Non-empty `existing_use` when `Declared` has 0 entries (0 >= 0): rejected.
+    let empty_decl = Declared::none();
+    let mut r = Report::new(make_header(empty_decl.rules_id(), 2), &empty_decl);
+    r.add(
+        &d(1),
+        b"/src/a.cpp",
+        Some(&make_shard(
+            1,
+            empty_decl.rules_id(),
+            false,
+            ExistingUse { existing: vec![0], local: vec![] },
+        )),
+        MAP_OK,
+    );
+    r.add(
+        &d(2),
+        b"/src/b.cpp",
+        Some(&make_shard(
+            2,
+            empty_decl.rules_id(),
+            false,
+            ExistingUse { existing: vec![], local: vec![0] },
+        )),
+        MAP_OK,
+    );
+    assert_eq!(r.verdict(), RunVerdict::Incomplete);
+    assert_eq!(r.states()[at(State::Failed)], 2);
+}

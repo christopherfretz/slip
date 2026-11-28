@@ -1,0 +1,3 @@
+# S7 (R11g): existing owned x inside dep-opened outer::inner climbs dep_parents through
+# dep namespace `inner` to `outer` -> direct 1.
+use 1 via 1 direct 1

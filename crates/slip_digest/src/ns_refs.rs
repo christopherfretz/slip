@@ -73,7 +73,7 @@ pub(crate) struct NsRefState {
     table: Option<Arc<Table>>,
     /// Guard against re-entering `ns_table` during Pass 1 or Pass 2
     /// (WP-144 amendment 2: probes must never read `ns_table`).
-    building: bool,
+    pub(crate) building: bool,
     by_key: Option<Arc<ByKey>>,
     /// `digest.ref.namespace_no_referent`: references named to find
     /// members that found nothing, written with every view key.
@@ -101,6 +101,10 @@ struct NsInfo {
     /// WP-144 amendment 3: listed whole, or holds an existing member or a
     /// nested namespace that stays.
     stays: bool,
+    /// WP-144 W1: probe-abort cause from `listed` or a member's `existing`
+    /// check under this namespace, propagated upward so the namespace unit
+    /// is indeterminate if a probe aborted.
+    probe_cause: Option<Cause>,
     /// Some declaration of it is `inline`.
     inline: bool,
     /// Its enclosing namespace entity (`None`: the global namespace, or
@@ -264,12 +268,20 @@ impl Walk<'_> {
     /// (mapped) when owned and not staying, `false` (unmapped/dependency)
     /// otherwise. Without `existing` entries, identical to `Walk::owned`.
     pub(crate) fn ns_own_view(&mut self, ns: DeclId) -> bool {
+        self.ns_own_view_res(ns).0
+    }
+
+    /// [`Walk::ns_own_view`], returning any probe-abort cause for `ns`.
+    pub(crate) fn ns_own_view_res(&mut self, ns: DeclId) -> (bool, Option<Cause>) {
         let ns = self.entity(ns);
         if !self.has_existing() || !self.ns_rules() {
-            return self.owned(ns);
+            return (self.owned(ns), None);
         }
         let table = self.ns_table();
-        table.info.get(&ns).map_or_else(|| self.owned(ns), |i| i.own_view())
+        table
+            .info
+            .get(&ns)
+            .map_or_else(|| (self.owned(ns), None), |i| (i.own_view(), i.probe_cause))
     }
 
     /// Whether namespace `ns` stays (WP-144 amendment 3): listed whole, or
@@ -585,7 +597,7 @@ impl Walk<'_> {
                 continue;
             }
             let owned = self.owned(e);
-            let listed = owned && self.listed(e);
+            let (listed, listed_cause) = self.listed_res(e);
             let chain = self.chain(e);
             let mut inline = false;
             if chain.len() <= REDECL_LIMIT {
@@ -603,6 +615,7 @@ impl Walk<'_> {
                 NsInfo {
                     owned,
                     stays: listed,
+                    probe_cause: listed_cause,
                     inline,
                     parent,
                     member: [listed, false],
@@ -637,7 +650,12 @@ impl Walk<'_> {
                     if self.in_owned_file(d) {
                         self.rebuilt_reference(d, t);
                     }
-                    let view = self.mapped(d);
+                    let (view, dir_cause) = self.mapped_res(d);
+                    if let Some(c) = dir_cause
+                        && let Some(i) = info_of.get_mut(&n)
+                    {
+                        i.probe_cause = i.probe_cause.or(Some(c));
+                    }
                     let v = dirs.entry(n).or_default();
                     if !v.contains(&(t, view)) {
                         v.push((t, view));
@@ -673,9 +691,11 @@ impl Walk<'_> {
                 if let Some(n) = self.enclosing_namespace(d)
                     && info_of.contains_key(&n)
                 {
-                    let b = self.in_owned_file(d) && !self.listed(n);
+                    let (n_listed, n_cause) = self.listed_res(n);
+                    let b = self.in_owned_file(d) && !n_listed;
                     if let Some(i) = info_of.get_mut(&n) {
                         i.member[usize::from(b)] = true;
+                        i.probe_cause = i.probe_cause.or(n_cause);
                     }
                 }
                 continue;
@@ -688,13 +708,14 @@ impl Walk<'_> {
                 continue;
             }
             let owned_e = self.owned(e);
-            let ex_e = owned_e && self.existing(e);
+            let (ex_e, ex_cause) = if owned_e { self.existing_res(e) } else { (false, None) };
             let b = owned_e && !ex_e;
             if let Some(i) = info_of.get_mut(&n) {
                 i.member[usize::from(b)] = true;
                 if ex_e {
                     i.stays = true;
                 }
+                i.probe_cause = i.probe_cause.or(ex_cause);
             }
         }
         order.sort();
@@ -727,6 +748,7 @@ impl Walk<'_> {
                 pi.holds[0] |= i.holds[0];
                 pi.holds[1] |= i.holds[1];
                 pi.stays |= i.stays;
+                pi.probe_cause = pi.probe_cause.or(i.probe_cause);
                 if i.inline {
                     inline_children.entry(p).or_default().push(n);
                 }

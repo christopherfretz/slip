@@ -379,10 +379,11 @@ impl Counting {
 /// rule did.
 pub(crate) fn made_by(c: &Counting, e: DeclId) -> Option<usize> {
     let entry = c.entries.get(&e)?;
+    debug_assert!(!entry.dep_chain, "made_by called on an unmapped entry");
     if let Some(Trace::Via(r)) = entry.trace {
         return Some(r);
     }
-    if !entry.member || entry.dep_chain {
+    if !entry.member {
         return None;
     }
     chain(c, e, false).and_then(|(_, via)| via.first().copied())
@@ -718,6 +719,18 @@ mod tests {
         assert_eq!(c.level(ns), None);
         c.forget(ns, Some(false));
         assert_eq!(c.level(ns), None);
+        assert_eq!(finish(Some(c)).0, []);
+        // Forgetting the dependency view clears `dep_direct` (WP-144).
+        let mut c = Counting::default();
+        c.dep_direct.insert(ns, Some(2));
+        c.dep_parents.insert(member, ns);
+        c.set(member, Entry { member: true, dep_chain: true, ..Entry::default() });
+        assert_eq!(finish(Some(c)).0, [Use { rule: 2, via: 0, direct: 1, kept_via: 0 }]);
+        let mut c = Counting::default();
+        c.dep_direct.insert(ns, Some(2));
+        c.dep_parents.insert(member, ns);
+        c.set(member, Entry { member: true, dep_chain: true, ..Entry::default() });
+        c.forget(ns, Some(false));
         assert_eq!(finish(Some(c)).0, []);
         let mut c = Counting::default();
         c.set(member, Entry { trace: Some(Trace::Via(1)), member: true, ..Entry::default() });

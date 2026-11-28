@@ -1,0 +1,4 @@
+# S7: owned+staying acme's mapped view enters E(legacy), turning `using namespace legacy;` into Ref::part.
+added <using_directive legacy (the part the rule moves)>
+removed <using_directive legacy>
+use 1 via 1 direct 1

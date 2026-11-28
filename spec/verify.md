@@ -647,15 +647,23 @@ moves a key away from the pre-image's (a finding):
   and R2: `e`'s key formed as a dependency entity's (namespace parents in
   the unmapped view, no rule applied to `e`'s own key), in probe writing,
   where any namespace named is written by its unmapped view key and any
-  entity mentioned is written by its own key in probe writing. A probe
-  that cannot be formed (a cycle, depth limit, or any cause) answers "not
-  existing".
-- **Whole namespaces.** A named owned namespace `n` is **listed**
-  (`listed(n)`) if `U(n)` is in `Declared.existing`, or if the namespace
-  it is keyed under is listed. An unnamed namespace is listed only
-  through an enclosing namespace. Every entity keyed under a listed
-  namespace (at any depth) is existing, and a listed namespace holds in
-  the unmapped view even when empty, as a read-only opening does.
+  entity mentioned is written by its own key in probe writing. When
+  either existing list is non-empty and the probe for a candidate entity
+  `e` (or a namespace `listed(n)` query) aborts (a cycle, depth limit, or
+  any cause) where `e`'s real key forms, `e`'s key receives that cause so
+  its unit is indeterminate (failing closed: never `Verified`). When both
+  existing lists are empty, no probe runs.
+- **Whole namespaces.** Any named namespace `n` — **owned or not** — is
+  **listed** (`listed(n)`) if `U(n)` is in `Declared.existing`, or if the
+  namespace it is keyed under is listed. An unnamed namespace is listed
+  only through an enclosing namespace. For a non-owned `n` (opened by
+  both a dependency and owned code), listing `n` lists `n`'s owned part:
+  every owned entity keyed under `n` (at any depth) is existing, `n`'s
+  owned part stays (`stays = true`), and `n` gets no mapped view unit
+  unless moved members exist; who may write still reads `owned`. Every
+  owned entity keyed under a listed namespace (at any depth) is existing,
+  and a listed namespace holds in the unmapped view even when empty, as a
+  read-only opening does.
 - **A namespace's own view.** A namespace **stays** if it is listed,
   holds an existing member, or holds a nested namespace that stays. An
   owned namespace that stays takes the unmapped (dependency) view as its
@@ -669,7 +677,9 @@ moves a key away from the pre-image's (a finding):
   governs rule 1, rule 2, `ns_table`'s member view, and R1's `route`.
   Everything about who may write (`decide_owned`, `only_by_inclusion`,
   `records::facts`, rebuilt accounting, and the counts of §9.2) still
-  reads `owned`.
+  reads `owned`. In WP-146's ownership lists (`own_lists.rs`), a
+  program-wide existing entity has its key formed unmapped (while
+  `as_if_owned` would map it), so it appears as a `fixed` `M` entry.
 
 **Limits of `existing`, all failing closed** ("Open questions"):
 
@@ -3555,8 +3565,9 @@ is pending, until Kiln records a range for it
 - `crates/slip_digest/tests/rules.rs` — §2.1: mapped keys under rules, one
   directory per case: a relocated namespace, a merged namespace, a renamed
   member, a swap, a collision, a rule that captures a pre-existing entity,
-  and `rules/existing/` (40 cases, with `existing.txt`) plus
-  `wp144_shared_detail_view_name_and_existing_use` and
+  and `rules/existing/` (52 cases, with `existing.txt`) plus
+  `wp144_shared_detail_view_name_and_existing_use`,
+  `wp144_dep_opened_listed_namespace_stays_and_existing_use`, and
   `tests/ns_holds_order.rs` `wp144_mutual_using_declarations_order_independent`
   (WP-144).
 - `crates/slip_digest/tests/records.rs` — §2.3 "Records": the records of

@@ -1,0 +1,2 @@
+# M1b: dep-opened listed namespace with no owned members still stays and records existing_use.
+use 1 via 1 direct 0

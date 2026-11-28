@@ -40,9 +40,10 @@ use slip_model::Digest;
 use slip_model::keys::KeyKind;
 use slip_model::transform::{FileClass, Ownership};
 
-use crate::keys::{KeyRes, Role, info};
+use crate::Cause;
+use crate::keys::{KEY_CYCLE, KeyRes, Role, info};
 use crate::units::REDECL_LIMIT;
-use crate::walk::Walk;
+use crate::walk::{TOO_DEEP, Walk};
 
 /// The class of one file of the image (`spec/verify.md` §2.1, WP-118):
 /// what the walk is told of it.
@@ -315,22 +316,41 @@ pub(crate) struct OwnedState {
     pub keyed: HashMap<DeclId, (bool, slip_model::keys::Key)>,
 }
 
+/// A probe key could not be formed without a more specific cause.
+const PROBE_ABORT: Cause = Cause::Unaccounted("existing/probe");
+
+/// The result of forming a probe key `U(e)` (WP-144 amendment 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProbeKey {
+    /// Probe key formed cleanly without cause or abort.
+    Key(Digest),
+    /// Probe could not be formed cleanly (depth limit, cycle, or a cause):
+    /// the candidate entity's own key receives this cause so its unit is
+    /// indeterminate (never `Verified`).
+    Aborted(Cause),
+}
+
 /// The walk's state for `Declared.existing` and `Declared.existing_local`
 /// (`spec/verify.md` §2.1, WP-144).
 #[derive(Default)]
 pub(crate) struct ExistingState {
-    /// Whether an owned namespace entity is listed (directly or through
-    /// an enclosing namespace).
-    listed: HashMap<DeclId, bool>,
+    /// Whether a namespace entity is listed (directly or through an
+    /// enclosing namespace), and any probe-abort cause if not listed.
+    listed: HashMap<DeclId, (bool, Option<Cause>)>,
     listed_in_progress: HashSet<DeclId>,
-    /// Whether an owned non-namespace entity is existing (`Walk::existing`).
-    memo: HashMap<DeclId, bool>,
+    /// Whether an owned non-namespace entity is existing (`Walk::existing`),
+    /// and any probe-abort cause if not existing.
+    memo: HashMap<DeclId, (bool, Option<Cause>)>,
     in_progress: HashSet<DeclId>,
     /// Cycles met while deciding `listed` or `existing`: nothing decided
     /// above one is memoised.
     cycles: u64,
     /// Memo of probe keys `U(e)` (amendment 2), by entity.
-    pub(crate) probe_u: HashMap<DeclId, Option<Digest>>,
+    pub(crate) probe_u: HashMap<DeclId, ProbeKey>,
+    /// Probe-abort causes recorded at top level (`depth == 0`) or during
+    /// `ns_table` construction, so an entity whose probe aborted remains
+    /// indeterminate even if `probe_memos` warms up later.
+    pub(crate) probe_causes: HashMap<DeclId, Cause>,
     /// Indices into `Walk::existing` matched by some entity (section 34).
     pub(crate) used_existing: BTreeSet<usize>,
     /// Indices into `Walk::existing_local` matched by some entity (section 34).
@@ -360,19 +380,10 @@ impl Walk<'_> {
     }
 
     /// The `KeyKind` entity `e` has, structurally without forming its key.
+    /// Called only when `key_namespace(e)` is `Some`, so specialisations
+    /// and non-unit roles are already excluded.
     fn key_kind_of(&self, e: DeclId) -> Option<KeyKind> {
         let r = self.representative(e);
-        match self.ast.templ_link(r).get() {
-            Some((TemplLinkKind::Specialization, _)) if self.ast.spec_info(r).is_some() => {
-                return Some(KeyKind::Specialisation);
-            }
-            Some((TemplLinkKind::PartialSpecialization, _))
-                if self.ast.partial_spec_info(r).is_some() =>
-            {
-                return Some(KeyKind::PartialSpecialisation);
-            }
-            Some(_) | None => {}
-        }
         match info(self.ast.decls.get(r).kind()).role {
             Role::Entity(KeyKind::Variable) if self.ast.decls.is_decomposition(r) => {
                 Some(KeyKind::Decomposition)
@@ -389,9 +400,11 @@ impl Walk<'_> {
 
     /// Probe key `U(e)` (WP-144 amendment 2): `e`'s key formed as a
     /// dependency entity's (namespace parents in dependency view, no rule
-    /// on own key) in probe writing (no R1, no R2, no `ns_table`). `None`
-    /// if it cannot be formed or carries a cause.
-    pub(crate) fn probe_u(&mut self, e: DeclId) -> Option<Digest> {
+    /// on own key) in probe writing (no R1, no R2, no `ns_table`).
+    /// Returns [`ProbeKey::Aborted`] if it cannot be formed or carries a
+    /// cause (fail closed: the candidate entity's own key receives the
+    /// cause so its unit is indeterminate).
+    pub(crate) fn probe_u(&mut self, e: DeclId) -> ProbeKey {
         let e = self.entity(e);
         if let Some(&u) = self.existing_state.probe_u.get(&e) {
             return u;
@@ -399,9 +412,9 @@ impl Walk<'_> {
         let saved_probe = self.enter_probe();
         let res = if self.keys_in_progress.contains(&e) {
             self.aborts += 1;
-            None
+            ProbeKey::Aborted(KEY_CYCLE)
         } else if !self.enter() {
-            None
+            ProbeKey::Aborted(TOO_DEEP)
         } else {
             let aborts = self.aborts;
             let rooted = self.local.self_rooted;
@@ -416,8 +429,9 @@ impl Walk<'_> {
             self.keys_in_progress.remove(&e);
             self.leave();
             let out = match computed {
-                Ok((key, None)) => Some(key.id()),
-                Ok((_, Some(_))) | Err(_) => None,
+                Ok((key, None)) if self.aborts == aborts => ProbeKey::Key(key.id()),
+                Ok((_, Some(c))) | Err(Some(c)) => ProbeKey::Aborted(c),
+                Ok((_, None)) | Err(None) => ProbeKey::Aborted(PROBE_ABORT),
             };
             if self.aborts == aborts && self.local.self_rooted == rooted {
                 self.existing_state.probe_u.insert(e, out);
@@ -428,159 +442,195 @@ impl Walk<'_> {
         res
     }
 
-    /// `listed(n)` (WP-144 amendment 4): for an owned namespace `n`,
-    /// `U(n)` is in `existing` (named namespaces only), or the namespace
-    /// it is keyed under is listed.
-    pub(crate) fn listed(&mut self, d: DeclId) -> bool {
+    /// `listed(n)` (WP-144 amendment 4, M1): for any named namespace `n`
+    /// (owned or not), `U(n)` is in `existing`, or the namespace it is
+    /// keyed under is listed. An unnamed namespace is listed only through
+    /// an enclosing namespace. Returns `(is_listed, probe_abort_cause)`.
+    pub(crate) fn listed_res(&mut self, d: DeclId) -> (bool, Option<Cause>) {
         if self.existing.is_empty() || self.rules.is_empty() {
-            return false;
+            return (false, None);
         }
         let n = self.entity(d);
         if self.ast.decls.get(n).kind() != DeclKind::Namespace {
-            return false;
+            return (false, None);
         }
         if let Some(&ans) = self.existing_state.listed.get(&n) {
             return ans;
         }
-        if !self.owned(n) {
-            return false;
-        }
         if !self.existing_state.listed_in_progress.insert(n) {
             self.existing_state.cycles += 1;
             self.aborts += 1;
-            return false;
+            return (false, Some(KEY_CYCLE));
         }
         let cycles = self.existing_state.cycles;
         let aborts = self.aborts;
         let unnamed =
             matches!(self.ast.names.view(self.ast.decls.get(n).name()), DeclNameView::Empty);
-        let direct = if !unnamed
-            && let Some(u) = self.probe_u(n)
-            && let Ok(idx) = self.existing.binary_search(&u)
-        {
-            if self.aborts == aborts {
-                self.existing_state.used_existing.insert(idx);
-            }
-            true
+        let (direct, direct_cause) = if unnamed {
+            (false, None)
         } else {
-            false
+            match self.probe_u(n) {
+                ProbeKey::Key(u) => {
+                    if let Ok(idx) = self.existing.binary_search(&u) {
+                        if self.aborts == aborts {
+                            self.existing_state.used_existing.insert(idx);
+                        }
+                        (true, None)
+                    } else {
+                        (false, None)
+                    }
+                }
+                ProbeKey::Aborted(c) => (false, Some(c)),
+            }
         };
-        let ans = direct || self.key_namespace(n).is_some_and(|p| self.listed(p));
+        let (ans, cause) = if direct {
+            (true, None)
+        } else if let Some(p) = self.key_namespace(n) {
+            let (p_listed, p_cause) = self.listed_res(p);
+            if p_listed { (true, None) } else { (false, direct_cause.or(p_cause)) }
+        } else {
+            (false, direct_cause)
+        };
         self.existing_state.listed_in_progress.remove(&n);
-        if self.existing_state.cycles == cycles && self.aborts == aborts {
-            self.existing_state.listed.insert(n, ans);
+        if let Some(c) = cause
+            && (self.ns_refs.building || self.depth == 0)
+        {
+            self.existing_state.probe_causes.entry(n).or_insert(c);
         }
-        ans
+        if self.existing_state.cycles == cycles && self.aborts == aborts {
+            self.existing_state.listed.insert(n, (ans, cause));
+        }
+        (ans, cause)
     }
 
     /// `existing(e)` (WP-144): for an owned non-namespace entity `e` whose
     /// key's parent is a namespace `n`, `listed(n)`; or `e` is program-wide
     /// and `U(e)` is in `existing`; or `e` is local and `(U(e), file(d))`
-    /// is in `existing_local` for every declaration `d` of `e`.
-    pub(crate) fn existing(&mut self, d: DeclId) -> bool {
+    /// is in `existing_local` for every declaration `d` of `e`. Returns
+    /// `(is_existing, probe_abort_cause)`.
+    pub(crate) fn existing_res(&mut self, d: DeclId) -> (bool, Option<Cause>) {
         if !self.has_existing() || self.rules.is_empty() {
-            return false;
+            return (false, None);
         }
         let e = self.entity(d);
         if self.ast.decls.get(e).kind() == DeclKind::Namespace {
-            return false;
+            return (false, None);
         }
         if let Some(&ans) = self.existing_state.memo.get(&e) {
             return ans;
         }
         if !self.owned(e) {
-            return false;
+            return (false, None);
         }
         let Some(n) = self.key_namespace(e) else {
-            return false;
+            return (false, None);
         };
         if !self.existing_state.in_progress.insert(e) {
             self.existing_state.cycles += 1;
             self.aborts += 1;
-            return false;
+            return (false, Some(KEY_CYCLE));
         }
         let cycles = self.existing_state.cycles;
         let aborts = self.aborts;
-        let ans = if self.listed(n) {
-            true
+        let (n_listed, n_cause) = self.listed_res(n);
+        let (ans, cause) = if n_listed {
+            (true, None)
         } else if let Some(kind) = self.key_kind_of(e) {
             if self.is_program_wide(e, kind) {
-                if !self.existing.is_empty()
-                    && let Some(u) = self.probe_u(e)
-                    && let Ok(idx) = self.existing.binary_search(&u)
-                {
-                    if self.aborts == aborts {
-                        self.existing_state.used_existing.insert(idx);
-                    }
-                    true
+                if self.existing.is_empty() {
+                    (false, n_cause)
                 } else {
-                    false
-                }
-            } else if !self.existing_local.is_empty()
-                && let Some(u) = self.probe_u(e)
-            {
-                let chain = self.chain(e);
-                if chain.is_empty() || chain.len() > REDECL_LIMIT {
-                    false
-                } else {
-                    let mut idxs = Vec::with_capacity(chain.len());
-                    let mut all = true;
-                    for decl in chain {
-                        let loc = self.sm.expansion_loc(self.ast.decls.get(decl).loc());
-                        let Some(fid) = self.buffer_of(loc) else {
-                            all = false;
-                            break;
-                        };
-                        let path = (self.subject_path)(fid);
-                        if let Ok(idx) = self.existing_local.binary_search_by(|x| {
-                            (&x.key, x.file.as_slice()).cmp(&(&u, path.as_slice()))
-                        }) {
-                            idxs.push(idx);
-                        } else {
-                            all = false;
-                            break;
+                    match self.probe_u(e) {
+                        ProbeKey::Key(u) => {
+                            if let Ok(idx) = self.existing.binary_search(&u) {
+                                if self.aborts == aborts {
+                                    self.existing_state.used_existing.insert(idx);
+                                }
+                                (true, None)
+                            } else {
+                                (false, n_cause)
+                            }
                         }
-                    }
-                    if all {
-                        if self.aborts == aborts {
-                            self.existing_state.used_local.extend(idxs);
-                        }
-                        true
-                    } else {
-                        false
+                        ProbeKey::Aborted(c) => (false, Some(c)),
                     }
                 }
+            } else if self.existing_local.is_empty() {
+                (false, n_cause)
             } else {
-                false
+                match self.probe_u(e) {
+                    ProbeKey::Key(u) => {
+                        let chain = self.chain(e);
+                        let mut idxs = Vec::with_capacity(chain.len());
+                        let mut all = true;
+                        for decl in chain {
+                            let loc = self.sm.expansion_loc(self.ast.decls.get(decl).loc());
+                            let Some(fid) = self.buffer_of(loc) else {
+                                all = false;
+                                break;
+                            };
+                            let path = (self.subject_path)(fid);
+                            if let Ok(idx) = self.existing_local.binary_search_by(|x| {
+                                (&x.key, x.file.as_slice()).cmp(&(&u, path.as_slice()))
+                            }) {
+                                idxs.push(idx);
+                            } else {
+                                all = false;
+                                break;
+                            }
+                        }
+                        if all {
+                            if self.aborts == aborts {
+                                self.existing_state.used_local.extend(idxs);
+                            }
+                            (true, None)
+                        } else {
+                            (false, n_cause)
+                        }
+                    }
+                    ProbeKey::Aborted(c) => (false, Some(c)),
+                }
             }
         } else {
-            false
+            (false, n_cause)
         };
         self.existing_state.in_progress.remove(&e);
-        if self.existing_state.cycles == cycles && self.aborts == aborts {
-            self.existing_state.memo.insert(e, ans);
+        if let Some(c) = cause
+            && (self.ns_refs.building || self.depth == 0)
+        {
+            self.existing_state.probe_causes.entry(e).or_insert(c);
         }
-        ans
+        if self.existing_state.cycles == cycles && self.aborts == aborts {
+            self.existing_state.memo.insert(e, (ans, cause));
+        }
+        (ans, cause)
     }
 
-    /// `mapped(e) := owned(e) && !existing(e)` (WP-144 amendment 5).
-    pub(crate) fn mapped(&mut self, d: DeclId) -> bool {
+    /// `mapped(e) := owned(e) && !existing(e)` (WP-144 amendment 5),
+    /// returning any probe-abort cause.
+    pub(crate) fn mapped_res(&mut self, d: DeclId) -> (bool, Option<Cause>) {
         let e = self.entity(d);
         if !self.owned(e) {
-            return false;
+            return (false, None);
         }
-        !self.existing(e)
+        let (ex, cause) = self.existing_res(e);
+        (!ex, cause)
     }
 
     /// The view of entity `d` (`true`: mapped/owned; `false`:
     /// unmapped/dependency): for a namespace, its own view (`ns_own_view`,
     /// which is `owned && !stays`); for any other entity, `mapped`.
     pub(crate) fn entity_view(&mut self, d: DeclId) -> bool {
+        self.entity_view_res(d).0
+    }
+
+    /// [`Walk::entity_view`], returning any probe-abort cause.
+    pub(crate) fn entity_view_res(&mut self, d: DeclId) -> (bool, Option<Cause>) {
         let e = self.entity(d);
         if self.ast.decls.get(e).kind() == DeclKind::Namespace {
-            if self.probe > 0 { false } else { self.ns_own_view(e) }
+            debug_assert_eq!(self.probe, 0, "namespace queried without explicit view in probe");
+            self.ns_own_view_res(e)
         } else {
-            self.mapped(e)
+            self.mapped_res(e)
         }
     }
 

@@ -160,7 +160,7 @@ pub(crate) enum KeyRes {
 }
 
 /// The cause of an entity that refers to itself through its own key.
-const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
+pub(crate) const KEY_CYCLE: Cause = Cause::Unaccounted("key/cycle");
 /// A rule that matches a member of an instantiation, not its pattern's
 /// (`spec/digest.md` §3.4).
 const RULE_ON_INSTANTIATED_MEMBER: Cause = Cause::Unaccounted("key/rule-on-instantiated-member");
@@ -274,15 +274,20 @@ impl Walk<'_> {
         // WP-144: resolve `entity_view(e)` (which may run `probe_u(e)` or
         // build `ns_table`) before marking `e` in `keys_in_progress`, so
         // `probe_u(e)` does not mistake the outer `key_in(e, None)` for a
-        // cycle on `e`.
-        if view.is_none() && !self.rules.is_empty() && self.has_existing() {
-            let _ = self.entity_view(e);
-        }
+        // cycle on `e`. Capture `aborts` first so a probe abort prevents
+        // path-dependent memoisation and attaches its cause to `e`'s key
+        // (WP-144 W1: fail closed with indeterminate, never `Verified`).
+        let aborts = self.aborts;
+        let view_cause = if view.is_none() && !self.rules.is_empty() && self.has_existing() {
+            let (_, c) = self.entity_view_res(e);
+            c.or_else(|| self.existing_state.probe_causes.get(&e).copied())
+        } else {
+            None
+        };
         if !self.enter() {
             crate::rule_use::forget(self, e, view);
             return KeyRes::None(Some(TOO_DEEP));
         }
-        let aborts = self.aborts;
         let rooted = self.local.self_rooted;
         self.keys_in_progress.insert(e);
         // A key does not depend on the unit that asks for it: the unit's
@@ -300,6 +305,7 @@ impl Walk<'_> {
         let mut keyed = None;
         let res = match computed {
             Ok((key, cause)) => {
+                let cause = merge(cause, view_cause);
                 let kind = key.kind;
                 // The lists of ownership (WP-146) read the key before the
                 // table and the ownership it was formed under.

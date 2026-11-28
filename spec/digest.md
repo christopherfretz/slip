@@ -671,8 +671,10 @@ existing) view, and its own unit has the key of its own view.
 
 **A namespace's unit in each view** (WP-140, WP-144). A namespace is
 owned iff none of its openings lies in a read-only file (`verify.md`
-§2.1); it **stays** iff it is listed in `Declared.existing`, holds an
-existing member, or holds a nested namespace that stays. Its **own view**
+§2.1); any named namespace (owned or not) is **listed** iff its probe key
+is in `Declared.existing` or its enclosing namespace is listed; it
+**stays** iff it is listed, holds an existing member, or holds a nested
+namespace that stays. Its **own view**
 is the mapped view iff it is owned and does not stay (`owned && !stays`);
 otherwise its own unit is keyed in the unmapped (dependency) view. It has
 a unit in the **other** view too when that view exists. **A view of a
@@ -796,10 +798,16 @@ in the member's view (`key_in(ns, Some(b))`) without reading `ns_own_view`;
 key formed in probe writing (mapped or unmapped by its own `mapped(e)`);
 (d) probe memos (types, keys, views, content digests, constants) are kept
 separate from the walk's main memos, and probe work writes no `rule_use`
-or `bytes`. The namespace table is built in two passes that never
-re-enter it: pass 1 records namespaces (`owned`, `listed`, read-only
-openings), and pass 2 classifies members and using-directives using
-probes. Nothing depends on the order units are walked in
+or `bytes`; (e) when either existing list is non-empty and a probe aborts
+(depth limit, cycle, or any cause), the candidate entity's own key (and
+any enclosing namespace whose `ns_table` classification depended on the
+aborted probe) receives that cause so the unit is indeterminate (never
+`Verified`, even when the main walk's memo allows the entity's real key
+to form cleanly; WP-144 W1). The namespace table is built in two passes
+that never re-enter it: pass 1 records namespaces (`owned`, `listed` for
+any named namespace owned or not, read-only openings), and pass 2
+classifies members and using-directives using probes. Nothing depends on
+the order units are walked in
 (`tests/ns_holds_order.rs` `wp144_mutual_using_declarations_order_independent`).
 
 The guard: R1 asks the route only when the named namespace has two view

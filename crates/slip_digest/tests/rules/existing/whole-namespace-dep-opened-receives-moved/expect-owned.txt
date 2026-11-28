@@ -1,0 +1,6 @@
+# Every file owned.
+added acme::newlib::m()
+removed legacy
+removed legacy::newlib
+removed legacy::newlib::m()
+use 1 via 0 direct 0

@@ -1,0 +1,2 @@
+# M1: whole-namespace entry lists a dep-opened namespace's owned part.
+use 1 via 1 direct 0

@@ -1,0 +1,6 @@
+# S1 (R2): acme has two views (Dep + moved g), so dirs bit (in_owned_file == false)
+# alone decides that acme::forward<T>(t) routes to dependency view -> changed f.
+added acme::<using_directive std>
+changed template <class> type-parameter-0-0 f(type-parameter-0-0)
+removed legacy::<using_directive std>
+use 1 via 1 direct 0

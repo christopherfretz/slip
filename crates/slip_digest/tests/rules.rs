@@ -1178,6 +1178,37 @@ fn wp144_shared_detail_view_name_and_existing_use() {
         assert!(names.contains(want), "missing `{want}` in {names:?}");
     }
     assert_eq!(o.existing_use, slip_model::ExistingUse { existing: vec![0], local: Vec::new() });
+    // Existing program-wide entities appear as WP-146 `fixed` `M` entries.
+    assert!(
+        o.fixed.iter().any(|f| f.name == "acme::detail::x()" && f.as_ == slip_digest::FixedAs::M),
+        "expected fixed M for acme::detail::x(), got: {:?}",
+        o.fixed
+    );
+}
+
+/// WP-144 M1: a dep-opened namespace listed whole in `existing` (even with no
+/// owned members of its own) sets `stays` (propagating to `acme`, naming its
+/// view unit `legacy (the moved part of acme)`) and records `existing_use`.
+#[test]
+fn wp144_dep_opened_listed_namespace_stays_and_existing_use() {
+    let dir = common::manifest().join("tests/rules/existing/whole-namespace-dep-opened-dep-only");
+    let pre = common::with_side(&dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])
+    })
+    .unwrap()
+    .unwrap();
+    let ro = readonly_of(&dir).unwrap().expect("readonly.txt");
+    let o = post_side(&dir, &pre, &[], &Own::Listed(ro), false).unwrap().digested.output;
+    let names: BTreeSet<&str> = o.names.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(
+        names.contains("legacy (the moved part of acme)"),
+        "expected `(the moved part of acme)` in {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("legacy::newlib")),
+        "no mapped view unit for listed acme::newlib: {names:?}"
+    );
+    assert_eq!(o.existing_use, slip_model::ExistingUse { existing: vec![0], local: Vec::new() });
 }
 
 const ENTRIES_CASES: &[&str] = &["places", "f1-rename-x"];

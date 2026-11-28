@@ -1,0 +1,2 @@
+# S7: stays propagates from listed acme::sub to acme so using namespace acme stays unmapped.
+use 1 via 1 direct 0

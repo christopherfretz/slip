@@ -1,0 +1,7 @@
+# S7: unnamed namespace is listed only through an enclosing namespace, never directly.
+added acme::(anonymous namespace)
+added acme::(anonymous namespace)::x()
+removed acme
+removed acme::(anonymous namespace)
+removed acme::(anonymous namespace)::x()
+use 1 via 1 direct 0

@@ -1,0 +1,5 @@
+# S3 (R6): empty listed legacy::sub holds in dep view, entering E(legacy::sub)
+# and turning `using namespace acme::sub;` into Ref::part.
+added <using_directive acme::sub (the part the rule moves)>
+removed <using_directive legacy::sub>
+use 1 via 1 direct 0

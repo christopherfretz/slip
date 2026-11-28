@@ -1,0 +1,6 @@
+# S7: existing acme::y in rebuilt gen.h counts left 1 for rule 2 via dep_chain.
+declares gen.h rule 1 mapped 1 left 0
+declares gen.h rule 2 mapped 0 left 1 left_kept 1
+relied gen.h
+use 1 via 1 direct 0
+use 2 via 1 direct 1

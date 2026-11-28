@@ -1,0 +1,2 @@
+# S4 (R9): C-linkage decl in listed namespace counts unmapped (no spurious view unit).
+use 1 via 1 direct 0

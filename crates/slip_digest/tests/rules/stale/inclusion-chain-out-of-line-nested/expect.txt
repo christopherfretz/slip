@@ -1,0 +1,3 @@
+# S7: outer/inner owned (own_view=true), x only_by_inclusion via out-of-line def in def.h ->
+# key_in(ns, Some(false)) -> in_dep_view + dep_parents climb -> direct 1.
+use 1 via 1 direct 1
