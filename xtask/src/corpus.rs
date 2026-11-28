@@ -45,7 +45,8 @@ usage: cargo xtask corpus list
        cargo xtask corpus status <name>
        cargo xtask corpus path <name> [--db]
        cargo xtask corpus rename <name> --from <name> --to <identifier> [--kind <k>]
-               [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]";
+               [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+               [-j <n>] [--slip <path>]";
 
 /// What a missing tool's message tells the user to run.
 pub const PROVISION: &str = "scripts/provision.sh --full";
