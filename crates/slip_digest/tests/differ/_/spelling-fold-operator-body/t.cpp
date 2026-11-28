@@ -1,5 +1,6 @@
 #include "side.h"
-// §4.4 "Spellings", rule 9: as `spelling-fold-operator-trailing`, in a body.
+// §4.4 "Spellings", §9.5 `oper_lookups` (WP-138): binary right fold in a
+// body reads its definition-context operator set from `oper_lookups`.
 namespace N { struct X {}; }
 int operator+(N::X, int);
 #ifdef B

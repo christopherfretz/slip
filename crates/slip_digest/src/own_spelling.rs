@@ -105,6 +105,9 @@ thread_local! {
     pub(crate) static NO_LIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// How many lists were written.
     pub(crate) static LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Display names of content-keyed units that wrote a list (decision 2's test).
+    pub(crate) static CONTENT_LIST_NAMES: std::cell::RefCell<std::collections::BTreeSet<String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
 }
 
 /// Where the mark of a canonical operand is read: the type around it, or
@@ -265,6 +268,15 @@ pub(crate) fn write_unit_list(w: &mut Walk<'_>, s: &mut Stream) {
             return;
         }
         LISTS.with(|c| c.set(c.get() + 1));
+        if let Some(e) = w.unit.local.content
+            && let crate::keys::Role::Content(kind) =
+                crate::keys::info(w.ast.decls.get(e).kind()).role
+        {
+            let name = crate::names::unit_name(w, e, kind);
+            CONTENT_LIST_NAMES.with(|names| {
+                names.borrow_mut().insert(name);
+            });
+        }
     }
     s.count(facts.len());
     for f in facts {
@@ -1304,8 +1316,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
     let k = n.kind();
     let id = ExprId::try_new;
     let opt = |kids: &mut Vec<I>, e: Option<ExprId>| kids.extend(e.map(I::E));
-    // The set a dependent operator's lookup found at the definition
-    // (`oper_lookups`, digest-kinds §9.5): left out of every profile.
+    // The set a dependent operator or fold expression's lookup found at
+    // the definition (`oper_lookups`, digest-kinds §9.5): left out of
+    // every profile.
     if let Some(cands) = ast.templates.oper_lookups.of(e) {
         let ds: Vec<DeclId> = cands.iter().map(|c| c.decl).collect();
         record(e);

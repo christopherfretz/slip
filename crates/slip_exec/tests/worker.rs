@@ -5,6 +5,8 @@
 //! on every path ([`Worker`]'s `Drop`), and every wait is bounded.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
@@ -44,7 +46,7 @@ impl Drop for Scratch {
 fn scratch(tag: &str) -> Scratch {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let d = std::env::temp_dir().join(format!("slip-exec-worker-{}-{tag}-{n}", std::process::id()));
+    let d = common::work_root().join(format!("slip-exec-worker-{}-{tag}-{n}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(&d).unwrap();
     Scratch(d)

@@ -860,6 +860,7 @@ fn s2_a_handler_panic_poisons_the_session() {
     let (panicked, after, fine) = with(&cmd, |s| {
         let entry = s.entry("transform").unwrap();
         let fine = s.entry("fine").unwrap();
+        // Deliberate catch: tests that a handler panic poisons the session.
         let panicked = catch_unwind(AssertUnwindSafe(|| {
             s.run(entry, &mut Panicking, BUDGET, &Cancel::new());
         }))

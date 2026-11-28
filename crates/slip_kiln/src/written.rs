@@ -136,6 +136,10 @@ pub struct DependentName {
 /// §18.7.2).
 pub use crate::kiln::ast::written_refs::RefLookup as Lookup;
 
+/// The id of an interned argument-dependent lookup set (Kiln `spec/ast.md`
+/// §18.7.4), read through `Ast::written_refs.adl_set_of`.
+pub use crate::kiln::ast::written_refs::AdlSetId;
+
 /// What one instantiation made a dependent name denote: a row of Kiln's
 /// per-specialisation table (stage 4, Kiln WP-1933, `spec/ast.md` §18.9;
 /// in the pin since WP-066), as `docs/wp/WP-139.md` item 9 reads it.
@@ -157,6 +161,10 @@ pub struct Instance {
     pub found: Option<DeclId>,
     /// How the instantiation's lookup found it.
     pub how: Lookup,
+    /// The associated namespaces, classes and enumerations of an
+    /// argument-dependent lookup in this specialisation (Kiln §18.7.4,
+    /// §18.9.1; `docs/wp/WP-152.md`).
+    pub adl: Option<AdlSetId>,
 }
 
 /// For the span of every dependent name ([`dependent_names`]), the rows of
@@ -207,10 +215,17 @@ fn instances_of(
             entity: r.entity,
             found: r.found,
             how: r.how,
+            adl: r.adl,
         });
     }
     let key = |i: &Instance| {
-        (i.spec.index(), i.entity.map(DeclId::index), i.found.map(DeclId::index), i.how as u8)
+        (
+            i.spec.index(),
+            i.entity.map(DeclId::index),
+            i.found.map(DeclId::index),
+            i.how as u8,
+            i.adl,
+        )
     };
     for v in out.values_mut() {
         v.sort_by_key(key);

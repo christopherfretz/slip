@@ -135,7 +135,7 @@ pub(crate) fn run(
     dependent::claim_all(&mut ctx);
 
     let Ctx { subjects, claims, changed, .. } = ctx;
-    let (files, claims, instances) = claims.finish(files, main)?;
+    let (files, claims, instances, reports) = claims.finish(files, main)?;
     let (subjects, links) = subjects.finish(unit.ast());
     let mut edits = Edits {
         scheme: SCHEME,
@@ -146,7 +146,7 @@ pub(crate) fn run(
         links,
         claims,
         groups: Vec::new(),
-        reports: Vec::new(),
+        reports,
         changed,
         renamed: Vec::new(),
         instances,

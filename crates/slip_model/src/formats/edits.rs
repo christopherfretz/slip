@@ -65,11 +65,13 @@ impl Enumeration for Reason {
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
         (Reason::Rebuilt, 13, "rebuilt"),
+        (Reason::CapturedAtInstance, 14, "captured_at_instance"),
     ];
     const UNLISTED: &'static str = "unlisted Reason value";
     const EXPECTED: &'static str = "expected one of \"none\", \"macro_body\", \"pasted\", \
          \"crossing\", \"not_a_file\", \"not_owned\", \"file_recoded\", \"not_plain\", \
-         \"mixed_set\", \"mixed_instances\", \"directive\", \"instantiated\", \"rebuilt\"";
+         \"mixed_set\", \"mixed_instances\", \"directive\", \"instantiated\", \"rebuilt\", \
+         \"captured_at_instance\"";
 }
 
 impl Enumeration for Severity {

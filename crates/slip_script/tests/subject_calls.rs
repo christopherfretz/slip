@@ -2251,6 +2251,31 @@ fn remove_scratch(dir: &std::path::Path) {
     }
 }
 
+/// Builds the clang command for [`clang_dump`]: isolates `TMPDIR` inside
+/// `tmp` (removed with the side's scratch directory) and passes
+/// `-fno-crash-diagnostics` so a clang ICE never leaks reproducer files into
+/// the system temporary directory (`docs/wp/WP-167.md`).
+fn clang_dump_command(
+    side: &Side,
+    dir: &std::path::Path,
+    tmp: &std::path::Path,
+) -> std::process::Command {
+    let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
+    let mut cmd = std::process::Command::new(CLANG);
+    cmd.current_dir(dir)
+        .env("TMPDIR", tmp)
+        .arg("-fno-crash-diagnostics")
+        .arg(format!("-std={}", side.std))
+        .arg(format!("--target={target}"))
+        .args(&side.args)
+        .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
+        .args(["-Xclang", "-ast-dump=json", "main.cpp"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 /// Clang's dump of a side, read up to [`dump_limit`] bytes.
 fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
     use std::io::Read as _;
@@ -2259,19 +2284,9 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, t).unwrap();
     }
-    let target = side.target.as_deref().unwrap_or("x86_64-unknown-linux-gnu");
-    let mut child = std::process::Command::new(CLANG)
-        .current_dir(dir)
-        .arg(format!("-std={}", side.std))
-        .arg(format!("--target={target}"))
-        .args(&side.args)
-        .args(["-nostdinc", "-nostdinc++", "-I.", "-w", "-fsyntax-only"])
-        .args(["-Xclang", "-ast-dump=json", "main.cpp"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let tmp = dir.join(".clang-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut child = clang_dump_command(side, dir, &tmp).spawn().unwrap();
     let limit = dump_limit();
     let mut json = Vec::new();
     child.stdout.take().unwrap().take(limit + 1).read_to_end(&mut json).unwrap();
@@ -2282,6 +2297,16 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
+    if !too_large {
+        let leaked: Vec<_> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "clang left files in its isolated TMPDIR (missing -fno-crash-diagnostics?): {leaked:?}"
+        );
+    }
     remove_scratch(dir);
     if too_large {
         Dumped::TooLarge
@@ -2289,6 +2314,37 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         Dumped::Json(json)
     } else {
         Dumped::Error
+    }
+}
+
+/// Runs `f` on `side` with Kiln's tables, recording front-end thread failures
+/// in `d.not_parsed`, source diagnostics in `d.kiln_errors`, and propagating
+/// callback or front-end panics.
+fn run_differential_parse(
+    side: &Side,
+    label: &str,
+    d: &mut Diff,
+    f: impl FnOnce(&Parsed<'_>, &mut Diff),
+) {
+    let files: Vec<(&str, &str)> =
+        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
+    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
+    let extra = Extra { args: &args, target: side.target.as_deref() };
+    if let Err(e) = parse_with_tables(&snippet, &extra, |p| f(p, d)) {
+        // `parse_with_tables`' own errors (`slip_kiln::snippet`): a callback
+        // or front-end panic must fail the test rather than being counted as
+        // a source diagnostic (`kiln_errors`).
+        if e.contains("panicked:") {
+            panic!("{label}: {e}");
+        } else if e.starts_with("cannot start the front end's thread") {
+            d.not_parsed.push(format!("{label}: {e}"));
+        } else {
+            d.kiln_errors = 1;
+            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
+                eprintln!("TRACE kiln-error {label}: {e}");
+            }
+        }
     }
 }
 
@@ -2326,12 +2382,7 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     let mut cx = ClangContext { texts: &texts, kinds: Kinds::new(), instances: HashSet::new() };
     clang_decls(&tree, &mut cx.kinds, &mut cx.instances);
     clang_calls(&tree, "", false, &cx, &mut clang, &mut sites);
-    let files: Vec<(&str, &str)> =
-        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
-    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
-    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
-    let extra = Extra { args: &args, target: side.target.as_deref() };
-    let parsed = parse_with_tables(&snippet, &extra, |p| {
+    run_differential_parse(side, label, &mut d, |p, d| {
         if p.errors > 0 {
             d.kiln_errors = 1;
             if std::env::var_os("SLIP_WP086_TRACE").is_some() {
@@ -2445,21 +2496,22 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
             }
         }
     });
-    if let Err(e) = parsed {
-        // `parse_with_tables`' own errors (`slip_kiln::snippet`): a thread
-        // that cannot start or a panic is not a diagnosis of the source.
-        if e.starts_with("cannot start the front end's thread")
-            || e.starts_with("the front end panicked")
-        {
-            d.not_parsed.push(format!("{label}: {e}"));
-        } else {
-            d.kiln_errors = 1;
-            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
-                eprintln!("TRACE kiln-error {label}: {e}");
-            }
-        }
-    }
     d
+}
+
+#[test]
+#[should_panic(expected = "the callback panicked:")]
+fn wp168_differential_parse_propagates_callback_panic() {
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), "int x = 1;\n".to_owned())],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let mut d = Diff::default();
+    run_differential_parse(&side, "wp168-sentinel", &mut d, |_, _| {
+        assert_eq!(1, 2, "wp168 subject_calls sentinel");
+    });
 }
 
 /// Kiln's own C++ tests as sides: every `*.cpp` directly under `dir`, as
@@ -2752,6 +2804,86 @@ fn item7_differential_against_clang() {
         d.dump_skipped,
         d.units
     );
+}
+
+/// WP-167 (`spec/harness.md` §11.5): `clang_dump_command` always isolates
+/// `TMPDIR` to the caller's scratch subdirectory and passes
+/// `-fno-crash-diagnostics`.
+#[test]
+fn wp167_clang_dump_command_isolates_tmp_and_disables_crash_diagnostics() {
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), "int f() { return 0; }\n".to_owned())],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let dir = std::path::Path::new("scratch-dir");
+    let tmp = dir.join(".clang-tmp");
+    let cmd = clang_dump_command(&side, dir, &tmp);
+    let args: Vec<_> = cmd.get_args().collect();
+    assert!(
+        args.iter().any(|a| *a == "-fno-crash-diagnostics"),
+        "missing -fno-crash-diagnostics in {args:?}"
+    );
+    let tmpdir = cmd.get_envs().find(|(k, _)| *k == "TMPDIR").and_then(|(_, v)| v);
+    assert_eq!(tmpdir, Some(tmp.as_os_str()), "TMPDIR not isolated to {tmp:?}");
+}
+
+/// Child entry point for [`wp167_clang_dump_crash_leaves_no_tmp_files`]:
+/// runs `clang_dump` on the two real clang-19 ICE shapes found in
+/// `crates/slip_digest/tests/`.
+#[test]
+#[ignore = "spawned by wp167_clang_dump_crash_leaves_no_tmp_files with an isolated TMPDIR"]
+fn wp167_clang_dump_crash_child() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let digest = root.join("../slip_digest/tests");
+    let cases = [
+        digest.join("differ/_/name-value-source-location-key-moved"),
+        digest.join("differ/_/spelling-prefix-pack-indexing"),
+    ];
+    let scratch = common::work_root().join(format!("wp167-child-{}", std::process::id()));
+    for (idx, dir) in cases.iter().enumerate() {
+        let sides = pair_sides(dir, &[]);
+        assert!(!sides.is_empty(), "{}: no sides", dir.display());
+        let dumped = clang_dump(&sides[0], &scratch.join(format!("case-{idx}")));
+        assert!(
+            matches!(dumped, Dumped::Error),
+            "{}: expected Dumped::Error on clang-19 ICE",
+            dir.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// WP-167 (`spec/harness.md` §11.5): running `clang_dump` against real
+/// `clang++-19` on the crashing snippets from `crates/slip_digest/tests/`
+/// must leave zero files in the inherited `TMPDIR`.
+#[test]
+fn wp167_clang_dump_crash_leaves_no_tmp_files() {
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!("SKIP subject_calls.rs wp167_clang_dump_crash_leaves_no_tmp_files: no {CLANG}");
+        return;
+    }
+    let isolated_tmp = common::scratch("wp167-isolated-tmp");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "wp167_clang_dump_crash_child", "--ignored", "--nocapture"])
+        .env("TMPDIR", &isolated_tmp)
+        .output()
+        .unwrap();
+    let leaked: Vec<_> = std::fs::read_dir(&isolated_tmp)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    let _ = std::fs::remove_dir_all(&isolated_tmp);
+    assert!(
+        out.status.success(),
+        "child failed ({}):\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(leaked.is_empty(), "clang_dump leaked files into inherited TMPDIR: {leaked:?}");
 }
 
 /// The peak resident memory of this process in KiB (`VmHWM`), where the

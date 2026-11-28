@@ -1,0 +1,4 @@
+exact derived
+added operator+(const A::X &, const A::X &)
+changed template <class...> auto f(type-parameter-0-0...)
+derived-changed f<A::X, A::X>(A::X, A::X)::<definition>
