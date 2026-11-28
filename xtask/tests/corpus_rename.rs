@@ -113,7 +113,10 @@ exit 99
 "#;
 
 /// The stand-in clang: rejects the units named in `reject` always and
-/// those in `reject.after` only with `-ivfsoverlay`.
+/// those in `reject.after` only with `-ivfsoverlay`; crashes on units
+/// listed in `crash` (exit 139 on both), `crash.before` / `crash.after`
+/// (exit 139 on pre/post), `crash.text` / `crash.signal_text` (exit 1 with
+/// clang crash text on stderr), or `crash.signal` (killed by SIGSEGV).
 const CLANG: &str = r#"#!/bin/sh
 [ "$1" = --probe ] && exit 0
 D=@DIR@
@@ -136,8 +139,32 @@ case "$TMPDIR" in
   */rename/accept-tmp) ;;
   *) exit 10 ;;
 esac
+: > "$TMPDIR/touched-$file"
 [ -n "$vfs" ] && [ ! -f "$vfs" ] && exit 7
 echo "$file ${vfs:+post}" >> "$D/clang.log"
+if grep -qx "$file" "$D/crash" 2>/dev/null; then
+  echo "clang: error: clang frontend command failed with exit code 139" >&2
+  exit 139
+fi
+if [ -z "$vfs" ] && grep -qx "$file" "$D/crash.before" 2>/dev/null; then
+  echo "clang: error: clang frontend command failed with exit code 139" >&2
+  exit 139
+fi
+if [ -n "$vfs" ] && grep -qx "$file" "$D/crash.after" 2>/dev/null; then
+  echo "clang: error: clang frontend command failed with exit code 139" >&2
+  exit 139
+fi
+if grep -qx "$file" "$D/crash.text" 2>/dev/null; then
+  echo "PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/" >&2
+  exit 1
+fi
+if grep -qx "$file" "$D/crash.signal_text" 2>/dev/null; then
+  echo "clang: error: clang frontend command failed due to signal" >&2
+  exit 1
+fi
+if grep -qx "$file" "$D/crash.signal" 2>/dev/null; then
+  kill -SEGV $$
+fi
 if grep -qx "$file" "$D/reject" 2>/dev/null; then echo "$file:1:1: error: always" >&2; exit 1; fi
 if [ -n "$vfs" ] && grep -qx "$file" "$D/reject.after" 2>/dev/null; then
   echo "$file:2:5: error: use of undeclared identifier 'h'" >&2; exit 1
@@ -1297,6 +1324,111 @@ fn s6_5_verified_without_a_patch() {
         checks(&out)[1],
         "check state: FAIL (state verified, but slip wrote no patch: its lines say why)"
     );
+}
+
+// WP-171 item 1: a compiler crash (status != 0/1, signal, or crash text on
+// stderr) is never a rejection, even when both images fail the same way.
+#[test]
+fn s6_5_accept_crash_is_not_rejection() {
+    // Exit 139 on both images: FAILS, naming the command.
+    let w = World::new("rename-accept-crash-both");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/crash"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(out.contains(&format!("  {bad}: pre-image exit 139, post-image exit 139")), "{out}");
+
+    // Exit 139 on pre-image and exit 1 on post-image: FAILS, naming the command.
+    let w = World::new("rename-accept-crash-pre-reject-post");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/crash.before"), "bad.cpp\n").unwrap();
+    std::fs::write(w.f.path("fake/reject.after"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(out.contains(&format!("  {bad}: pre-image exit 139, post-image exit 1")), "{out}");
+
+    // Exit 1 on pre-image and exit 139 on post-image: FAILS, naming the command.
+    let w = World::new("rename-accept-reject-pre-crash-post");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/reject"), "bad.cpp\n").unwrap();
+    std::fs::write(w.f.path("fake/crash.after"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(out.contains(&format!("  {bad}: pre-image exit 1, post-image exit 139")), "{out}");
+
+    // Exit 1 on both images with crash text ("PLEASE submit a bug report"): FAILS.
+    let w = World::new("rename-accept-crash-text");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/crash.text"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(
+        out.contains(&format!(
+            "  {bad}: pre-image crashed (exit 1), post-image crashed (exit 1): PLEASE submit a bug report"
+        )),
+        "{out}"
+    );
+
+    // Exit 1 on both images with "frontend command failed due to signal": FAILS.
+    let w = World::new("rename-accept-crash-signal-text");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/crash.signal_text"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(
+        out.contains(&format!(
+            "  {bad}: pre-image crashed (exit 1), post-image crashed (exit 1): clang: error: clang frontend command failed due to signal"
+        )),
+        "{out}"
+    );
+
+    // Killed by signal on both images: FAILS.
+    let w = World::new("rename-accept-crash-signal");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/crash.signal"), "bad.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL"), "{out}");
+    let bad = w.src.join("bad.cpp").display().to_string();
+    assert!(out.contains(&format!("  {bad}: pre-image killed, post-image killed")), "{out}");
+}
+
+// WP-171 item 5: `rename/accept-tmp` is removed after `--accept`, both when
+// the check passes and when it fails (post-image rejection, crash, or spawn error).
+#[test]
+fn s6_5_accept_removes_accept_tmp() {
+    let w = World::new("rename-accept-tmp-pass");
+    w.records(&Run1::of(State::Verified));
+    let (r, out) = w.run(&["--accept", "-j", "2"]);
+    assert!(matches!(r, Ok(true)), "{r:?}\n{out}");
+    assert!(!w.dir().join("rename/accept-tmp").exists(), "accept-tmp leaked on pass");
+
+    let w = World::new("rename-accept-tmp-fail");
+    w.records(&Run1::of(State::Verified));
+    std::fs::write(w.f.path("fake/reject.after"), "b.cpp\n").unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(!w.dir().join("rename/accept-tmp").exists(), "accept-tmp leaked on reject fail");
+
+    let w = World::new("rename-accept-tmp-spawn-err");
+    w.records(&Run1::of(State::Verified));
+    let broken = w.f.path("bin/fakecxx");
+    std::fs::write(&broken, "#!/nonexistent/wp171-interpreter\n").unwrap();
+    std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (r, out) = w.run(&["--accept", "-j", "1"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check accept: FAIL (cannot run "), "{out}");
+    assert!(!w.dir().join("rename/accept-tmp").exists(), "accept-tmp leaked on spawn error");
 }
 
 /// Whether any logged stand-in command line starts with `cmd`.

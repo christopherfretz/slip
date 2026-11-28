@@ -1205,10 +1205,23 @@ pub fn vfs_overlay(files: &[(Vec<u8>, PathBuf)]) -> Result<String, String> {
     json::write_pretty(&doc).map_err(|e| format!("the VFS overlay: {e}"))
 }
 
+/// Substrings of clang's standard error that mark a compiler crash even when
+/// the driver exits with status 1 (`spec/harness.md` §6.5).
+pub const CRASH_MARKERS: [&str; 2] =
+    ["PLEASE submit a bug report", "frontend command failed due to signal"];
+
+/// Whether `stderr` contains clang's crash diagnostic text.
+pub fn has_crash_text(stderr: &str) -> bool {
+    CRASH_MARKERS.iter().any(|m| stderr.contains(m))
+}
+
 /// How one clang run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
     Code(i32),
+    /// Exited (with status `Some(c)` or a signal `None`) with crash text on
+    /// standard error.
+    Crashed(Option<i32>),
     Killed,
     TimedOut,
 }
@@ -1217,9 +1230,18 @@ impl Exit {
     fn text(&self) -> String {
         match self {
             Exit::Code(c) => format!("exit {c}"),
+            Exit::Crashed(Some(c)) => format!("crashed (exit {c})"),
+            Exit::Crashed(None) => "crashed (killed)".to_owned(),
             Exit::Killed => "killed".to_owned(),
             Exit::TimedOut => format!("no end within {} s", CLANG_TIMEOUT.as_secs()),
         }
+    }
+
+    /// Only status `0` (accepted) and status `1` without crash text (rejected)
+    /// may match across images; any other exit status, a signal, a timeout, or
+    /// crash text on standard error is a failure of `--accept`.
+    fn is_normal(&self) -> bool {
+        matches!(self, Exit::Code(0 | 1))
     }
 }
 
@@ -1247,16 +1269,78 @@ fn clang_run(u: &Unit, vfs: Option<&Path>, tmp: &Path) -> Result<(Exit, String),
     match run_bounded(cmd, CLANG_TIMEOUT) {
         Ok(f) => {
             let err = String::from_utf8_lossy(&f.stderr);
+            let crashed = has_crash_text(&err);
             let first = err
                 .lines()
-                .find(|l| l.contains("error"))
+                .find(|l| CRASH_MARKERS.iter().any(|m| l.contains(m)))
+                .or_else(|| err.lines().find(|l| l.contains("error")))
                 .or_else(|| err.lines().next())
                 .unwrap_or("")
                 .to_owned();
-            Ok((f.status.code().map_or(Exit::Killed, Exit::Code), first))
+            let exit = if crashed {
+                Exit::Crashed(f.status.code())
+            } else {
+                f.status.code().map_or(Exit::Killed, Exit::Code)
+            };
+            Ok((exit, first))
         }
         Err(Bounded::TimedOut { .. }) => Ok((Exit::TimedOut, String::new())),
         Err(Bounded::Spawn(e)) => Err(format!("cannot run {}: {e}", u.clang.display())),
+    }
+}
+
+type Pair = ((Exit, String), (Exit, String));
+
+/// Evaluates the pre/post clang exit pairs of `--accept`, printing up to
+/// [`LISTED`] failing commands. Only matching clean accepts (`exit 0`) or
+/// matching clean rejections (`exit 1` without crash text) pass.
+fn judge_accept(units: &[Unit], results: &[Pair], out: &mut dyn Write) -> Outcome {
+    let mut both = 0u64;
+    let mut crashed = 0u64;
+    let mut differ = Vec::new();
+    for (u, ((pre, pre_why), (post, post_why))) in units.iter().zip(results) {
+        if pre == post && pre.is_normal() {
+            both += u64::from(*pre == Exit::Code(1));
+        } else {
+            if !pre.is_normal() || !post.is_normal() {
+                crashed += 1;
+            }
+            let why = if !pre.is_normal() {
+                if pre_why.is_empty() { post_why } else { pre_why }
+            } else if post_why.is_empty() {
+                pre_why
+            } else {
+                post_why
+            };
+            differ.push(format!(
+                "  {}: pre-image {}, post-image {}{}",
+                u.main,
+                pre.text(),
+                post.text(),
+                if why.is_empty() { String::new() } else { format!(": {why}") }
+            ));
+        }
+    }
+    for l in differ.iter().take(LISTED) {
+        say(out, l);
+    }
+    if differ.is_empty() {
+        Outcome::Ok(format!(
+            "{} commands; {both} rejected on both images, none otherwise",
+            units.len()
+        ))
+    } else if crashed > 0 {
+        Outcome::Fail(format!(
+            "{} of {} commands failed ({crashed} crashed or abnormal exit)",
+            differ.len(),
+            units.len()
+        ))
+    } else {
+        Outcome::Fail(format!(
+            "{} of {} commands end otherwise on the post-image",
+            differ.len(),
+            units.len()
+        ))
     }
 }
 
@@ -1801,36 +1885,7 @@ impl Rename<'_> {
         let _ = std::fs::remove_dir_all(&accept_tmp);
         let results = results?;
         say(out, &format!("step accept: done in {}", secs(t)));
-        let mut both = 0u64;
-        let mut differ = Vec::new();
-        for (u, ((pre, _), (post, why))) in units.iter().zip(&results) {
-            if pre == post && matches!(pre, Exit::Code(_)) {
-                both += u64::from(*pre != Exit::Code(0));
-            } else {
-                differ.push(format!(
-                    "  {}: pre-image {}, post-image {}{}",
-                    u.main,
-                    pre.text(),
-                    post.text(),
-                    if why.is_empty() { String::new() } else { format!(": {why}") }
-                ));
-            }
-        }
-        for l in differ.iter().take(LISTED) {
-            say(out, l);
-        }
-        Ok(if differ.is_empty() {
-            Outcome::Ok(format!(
-                "{} commands; {both} rejected on both images, none otherwise",
-                units.len()
-            ))
-        } else {
-            Outcome::Fail(format!(
-                "{} of {} commands end otherwise on the post-image",
-                differ.len(),
-                units.len()
-            ))
-        })
+        Ok(judge_accept(&units, &results, out))
     }
 
     /// Check 5 (`build`): the patch applied to a copy of the source directory,
@@ -2159,5 +2214,123 @@ mod tests {
         for bad in ["", "::", "a::", "a::::b", "a/b", "a::1b", "../x", "a.b"] {
             assert!(target_name(bad).is_err(), "{bad}");
         }
+    }
+
+    fn test_unit(main: &str) -> Unit {
+        Unit {
+            main: main.to_owned(),
+            clang: PathBuf::from("clang++"),
+            command: slip_model::Command {
+                directory: Vec::new(),
+                argv: Vec::new(),
+                env: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn judge_accept_rejects_abnormal_exits() {
+        let u = [test_unit("a.cpp")];
+        let run = |pre: (Exit, &str), post: (Exit, &str)| {
+            let pairs = [((pre.0, pre.1.to_owned()), (post.0, post.1.to_owned()))];
+            let mut out = Vec::new();
+            let outcome = judge_accept(&u, &pairs, &mut out);
+            (outcome, String::from_utf8(out).unwrap())
+        };
+
+        // Controls: matching clean accepts (0) and clean rejections (1) pass;
+        // clean regression (0 -> 1) fails without abnormal-exit wording.
+        let (ok0, out0) = run((Exit::Code(0), ""), (Exit::Code(0), ""));
+        assert!(matches!(ok0, Outcome::Ok(ref s) if s.contains("0 rejected on both")), "{ok0:?}");
+        assert!(out0.is_empty(), "{out0}");
+
+        let (ok1, out1) =
+            run((Exit::Code(1), "a.cpp:1:1: error: bad"), (Exit::Code(1), "a.cpp:1:1: error: bad"));
+        assert!(matches!(ok1, Outcome::Ok(ref s) if s.contains("1 rejected on both")), "{ok1:?}");
+        assert!(out1.is_empty(), "{out1}");
+
+        let (reg, out_reg) =
+            run((Exit::Code(0), ""), (Exit::Code(1), "a.cpp:1:1: error: undeclared"));
+        assert!(
+            matches!(reg, Outcome::Fail(ref s) if s.contains("end otherwise on the post-image")),
+            "{reg:?}"
+        );
+        assert!(out_reg.contains("error: undeclared"), "{out_reg}");
+
+        // Abnormal exits fail even when both images match.
+        let cases = [
+            ("timeout/timeout", (Exit::TimedOut, ""), (Exit::TimedOut, ""), "no end within"),
+            ("code2/code2", (Exit::Code(2), ""), (Exit::Code(2), ""), "exit 2"),
+            ("code254/code254", (Exit::Code(254), ""), (Exit::Code(254), ""), "exit 254"),
+            (
+                "crashed0/code0",
+                (Exit::Crashed(Some(0)), "PLEASE submit a bug report"),
+                (Exit::Code(0), ""),
+                "crashed (exit 0)",
+            ),
+            (
+                "crashed0/crashed0",
+                (Exit::Crashed(Some(0)), "PLEASE submit a bug report"),
+                (Exit::Crashed(Some(0)), "PLEASE submit a bug report"),
+                "crashed (exit 0)",
+            ),
+            (
+                "code139/code1",
+                (Exit::Code(139), "Segmentation fault"),
+                (Exit::Code(1), "a.cpp:1:1: error: bad"),
+                "exit 139",
+            ),
+            (
+                "code1/code139",
+                (Exit::Code(1), "a.cpp:1:1: error: bad"),
+                (Exit::Code(139), "Segmentation fault"),
+                "exit 139",
+            ),
+        ];
+        for (name, pre, post, needle) in cases {
+            let (outcome, out) = run(pre, post);
+            assert!(
+                matches!(outcome, Outcome::Fail(ref s) if s.contains("crashed or abnormal exit")),
+                "{name}: expected abnormal Fail, got {outcome:?}"
+            );
+            assert!(out.contains("a.cpp") && out.contains(needle), "{name}: {out}");
+        }
+    }
+
+    #[test]
+    fn judge_accept_prefers_crashed_side_diagnostic() {
+        let u = [test_unit("a.cpp")];
+        let run = |pre: (Exit, &str), post: (Exit, &str)| {
+            let pairs = [((pre.0, pre.1.to_owned()), (post.0, post.1.to_owned()))];
+            let mut out = Vec::new();
+            let outcome = judge_accept(&u, &pairs, &mut out);
+            (outcome, String::from_utf8(out).unwrap())
+        };
+
+        // Pre crashed (139), post clean rejection (1): print pre's crash line.
+        let (outcome, out) = run(
+            (Exit::Code(139), "PLEASE submit a bug report"),
+            (Exit::Code(1), "a.cpp:1:1: error: expected ';'"),
+        );
+        assert!(matches!(outcome, Outcome::Fail(_)), "{outcome:?}");
+        assert!(out.contains("PLEASE submit a bug report"), "{out}");
+        assert!(!out.contains("error: expected ';'"), "{out}");
+
+        // Mirror: pre clean rejection (1), post crashed (139): print post's crash line.
+        let (outcome, out) = run(
+            (Exit::Code(1), "a.cpp:1:1: error: expected ';'"),
+            (Exit::Code(139), "PLEASE submit a bug report"),
+        );
+        assert!(matches!(outcome, Outcome::Fail(_)), "{outcome:?}");
+        assert!(out.contains("PLEASE submit a bug report"), "{out}");
+        assert!(!out.contains("error: expected ';'"), "{out}");
+
+        // Fallback when the crashed side has no stderr line.
+        let (_, out) = run((Exit::Killed, ""), (Exit::Code(1), "a.cpp:1:1: error: fallback"));
+        assert!(out.contains("error: fallback"), "{out}");
+
+        // Both abnormal: first non-empty crash line (pre first).
+        let (_, out) = run((Exit::Code(139), "pre crash line"), (Exit::Code(139), "post crash"));
+        assert!(out.contains("pre crash line"), "{out}");
     }
 }
