@@ -152,13 +152,79 @@ declaration extents are opt-in (`decl_extents`, for the transform), so
 the digest does not read them. With 2.1 to 2.3 and 2.6 delivered this
 is not needed.
 
+### 2.8 Every expression parsed and kept on no node (fix round 3)
+
+The general form of 2.2 to 2.6, and the one fact that ends the list.
+Kiln parses and evaluates expressions that no node reachable from a
+declaration holds: a directive's non-type argument and `noexcept`, a
+friend's declarator, a declarator qualifier's argument, a destructor
+template-id's argument, a `_BitInt` width, the argument of
+`vector_size`, `ext_vector_type` and `address_space`, and whatever
+else is folded to a value.
+
+Asked: one list, in the AST and the image, of `(ExprId, DeclId)`:
+every expression root that was parsed and then folded or dropped, with
+the declaration whose text holds it (the translation unit's for a
+directive). Slip reads each as an operand of its holder; a type name
+alone in such an expression (`sizeof(X)`) is then walked as any other.
+Design part (Kiln's Fable): which holder a directive's expression has,
+and whether the list or a slot per kind (2.2 to 2.6) is the better
+shape; Slip needs either, not both.
+
+### 2.9 Promises about the written-reference table (fix round 3)
+
+From fix round 3 the digest parses with the table (`spec/ast.md` §18)
+and proves its closure with it: every entry that has an entity and is
+not dependent is walked by a stream, or written by its entity. Slip
+leans on these, read from §18 at `60fb5ab9d`; each is asked as a
+stated promise with a test, or a correction if it is not so:
+
+1. A name written in any of the places of 2.1 to 2.6 and 2.8, and in
+   a dynamic exception specification, has an entry: its `entity` is
+   the overload chosen, its `enclosing` the declaration of §18.3 (an
+   explicit instantiation of a function or variable: the context its
+   qualifier enters).
+2. The same when the name comes from a macro's body or a macro's
+   argument.
+3. The join of §18.11.1 (`name_lo(id) == loc()` and the same entity)
+   holds for a `DeclRefExpr` and `MemberExpr` whose name comes from a
+   macro's body or argument, and the operator join of §18.13.7 for an
+   operator and a literal suffix.
+4. `enclosing` never names a declaration of an instantiation for an
+   entry of the main table.
+5. An entry of a type-constraint has role `Concept`, and the entries
+   of a declaration are in source order up to its `Redecl` entry.
+
+### 2.10 A lean recording switch (fix round 3)
+
+The digest reads `range.lo`, `entity`, `enclosing`, `role`, `flags`
+and the qualifier chain. It does not read macro provenance beyond the
+token's own location, the per-specialisation rows (§18.9), nor
+declaration extents. §18.7.6 gives about +10% parse time and +37%
+resident memory for the full table on `SemaExpr.cpp`.
+
+Asked: a switch that records only the main table's entries, and its
+cost on the same file. With 2.8 delivered the digest needs the table
+only as a test oracle and stops recording it.
+
 ## 3. Not asked
 
 - Array bounds and pack indices as written (`spec/digest.md` §2.3's
   limits, B1 and B7 of `spec/landed/digest/WP-153.md`): separate.
-- Kiln's written-reference table (`-fkiln-dump-written-refs`, KR1)
-  records references as written for the transform; the digest does not
-  parse with it, and it holds references, not the operands' trees.
+- The operands' trees from the written-reference table: it holds
+  references, not trees, and the digest reads it only to account for
+  names (2.9). (Before fix round 3 this file said the digest does not
+  parse with the table; it now does.)
+
+## 3.1 State of delivery (2026-11-28)
+
+2.1 is delivered at Kiln main `00415ed7f` (WP-3640, PCH 188, IMAGE
+102): constraint arguments and array bounds around a deduced
+placeholder, in `DeclArena::written_decl_type`, on specialisations
+too. Slip's pin is `60fb5ab9d`; the read lands with the pin move, a
+package of its own. Slip does not use `Ast::decl_written_exprs`, so
+WP-3641 (no deduced-return expressions there) changes nothing for it.
+2.7 is withdrawn: fix round 3 bounds nothing by location.
 
 ## 4. What Slip does on delivery
 
