@@ -1,5 +1,5 @@
 //! `cargo xtask corpus rename` (`spec/harness.md` §6.5): a native rename
-//! over a corpus, with `slip rename`, and the five checks of its outcome.
+//! over a corpus, with `slip rename`, and the six checks of its outcome.
 //!
 //! ```text
 //! cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
@@ -27,8 +27,9 @@
 //! ([`target_name`]).
 
 use crate::census;
+use crate::corpus::rows::{ExpectedExcluded, ExpectedUnparsed};
 use crate::corpus::{self, Corpus, Ctx, Layout, build_tree, rows};
-use crate::invariants::Failure;
+use crate::invariants::{self, Failure, Side};
 use crate::perf::{self, Measured};
 use crate::slip_run::{self, Ran};
 use crate::transform::run::{Bounded, Lines, cmdline, read_object, read_result, run_bounded};
@@ -40,8 +41,8 @@ use slip_model::json::{self, Value};
 use slip_model::overlay::Overlay;
 use slip_model::result::{Category, State, TransformResult};
 use slip_model::transform_run::{StepName, TransformRun};
-use slip_model::{Digest, Language, Plan, RunRecord};
-use std::collections::BTreeMap;
+use slip_model::{Digest, Language, Plan, Reason as PlanReason, RunRecord, Status};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -60,6 +61,14 @@ pub const CLANG_TIMEOUT: Duration = Duration::from_hours(1);
 
 /// At most this many lines of a failing check's differences are printed.
 pub const LISTED: usize = 20;
+
+/// At most this many broken database entries are printed before `slip` runs
+/// (`spec/harness.md` §6.5).
+pub const DB_LISTED: usize = 10;
+
+/// At most this many unexpected or mismatched observers are printed when
+/// `coverage` fails (`spec/harness.md` §6.5).
+pub const COVERAGE_LISTED: usize = 10;
 
 /// The top-level directory of the source directory that is not copied and
 /// not compared: the clone's git metadata (see [`copy_tree`]).
@@ -267,8 +276,8 @@ impl Outcome {
     }
 }
 
-/// One of the five checks, in order: `state`, `determinism`, `accept`,
-/// `build`, `back`.
+/// One of the six checks, in order: `coverage`, `state`, `determinism`,
+/// `accept`, `build`, `back`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub name: &'static str,
@@ -283,7 +292,313 @@ impl Check {
     }
 }
 
-/// Check 1: the state is `expect`, or `verified` or
+/// Pre-flight database check (`spec/harness.md` §6.5): before `slip` runs,
+/// every database entry's `directory` must exist and be a directory, and its
+/// `file` (resolved against `directory` when relative) must exist. Returns
+/// `Err` naming the count and the first [`DB_LISTED`] failing entries.
+pub fn check_database(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: cannot read: {e}", path.display()))?;
+    let doc = json::parse(&bytes).map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
+    let Some(entries) = doc.as_array() else {
+        return Err(format!("{}: not a JSON array", path.display()));
+    };
+    let mut dir_cache: BTreeMap<&str, Result<(), String>> = BTreeMap::new();
+    let mut broken = 0usize;
+    let mut first: Vec<String> = Vec::new();
+    let mut record = |line: String| {
+        broken += 1;
+        if first.len() < DB_LISTED {
+            first.push(line);
+        }
+    };
+    for (i, entry) in entries.iter().enumerate() {
+        if entry.as_object().is_none() {
+            record(format!("entry {i}: not a JSON object"));
+            continue;
+        }
+        let Some(dir) = entry.get("directory").and_then(Value::as_str) else {
+            record(format!("entry {i}: missing `directory`"));
+            continue;
+        };
+        if dir.is_empty() {
+            record(format!("entry {i}: empty `directory`"));
+            continue;
+        }
+        let dir_res = dir_cache.entry(dir).or_insert_with(|| {
+            if !Path::new(dir).is_absolute() {
+                return Err("not an absolute path".to_owned());
+            }
+            match std::fs::metadata(dir) {
+                Ok(m) if m.is_dir() => Ok(()),
+                Ok(_) => Err("not a directory".to_owned()),
+                Err(e) => Err(e.to_string()),
+            }
+        });
+        if let Err(why) = dir_res {
+            record(format!("{dir}: {why}"));
+            continue;
+        }
+        let Some(file) = entry.get("file").and_then(Value::as_str) else {
+            record(format!("{dir}: missing `file`"));
+            continue;
+        };
+        if file.is_empty() {
+            record(format!("{dir}: empty `file`"));
+            continue;
+        }
+        let p = Path::new(file);
+        let resolved = if p.is_absolute() { p.to_path_buf() } else { Path::new(dir).join(p) };
+        match std::fs::metadata(&resolved) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => record(format!("{}: not a regular file", resolved.display())),
+            Err(e) => record(format!("{}: {e}", resolved.display())),
+        }
+    }
+    if broken == 0 {
+        return Ok(());
+    }
+    let noun = if broken == 1 { "entry" } else { "entries" };
+    let mut msg = format!("{broken} database {noun} cannot run: {}", first[0]);
+    for line in &first[1..] {
+        msg.push_str("\n  ");
+        msg.push_str(line);
+    }
+    Err(msg)
+}
+
+struct CoverageIssues {
+    unexpected_excl: Vec<(String, PlanReason, String)>,
+    mismatched_excl: Vec<(String, PlanReason, String, String)>,
+    unexpected: Vec<(String, String, String)>,
+    mismatched: Vec<(String, Status, String, String)>,
+}
+
+fn collect_excluded(
+    plan: &Plan,
+    src: &Path,
+    expected_excluded: &[ExpectedExcluded],
+    issues: &mut CoverageIssues,
+) {
+    let expected_map: BTreeMap<&str, PlanReason> =
+        expected_excluded.iter().map(|e| (e.path.as_str(), e.reason)).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for ex in &plan.excluded {
+        let ex_path = Path::new(OsStr::from_bytes(&ex.file));
+        let rel = if ex_path.is_absolute() {
+            ex_path.strip_prefix(src).ok().and_then(Path::to_str)
+        } else {
+            ex_path.to_str().filter(|s| !s.is_empty())
+        };
+        let display_path = if ex.file.is_empty() {
+            format!("entry {}", ex.entry)
+        } else {
+            rel.map_or_else(|| perf::render::text(&ex.file), str::to_owned)
+        };
+        let first_detail = ex.detail.lines().next().unwrap_or("").to_owned();
+        if let Some(r) = rel
+            && let Some(&want) = expected_map.get(r)
+        {
+            seen.insert(r);
+            if ex.reason != want {
+                issues.mismatched_excl.push((
+                    r.to_owned(),
+                    want,
+                    perf::reason_name(ex.reason).to_owned(),
+                    first_detail,
+                ));
+            }
+        } else {
+            issues.unexpected_excl.push((display_path, ex.reason, first_detail));
+        }
+    }
+    for e in expected_excluded {
+        if !seen.contains(e.path.as_str()) {
+            issues.mismatched_excl.push((
+                e.path.clone(),
+                e.reason,
+                "not excluded".to_owned(),
+                String::new(),
+            ));
+        }
+    }
+}
+
+fn collect_observers(
+    loaded: &perf::Loaded,
+    src: &Path,
+    expected_unparsed: &[ExpectedUnparsed],
+    issues: &mut CoverageIssues,
+) -> usize {
+    let expected_map: BTreeMap<&str, Status> =
+        expected_unparsed.iter().map(|e| (e.path.as_str(), e.status)).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut ok_count = 0usize;
+    for o in &loaded.plan.observers {
+        let main_path = Path::new(OsStr::from_bytes(&o.main.path));
+        let rel = main_path.strip_prefix(src).ok().and_then(Path::to_str);
+        let display_path = rel.map_or_else(|| perf::render::text(&o.main.path), str::to_owned);
+        let (actual_status, outcome_name, first_err) = match invariants::side(loaded, &o.id) {
+            Side::Shard(status, _) => {
+                let first = loaded
+                    .shards
+                    .get(&o.id)
+                    .and_then(Option::as_ref)
+                    .map_or("", |s| s.outcome.message.lines().next().unwrap_or(""));
+                (Some(status), perf::status_name(status).to_owned(), first.to_owned())
+            }
+            Side::NoJob => (None, "no job".to_owned(), String::new()),
+            Side::NoShard(end) => {
+                (None, format!("no shard ({})", perf::end_name(end)), String::new())
+            }
+            Side::Absent(_) => (None, "missing shard".to_owned(), String::new()),
+            Side::Other(_) => (None, "other shard".to_owned(), String::new()),
+        };
+        if let Some(r) = rel
+            && let Some(&want) = expected_map.get(r)
+        {
+            seen.insert(r);
+            if actual_status != Some(want) {
+                issues.mismatched.push((r.to_owned(), want, outcome_name, first_err));
+            }
+        } else if actual_status == Some(Status::Ok) {
+            ok_count += 1;
+        } else {
+            issues.unexpected.push((display_path, outcome_name, first_err));
+        }
+    }
+    for e in expected_unparsed {
+        if !seen.contains(e.path.as_str()) {
+            issues.mismatched.push((
+                e.path.clone(),
+                e.status,
+                "absent from plan".to_owned(),
+                String::new(),
+            ));
+        }
+    }
+    ok_count
+}
+
+fn format_coverage_failure(
+    issues: &CoverageIssues,
+    expected_unparsed: usize,
+    expected_excluded: usize,
+) -> (Outcome, Vec<String>) {
+    let total_issues = issues.unexpected_excl.len()
+        + issues.mismatched_excl.len()
+        + issues.unexpected.len()
+        + issues.mismatched.len();
+    let mut lines = Vec::new();
+    let mut push_line = |line: String| {
+        if lines.len() < COVERAGE_LISTED {
+            lines.push(line);
+        }
+    };
+    let with_tail = |head: String, tail: &str| {
+        if tail.is_empty() {
+            head
+        } else {
+            format!("{head}: {}", perf::render::text(tail.as_bytes()))
+        }
+    };
+    for (path, reason, detail) in &issues.unexpected_excl {
+        push_line(with_tail(format!("  excluded {path}: {}", perf::reason_name(*reason)), detail));
+    }
+    for (path, want, actual, detail) in &issues.mismatched_excl {
+        push_line(with_tail(
+            format!("  excluded {path}: {actual} (expected {})", perf::reason_name(*want)),
+            detail,
+        ));
+    }
+    for (path, outcome, err) in &issues.unexpected {
+        push_line(with_tail(format!("  {path}: {outcome}"), err));
+    }
+    for (path, want, outcome, err) in &issues.mismatched {
+        push_line(with_tail(
+            format!("  {path}: {outcome} (expected {})", perf::status_name(*want)),
+            err,
+        ));
+    }
+    if total_issues > COVERAGE_LISTED {
+        lines.push(format!("  (+{} more)", total_issues - COVERAGE_LISTED));
+    }
+    let detail = if !issues.unexpected_excl.is_empty() {
+        let n = issues.unexpected_excl.len();
+        let noun = if n == 1 { "entry" } else { "entries" };
+        format!("{n} database {noun} excluded beyond the expected {expected_excluded}")
+    } else if !issues.mismatched_excl.is_empty() {
+        let (path, _, actual, _) = &issues.mismatched_excl[0];
+        if issues.mismatched_excl.len() == 1 {
+            format!("expected excluded entry {path} is {actual}")
+        } else {
+            format!(
+                "expected excluded entry {path} is {actual} (+{} more)",
+                issues.mismatched_excl.len() - 1
+            )
+        }
+    } else if !issues.unexpected.is_empty() {
+        let n = issues.unexpected.len();
+        let noun = if n == 1 { "observer" } else { "observers" };
+        format!("{n} {noun} not ok beyond the expected {expected_unparsed}")
+    } else {
+        let (path, _, outcome, _) = &issues.mismatched[0];
+        if issues.mismatched.len() == 1 {
+            format!("expected unparsed observer {path} is {outcome}")
+        } else {
+            format!(
+                "expected unparsed observer {path} is {outcome} (+{} more)",
+                issues.mismatched.len() - 1
+            )
+        }
+    };
+    (Outcome::Fail(detail), lines)
+}
+
+/// Check 1 (`coverage`, `spec/harness.md` §6.5): every entry excluded by the
+/// plan matches `expected_excluded` (paths relative to `src`) with its exact
+/// reason, and every observer of the plan has map outcome `ok` in `loaded`,
+/// except `expected_unparsed`, which must have their listed non-`ok` outcomes.
+/// Returns the outcome and up to [`COVERAGE_LISTED`] detail lines (plus a
+/// trailing `  (+<n> more)` line when more fail) to print when failing.
+pub fn check_coverage(
+    loaded: &perf::Loaded,
+    src: &Path,
+    expected_unparsed: &[ExpectedUnparsed],
+    expected_excluded: &[ExpectedExcluded],
+) -> (Outcome, Vec<String>) {
+    let mut issues = CoverageIssues {
+        unexpected_excl: Vec::new(),
+        mismatched_excl: Vec::new(),
+        unexpected: Vec::new(),
+        mismatched: Vec::new(),
+    };
+    collect_excluded(&loaded.plan, src, expected_excluded, &mut issues);
+    let ok_count = collect_observers(loaded, src, expected_unparsed, &mut issues);
+    if issues.unexpected_excl.is_empty()
+        && issues.mismatched_excl.is_empty()
+        && issues.unexpected.is_empty()
+        && issues.mismatched.is_empty()
+    {
+        let total = loaded.plan.observers.len();
+        let obs_noun = if total == 1 { "observer" } else { "observers" };
+        let mut notes = Vec::new();
+        if !expected_unparsed.is_empty() {
+            notes.push(format!("{} expected unparsed", expected_unparsed.len()));
+        }
+        if !expected_excluded.is_empty() {
+            notes.push(format!("{} expected excluded", expected_excluded.len()));
+        }
+        let detail = if notes.is_empty() {
+            format!("{ok_count} of {total} {obs_noun} ok")
+        } else {
+            format!("{ok_count} of {total} {obs_noun} ok ({})", notes.join(", "))
+        };
+        return (Outcome::Ok(detail), Vec::new());
+    }
+    format_coverage_failure(&issues, expected_unparsed.len(), expected_excluded.len())
+}
+
+/// Check 2 (`state`): the state is `expect`, or `verified` or
 /// `verified_with_residue` without one.
 pub fn check_state(state: State, expect: Option<State>) -> Outcome {
     let ok = match expect {
@@ -310,6 +625,8 @@ pub struct Records {
     pub result: TransformResult,
     pub set: EditSet,
     pub run: TransformRun,
+    /// Path of the map phase run record named by `run`, if any.
+    pub map_run: Option<PathBuf>,
     /// `(step name, measured)` for each step with a phase run record.
     pub phases: Vec<(&'static str, Measured)>,
 }
@@ -352,6 +669,7 @@ pub fn read_records(store: &Path, result_id: &str) -> Result<Records, String> {
     let run = found.ok_or_else(|| {
         format!("{}: no transform run record names the result {id}", runs.display())
     })?;
+    let mut map_run = None;
     let mut phases = Vec::new();
     for step in &run.steps {
         let Some(rid) = step.run else { continue };
@@ -370,20 +688,23 @@ pub fn read_records(store: &Path, result_id: &str) -> Result<Records, String> {
             let p = runs.join(n);
             let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
             if slip_model::formats::content_id(&bytes).ok() == Some(rid) {
-                record = Some(
-                    RunRecord::from_bytes(&bytes).map_err(|e| format!("{}: {e}", p.display()))?,
-                );
+                let parsed =
+                    RunRecord::from_bytes(&bytes).map_err(|e| format!("{}: {e}", p.display()))?;
+                record = Some((p, parsed));
                 break;
             }
         }
-        let record = record.ok_or_else(|| {
+        let (path, record) = record.ok_or_else(|| {
             format!("{}: no {} run record {rid}, which the transform run names", runs.display(), {
                 step.name.name()
             })
         })?;
+        if step.name == StepName::Map {
+            map_run = Some(path);
+        }
         phases.push((step.name.name(), perf::measured(&record)?));
     }
-    Ok(Records { result_id: id, result, set, run, phases })
+    Ok(Records { result_id: id, result, set, run, map_run, phases })
 }
 
 // ---------------------------------------------------------------------------
@@ -971,7 +1292,7 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode {
         }
         Err(Failure::Error(e)) => {
             eprintln!("xtask corpus rename: {e}");
-            ExitCode::from(1)
+            ExitCode::from(2)
         }
     }
 }
@@ -1162,6 +1483,10 @@ impl Rename<'_> {
     /// Pre-flight census check (§6.5): returns `Ok(true)` to continue,
     /// `Ok(false)` when refused because the census is not clean.
     fn check_census(&self, out: &mut dyn Write) -> Result<bool, String> {
+        if self.opts.skip_census {
+            say(out, "census: skipped (--skip-census)");
+            return Ok(true);
+        }
         let mut census_opts = census::Options::default();
         census_opts.common.jobs = self.opts.jobs.map(|j| j.to_string());
         let outcome = census::execute(self.repo, self.c, &self.layout, &self.slip, &census_opts)
@@ -1184,13 +1509,10 @@ impl Rename<'_> {
     fn execute(&self, out: &mut dyn Write) -> Result<bool, String> {
         say(out, &format!("corpus rename {}: {} to {}", self.c.name, self.opts.from, self.opts.to));
         let owned = self.owned()?;
+        check_database(&self.layout.database())?;
         let check_census = needs_census(self.opts);
-        if check_census {
-            if self.opts.skip_census {
-                say(out, "census: skipped (--skip-census)");
-            } else if !self.check_census(out)? {
-                return Ok(false);
-            }
+        if check_census && !self.check_census(out)? {
+            return Ok(false);
         }
         if self.opts.build {
             self.prepare_build(out)?;
@@ -1219,6 +1541,7 @@ impl Rename<'_> {
             .is_none()
             .then(|| format!("the result is {}: there is no post-image", state.name()));
         let patched = self.paths.patch.is_file();
+        gate(&mut checks, out, "coverage", &mut |out| self.coverage(&records, out));
         gate(&mut checks, out, "state", &mut |_| match check_state(state, self.opts.expect) {
             // `--patch` refused at apply (`not_owned`, `not_canonical`,
             // `stale_file`): the state permits a patch and none was written.
@@ -1351,8 +1674,30 @@ impl Rename<'_> {
         Ok(r)
     }
 
-    /// Check 2: `slip reduce` over the round's shards gives the run's edit
-    /// set id.
+    /// Check 1 (`coverage`): every observer of the plan has map outcome `ok`,
+    /// except the corpus's `expected_unparsed` list with their exact outcomes.
+    fn coverage(&self, r: &Records, out: &mut dyn Write) -> Outcome {
+        let Some(map_run) = r.map_run.as_deref() else {
+            return Outcome::Fail("the transform run record names no map run record".to_owned());
+        };
+        let src = match std::fs::canonicalize(&self.layout.src) {
+            Ok(s) => s,
+            Err(e) => return Outcome::Fail(format!("{}: {e}", self.layout.src.display())),
+        };
+        let loaded = match perf::load(map_run) {
+            Ok(l) => l,
+            Err(e) => return Outcome::Fail(e),
+        };
+        let (outcome, lines) =
+            check_coverage(&loaded, &src, &self.c.expected_unparsed, &self.c.expected_excluded);
+        for l in &lines {
+            say(out, l);
+        }
+        outcome
+    }
+
+    /// Check 3 (`determinism`): `slip reduce` over the round's shards gives
+    /// the run's edit set id.
     fn determinism(&self, r: &Records, out: &mut dyn Write) -> Outcome {
         let mut args: Vec<OsString> = vec![
             "reduce".into(),
@@ -1384,8 +1729,8 @@ impl Rename<'_> {
         }
     }
 
-    /// Check 3: every command of the plan, by the corpus's compiler with
-    /// `-fsyntax-only`, exits on the post-image (through a VFS overlay of
+    /// Check 4 (`accept`): every command of the plan, by the corpus's compiler
+    /// with `-fsyntax-only`, exits on the post-image (through a VFS overlay of
     /// the overlay's changed files) as it does on the pre-image.
     fn accept(&self, r: &Records, out: &mut dyn Write) -> Result<Outcome, String> {
         let store = &self.paths.store;
@@ -1488,8 +1833,8 @@ impl Rename<'_> {
         })
     }
 
-    /// Check 4: the patch applied to a copy of the source directory, which
-    /// is configured and generated as the corpus is and built (`all`).
+    /// Check 5 (`build`): the patch applied to a copy of the source directory,
+    /// which is configured and generated as the corpus is and built (`all`).
     fn build(&self, out: &mut dyn Write) -> Result<Outcome, String> {
         let p = &self.paths;
         let t = Instant::now();
@@ -1590,10 +1935,14 @@ impl Rename<'_> {
         )))
     }
 
-    /// Check 5: the inverse rename over the copy's database, with
+    /// Check 6 (`back`): the inverse rename over the copy's database, with
     /// `--write`, leaves the copy byte-identical to the source directory.
     fn back(&self, owned: &[PathBuf], out: &mut dyn Write) -> Result<Outcome, String> {
         let p = &self.paths;
+        let back_db = p.build.join("compile_commands.json");
+        if let Err(e) = check_database(&back_db) {
+            return Ok(Outcome::Fail(format!("database: {e}")));
+        }
         let run: Vec<String> = ["rename", "--from", &self.opts.from, "--to", &self.opts.to]
             .iter()
             .map(|s| (*s).to_owned())
@@ -1605,7 +1954,7 @@ impl Rename<'_> {
             .map_err(|e| format!("{}: {e}", self.layout.src.display()))?;
         let mut args: Vec<OsString> = inverse.iter().map(OsString::from).collect();
         args.extend(self.kind_args());
-        args.extend(["--db".into(), p.build.join("compile_commands.json").into()]);
+        args.extend(["--db".into(), back_db.into()]);
         for o in owned {
             let rel = o.strip_prefix(&src).unwrap_or(Path::new(""));
             args.extend(["--owned".into(), p.copy.join(rel).into()]);
