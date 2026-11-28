@@ -66,7 +66,9 @@ fn main() -> ExitCode {
         rule_use: false,
     };
     let identity = |path: &[u8]| path.to_vec();
-    let result = parse_observer_with(observer, Phase::Map, 0, ParseOptions::default(), |unit| {
+    let mut parse = ParseOptions::default();
+    parse.written = true;
+    let result = parse_observer_with(observer, Phase::Map, 0, parse, |unit| {
         let types = if expr_args { expr_arg_types(unit.ast(), unit.sm()) } else { Vec::new() };
         (slip_digest::map::map_unit(unit, &options, &identity), types)
     });

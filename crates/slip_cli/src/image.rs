@@ -581,6 +581,8 @@ impl Image {
         }
         let mut options = ParseOptions::default();
         options.lookups = lookups;
+        // The digest's ledger of written names reads the table (L0).
+        options.written = true;
         let (shard, walked) =
             self.parse_unit(observer, side, phase, round, options, |unit, subject| {
                 (unit.errors() == 0)

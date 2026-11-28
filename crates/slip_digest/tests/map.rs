@@ -76,6 +76,14 @@ impl Drop for Fixture {
     }
 }
 
+/// The options of every digested parse: the written-reference table
+/// recorded (WP-156 fix round 3, L0).
+fn written() -> ParseOptions<'static> {
+    let mut o = ParseOptions::default();
+    o.written = true;
+    o
+}
+
 fn bytes(p: &Path) -> Vec<u8> {
     p.to_str().unwrap().as_bytes().to_vec()
 }
@@ -98,10 +106,9 @@ fn walk(
         names: true,
         rule_use: false,
     };
-    let (shard, walked) = parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
-        map_unit(unit, &options, subject)
-    })
-    .expect("parse_observer_with");
+    let (shard, walked) =
+        parse_observer_with(o, Phase::Map, 0, written(), |unit| map_unit(unit, &options, subject))
+            .expect("parse_observer_with");
     (shard, walked.flatten())
 }
 
@@ -118,10 +125,9 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
         rule_use: false,
     };
     let identity = |p: &[u8]| p.to_vec();
-    let (mut shard, walked) =
-        parse_observer_with(o, Phase::Map, 0, ParseOptions::default(), |unit| {
-            map_unit(unit, &options, &identity)
-        })?;
+    let (mut shard, walked) = parse_observer_with(o, Phase::Map, 0, written(), |unit| {
+        map_unit(unit, &options, &identity)
+    })?;
     if let Some(output) = walked.flatten().transpose()?
         && shard.outcome.status == Status::Ok
     {
@@ -166,7 +172,7 @@ fn s8_5_subject_paths_of_inputs_and_predefines() {
     );
     let o = f.observer(&["c++", "-std=c++17", "-DM=1", "main.cpp"]);
     let identity = |p: &[u8]| p.to_vec();
-    let (shard, seen) = parse_observer_with(&o, Phase::Map, 0, ParseOptions::default(), |unit| {
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 0, written(), |unit| {
         with_input(unit, &identity, |input| {
             let sm = input.sm;
             sm.file_ids()
@@ -241,12 +247,11 @@ fn s8_5_too_little_stack_is_err() {
     f.write("main.cpp", "int x;\n");
     let small = f.observer(&["c++", "-fkiln-stack-size=16M", "main.cpp"]);
     let identity = |p: &[u8]| p.to_vec();
-    let (shard, seen) =
-        parse_observer_with(&small, Phase::Map, 0, ParseOptions::default(), |unit| {
-            let left = unit.stack_remaining();
-            (left, with_input(unit, &identity, |_| -> u8 { panic!("f is not called") }))
-        })
-        .unwrap();
+    let (shard, seen) = parse_observer_with(&small, Phase::Map, 0, written(), |unit| {
+        let left = unit.stack_remaining();
+        (left, with_input(unit, &identity, |_| -> u8 { panic!("f is not called") }))
+    })
+    .unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
     let (left, result) = seen.unwrap();
     let left = left.expect("the front end's thread has a guard");
@@ -663,7 +668,7 @@ fn s9_5_map_unit_passes_rule_use_through() {
     f.write("main.cpp", "int g();\nint g() { return 1; }\nint k = g();\n");
     let o = f.observer(&["c++", "main.cpp"]);
     let identity = |p: &[u8]| p.to_vec();
-    let (_, walked) = parse_observer_with(&o, Phase::Map, 0, ParseOptions::default(), |unit| {
+    let (_, walked) = parse_observer_with(&o, Phase::Map, 0, written(), |unit| {
         // The rule that undoes `f` renamed to `g`: its discriminator is g's.
         let recs = with_input(unit, &identity, |input| {
             slip_digest::records::records(

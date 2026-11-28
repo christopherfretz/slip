@@ -96,13 +96,17 @@ fn each_side(dir: &Path, mut f: impl FnMut(&mut Walk<'_>)) {
             include: &[""],
             std: &std,
         };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let path = |_| Vec::new();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let rules = RuleTable::empty();
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w);
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let path = |_| Vec::new();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let rules = RuleTable::empty();
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w);
+            },
+        )
         .expect("parses");
     }
 }
@@ -529,7 +533,7 @@ fn opaque_values_are_numbered() {
         include: &[""],
         std: "c++20",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
         let rules = RuleTable::empty();
@@ -575,7 +579,7 @@ fn with_source(src: &str, std: &str, f: impl FnOnce(&mut Walk<'_>)) {
     let files = [("main.cpp", src)];
     let snippet =
         slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
         let rules = RuleTable::empty();

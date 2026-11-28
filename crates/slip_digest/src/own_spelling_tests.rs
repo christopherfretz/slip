@@ -62,7 +62,7 @@ fn units(src: &str) -> BTreeMap<String, U> {
         include: &[""],
         std: "c++26",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{src}\n{}", p.diagnostics);
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };

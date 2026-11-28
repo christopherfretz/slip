@@ -15,7 +15,7 @@ use crate::{Cause, Detail, Input, Options, Output, tables};
 fn walk_with(files: &[(&str, &str)], rules: &RuleTable, detail: Detail<'_>) -> Output {
     let snippet =
         slip_kiln::snippet::Snippet { files, main: files[0].0, include: &[""], std: "c++20" };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -481,7 +481,7 @@ fn with_walk_std<R>(src: &str, std: &str, f: impl FnOnce(&mut crate::walk::Walk<
     let snippet =
         slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
     let rules = RuleTable::empty();
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -571,21 +571,25 @@ fn a_key_keeps_its_parents_cause() {
         include: &[""],
         std: "c++26",
     };
-    let o = slip_kiln::snippet::parse(&snippet, |p| {
-        assert_eq!(p.errors, 0, "{}", p.diagnostics);
-        let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-        crate::digest(
-            &input,
-            &Options {
-                rules: &rules,
-                read_only: crate::ReadOnly::NO_FILE,
-                detail: Detail::All,
-                names: true,
-                rule_use: false,
-            },
-        )
-    })
+    let o = slip_kiln::snippet::parse_with_tables(
+        &snippet,
+        &slip_kiln::snippet::Extra::default(),
+        |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            crate::digest(
+                &input,
+                &Options {
+                    rules: &rules,
+                    read_only: crate::ReadOnly::NO_FILE,
+                    detail: Detail::All,
+                    names: true,
+                    rule_use: false,
+                },
+            )
+        },
+    )
     .expect("the snippet parses");
     let g: Vec<_> = o.names.iter().filter(|(_, n)| n.starts_with("g(")).collect();
     assert!(!g.is_empty());
@@ -709,7 +713,7 @@ fn view_units_of(
 ) -> (Vec<ViewUnit>, Vec<slip_model::agreement::Use>) {
     let snippet =
         slip_kiln::snippet::Snippet { files, main: files[0].0, include: &[""], std: "c++20" };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let ro: Vec<slip_kiln::kiln::source::FileId> =
             p.sm.file_ids()

@@ -1343,12 +1343,16 @@ mod tests {
         let files = [("main.cpp", src)];
         let snippet =
             slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let path = |_| Vec::new();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let rules = RuleTable::empty();
-            f(&input, &rules);
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let path = |_| Vec::new();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let rules = RuleTable::empty();
+                f(&input, &rules);
+            },
+        )
         .expect("parses");
     }
 

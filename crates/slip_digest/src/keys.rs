@@ -1730,26 +1730,31 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        let seen = slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            let (mut seen, mut names) = (BTreeSet::new(), BTreeSet::new());
-            for d in p.ast.decls.ids() {
-                let DeclNameView::Operator(op) = p.ast.names.view(p.ast.decls.get(d).name()) else {
-                    continue;
-                };
-                let want = Name::Operator(u64::from(overloaded_operator::row(&op).tag));
-                let (key, cause) = w.compute_key(d).expect("an operator has a key");
-                assert_eq!(cause, None, "{op:?}");
-                assert_eq!(key.kind, KeyKind::Function, "{op:?}");
-                assert_eq!(key.name, want, "{op:?}");
-                assert!(seen.insert(op as u8), "{op:?} declared once");
-                assert!(names.insert(key.name), "{op:?}: its key name is another operator's");
-            }
-            seen
-        })
+        let seen = slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                let (mut seen, mut names) = (BTreeSet::new(), BTreeSet::new());
+                for d in p.ast.decls.ids() {
+                    let DeclNameView::Operator(op) = p.ast.names.view(p.ast.decls.get(d).name())
+                    else {
+                        continue;
+                    };
+                    let want = Name::Operator(u64::from(overloaded_operator::row(&op).tag));
+                    let (key, cause) = w.compute_key(d).expect("an operator has a key");
+                    assert_eq!(cause, None, "{op:?}");
+                    assert_eq!(key.kind, KeyKind::Function, "{op:?}");
+                    assert_eq!(key.name, want, "{op:?}");
+                    assert!(seen.insert(op as u8), "{op:?} declared once");
+                    assert!(names.insert(key.name), "{op:?}: its key name is another operator's");
+                }
+                seen
+            },
+        )
         .expect("the snippet parses");
         let every: BTreeSet<u8> =
             (1..=u8::MAX).filter_map(OverloadedOperator::from_u8).map(|op| op as u8).collect();

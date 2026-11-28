@@ -478,10 +478,14 @@ mod tests {
         let files = [("main.cpp", src)];
         let snippet =
             slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            f(p)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                f(p)
+            },
+        )
         .expect("parses")
     }
 

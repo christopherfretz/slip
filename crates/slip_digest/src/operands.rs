@@ -2370,6 +2370,34 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
 /// `operands`, no discriminator; derived, in the derived group of the
 /// parent's file (none for a namespace's); the parent's cause.
 pub(crate) fn unit(w: &mut Walk<'_>, e: DeclId, parent: &Written, h: Hashed) -> Written {
+    unit_of(w, Some(e), parent, h)
+}
+
+/// Kiln's written-reference table (Kiln `spec/ast.md` §18) is not
+/// recorded, or not whole (a snapshot or module image made without it):
+/// the ledger of written names cannot be checked (WP-156 fix round 3,
+/// L0), so the translation unit's `<order>` unit has an operand unit with
+/// this cause. Every digested parse records the table.
+pub(crate) const NOT_RECORDED: Cause = Cause::Unsupported("kiln/written-refs-not-recorded");
+
+/// The operand unit of the translation unit's `<order>` unit (`parent`,
+/// written): one [`Op::Unkept`] entry of [`NOT_RECORDED`] when the
+/// written-reference table is not on or not whole (L0); `None` otherwise.
+pub(crate) fn order(w: &mut Walk<'_>, parent: &Written) -> Option<Written> {
+    let refs = &w.ast.written_refs;
+    if refs.is_on() && refs.unrecorded().is_empty() {
+        return None;
+    }
+    let (es, _, _) = entry(w, Op::Unkept(NOT_RECORDED));
+    let mut s = Stream::new();
+    s.count(1);
+    s.raw(es.as_bytes()).absorb(es.cause());
+    let h = s.finish(UNIT_TAG);
+    let h = w.hashed(h);
+    Some(unit_of(w, None, parent, h))
+}
+
+fn unit_of(w: &mut Walk<'_>, e: Option<DeclId>, parent: &Written, h: Hashed) -> Written {
     let key = Key {
         kind: KeyKind::Operands,
         parent: Parent::Unit(parent.key),
@@ -2383,7 +2411,7 @@ pub(crate) fn unit(w: &mut Walk<'_>, e: DeclId, parent: &Written, h: Hashed) -> 
         GroupClass::Tu => Vec::new(),
         GroupClass::Declared | GroupClass::Derived => {
             if parent.file.is_empty() {
-                crate::units::origin_file(w, parent.read.unwrap_or(e))
+                parent.read.or(e).map_or_else(Vec::new, |d| crate::units::origin_file(w, d))
             } else {
                 parent.file.clone()
             }
@@ -2395,7 +2423,7 @@ pub(crate) fn unit(w: &mut Walk<'_>, e: DeclId, parent: &Written, h: Hashed) -> 
         (p, own) => p.or(own),
     };
     Written {
-        entity: Some(e),
+        entity: e,
         read: parent.read,
         key: key.id(),
         kind: KeyKind::Operands,

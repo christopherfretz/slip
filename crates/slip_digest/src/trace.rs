@@ -587,12 +587,16 @@ int v = h(1);
             include: &[""],
             std: "c++20",
         };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            f(&input)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                f(&input)
+            },
+        )
         .expect("the snippet parses")
     }
 

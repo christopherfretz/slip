@@ -1592,31 +1592,35 @@ mod tests {
             std: "c++26",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let options = crate::Options {
-                rules: &rules,
-                read_only: crate::ReadOnly::NO_FILE,
-                detail: crate::Detail::All,
-                names: true,
-                rule_use: false,
-            };
-            let t = std::time::Instant::now();
-            let o = crate::digest(&input, &options);
-            let took = t.elapsed();
-            let names: std::collections::BTreeMap<Digest, String> =
-                o.names.iter().cloned().collect();
-            let mut out = Vec::new();
-            for g in &o.digests.groups {
-                for u in g.units.iter().flatten() {
-                    let name = names.get(&u.key).cloned().unwrap_or_default();
-                    out.push((g.class, name, u.key, u.digest));
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let options = crate::Options {
+                    rules: &rules,
+                    read_only: crate::ReadOnly::NO_FILE,
+                    detail: crate::Detail::All,
+                    names: true,
+                    rule_use: false,
+                };
+                let t = std::time::Instant::now();
+                let o = crate::digest(&input, &options);
+                let took = t.elapsed();
+                let names: std::collections::BTreeMap<Digest, String> =
+                    o.names.iter().cloned().collect();
+                let mut out = Vec::new();
+                for g in &o.digests.groups {
+                    for u in g.units.iter().flatten() {
+                        let name = names.get(&u.key).cloned().unwrap_or_default();
+                        out.push((g.class, name, u.key, u.digest));
+                    }
                 }
-            }
-            (out, took)
-        })
+                (out, took)
+            },
+        )
         .expect("the snippet parses")
     }
 

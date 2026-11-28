@@ -274,7 +274,7 @@ fn records_of(source: &str, rules: &RuleTable) -> Vec<slip_digest::records::Reco
         std: "c++20",
     };
     let extra = slip_kiln::snippet::Extra { args: &[], target: None };
-    let (r, errors) = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    let (r, errors) = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())

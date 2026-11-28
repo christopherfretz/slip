@@ -802,13 +802,17 @@ mod tests {
     /// on a walk over it.
     fn with_walk<T>(files: &[(&str, &str)], std: &str, f: impl FnOnce(&mut Walk<'_>) -> T) -> T {
         let snippet = slip_kiln::snippet::Snippet { files, main: "main.cpp", include: &[""], std };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let path = |_| Vec::new();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let rules = RuleTable::empty();
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let path = |_| Vec::new();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let rules = RuleTable::empty();
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w)
+            },
+        )
         .expect("parses")
     }
 
@@ -1630,13 +1634,14 @@ mod tests {
                     .map_or("c++20", str::trim)
                     .to_owned();
                 let files = [("main.cpp", main.as_str()), ("side.h", side)];
-                let found = slip_kiln::snippet::parse(
+                let found = slip_kiln::snippet::parse_with_tables(
                     &slip_kiln::snippet::Snippet {
                         files: &files,
                         main: "main.cpp",
                         include: &[""],
                         std: &std,
                     },
+                    &slip_kiln::snippet::Extra::default(),
                     |p| {
                         let path = |_| Vec::new();
                         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };

@@ -27,23 +27,27 @@ fn digest_with(src: &str, std: &str, rules: RuleTable) -> (Output, u64) {
                 include: &[""],
                 std: &std,
             };
-            slip_kiln::snippet::parse(&snippet, |p| {
-                assert_eq!(p.errors, 0, "{}", p.diagnostics);
-                let path = |_| Vec::new();
-                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-                let before = BACKREFS.with(std::cell::Cell::get);
-                let o = crate::digest(
-                    &input,
-                    &Options {
-                        rules: &rules,
-                        read_only: crate::ReadOnly::NO_FILE,
-                        detail: Detail::All,
-                        names: true,
-                        rule_use: false,
-                    },
-                );
-                (o, BACKREFS.with(std::cell::Cell::get) - before)
-            })
+            slip_kiln::snippet::parse_with_tables(
+                &snippet,
+                &slip_kiln::snippet::Extra::default(),
+                |p| {
+                    assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                    let path = |_| Vec::new();
+                    let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                    let before = BACKREFS.with(std::cell::Cell::get);
+                    let o = crate::digest(
+                        &input,
+                        &Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            detail: Detail::All,
+                            names: true,
+                            rule_use: false,
+                        },
+                    );
+                    (o, BACKREFS.with(std::cell::Cell::get) - before)
+                },
+            )
             .expect("parses")
         })
         .expect("a thread")
@@ -197,7 +201,7 @@ fn with_walk<T>(src: &str, std: &str, f: impl FnOnce(&mut Walk<'_>) -> T) -> T {
     let files = [("main.cpp", src)];
     let snippet =
         slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };

@@ -27,7 +27,7 @@ fn with_ast<R>(src: &str, f: impl FnOnce(&Ast) -> R) -> R {
         include: &[""],
         std: "c++20",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{src}\n{}", p.diagnostics);
         f(p.ast)
     })

@@ -291,12 +291,13 @@ impl<'o> Loaded<'o> {
     }
 
     /// `slip_kiln::ParseOptions` with the entries given so far, and
-    /// `written` when the overlay has obligations (the checks of
-    /// `spec/verify.md` §10.2 read Kiln's written-reference table).
+    /// `written`: the digest's ledger of written names reads Kiln's
+    /// written-reference table (WP-156 fix round 3, L0), as do the checks
+    /// of `spec/verify.md` §10.2 when the overlay has obligations.
     pub fn parse_options(&self) -> slip_kiln::ParseOptions<'_> {
         let mut options = slip_kiln::ParseOptions::default();
         options.overlay = &self.entries;
-        options.written = !self.overlay.spellings.is_empty();
+        options.written = true;
         options
     }
 

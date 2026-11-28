@@ -645,13 +645,17 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w)
+            },
+        )
         .expect("the snippet parses")
     }
 
@@ -835,13 +839,17 @@ mod tests {
             std: &std,
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}: {}", dir.display(), p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}: {}", dir.display(), p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w)
+            },
+        )
         .expect("the pair test parses")
     }
 
@@ -1174,20 +1182,24 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert!(p.errors > 0, "the second `x` is an error");
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            let ss = named(&w, "S", DeclKind::CXXRecord);
-            assert_eq!(ss.len(), 1);
-            let d = ss[0];
-            assert!(!w.ast.decls.get(d).has(DeclFlags::INVALID), "S itself is valid");
-            assert!(w.ast.members(d).any(|m| w.ast.decls.get(m).has(DeclFlags::INVALID)));
-            let mut s = Stream::new();
-            record_data(&mut w, &mut s, d);
-            assert_eq!(s.cause(), Some(Cause::Error));
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert!(p.errors > 0, "the second `x` is an error");
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                let ss = named(&w, "S", DeclKind::CXXRecord);
+                assert_eq!(ss.len(), 1);
+                let d = ss[0];
+                assert!(!w.ast.decls.get(d).has(DeclFlags::INVALID), "S itself is valid");
+                assert!(w.ast.members(d).any(|m| w.ast.decls.get(m).has(DeclFlags::INVALID)));
+                let mut s = Stream::new();
+                record_data(&mut w, &mut s, d);
+                assert_eq!(s.cause(), Some(Cause::Error));
+            },
+        )
         .expect("the snippet parses");
     }
 

@@ -1307,13 +1307,17 @@ mod tests {
         let snippet =
             slip_kiln::snippet::Snippet { files: &files, main: "main.cpp", include: &[""], std };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w)
+            },
+        )
         .expect("the snippet parses")
     }
 
@@ -2046,13 +2050,17 @@ struct source_location {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            f(&mut w)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                f(&mut w)
+            },
+        )
         .expect("the snippet parses")
     }
 

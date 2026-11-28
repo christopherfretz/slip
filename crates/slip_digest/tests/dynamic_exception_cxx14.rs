@@ -20,8 +20,11 @@ fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool) {
     let tree = Tree::new(&common::work_root(), label, &[("main.cpp", source.as_bytes())])
         .expect("the tree");
     let observer = tree.observer("main.cpp", "c++14", &[]);
+    // Every digested parse records the written-reference table (L0).
+    let mut parse = ParseOptions::default();
+    parse.written = true;
     let (shard, got) = tree
-        .parse(&observer, &ParseOptions::default(), |unit| {
+        .parse(&observer, &parse, |unit| {
             let (ast, sm) = (unit.ast(), unit.sm());
             let rules = RuleTable::empty();
             let path = |_: slip_kiln::kiln::source::FileId| Vec::new();

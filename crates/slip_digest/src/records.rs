@@ -227,13 +227,17 @@ fn collect(w: &mut Walk<'_>, written: &[Written], output: &Output) -> Result<Vec
     for u in written {
         let name = name_of(w, u, output)?;
         let key = match u.entity {
-            // The order unit: the key `units::order_unit` builds, mapped.
-            None => Some(w.rules.map(Key {
-                kind: KeyKind::Order,
-                parent: Parent::Root,
-                name: Name::Order,
-                disc: None,
-            })),
+            // The order unit: the key `units::order_unit` builds, mapped;
+            // its operand unit (`operands::order`) is keyed under it.
+            None => {
+                let k = w.rules.map(Key {
+                    kind: KeyKind::Order,
+                    parent: Parent::Root,
+                    name: Name::Order,
+                    disc: None,
+                });
+                Some(crate::demand::part_key(w, k.clone(), u).unwrap_or(k))
+            }
             Some(e) => match w.key(e) {
                 // No key at all: the unit was written under a fallback key.
                 KeyRes::None(_) => None,
@@ -377,15 +381,19 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            let s = w.entity(named(&w, "S", DeclKind::CXXRecord));
-            let m = w.entity(named(&w, "m", DeclKind::Field));
-            let mut written = Vec::new();
-            f(&mut w, [s, m], &mut written)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                let s = w.entity(named(&w, "S", DeclKind::CXXRecord));
+                let m = w.entity(named(&w, "m", DeclKind::Field));
+                let mut written = Vec::new();
+                f(&mut w, [s, m], &mut written)
+            },
+        )
         .expect("the snippet parses")
     }
 
@@ -448,47 +456,55 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut w = Walk::new(&input, &rules);
-            let s = w.entity(named(&w, "S", DeclKind::CXXRecord));
-            let m = w.entity(named(&w, "m", DeclKind::Field));
-            let KeyRes::Key { id: parent, .. } = w.key(s) else { panic!("S has a key") };
-            w.keys.insert(m, KeyRes::None(Some(Cause::Unaccounted("key/test"))));
-            let um = units::write(&mut w, m, UnitClass::Declared).expect("m written");
-            let us = units::write(&mut w, s, UnitClass::Declared).expect("S written");
-            let written = [um, us];
-            let mut names = crate::names::names(&w, &written);
-            names.sort();
-            let output = Output {
-                digests: Digests { scheme: 0, tu: slip_model::Digest([0; 32]), groups: Vec::new() },
-                counters: Vec::new(),
-                causes: Vec::new(),
-                names,
-                rule_use: Vec::new(),
-                kept: Vec::new(),
-                name_strings: Vec::new(),
-                namespace_parts: Vec::new(),
-                made: Vec::new(),
-                fixed: Vec::new(),
-                rebuilt: crate::RebuiltOutput::default(),
-            };
-            let recs = collect(&mut w, &written, &output).expect("records");
-            assert_eq!(recs.len(), 2, "{recs:#?}");
-            let rm = recs.iter().find(|r| r.kind == KeyKind::Field).expect("m");
-            assert_eq!(rm.key, None, "a fallback key is no Key");
-            assert!(rm.indeterminate);
-            let want = Key {
-                kind: KeyKind::Field,
-                parent: Parent::Unit(parent),
-                name: Name::Content,
-                disc: Some(written[0].digest),
-            };
-            assert_eq!(rm.id, want.id(), "its id is the unit's (fallback) key");
-            let rs = recs.iter().find(|r| r.kind == KeyKind::Class).expect("S");
-            assert_eq!(rs.key.as_ref().map(Key::id), Some(parent));
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut w = Walk::new(&input, &rules);
+                let s = w.entity(named(&w, "S", DeclKind::CXXRecord));
+                let m = w.entity(named(&w, "m", DeclKind::Field));
+                let KeyRes::Key { id: parent, .. } = w.key(s) else { panic!("S has a key") };
+                w.keys.insert(m, KeyRes::None(Some(Cause::Unaccounted("key/test"))));
+                let um = units::write(&mut w, m, UnitClass::Declared).expect("m written");
+                let us = units::write(&mut w, s, UnitClass::Declared).expect("S written");
+                let written = [um, us];
+                let mut names = crate::names::names(&w, &written);
+                names.sort();
+                let output = Output {
+                    digests: Digests {
+                        scheme: 0,
+                        tu: slip_model::Digest([0; 32]),
+                        groups: Vec::new(),
+                    },
+                    counters: Vec::new(),
+                    causes: Vec::new(),
+                    names,
+                    rule_use: Vec::new(),
+                    kept: Vec::new(),
+                    name_strings: Vec::new(),
+                    namespace_parts: Vec::new(),
+                    made: Vec::new(),
+                    fixed: Vec::new(),
+                    rebuilt: crate::RebuiltOutput::default(),
+                };
+                let recs = collect(&mut w, &written, &output).expect("records");
+                assert_eq!(recs.len(), 2, "{recs:#?}");
+                let rm = recs.iter().find(|r| r.kind == KeyKind::Field).expect("m");
+                assert_eq!(rm.key, None, "a fallback key is no Key");
+                assert!(rm.indeterminate);
+                let want = Key {
+                    kind: KeyKind::Field,
+                    parent: Parent::Unit(parent),
+                    name: Name::Content,
+                    disc: Some(written[0].digest),
+                };
+                assert_eq!(rm.id, want.id(), "its id is the unit's (fallback) key");
+                let rs = recs.iter().find(|r| r.kind == KeyKind::Class).expect("S");
+                assert_eq!(rs.key.as_ref().map(Key::id), Some(parent));
+            },
+        )
         .expect("the snippet parses");
     }
 }

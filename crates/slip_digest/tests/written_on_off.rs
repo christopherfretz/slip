@@ -1,9 +1,12 @@
 //! `slip_kiln::ParseOptions::written` changes nothing the digest reads
-//! (work package WP-067, fix round 1; `spec/model.md` §8.4): over a unit
-//! with standard headers, macros, templates, default arguments and an
-//! inheriting constructor, the declaration arena, the shard and the
-//! `slip_digest::digest` output are the same with the written-reference
-//! and declaration-extent tables recorded and without them.
+//! but the ledger's cause (work package WP-067, fix round 1;
+//! `spec/model.md` §8.4; WP-156 fix round 3, L0): over a unit with
+//! standard headers, macros, templates, default arguments and an
+//! inheriting constructor, the declaration arena and the shard are the
+//! same with the written-reference and declaration-extent tables recorded
+//! and without them, and the `slip_digest::digest` output without them is
+//! the output with them and one more unit: the operand unit of `<order>`,
+//! indeterminate with `kiln/written-refs-not-recorded`.
 //!
 //! The parse is the production one (`parse_observer_with`), in a tree
 //! under the work root (`common::work_root()`); `slip_kiln`'s own test of this
@@ -35,7 +38,7 @@ v.push_back(\"x\"); Der d(1); return M(b.t); }
 ";
 
 #[test]
-fn wp067_written_changes_no_digest() {
+fn wp067_written_changes_only_the_ledger_cause() {
     let dir = common::work_root().join("written-on-off");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -91,7 +94,32 @@ fn wp067_written_changes_no_digest() {
     assert!(off_decls > 10_000, "the standard headers were parsed: {off_decls}");
     assert_eq!(on_decls, off_decls, "the declaration arena");
     assert_eq!(on_shard.to_bytes(), off_shard.to_bytes(), "the shard");
-    assert!(on_digest == off_digest, "the digest output differs");
+    let units = |o: &slip_digest::Output| {
+        let mut v: Vec<([u8; 32], [u8; 32])> = o
+            .digests
+            .groups
+            .iter()
+            .flat_map(|g| g.units.iter().flatten())
+            .map(|u| (u.key.0, u.digest.0))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    let (on, off) = (units(&on_digest), units(&off_digest));
+    let extra: Vec<_> = off.iter().filter(|u| on.binary_search(u).is_err()).collect();
+    assert!(
+        on.iter().all(|u| off.binary_search(u).is_ok()),
+        "every unit of the parse with the table"
+    );
+    assert_eq!(extra.len(), 1, "one more unit without the table: {extra:?}");
+    let not_recorded = slip_digest::Cause::Unsupported("kiln/written-refs-not-recorded");
+    assert!(
+        off_digest.causes.iter().any(|(k, c)| k.0 == extra[0].0 && *c == not_recorded),
+        "the ledger's cause: {:?}",
+        off_digest.causes
+    );
+    assert!(on_digest.causes.iter().all(|(_, c)| *c != not_recorded), "{:?}", on_digest.causes);
+    assert!(on_digest.names.iter().all(|n| off_digest.names.contains(n)), "the names");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

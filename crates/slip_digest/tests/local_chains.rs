@@ -49,7 +49,7 @@ fn digest(src: &str) -> (Output, Duration, u64) {
         include: &[""],
         std: "c++20",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let (ast, sm) = (p.ast, p.sm);
         common::on_walk_stack(|| {

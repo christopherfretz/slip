@@ -32,7 +32,7 @@ fn with_input<R: Send>(
 ) -> Result<(R, u32), String> {
     let snippet = slip_kiln::snippet::Snippet { files, main: files[0].0, include: &[""], std };
     let extra = slip_kiln::snippet::Extra { args, target: None };
-    slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
@@ -286,7 +286,7 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
         std: &head.std,
     };
     let extra = slip_kiln::snippet::Extra { args: &args, target: head.target.as_deref() };
-    let got = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    let got = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())

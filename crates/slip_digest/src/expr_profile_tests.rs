@@ -92,7 +92,7 @@ pub(crate) fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
             std: &std,
         };
         let extra = slip_kiln::snippet::Extra { args: &args, target };
-        let _ = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+        let _ = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
             f(&input);
@@ -476,7 +476,7 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
         include: &[""],
         std: "c++20",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
@@ -693,7 +693,7 @@ fn unit_digest(src: &str, name: &str) -> slip_model::Digest {
         include: &[""],
         std: "c++20",
     };
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         let path = |_| Vec::new();
         let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
         let rules = RuleTable::empty();
@@ -952,7 +952,7 @@ fn sample_bytes(src: &str) -> Result<(Vec<String>, HashSet<String>), String> {
         std: "c++26",
     };
     let rules = RuleTable::empty();
-    slip_kiln::snippet::parse(&snippet, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), |p| {
         if p.errors != 0 {
             return Err(p.diagnostics.clone());
         }

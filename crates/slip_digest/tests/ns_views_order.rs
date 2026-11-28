@@ -63,7 +63,7 @@ fn with_post<R>(
     };
     let extra = slip_kiln::snippet::Extra::default();
     let table = if rules { table() } else { RuleTable::empty() };
-    slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         assert_eq!(p.errors, 0, "{}", p.diagnostics);
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()

@@ -1699,22 +1699,26 @@ mod tests {
                         include: &[""],
                         std,
                     };
-                    slip_kiln::snippet::parse(&snippet, |p| {
-                        if p.errors > 0 {
-                            return None;
-                        }
-                        let path = |_| Vec::new();
-                        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-                        let rules = RuleTable::empty();
-                        let options = Options {
-                            rules: &rules,
-                            read_only: crate::ReadOnly::NO_FILE,
-                            detail: Detail::None,
-                            names: true,
-                            rule_use: false,
-                        };
-                        Some(crate::walk::run_with(&input, &options, |w, u, o| f(w, u, &o)))
-                    })
+                    slip_kiln::snippet::parse_with_tables(
+                        &snippet,
+                        &slip_kiln::snippet::Extra::default(),
+                        |p| {
+                            if p.errors > 0 {
+                                return None;
+                            }
+                            let path = |_| Vec::new();
+                            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                            let rules = RuleTable::empty();
+                            let options = Options {
+                                rules: &rules,
+                                read_only: crate::ReadOnly::NO_FILE,
+                                detail: Detail::None,
+                                names: true,
+                                rule_use: false,
+                            };
+                            Some(crate::walk::run_with(&input, &options, |w, u, o| f(w, u, &o)))
+                        },
+                    )
                     .ok()
                     .flatten()
                 })
@@ -2088,42 +2092,47 @@ mod tests {
                         include: &[""],
                         std: "c++20",
                     };
-                    slip_kiln::snippet::parse(&snippet, |p| {
-                        assert_eq!(p.errors, 0, "{}", p.diagnostics);
-                        let path = |_| Vec::new();
-                        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-                        let rules = RuleTable::empty();
-                        let options = Options {
-                            rules: &rules,
-                            read_only: crate::ReadOnly::NO_FILE,
-                            detail: Detail::None,
-                            names: false,
-                            rule_use: false,
-                        };
-                        let normal =
-                            crate::walk::run_with(&input, &options, |_, u, _| keys_and_digests(u));
-                        let mut w = Walk::new(&input, &rules);
-                        let forward = walk_by_hand(
-                            &mut w,
-                            |w| {
-                                let ast = w.ast;
-                                for d in ast.decls.ids() {
-                                    if super::is_local_type(w, d) {
-                                        let _ = super::type_number(w, d);
+                    slip_kiln::snippet::parse_with_tables(
+                        &snippet,
+                        &slip_kiln::snippet::Extra::default(),
+                        |p| {
+                            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                            let path = |_| Vec::new();
+                            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                            let rules = RuleTable::empty();
+                            let options = Options {
+                                rules: &rules,
+                                read_only: crate::ReadOnly::NO_FILE,
+                                detail: Detail::None,
+                                names: false,
+                                rule_use: false,
+                            };
+                            let normal = crate::walk::run_with(&input, &options, |_, u, _| {
+                                keys_and_digests(u)
+                            });
+                            let mut w = Walk::new(&input, &rules);
+                            let forward = walk_by_hand(
+                                &mut w,
+                                |w| {
+                                    let ast = w.ast;
+                                    for d in ast.decls.ids() {
+                                        if super::is_local_type(w, d) {
+                                            let _ = super::type_number(w, d);
+                                        }
                                     }
-                                }
-                                assert!(w.local.numbered >= 6, "{}", w.local.numbered);
-                            },
-                            false,
-                        );
-                        let mut w = Walk::new(&input, &rules);
-                        let backward = walk_by_hand(&mut w, |_| {}, true);
-                        assert!(w.local.numbered >= 6, "numbered inside the walk");
-                        let mut w = Walk::new(&input, &rules);
-                        let lazy = walk_by_hand(&mut w, |_| {}, false);
-                        assert_eq!(lazy, backward);
-                        (normal, forward, backward)
-                    })
+                                    assert!(w.local.numbered >= 6, "{}", w.local.numbered);
+                                },
+                                false,
+                            );
+                            let mut w = Walk::new(&input, &rules);
+                            let backward = walk_by_hand(&mut w, |_| {}, true);
+                            assert!(w.local.numbered >= 6, "numbered inside the walk");
+                            let mut w = Walk::new(&input, &rules);
+                            let lazy = walk_by_hand(&mut w, |_| {}, false);
+                            assert_eq!(lazy, backward);
+                            (normal, forward, backward)
+                        },
+                    )
                     .expect("parses")
                 })
                 .expect("a thread")
@@ -2170,39 +2179,44 @@ mod tests {
                         include: &[""],
                         std: "c++20",
                     };
-                    slip_kiln::snippet::parse(&snippet, |p| {
-                        assert_eq!(p.errors, 0, "{}", p.diagnostics);
-                        let path = |_| Vec::new();
-                        let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
-                        let rules = RuleTable::empty();
-                        let options = Options {
-                            rules: &rules,
-                            read_only: crate::ReadOnly::NO_FILE,
-                            detail: Detail::None,
-                            names: false,
-                            rule_use: false,
-                        };
-                        let normal =
-                            crate::walk::run_with(&input, &options, |_, u, _| keys_and_digests(u));
-                        let mut w = Walk::new(&input, &rules);
-                        let backward = walk_by_hand(&mut w, |_| {}, true);
-                        // The friend's type, asked first from M's stream
-                        // and first from h's, in fresh walks.
-                        let digest_from = |holder: &str, kind: DeclKind| {
+                    slip_kiln::snippet::parse_with_tables(
+                        &snippet,
+                        &slip_kiln::snippet::Extra::default(),
+                        |p| {
+                            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                            let path = |_| Vec::new();
+                            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                            let rules = RuleTable::empty();
+                            let options = Options {
+                                rules: &rules,
+                                read_only: crate::ReadOnly::NO_FILE,
+                                detail: Detail::None,
+                                names: false,
+                                rule_use: false,
+                            };
+                            let normal = crate::walk::run_with(&input, &options, |_, u, _| {
+                                keys_and_digests(u)
+                            });
                             let mut w = Walk::new(&input, &rules);
-                            let ty = befriended_type(&w);
-                            let h = named(&w, holder, kind)[0];
-                            w.unit.local.holder = Some(h);
-                            let t = w.type_digest(ty, false);
-                            assert_eq!(t.cause, None, "the friend's type is written");
-                            t.digest
-                        };
-                        assert_eq!(
-                            digest_from("M", DeclKind::ClassTemplate),
-                            digest_from("h", DeclKind::Function)
-                        );
-                        (normal, backward)
-                    })
+                            let backward = walk_by_hand(&mut w, |_| {}, true);
+                            // The friend's type, asked first from M's stream
+                            // and first from h's, in fresh walks.
+                            let digest_from = |holder: &str, kind: DeclKind| {
+                                let mut w = Walk::new(&input, &rules);
+                                let ty = befriended_type(&w);
+                                let h = named(&w, holder, kind)[0];
+                                w.unit.local.holder = Some(h);
+                                let t = w.type_digest(ty, false);
+                                assert_eq!(t.cause, None, "the friend's type is written");
+                                t.digest
+                            };
+                            assert_eq!(
+                                digest_from("M", DeclKind::ClassTemplate),
+                                digest_from("h", DeclKind::Function)
+                            );
+                            (normal, backward)
+                        },
+                    )
                     .expect("parses")
                 })
                 .expect("a thread")

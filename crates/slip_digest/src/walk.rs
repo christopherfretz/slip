@@ -871,7 +871,11 @@ pub(crate) fn run_kept<R>(
             w.names_end(saved);
         }
     }
-    written.push(crate::units::order_unit(&mut w));
+    let order = crate::units::order_unit(&mut w);
+    // Its operand unit: the ledger's (L0, `operands::order`).
+    let order_operands = crate::operands::order(&mut w, &order);
+    written.push(order);
+    written.extend(order_operands);
     crate::units::apply_taints(&w, &mut written);
     crate::units::view_units(&mut w, &mut written);
     let collisions = crate::units::mark_collisions(&mut written)

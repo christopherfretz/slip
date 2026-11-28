@@ -153,8 +153,9 @@ pub fn map_observer(observer: &Observer, round: u64, negatives: bool) -> Result<
 
 /// [`map_observer`], and with `transform` (the request and its id) the map
 /// job of a transform (`spec/edits.md` §8.1; work package WP-074): the
-/// parse records Kiln's written-reference tables and preprocessing record
-/// (`ParseOptions::written`, `pp_record`), the walk runs as without, and
+/// parse also records Kiln's preprocessing record (`ParseOptions::pp_record`;
+/// every map parse records the written-reference tables,
+/// `ParseOptions::written`, which the digest reads), the walk runs as without, and
 /// then, in the same closure and on a walk that succeeded,
 /// [`transform::run_transform`] over the same input. An `ok` shard gets
 /// `edits` and the `edits.*` counters beside the walk's; a shard that is
@@ -183,8 +184,11 @@ fn map_shard(
     let identity = |path: &[u8]| path.to_vec();
     let mut parse = ParseOptions::default();
     parse.lookups = negatives;
+    // Every digested parse records the written-reference table: the
+    // digest's ledger of written names reads it (`spec/digest.md` §2.4,
+    // WP-156 fix round 3, L0).
+    parse.written = true;
     if transform.is_some() {
-        parse.written = true;
         parse.pp_record = true;
     }
     let directory = &observer.command.directory;

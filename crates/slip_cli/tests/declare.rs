@@ -802,7 +802,7 @@ fn with_input<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> 
         std: "c++20",
     };
     let extra = slip_kiln::snippet::Extra { args: &[], target: None };
-    let (r, errors) = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    let (r, errors) = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())

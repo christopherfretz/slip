@@ -960,7 +960,8 @@ mod tests {
             include: &[""],
             std: "c++20",
         };
-        slip_kiln::snippet::parse(&snippet, f).expect("parses")
+        slip_kiln::snippet::parse_with_tables(&snippet, &slip_kiln::snippet::Extra::default(), f)
+            .expect("parses")
     }
 
     /// `lib.rs` "What bounds the stack": measures the bytes one level of
@@ -1106,21 +1107,25 @@ mod tests {
             include: &[""],
             std: &std,
         };
-        let out = slip_kiln::snippet::parse(&snippet, |p| {
-            let opts = slip_kiln::kiln::ast::dump::DumpOptions {
-                ids: true,
-                canonical_types: true,
-                implicit: false,
-                sources: Some(p.sm),
-                main_file: Some(p.main_file),
-                ..Default::default()
-            };
-            format!(
-                "{}\n{}",
-                p.diagnostics,
-                slip_kiln::kiln::ast::dump::dump_to_string(p.ast, &opts)
-            )
-        })
+        let out = slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let opts = slip_kiln::kiln::ast::dump::DumpOptions {
+                    ids: true,
+                    canonical_types: true,
+                    implicit: false,
+                    sources: Some(p.sm),
+                    main_file: Some(p.main_file),
+                    ..Default::default()
+                };
+                format!(
+                    "{}\n{}",
+                    p.diagnostics,
+                    slip_kiln::kiln::ast::dump::dump_to_string(p.ast, &opts)
+                )
+            },
+        )
         .expect("parses");
         println!("{out}");
     }
