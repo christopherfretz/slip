@@ -471,26 +471,13 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
     let (output, errors, diagnostics) = out;
     let output = output?;
-    // WP-155 (second fix round, rule 3): every local function with
-    // `constructor`, `destructor` or `used` the mark could place, it
-    // placed, in every fixture of every runner.
-    let unplaced = output.counters.iter().find(|c| c.name == "digest.emitted.unplaced");
-    if unplaced.is_none_or(|c| c.value != 0) {
-        return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
-    }
-    // WP-158 (`spec/digest.md` §13): every function body and default
-    // argument Kiln instantiated is held by a unit, in every fixture of
-    // every runner.
-    let unheld = output.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
-    if unheld.is_none_or(|c| c.value != 0) {
-        return Err(format!("side {side:?}: digest.instantiated.unheld is {unheld:?}, not 0"));
-    }
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",
             head.line()
         ));
     }
+    check_invariant_counters(side, errors, &output)?;
     let units = index(&output);
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
         eprintln!("--- {} side {side:?}: kiln {}", rel(dir), head.line());
@@ -515,6 +502,35 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
         }
     }
     Ok(Digested { output, units, errors, diagnostics })
+}
+
+fn check_invariant_counters(side: Side, errors: u32, output: &Output) -> Result<(), String> {
+    // WP-155 (second fix round, rule 3): every local function with
+    // `constructor`, `destructor` or `used` the mark could place, it
+    // placed, in every fixture of every runner.
+    let unplaced = output.counters.iter().find(|c| c.name == "digest.emitted.unplaced");
+    if unplaced.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
+    }
+    // WP-158 (`spec/digest.md` §13): every function body and default
+    // argument Kiln instantiated is held by a unit, in every fixture of
+    // every runner.
+    let unheld = output.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
+    if unheld.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.instantiated.unheld is {unheld:?}, not 0"));
+    }
+    // WP-136 (`spec/digest.md` §10, §12): an observer with no error
+    // diagnostic must have no invalid declaration without Kiln's
+    // `subst_failed` mark.
+    if errors == 0 {
+        let unmarked = output.counters.iter().find(|c| c.name == "digest.invalid.unmarked");
+        if unmarked.is_none_or(|c| c.value != 0) {
+            return Err(format!(
+                "side {side:?}: digest.invalid.unmarked is {unmarked:?}, not 0 (with 0 errors)"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Parses one side of the test in `dir` as [`digest_side_with`] does and

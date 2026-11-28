@@ -366,7 +366,8 @@ pub(crate) fn unplaced(w: &mut Walk<'_>) -> u64 {
     let ast = w.ast;
     let mut n = 0;
     for f in ast.decls.ids() {
-        if ast.decls.function(f).is_none()
+        if crate::units::in_failed_substitution(ast, f)
+            || ast.decls.function(f).is_none()
             || !w.is_local(f)
             || templated(w, f)
             || !attributed(w, f)

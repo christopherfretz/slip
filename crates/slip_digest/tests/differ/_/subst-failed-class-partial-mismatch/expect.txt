@@ -1,0 +1,4 @@
+added Trait<int>::type
+changed Trait<int>
+changed u()
+derived-changed P<int, void>::<definition>

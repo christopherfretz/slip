@@ -1,0 +1,1 @@
+# Side A tries a::g<a::S> (fails substitution); side B never tries it. Both equal.

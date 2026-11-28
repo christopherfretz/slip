@@ -119,6 +119,50 @@ fn rejects_malformed_rows() {
         (format!("{good}[tiny]\n"), "appears twice"),
         (format!("x = 1\n{good}"), "outside any table"),
         (format!("{good}[a.b]\n"), "unsupported table header"),
+        (format!("{good}expected_unparsed = [\"bad\"]\n"), "must be `<outcome>:<path>:<reason>`"),
+        (
+            format!("{good}expected_unparsed = [\"ok:a.cpp:why\"]\n"),
+            "must be `diagnosed`, `rejected` or `failed`",
+        ),
+        (
+            format!("{good}expected_unparsed = [\"diagnosed:/abs.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_unparsed = [\"diagnosed:../a.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_unparsed = [\"diagnosed:a.cpp:   \"]\n"),
+            "needs a one-line reason",
+        ),
+        (
+            format!("{good}expected_unparsed = [\"diagnosed:a.cpp:r1\", \"failed:a.cpp:r2\"]\n"),
+            "lists `a.cpp` twice",
+        ),
+        (format!("{good}expected_excluded = [\"bad\"]\n"), "must be `<reason>:<path>:<note>`"),
+        (
+            format!("{good}expected_excluded = [\"bogus:a.cpp:why\"]\n"),
+            "must be one of not_a_compile",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:/abs.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:../a.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:a.cpp:   \"]\n"),
+            "needs a one-line note",
+        ),
+        (
+            format!(
+                "{good}expected_excluded = [\"unsupported_flag:a.cpp:n1\", \"not_a_compile:a.cpp:n2\"]\n"
+            ),
+            "lists `a.cpp` twice",
+        ),
     ];
     for (text, want) in cases {
         let e = parse_err(&text);
@@ -148,6 +192,17 @@ fn the_committed_llvm_row() {
     for t in ["intrinsics_gen", "X86CommonTableGen", "AArch64CommonTableGen"] {
         assert!(c.generate.iter().any(|g| g == t), "{t}");
     }
+    let unparsed: Vec<(&str, slip_model::Status)> =
+        c.expected_unparsed.iter().map(|e| (e.path.as_str(), e.status)).collect();
+    assert_eq!(
+        unparsed,
+        [
+            ("clang/tools/clang-fuzzer/ClangFuzzer.cpp", slip_model::Status::Diagnosed),
+            ("clang/tools/clang-fuzzer/ClangObjectiveCFuzzer.cpp", slip_model::Status::Diagnosed),
+        ]
+    );
+    assert!(c.expected_unparsed.iter().all(|e| !e.reason.is_empty()));
+    assert!(c.expected_excluded.is_empty());
     assert!(rows::find(&all, "nope").unwrap_err().contains("corpora: llvm"));
 }
 

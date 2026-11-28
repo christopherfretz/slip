@@ -1,0 +1,2 @@
+# `X<int, int>` carries `ClassPartialAmbiguity` from the SFINAE probe and a definition/members from the later explicit specialisation: fails closed (`Unaccounted("decl/class-partial-ambiguity")`).
+indeterminate X<int, int>

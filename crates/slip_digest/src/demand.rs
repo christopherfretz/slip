@@ -1005,7 +1005,10 @@ pub(crate) fn unheld(w: &Walk<'_>) -> u64 {
         false
     };
     for d in ast.decls.ids() {
-        if ast.decls.get(d).has(DeclFlags::DEPENDENT_CTX) || in_held_type(d) {
+        if ast.decls.get(d).has(DeclFlags::DEPENDENT_CTX)
+            || in_held_type(d)
+            || crate::units::in_failed_substitution(ast, d)
+        {
             bodies.remove(&d);
             continue;
         }
@@ -1057,7 +1060,11 @@ pub(crate) fn local_parts(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mu
 /// argument.
 pub(crate) fn is_local_default_holder(w: &Walk<'_>, e: DeclId) -> bool {
     let ast = w.ast;
-    if ast.decls.function(e).is_none() || !w.is_local(e) || w.is_local_extern(e) {
+    if ast.decls.function(e).is_none()
+        || !w.is_local(e)
+        || w.is_local_extern(e)
+        || crate::units::in_failed_substitution(ast, e)
+    {
         return false;
     }
     let decls: Vec<DeclId> =

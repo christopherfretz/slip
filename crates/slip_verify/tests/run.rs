@@ -1417,3 +1417,121 @@ fn s7_1_strict_names_after_add_panics() {
     r.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
     r.strict_names();
 }
+
+// WP-136 (`spec/digest.md` §10, §12): an `ok` verify shard (no error
+// diagnostic) whose `digest.invalid.unmarked` counter is non-zero is a
+// defect of Kiln or Slip, reported as a line in the text report and a
+// member in JSON without panicking; when 0 or absent neither appears.
+#[test]
+fn wp136_unmarked_invalid_reported_in_text_and_json() {
+    let mut r_clean = Report::new(header(vec![], 1), &Declared::none());
+    r_clean.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
+    assert!(!r_clean.to_text().contains("unmarked invalid"), "{}", r_clean.to_text());
+    let clean_json = json::write_pretty(&r_clean.to_json()).unwrap();
+    assert!(!clean_json.contains("unmarked_invalid"), "{clean_json}");
+
+    let mut s1 = verified(1);
+    s1.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 2 });
+    s1.counters.sort();
+    let mut s2 = verified(2);
+    s2.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 1 });
+    s2.counters.sort();
+
+    let mut r = Report::new(header(vec![], 2), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&s1), MAP_OK);
+    r.add(&d(2), b"/b.cpp", Some(&s2), MAP_OK);
+    let text = r.to_text();
+    assert!(text.contains("defect: unmarked invalid declarations: 3 in 2 observer(s)\n"), "{text}");
+    let j = json::write_pretty(&r.to_json()).unwrap();
+    assert!(
+        j.contains("\"unmarked_invalid\"")
+            && j.contains("\"observers\": 2")
+            && j.contains("\"declarations\": 3"),
+        "{j}"
+    );
+}
+
+// WP-136 fix round 1 (item 3): `digest.invalid.unmarked` on the pre-image only
+// (carried via `verify.invalid.unmarked.pre` for compared shards, and read
+// directly from the `ok` map shard for `unchanged` observers) is folded into
+// `Report`'s text and JSON output; an observer with unmarked invalid
+// declarations on both sides counts once as an observer and sums declarations.
+#[test]
+fn wp136_unmarked_invalid_pre_image_and_unchanged() {
+    use std::collections::BTreeMap;
+
+    use slip_model::overlay::{Content, Overlay, OverlayFile};
+    use slip_model::{FileRef, Phase};
+
+    // 1. Pre-image only (`verify.invalid.unmarked.pre > 0`, post = 0).
+    let mut pre_only = verified(1);
+    pre_only.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 0 });
+    pre_only.counters.push(Counter { name: "verify.invalid.unmarked.pre".to_owned(), value: 2 });
+    pre_only.counters.sort();
+
+    let mut r = Report::new(header(vec![], 1), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&pre_only), MAP_OK);
+    let text = r.to_text();
+    assert!(text.contains("defect: unmarked invalid declarations: 2 in 1 observer(s)\n"), "{text}");
+    let j = json::write_pretty(&r.to_json()).unwrap();
+    assert!(
+        j.contains("\"unmarked_invalid\"")
+            && j.contains("\"observers\": 1")
+            && j.contains("\"declarations\": 2"),
+        "{j}"
+    );
+
+    // 2. Both pre-image and post-image non-zero on one observer: counted once
+    // as an observer, declarations summed.
+    let mut both = verified(1);
+    both.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 3 });
+    both.counters.push(Counter { name: "verify.invalid.unmarked.pre".to_owned(), value: 2 });
+    both.counters.sort();
+
+    let mut r_both = Report::new(header(vec![], 1), &Declared::none());
+    r_both.add(&d(1), b"/a.cpp", Some(&both), MAP_OK);
+    assert!(
+        r_both.to_text().contains("defect: unmarked invalid declarations: 5 in 1 observer(s)\n"),
+        "{}",
+        r_both.to_text()
+    );
+
+    // 3. Unchanged observer (`add_unchanged_at`): map shard has
+    // `digest.invalid.unmarked > 0`.
+    let overlay = Overlay {
+        edits: d(0xaa),
+        files: vec![OverlayFile {
+            path: b"/s/edited.h".to_vec(),
+            pre: Content { size: 1, content: d(1) },
+            post: Content { size: 1, content: d(2) },
+        }],
+        spellings: Vec::new(),
+    };
+    let mut r_unch = Report::new(header(vec![], 1), &Declared::none());
+    r_unch.overlay(d(0xbb), &overlay);
+    r_unch.identities(BTreeMap::from([
+        (b"/s/edited.h".to_vec(), (1, 1)),
+        (b"/s/other.cpp".to_vec(), (1, 2)),
+    ]));
+    let mut map = verified(1);
+    map.phase = Phase::Map;
+    map.round = 0;
+    map.verdict = None;
+    map.binding = None;
+    map.inputs = Some(vec![FileRef { path: b"/s/other.cpp".to_vec(), size: 1, content: d(3) }]);
+    map.counters = vec![Counter { name: "digest.invalid.unmarked".to_owned(), value: 4 }];
+    r_unch.add_unchanged_at(0, &d(1), b"/s/other.cpp", &map);
+    assert_eq!(r_unch.states()[at(State::Unchanged)], 1);
+    let utext = r_unch.to_text();
+    assert!(
+        utext.contains("defect: unmarked invalid declarations: 4 in 1 observer(s)\n"),
+        "{utext}"
+    );
+    let uj = json::write_pretty(&r_unch.to_json()).unwrap();
+    assert!(
+        uj.contains("\"unmarked_invalid\"")
+            && uj.contains("\"observers\": 1")
+            && uj.contains("\"declarations\": 4"),
+        "{uj}"
+    );
+}

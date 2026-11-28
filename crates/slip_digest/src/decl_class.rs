@@ -427,9 +427,11 @@ fn members(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
             continue;
         }
         // An invalid member makes its class indeterminate too
-        // (spec/landed/digest-kinds/WP-027.md).
-        if w.redecls(e).iter().any(|&x| ast.decls.get(x).has(DeclFlags::INVALID)) {
-            s.indeterminate(Cause::Error);
+        // (spec/landed/digest-kinds/WP-027.md; WP-136 for `subst_failed`).
+        for x in w.redecls(e) {
+            if let Some(c) = crate::units::invalid_cause(ast, x) {
+                s.indeterminate(c);
+            }
         }
         let kind = ast.decls.get(e).kind();
         if kind == DeclKind::Field || kind == DeclKind::IndirectField {
@@ -522,6 +524,10 @@ fn local_member(w: &Walk<'_>, e: DeclId) -> bool {
     }
     // A hidden using-shadow is no member a class lists (WP-119 item 6).
     if crate::units::hidden_shadow(w, e) {
+        return false;
+    }
+    // A failed substitution specialisation is no entity (WP-136).
+    if w.chain(e).iter().all(|&d| crate::units::in_failed_substitution(ast, d)) {
         return false;
     }
     let written_by_another = kind == DeclKind::UsingShadow
