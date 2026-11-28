@@ -3,16 +3,12 @@
 //! test names the paragraph of §8.4 it covers ("the run", "outcome",
 //! "inputs", "counters"); the parity test compares every fixture with the
 //! parse task of WP-010 (`support::oracle`).
-//!
-//! The parse changes the process's current directory, so every test here
-//! holds [`LOCK`] and uses absolute paths only.
 
 mod common;
 
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cdb::check::FrontEndCheck;
 use slip_kiln::kiln::ast::decl::DeclKind;
@@ -21,27 +17,26 @@ use slip_kiln::{KilnCheck, ParseOptions, Unit, parse_observer, parse_observer_wi
 use slip_model::hash::content_digest;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
-/// A fixture directory, removed on drop, a directory beside it for the
-/// oracle's dependency file, and the lock held while it lives.
+/// A fixture directory, removed on drop, and a directory beside it for the
+/// oracle's dependency file.
 struct Fixture {
     root: PathBuf,
     oracle: PathBuf,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let base =
-            std::env::temp_dir().join(format!("slip-kiln-parse-{}-{name}", std::process::id()));
+            common::work_root().join(format!("slip-kiln-parse-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("work")).unwrap();
         std::fs::create_dir_all(base.join("oracle")).unwrap();
         // The fixture's own real path: the system temp dir may be a link.
         let base = std::fs::canonicalize(&base).unwrap();
-        Fixture { root: base.join("work"), oracle: base.join("oracle"), _lock: lock }
+        Fixture { root: base.join("work"), oracle: base.join("oracle") }
     }
 
     fn write(&self, rel: &str, text: &str) -> PathBuf {
@@ -643,7 +638,6 @@ fn s1_unit_order_forced_include_comes_before_the_main_file() {
     use slip_kiln::kiln::source::Loc;
     use slip_kiln::ranges::unit_order;
     use std::cmp::Ordering;
-    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let dir =
         common::work_root().join(format!("slip-kiln-wp084-forced-include-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1220,4 +1214,190 @@ fn wp173_static_init_facts_is_off() {
     .unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
     assert_eq!(seen, Some((false, false)));
+}
+
+// WP-148 item 1 (Kiln WP-2121): two parses with different working
+// directories run concurrently in one process without mutating the
+// process's current directory; each resolves its own relative main file,
+// relative `-I` header, and relative `-include` header. Fails with
+// process-wide `set_current_dir`; must pass 20x in a row.
+#[test]
+fn s8_4_two_directories_concurrently() {
+    use std::sync::{Arc, Barrier};
+
+    let before_cwd = std::env::current_dir().unwrap();
+    let base = common::work_root().join(format!("slip-kiln-two-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dir_a = base.join("dir_a");
+    let dir_b = base.join("dir_b");
+    std::fs::create_dir_all(dir_a.join("inc")).unwrap();
+    std::fs::create_dir_all(dir_b.join("inc")).unwrap();
+    let dir_a = std::fs::canonicalize(&dir_a).unwrap();
+    let dir_b = std::fs::canonicalize(&dir_b).unwrap();
+
+    let h_a = dir_a.join("inc/val.h");
+    let h_b = dir_b.join("inc/val.h");
+    let def_a = dir_a.join("inc/defs.h");
+    let def_b = dir_b.join("inc/defs.h");
+    std::fs::write(&h_a, "constexpr int VAL = 11;\n").unwrap();
+    std::fs::write(&h_b, "constexpr int VAL = 22;\n").unwrap();
+    std::fs::write(&def_a, "#define EXPECTED 11\n").unwrap();
+    std::fs::write(&def_b, "#define EXPECTED 22\n").unwrap();
+    let main_src =
+        "#include <val.h>\nstatic_assert(VAL == EXPECTED, \"wrong dir\");\nint x = VAL;\n";
+    let main_a = dir_a.join("main.cpp");
+    let main_b = dir_b.join("main.cpp");
+    std::fs::write(&main_a, main_src).unwrap();
+    std::fs::write(&main_b, main_src).unwrap();
+
+    let obs_a =
+        observer(&dir_a, &["c++", "-std=c++20", "-Iinc", "-include", "inc/defs.h", "main.cpp"]);
+    let obs_b =
+        observer(&dir_b, &["c++", "-std=c++20", "-Iinc", "-include", "inc/defs.h", "main.cpp"]);
+    let want_a = refs(&[&def_a, &h_a, &main_a]);
+    let want_b = refs(&[&def_b, &h_b, &main_b]);
+
+    for round in 0..8u64 {
+        let barrier = Arc::new(Barrier::new(2));
+        let (b1, b2) = (Arc::clone(&barrier), Arc::clone(&barrier));
+        let (oa, ob) = (&obs_a, &obs_b);
+        let (sa, sb) = std::thread::scope(|s| {
+            let ta = s.spawn(move || {
+                b1.wait();
+                parse_observer(oa, Phase::Map, round).expect("dir_a")
+            });
+            let tb = s.spawn(move || {
+                b2.wait();
+                parse_observer(ob, Phase::Map, round).expect("dir_b")
+            });
+            (ta.join().unwrap(), tb.join().unwrap())
+        });
+        assert_eq!(sa.outcome.status, Status::Ok, "round {round} dir_a: {:?}", sa.outcome);
+        assert_eq!(sb.outcome.status, Status::Ok, "round {round} dir_b: {:?}", sb.outcome);
+        assert_eq!(sa.inputs.as_ref(), Some(&want_a), "round {round} dir_a inputs");
+        assert_eq!(sb.inputs.as_ref(), Some(&want_b), "round {round} dir_b inputs");
+    }
+
+    assert_eq!(std::env::current_dir().unwrap(), before_cwd, "process current_dir must not change");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// WP-148 fix round 1 (item 1, M6): `-working-directory` in either spelling
+// (`-working-directory=sub` or `-working-directory sub`) is refused by both
+// `KilnCheck` and `parse_observer_with` (`slip_kiln::check::not_modelled`), so
+// relative lookup entries never diverge from `Command.directory`.
+#[test]
+fn s6_2_working_directory_flag_is_refused() {
+    use slip_cdb::check::Rejection;
+
+    let base = common::work_root().join(format!("slip-kiln-wd-flag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("sub/generated")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let main = base.join("sub/main.cpp");
+    std::fs::write(base.join("sub/generated/h.h"), "constexpr int H = 1;\n").unwrap();
+    std::fs::write(&main, "#include <h.h>\nint x = H;\n").unwrap();
+    let main_s = main.to_str().unwrap();
+
+    let cases: [(&[&str], &str); 2] = [
+        (
+            &["c++", "-std=c++20", "-working-directory=sub", "-Igenerated", "-nostdinc", main_s],
+            "-working-directory=sub",
+        ),
+        (
+            &["c++", "-std=c++20", "-working-directory", "sub", "-Igenerated", "-nostdinc", main_s],
+            "-working-directory",
+        ),
+    ];
+    let mut opts = ParseOptions::default();
+    opts.lookups = true;
+    for (argv, expected_flag) in cases {
+        let obs = observer(&base, argv);
+        assert_eq!(
+            KilnCheck.check(&obs.command, main_s.as_bytes()),
+            Err(Rejection::UnsupportedFlag(expected_flag.into())),
+            "{argv:?}"
+        );
+        let (shard, seen) =
+            parse_observer_with(&obs, Phase::Map, 0, opts, |_| ()).expect("parse_observer_with");
+        assert_eq!(shard.outcome.status, Status::Rejected, "{argv:?}: {:?}", shard.outcome);
+        assert!(seen.is_none(), "{argv:?}: refused unit must not run closure");
+        assert!(
+            shard.outcome.message.contains("-working-directory is not supported by Slip"),
+            "{argv:?}: {:?}",
+            shard.outcome
+        );
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// WP-148 item 3 (Kiln WP-2320): relative cost of `ParseOptions::written`
+// (`FrontEndOptions::written_refs` + `-fkiln-decl-extents`) vs default parse
+// on three large C++ inputs in the repository (debug build, relative ratios).
+#[test]
+#[ignore = "a measure: --ignored --nocapture"]
+fn measure_written_refs_cost() {
+    let repo = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+    let res_inc = repo.join("resource/include");
+    let res_inc_s = res_inc.to_str().unwrap().to_owned();
+    let cases: [(&str, PathBuf, Vec<String>); 3] = [
+        (
+            "resource/examples/swap_arguments.cpp",
+            repo.join("resource/examples"),
+            vec![
+                "c++".into(),
+                "-std=c++26".into(),
+                "-I".into(),
+                res_inc_s,
+                "swap_arguments.cpp".into(),
+            ],
+        ),
+        (
+            "kiln/tests/conformance/ext.gnu.builtins/overflow-constexpr.cpp",
+            repo.join("kiln/tests/conformance/ext.gnu.builtins"),
+            vec!["c++".into(), "-std=c++26".into(), "overflow-constexpr.cpp".into()],
+        ),
+        (
+            "crates/slip_digest/tests/equal/_/name-value-default-reach-large/a.cpp",
+            repo.join("crates/slip_digest/tests/equal/_/name-value-default-reach-large"),
+            vec!["c++".into(), "-std=c++20".into(), "a.cpp".into()],
+        ),
+    ];
+    for (label, dir, argv) in &cases {
+        let dir = std::fs::canonicalize(dir).unwrap();
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let obs = observer(&dir, &argv_refs);
+        let mut with_opt = ParseOptions::default();
+        with_opt.written = true;
+        // One warm-up each, then 3 alternating pairs.
+        let (s0, _) =
+            parse_observer_with(&obs, Phase::Map, 0, ParseOptions::default(), |_| ()).unwrap();
+        assert_eq!(s0.outcome.status, Status::Ok, "{label}: {:?}", s0.outcome);
+        let (s1, _) = parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
+        assert_eq!(s1.outcome.status, Status::Ok, "{label} (written): {:?}", s1.outcome);
+        assert_eq!(s0, s1, "{label}: shard must not depend on ParseOptions::written");
+        let mut without_s = Vec::new();
+        let mut with_s = Vec::new();
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            parse_observer_with(&obs, Phase::Map, 0, ParseOptions::default(), |_| ()).unwrap();
+            without_s.push(t0.elapsed());
+            let t1 = std::time::Instant::now();
+            parse_observer_with(&obs, Phase::Map, 0, with_opt, |_| ()).unwrap();
+            with_s.push(t1.elapsed());
+        }
+        without_s.sort_unstable();
+        with_s.sort_unstable();
+        let med_off = without_s[1].as_secs_f64();
+        let med_on = with_s[1].as_secs_f64();
+        let ratio = med_on / med_off;
+        let pct = (ratio - 1.0) * 100.0;
+        let tokens = s0.counters.iter().find(|c| c.name == "pp.tokens").map_or(0, |c| c.value);
+        let files = s0.counters.iter().find(|c| c.name == "inputs.files").map_or(0, |c| c.value);
+        println!(
+            "MEASURE {label}: files={files} tokens={tokens} ratio={ratio:.3}x ({pct:+.1}%) [raw medians: off={:.1}ms on={:.1}ms]",
+            med_off * 1e3,
+            med_on * 1e3,
+        );
+    }
 }

@@ -18,16 +18,12 @@
 //! `fresh -> old`, kind namespace) unless a test says otherwise; files
 //! under `dep/` are read-only; `u1` is the observer `X` (it reads the
 //! entity as owned), `u0` the observer `Y` (it reads it as a dependency's).
-//!
-//! A parse changes the process's current directory: every test that
-//! parses holds [`LOCK`], and every path is absolute.
 
 mod common;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cli::image::{Image, RootMap};
 use slip_cli::verify_job::{Params, verify};
@@ -41,17 +37,13 @@ use slip_model::transform::Ownership;
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard};
 use slip_verify::run::{Header, MapShard, Report, RunVerdict};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
 /// A subject tree `s/`, a post tree `post-tree/` and a store, in a
-/// directory of their own that is removed on drop; the lock is held while
-/// it lives.
+/// directory of their own that is removed on drop.
 struct Tree {
     base: PathBuf,
     subject: PathBuf,
     post: PathBuf,
     store: Store,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for Tree {
@@ -73,7 +65,6 @@ impl Tree {
     /// `pre` in both trees, then `post` over the post tree.
     fn new(name: &str, pre: &[(&str, &str)], post: &[(&str, &str)]) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let base = common::work_root().join(format!("wp146-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -91,7 +82,7 @@ impl Tree {
             write(&post_dir.join(rel), text);
         }
         let store = Store::open(&base.join("store"), Access::Shared).unwrap();
-        Tree { base, subject, post: post_dir, store, _lock: lock }
+        Tree { base, subject, post: post_dir, store }
     }
 
     fn observer_of(&self, main: &str, flags: &[&str]) -> Observer {

@@ -1011,8 +1011,8 @@ fn edits_unlisted_values() {
         (97, 0, 2),   // failure opt tag
         (141, 0, 4),  // stance
         (143, 0, 4),  // piece tag (3 is an identifier piece, WP-132)
-        (187, 0, 12), // reason (12 unlisted; 13 is `rebuilt`, WP-118)
-        (187, 0, 14), // reason, the first after `rebuilt`
+        (187, 0, 12), // reason (12 unlisted; 13 is `rebuilt`, 14 is `captured_at_instance`)
+        (187, 0, 15), // reason, the first after `captured_at_instance`
         (189, 0, 2),  // macro opt tag
         (196, 0, 2),  // report place opt tag
         (197, 0, 3),  // severity
@@ -1094,6 +1094,7 @@ fn edits_reason_values() {
         (Reason::Directive, 10, "directive"),
         (Reason::Instantiated, 11, "instantiated"),
         (Reason::Rebuilt, 13, "rebuilt"),
+        (Reason::CapturedAtInstance, 14, "captured_at_instance"),
     ];
     for (reason, n, name) in all {
         assert_eq!(reason as u64, n, "{name}");

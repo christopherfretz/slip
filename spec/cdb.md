@@ -346,7 +346,10 @@ In this order; the first that applies decides.
    - what it refuses with `drv_front_end_unsupported` when written on the
      command line: `-verify` (`Args::verify`), `-include-pch`
      (`pch.include`).
-   - Slip's own refusal (not the entry's): a flag that reads a file or
+   - Slip's own refusal (not the entry's): `-working-directory`
+     (`Args::working_directory`, WP-148: changing the front end's working
+     directory from the command line would make relative lookup entries
+     disagree with `Command.directory`); a flag that reads a file or
      names a search directory Slip's lookup guards do not model
      (`spec/verify.md` §5.3): `-imacros` (`Args::imacros`), `-iprefix`
      (`Args::iprefix`), `-iwithprefix`, `-iwithprefixbefore`
@@ -357,8 +360,8 @@ In this order; the first that applies decides.
      `-fkiln-verify-subst-failed`, `-fkiln-dump-friend-forms`;
      `slip_kiln::check::not_modelled`). Kiln's driver refused them as
      unknown arguments at earlier pins; Slip keeps refusing them (WP-163,
-     WP-173), and its parse refuses them too (`rejected`, before Kiln
-     runs).
+     WP-148, WP-173), and its parse refuses them too (`rejected`, before
+     Kiln runs).
 
    `UnsupportedFlag`, detail the argument responsible: the last argument
    of the shortest prefix `argv[1..=k]` of the command that is refused (in
