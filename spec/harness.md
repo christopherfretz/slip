@@ -643,8 +643,14 @@ checks, in order:
    same edit set id;
 3. with `--accept`: every command of the plan, run by clang with
    `-fsyntax-only` and a clang VFS overlay file that maps each overlay
-   path to its blob, exits as it does on the pre-image (the two units
-   clang rejects in `llvm`, §8.7, must be rejected the same way);
+   path to its blob, exits as it does on the pre-image — only status 0
+   is acceptance and only status 1 (without clang's crash text on
+   standard error) is a rejection; any other status, a signal, a
+   timeout, or clang's crash text (`PLEASE submit a bug report`,
+   `frontend command failed due to signal`) fails the check, naming the
+   command, even when both images fail the same way (the two units
+   clang rejects in `llvm`, §8.7, must be rejected with status 1 the
+   same way);
 4. with `--build`: the patch is applied to a copy of the source
    directory under the corpus's build directory; the copy is configured
    and generated as the corpus is (§8.3) and built with clang (`all`);
@@ -710,9 +716,14 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   file whose post-image differs from its pre-image to its blob in the
   store, `use-external-names` off. One jobserver token per command pair,
   at most `-j` pairs at once (the jobserver's count without `-j`); a
-  pair that does not end within an hour counts as a difference. Exit
-  statuses alone are compared; up to 20 differences are printed with the
-  first error line.
+  pair that does not end within an hour fails the check. Only exit
+  status 0 (accepted) and exit status 1 without clang crash text on
+  standard error (rejected) may match across images; any other exit
+  status, termination by signal, timeout, or crash text on standard
+  error (`PLEASE submit a bug report`, `frontend command failed due to
+  signal`) fails the check, naming the command. Up to 20 failing
+  commands are printed with their exit description and first crash or
+  error line.
 - **4.** Before `slip` runs: the tools are found, the file system of the
   corpus directory must have at least twice the bytes of `src/`'s
   regular files free (`df -Pk`), and a `rename-copy/` or `rename-build/`

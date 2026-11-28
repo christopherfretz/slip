@@ -2117,6 +2117,8 @@ struct Diff {
     units: u64,
     kiln_errors: u64,
     clang_errors: u64,
+    /// Sides on which clang crashed: `(label, detail)`.
+    crashed: Vec<(String, String)>,
     /// Units whose clang dump is over [`DUMP_LIMIT`], refused unread.
     dump_skipped: u64,
     dump_skipped_at: Vec<String>,
@@ -2150,6 +2152,7 @@ impl Diff {
         self.units += o.units;
         self.kiln_errors += o.kiln_errors;
         self.clang_errors += o.clang_errors;
+        self.crashed.extend(o.crashed);
         self.dump_skipped += o.dump_skipped;
         self.dump_skipped_at.extend(o.dump_skipped_at);
         self.largest_dump = self.largest_dump.max(o.largest_dump);
@@ -2186,13 +2189,121 @@ fn dump_limit() -> u64 {
         .map_or(DUMP_LIMIT, |v| v.parse().expect("SLIP_WP086_DUMP_LIMIT: a number of bytes"))
 }
 
+/// Substrings of clang's standard error that mark a compiler crash even when
+/// the driver exits with status 1 (`docs/wp/WP-171.md`).
+const CLANG_CRASH_MARKERS: [&str; 2] =
+    ["PLEASE submit a bug report", "frontend command failed due to signal"];
+
+/// Sides known to crash `clang++-19` under `-ast-dump=json`, with a one-line
+/// reason each. Any crash not listed fails `item7_differential_against_clang`;
+/// any listed side that no longer crashes also fails so the list cannot go
+/// stale (`docs/wp/WP-171.md`).
+const KNOWN_CLANG19_CRASHES: &[(&str, &str)] = &[
+    (
+        "differ/_/name-value-source-location-key-moved side 0",
+        "clang 19 SIGSEGV in ASTNameGenerator::getName / JSONNodeDumper on std::source_location NTTP",
+    ),
+    (
+        "differ/_/name-value-source-location-key-moved side 1",
+        "clang 19 SIGSEGV in ASTNameGenerator::getName / JSONNodeDumper on std::source_location NTTP",
+    ),
+    (
+        "differ/_/spelling-prefix-pack-indexing side 0",
+        "clang 19 SIGSEGV in Sema::ActOnIdExpression on C++26 pack indexing under -std=c++20",
+    ),
+    (
+        "differ/_/spelling-prefix-pack-indexing side 1",
+        "clang 19 SIGSEGV in Sema::ActOnIdExpression on C++26 pack indexing under -std=c++20",
+    ),
+    (
+        "equal/_/name-value-source-location-template-arguments side 0",
+        "clang 19 SIGSEGV in ASTNameGenerator::getName / JSONNodeDumper on std::source_location NTTP",
+    ),
+    (
+        "equal/_/name-value-source-location-template-arguments side 1",
+        "clang 19 SIGSEGV in ASTNameGenerator::getName / JSONNodeDumper on std::source_location NTTP",
+    ),
+    (
+        "indeterminate/_/lambda-in-lambda-requires-clause side 0",
+        "clang 19 SIGSEGV on a lambda in a generic lambda's trailing requires-clause",
+    ),
+    (
+        "indeterminate/_/lambda-in-lambda-requires-clause side 1",
+        "clang 19 SIGSEGV on a lambda in a generic lambda's trailing requires-clause",
+    ),
+];
+
 /// Clang's dump of a side.
+#[derive(Debug)]
 enum Dumped {
     Json(Vec<u8>),
-    /// Clang reports an error.
+    /// Clang rejected the source with a normal compile error (exit 1, no crash text).
     Error,
+    /// Clang crashed (status other than 0/1, killed by signal, or crash text on stderr).
+    Crashed(String),
     /// Over [`dump_limit`]: clang is stopped, the dump is not kept.
     TooLarge,
+}
+
+/// Classifies one clang dump invocation into [`Dumped`]: only exit 0 without
+/// crash text is `Json`, only exit 1 without crash text is `Error`; any other
+/// exit status, signal (`None`), or crash text on stderr is `Crashed`.
+fn classify_clang_dump(too_large: bool, code: Option<i32>, stderr: &str, json: Vec<u8>) -> Dumped {
+    if too_large {
+        return Dumped::TooLarge;
+    }
+    let crash_text = CLANG_CRASH_MARKERS.iter().any(|m| stderr.contains(m));
+    if !crash_text && code == Some(0) {
+        return Dumped::Json(json);
+    }
+    if !crash_text && code == Some(1) {
+        return Dumped::Error;
+    }
+    let how = match code {
+        Some(c) => format!("exit {c}"),
+        None => "killed by signal".to_owned(),
+    };
+    let detail = stderr
+        .lines()
+        .find(|l| {
+            CLANG_CRASH_MARKERS.iter().any(|m| l.contains(m))
+                || l.contains("error:")
+                || l.contains("Segmentation fault")
+        })
+        .or_else(|| stderr.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim();
+    if detail.is_empty() {
+        Dumped::Crashed(how)
+    } else {
+        Dumped::Crashed(format!("{how}: {detail}"))
+    }
+}
+
+/// Verifies that the observed `crashed` `(label, detail)` list matches
+/// `allowlist` `(label, reason)` exactly: any unlisted crash or stale entry
+/// returns `Err`.
+fn check_clang_crashes(
+    crashed: &[(String, String)],
+    allowlist: &[(&str, &str)],
+) -> Result<(), String> {
+    let allowed: std::collections::BTreeMap<&str, &str> = allowlist.iter().copied().collect();
+    let observed: std::collections::BTreeMap<&str, &str> =
+        crashed.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut problems = Vec::new();
+    for (label, detail) in &observed {
+        if !allowed.contains_key(label) {
+            problems.push(format!("unlisted clang crash: {label} ({detail})"));
+        }
+    }
+    for (label, reason) in &allowed {
+        if !observed.contains_key(label) {
+            problems.push(format!(
+                "stale clang crash allowlist entry (no longer crashes): {label} ({reason})"
+            ));
+        }
+    }
+    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
 }
 
 /// Removes a side's scratch directory. The host's shared file system has
@@ -2235,7 +2346,7 @@ fn clang_dump_command(
         .args(["-Xclang", "-ast-dump=json", "main.cpp"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     cmd
 }
 
@@ -2250,6 +2361,12 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
     let tmp = dir.join(".clang-tmp");
     std::fs::create_dir_all(&tmp).unwrap();
     let mut child = clang_dump_command(side, dir, &tmp).spawn().unwrap();
+    let mut stderr_pipe = child.stderr.take().unwrap();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    });
     let limit = dump_limit();
     let mut json = Vec::new();
     child.stdout.take().unwrap().take(limit + 1).read_to_end(&mut json).unwrap();
@@ -2260,6 +2377,7 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         let _ = child.kill();
     }
     let status = child.wait().unwrap();
+    let stderr = stderr_thread.join().unwrap_or_default();
     if !too_large {
         let leaked: Vec<_> = std::fs::read_dir(&tmp)
             .unwrap()
@@ -2271,13 +2389,7 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
         );
     }
     remove_scratch(dir);
-    if too_large {
-        Dumped::TooLarge
-    } else if status.success() {
-        Dumped::Json(json)
-    } else {
-        Dumped::Error
-    }
+    classify_clang_dump(too_large, status.code(), &stderr, json)
 }
 
 /// Runs `f` on `side` with Kiln's tables, recording front-end thread failures
@@ -2323,6 +2435,10 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
         Dumped::Json(json) => json,
         Dumped::Error => {
             d.clang_errors = 1;
+            return d;
+        }
+        Dumped::Crashed(why) => {
+            d.crashed.push((label.to_owned(), why));
             return d;
         }
         Dumped::TooLarge => {
@@ -2701,18 +2817,20 @@ fn item7_differential_against_clang() {
     for x in diffs {
         d.add(x);
     }
+    d.crashed.sort();
     d.differences.sort();
     d.unmatched_at.sort();
     d.missing_at.sort();
     eprintln!(
         "item 7 against {}: {} tests, {} units ({} with a Kiln error, {} with a clang \
-         error); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, \
+         error, {} clang crashed); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, \
          {} equal through a macro, {} null ({} of calls closed by a macro), {} clang's through a macro not comparable, {} different",
         version.lines().next().unwrap_or(CLANG),
         jobs.len(),
         d.units,
         d.kiln_errors,
         d.clang_errors,
+        d.crashed.len(),
         d.calls,
         d.closed_by_macro,
         d.unmatched,
@@ -2723,6 +2841,9 @@ fn item7_differential_against_clang() {
         d.clang_macro,
         d.differences.len()
     );
+    for (u, why) in &d.crashed {
+        eprintln!("CLANG CRASH item 7 unit: {u} ({why})");
+    }
     d.dump_skipped_at.sort();
     eprintln!(
         "item 7: {} units refused, clang's dump over {} bytes; the largest read: {} bytes; \
@@ -2767,6 +2888,9 @@ fn item7_differential_against_clang() {
         d.dump_skipped,
         d.units
     );
+    if let Err(e) = check_clang_crashes(&d.crashed, KNOWN_CLANG19_CRASHES) {
+        panic!("clang crash allowlist mismatch:\n{e}");
+    }
 }
 
 /// WP-167 (`spec/harness.md` §11.5): `clang_dump_command` always isolates
@@ -2810,27 +2934,29 @@ fn wp167_clang_dump_crash_child() {
         assert!(!sides.is_empty(), "{}: no sides", dir.display());
         let dumped = clang_dump(&sides[0], &scratch.join(format!("case-{idx}")));
         assert!(
-            matches!(dumped, Dumped::Error),
-            "{}: expected Dumped::Error on clang-19 ICE",
+            matches!(dumped, Dumped::Crashed(_)),
+            "{}: expected Dumped::Crashed on clang-19 ICE, got {dumped:?}",
             dir.display()
         );
     }
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-/// WP-167 (`spec/harness.md` §11.5): running `clang_dump` against real
-/// `clang++-19` on the crashing snippets from `crates/slip_digest/tests/`
-/// must leave zero files in the inherited `TMPDIR`.
-#[test]
-fn wp167_clang_dump_crash_leaves_no_tmp_files() {
-    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
-        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
-        eprintln!("SKIP subject_calls.rs wp167_clang_dump_crash_leaves_no_tmp_files: no {CLANG}");
-        return;
-    }
-    let isolated_tmp = common::scratch("wp167-isolated-tmp");
+/// Whether libtest's standard output reports that exactly `expected` tests
+/// passed and none failed.
+fn child_ran_exactly(stdout: &str, expected: usize) -> bool {
+    let want = format!("test result: ok. {expected} passed; 0 failed;");
+    stdout.lines().any(|l| l.starts_with(&want))
+}
+
+/// Runs the ignored child test named `child_name` in this test binary with
+/// `TMPDIR` isolated to a fresh directory, returning any files leaked into
+/// that `TMPDIR`. Asserts that the child exited successfully and actually ran
+/// one test (`1 passed; 0 failed;`).
+fn run_isolated_child_test(child_name: &str, scratch_tag: &str) -> Vec<std::ffi::OsString> {
+    let isolated_tmp = common::scratch(scratch_tag);
     let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "wp167_clang_dump_crash_child", "--ignored", "--nocapture"])
+        .args(["--exact", child_name, "--ignored", "--nocapture"])
         .env("TMPDIR", &isolated_tmp)
         .output()
         .unwrap();
@@ -2839,14 +2965,111 @@ fn wp167_clang_dump_crash_leaves_no_tmp_files() {
         .filter_map(|e| e.ok().map(|e| e.file_name()))
         .collect();
     let _ = std::fs::remove_dir_all(&isolated_tmp);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "child failed ({}):\nstdout:\n{}\nstderr:\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        "child `{child_name}` failed ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status
     );
+    assert!(
+        child_ran_exactly(&stdout, 1),
+        "child `{child_name}` did not run (expected `1 passed; 0 failed;`):\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    leaked
+}
+
+/// WP-167 (`spec/harness.md` §11.5) & WP-171 item 3: running `clang_dump`
+/// against real `clang++-19` on the crashing snippets from
+/// `crates/slip_digest/tests/` must execute the child test and leave zero
+/// files in the inherited `TMPDIR`.
+#[test]
+fn wp167_clang_dump_crash_leaves_no_tmp_files() {
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!("SKIP subject_calls.rs wp167_clang_dump_crash_leaves_no_tmp_files: no {CLANG}");
+        return;
+    }
+    let leaked = run_isolated_child_test("wp167_clang_dump_crash_child", "wp167-isolated-tmp");
     assert!(leaked.is_empty(), "clang_dump leaked files into inherited TMPDIR: {leaked:?}");
+}
+
+/// WP-171 item 3: if the child filter matches nothing (e.g. the child test was
+/// renamed), the parent runner must fail rather than passing on `0 passed`.
+#[test]
+#[should_panic(expected = "did not run")]
+fn wp171_parent_fails_when_child_filter_matches_nothing() {
+    let _ = run_isolated_child_test("nonexistent_wp171_child_test", "wp171-missing-child");
+}
+
+/// WP-171 item 4: crash classification and allowlist enforcement.
+#[test]
+fn wp171_clang_crash_classification_and_allowlist() {
+    assert!(matches!(classify_clang_dump(false, Some(0), "", b"{}".to_vec()), Dumped::Json(_)));
+    assert!(matches!(
+        classify_clang_dump(false, Some(1), "main.cpp:1:1: error: bad\n", Vec::new()),
+        Dumped::Error
+    ));
+    assert!(matches!(
+        classify_clang_dump(false, Some(139), "Segmentation fault\n", Vec::new()),
+        Dumped::Crashed(ref s) if s.contains("exit 139")
+    ));
+    assert!(matches!(
+        classify_clang_dump(false, None, "", Vec::new()),
+        Dumped::Crashed(ref s) if s.contains("killed by signal")
+    ));
+    assert!(matches!(
+        classify_clang_dump(false, Some(1), "PLEASE submit a bug report\n", Vec::new()),
+        Dumped::Crashed(ref s) if s.contains("PLEASE submit a bug report")
+    ));
+    assert!(matches!(
+        classify_clang_dump(
+            false,
+            Some(1),
+            "clang: error: clang frontend command failed due to signal\n",
+            Vec::new()
+        ),
+        Dumped::Crashed(ref s) if s.contains("frontend command failed due to signal")
+    ));
+    assert!(matches!(classify_clang_dump(true, None, "", Vec::new()), Dumped::TooLarge));
+
+    let list = &[("case-a side 0", "known ICE")];
+    assert!(
+        check_clang_crashes(&[("case-a side 0".to_owned(), "exit 139".to_owned())], list).is_ok()
+    );
+    let unlisted = check_clang_crashes(
+        &[
+            ("case-a side 0".to_owned(), "exit 139".to_owned()),
+            ("case-b side 0".to_owned(), "exit 139".to_owned()),
+        ],
+        list,
+    )
+    .unwrap_err();
+    assert!(unlisted.contains("unlisted clang crash: case-b side 0"), "{unlisted}");
+    let stale = check_clang_crashes(&[], list).unwrap_err();
+    assert!(stale.contains("stale clang crash allowlist entry"), "{stale}");
+    assert!(stale.contains("case-a side 0"), "{stale}");
+}
+
+/// WP-171 item 4: `differential` records a real clang-19 crash under
+/// `d.crashed`, not `d.clang_errors`.
+#[test]
+fn wp171_differential_records_clang_crash_separately_from_errors() {
+    if std::process::Command::new(CLANG).arg("--version").output().is_err() {
+        assert!(std::env::var_os("SLIP_REQUIRE_ALL").is_none_or(|v| v != "1"), "no {CLANG}");
+        eprintln!(
+            "SKIP subject_calls.rs wp171_differential_records_clang_crash_separately_from_errors: no {CLANG}"
+        );
+        return;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = root.join("../slip_digest/tests/differ/_/spelling-prefix-pack-indexing");
+    let sides = pair_sides(&dir, &[]);
+    let scratch = common::work_root().join(format!("wp171-diff-crash-{}", std::process::id()));
+    let d = differential(&sides[0], &scratch, "spelling-prefix-pack-indexing side 0");
+    assert_eq!(d.clang_errors, 0, "crash must not be filed under clang_errors");
+    assert_eq!(d.crashed.len(), 1, "expected 1 crash, got {:?}", d.crashed);
+    assert_eq!(d.crashed[0].0, "spelling-prefix-pack-indexing side 0");
 }
 
 /// The peak resident memory of this process in KiB (`VmHWM`), where the
