@@ -1,0 +1,2 @@
+added operator+(N::X, long)
+changed template <class...> auto g(type-parameter-0-0...)

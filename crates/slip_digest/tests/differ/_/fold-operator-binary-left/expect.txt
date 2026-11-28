@@ -1,0 +1,3 @@
+added operator+(long, N::X)
+changed template <class...> auto f(type-parameter-0-0...)
+changed template <class...> decltype((0L + ... + t)) g(type-parameter-0-0...)
