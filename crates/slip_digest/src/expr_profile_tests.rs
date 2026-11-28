@@ -423,10 +423,9 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("Unsupported(\"local/closure-owner\")", 5),
     ("Unsupported(\"local/lambda-in-type\")", 1),
     // WP-041's fix round: `indeterminate/_/spelling-conversion-name-*`
-    // and `spelling-fold-operator-*` (a conversion name of a marked type;
-    // a fold over an operator some declaration names).
+    // (a conversion name of a marked type). `spelling/fold-operator` is
+    // gone since WP-138.
     ("Unaccounted(\"spelling/conversion-name\")", 1),
-    ("Unaccounted(\"spelling/fold-operator\")", 1),
     // WP-041's fix round 3: `indeterminate/_/spelling-prefix-splice` (a
     // splice qualifier, 2 of 33 314).
     ("Unsupported(\"Nns/Splice\")", 1),

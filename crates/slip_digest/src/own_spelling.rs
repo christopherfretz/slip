@@ -1316,8 +1316,9 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, ctx: Ctx, kids: &mut Vec<I>
     let k = n.kind();
     let id = ExprId::try_new;
     let opt = |kids: &mut Vec<I>, e: Option<ExprId>| kids.extend(e.map(I::E));
-    // The set a dependent operator's lookup found at the definition
-    // (`oper_lookups`, digest-kinds §9.5): left out of every profile.
+    // The set a dependent operator or fold expression's lookup found at
+    // the definition (`oper_lookups`, digest-kinds §9.5): left out of
+    // every profile.
     if let Some(cands) = ast.templates.oper_lookups.of(e) {
         let ds: Vec<DeclId> = cands.iter().map(|c| c.decl).collect();
         record(e);
