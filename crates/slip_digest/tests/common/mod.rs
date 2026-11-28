@@ -7,8 +7,10 @@
 //! `side.h`, empty for side A and `#define B 1` for side B) or `a.cpp` and
 //! `b.cpp`; any other file is a header both sides see. The main file's
 //! header lines ([`header`]) choose the standard, the driver arguments
-//! and the target it is parsed under (`slip_kiln::snippet::parse_with`)
-//! and whether errors are allowed. Both sides' main file is parsed under
+//! and the target it is parsed under (`slip_kiln::snippet::parse_with_tables`:
+//! every side is parsed with Kiln's written-reference table recorded, as
+//! every digested parse is, WP-156 fix round 3) and whether errors are
+//! allowed. Both sides' main file is parsed under
 //! the path `main.cpp`, so that their groups have the same subject path.
 
 #![allow(dead_code, reason = "each runner uses a part")]
@@ -436,7 +438,7 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     };
     let args: Vec<&str> = head.args.iter().map(String::as_str).collect();
     let extra = slip_kiln::snippet::Extra { args: &args, target: head.target.as_deref() };
-    let out = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    let out = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         // `Parsed` is not `Sync`: the walk's thread gets the AST, the
         // source manager and the paths.
         let paths: Vec<Vec<u8>> =
@@ -536,7 +538,7 @@ pub fn with_side<R: Send>(
     };
     let args: Vec<&str> = head.args.iter().map(String::as_str).collect();
     let extra = slip_kiln::snippet::Extra { args: &args, target: head.target.as_deref() };
-    let out = slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+    let out = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
         let paths: Vec<Vec<u8>> =
             p.sm.file_ids()
                 .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())

@@ -195,6 +195,38 @@ stated promise with a test, or a correction if it is not so:
 5. An entry of a type-constraint has role `Concept`, and the entries
    of a declaration are in source order up to its `Redecl` entry.
 
+What the probes found at `60fb5ab9d` (fix round 3, commit 1,
+`crates/slip_digest/tests/ledger_facts.rs`; every listed shape has its
+entry, entity and holder, and every walked name, operator and literal
+suffix joins, in macros too). Five facts go against the promises as
+worded, or against §18.3:
+
+- (a) 4 as worded: an explicit instantiation of a member,
+  `template auto GM<int>::f() noexcept(e);`, holds `e`'s names by the
+  implicit instantiation `GM<int>` (the context the qualifier enters,
+  as §18.3 says). Promise 4 is to read: "except the class an explicit
+  instantiation's qualifier enters".
+- (b) Against §18.3 and 4: in `template <> int Q<4>::s = make(x);` and
+  `template <> auto QR<4>::g(X1) -> decltype(make(x)) {...}`, the
+  initializer's and the trailing return type's names are held by the
+  instantiated class `Q<4>` (`QR<4>`), not by the declaration. The
+  qualifier's own names, the parameters' and the body's are held by
+  the declaration. (Presumably the class is created after the
+  declaration's mark, so the claim keeps it as a nested holder.)
+- (c) Against §18.3: a late-parsed exception specification in a class
+  (`struct ND { void f() noexcept(e); };`, a friend's `noexcept`) holds
+  `e`'s names by the class, not by the function; a late-parsed default
+  argument is held by its parameter, as §18.3 says.
+- (d) Against 5: a function definition's `Redecl` entry is recorded
+  after its parameters' and its body's entries (`template <> void
+  QF<4>::f() { make(x); }`: qualifier, body, then `Redecl`). A
+  variable's is recorded after its qualifier and before its
+  initializer. So "the entries recorded before `Redecl`" are a
+  definition's whole text, not its decl-specifiers and qualifier.
+- (e) Against 3 (§18.11.1): a destructor named by `decltype`
+  (`wv.~decltype(e)()`) has no `member` entry: the `MemberExpr` at the
+  `decltype` joins nothing. Its operand's names have entries.
+
 ### 2.10 A lean recording switch (fix round 3)
 
 The digest reads `range.lo`, `entity`, `enclosing`, `role`, `flags`
