@@ -118,6 +118,8 @@ fn causes_of(input: &Input<'_>, name: &str) -> Vec<Vec<crate::Cause>> {
         &crate::Options {
             rules: &rules,
             read_only: crate::ReadOnly::NO_FILE,
+            existing: &[],
+            existing_local: &[],
             detail: crate::Detail::All,
             names: true,
             rule_use: false,
@@ -487,6 +489,8 @@ fn digest_all(src: &str) -> Vec<(slip_model::Digest, String, Vec<crate::Cause>)>
             &crate::Options {
                 rules: &rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,
@@ -703,6 +707,8 @@ fn unit_digest(src: &str, name: &str) -> slip_model::Digest {
             &crate::Options {
                 rules: &rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,

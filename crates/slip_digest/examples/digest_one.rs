@@ -61,6 +61,8 @@ fn main() -> ExitCode {
     let options = Options {
         rules: &rules,
         read_only: slip_digest::ReadOnly::EVERY_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::All,
         names: true,
         rule_use: false,

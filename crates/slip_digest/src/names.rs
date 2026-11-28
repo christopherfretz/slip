@@ -87,8 +87,14 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                     }
                     if let Some(view) = u.view {
                         // A namespace's unit in another view (WP-140 review
-                        // F4): the name its key denotes, and whose part it is.
-                        let part = if view { "owned" } else { "dependency's" };
+                        // F4, WP-144 §3(b)): the name its key denotes, and
+                        // whose part it is (`moved` for a staying namespace's
+                        // mapped view, `owned` / `dependency's` otherwise).
+                        let part = if view {
+                            if u.stays { "moved" } else { "owned" }
+                        } else {
+                            "dependency's"
+                        };
                         name = match &u.denotes {
                             Some(d) => format!("{d} (the {part} part of {name})"),
                             None => format!("{name} (the {part} part)"),

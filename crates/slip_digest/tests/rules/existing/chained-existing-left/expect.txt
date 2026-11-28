@@ -1,0 +1,3 @@
+# Counts: existing acme::y left in acme counts direct 1 for rule 2 (acme => modern).
+use 1 via 1 direct 0
+use 2 via 1 direct 1

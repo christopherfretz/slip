@@ -176,6 +176,8 @@ fn map_shard(
     let options = Options {
         rules: &rules,
         read_only: slip_digest::ReadOnly::EVERY_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::None,
         names: false,
         rule_use: false,

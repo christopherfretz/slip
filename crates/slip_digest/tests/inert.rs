@@ -146,7 +146,15 @@ fn declared_parent_table(base: &Output) -> RuleTable {
 fn walk(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output {
     slip_digest::digest(
         input,
-        &Options { rules, read_only, detail: Detail::All, names: true, rule_use: true },
+        &Options {
+            rules,
+            read_only,
+            existing: &[],
+            existing_local: &[],
+            detail: Detail::All,
+            names: true,
+            rule_use: true,
+        },
     )
 }
 

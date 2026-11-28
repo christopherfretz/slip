@@ -1,0 +1,5 @@
+# Soundness: file entry NEVER covers a program-wide entity.
+added acme::x()
+removed acme
+removed acme::x()
+use 1 via 1 direct 0

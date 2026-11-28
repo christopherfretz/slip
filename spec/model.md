@@ -337,7 +337,8 @@ whole file. The order of checks is:
 4. The format's invariants, the first violation in section and element
    order: the plan's (§7.1); the shard's (§8.1), then those of `digests`
    (§8.2), then those of `verdict` (§8.3), then those of `edits`,
-   `binding`, `rule_use`, `spellings`, `negatives` and `found` (§8). Within `digests` and
+   `binding`, `rule_use`, `rebuilt_use`, `existing_use`, `spellings`,
+   `negatives` and `found` (§8). Within `digests` and
    `verdict` the rules are checked in the order of their tables, **each
    rule over the whole section, in field and element order, before the
    next rule**; `edits.md` §4.7 states its own order. The edit set's
@@ -416,7 +417,8 @@ impl End    { pub const ALL: [End; 5];    pub fn name(self) -> &'static str; }
 - `Shard` has, besides the fields of §8, `digests: Option<Digests>`
   (`slip_model::digests`), `verdict: Option<Verdict>`
   (`slip_model::verdict`), `edits: Option<Edits>` (`slip_model::edits`),
-  `binding: Option<Binding>` and `rule_use: Option<RuleUse>`
+  `binding: Option<Binding>`, `rule_use: Option<RuleUse>`,
+  `rebuilt_use: Option<RebuiltUse>` and `existing_use: Option<ExistingUse>`
   (`slip_model::agreement`), `spellings: Option<Spellings>`
   (`slip_model::spellings`), `negatives: Option<Vec<Vec<u8>>>` (§8.6)
   and `found: Option<Found>` (§8.8; `Found { places: Vec<FoundPlace>,
@@ -574,6 +576,7 @@ the same bytes.
 | 31 | found | no | `Found` (§8.8): each place where the map parse found a file, with the input it led to, and the classes of `inputs` that were one file; phase `map` |
 | 32 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, instances, or its failure); phase `map` |
 | 33 | rebuilt_use | no | `RebuiltUse` (`verify.md` §9.1): what the walk said of the run's rebuilt entries, and the files that cut an include chain (WP-118); phase `verify`, status `ok` |
+| 34 | existing_use | no | `ExistingUse` (`verify.md` §9.1): indices into `Declared.existing` and `Declared.existing_local` that some entity matched (WP-144); phase `verify`, status `ok`, non-empty |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -605,7 +608,8 @@ list: nothing about a failed observer is deterministic.
 A reserved id (16, 18, 20) or a retired one (17, 25) is a critical id no
 reader knows: a file with one is `UnknownSection`. Ids 22, 23 and 30 are
 not assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work
-package WP-117, 29 by WP-111, 31 by WP-135, 32 by WP-139 and 33 by WP-118, without a change of the
+package WP-117, 29 by WP-111, 31 by WP-135, 32 by WP-139, 33 by WP-118
+and 34 by WP-144, without a change of the
 shard's version: a reader that predates one refuses a shard that has it
 (the ids are critical), and a shard without them reads as before (a map
 shard without `negatives` is then refused by the verify task's guard N1,
@@ -615,10 +619,10 @@ section whose payload changes takes a new id and the old one is retired,
 so that a reader never meets a payload it does not know under an id it
 knows (WP-111: 25 to 29; WP-139: 17 to 32, when `Edits` gained
 `instances`, `edits.md` §4.5). An `edits` section
-in a shard of phase `verify`, or a `binding`, `rule_use`, `spellings`
-or `rebuilt_use` section in a shard of phase `map`, is `Malformed` at
+in a shard of phase `verify`, or a `binding`, `rule_use`, `spellings`,
+`rebuilt_use` or `existing_use` section in a shard of phase `map`, is `Malformed` at
 the first byte of the section's payload, JSON path `sections.<name>`.
-So are `edits`, `rule_use`, `spellings` and `rebuilt_use` in a shard
+So are `edits`, `rule_use`, `spellings`, `rebuilt_use` and `existing_use` in a shard
 whose status is not `ok`, and
 `binding` in one whose status is `failed` (only). The phase is checked
 before the status. Their own invariants are `edits.md` §4.7 and
@@ -629,7 +633,7 @@ order of the section ids, each section's phase and status first.
 
 Section 27 (`names`, WP-112) changed the version to 2 (above): every
 shard a reader of version 2 reads, of either phase, is one that could
-have 27, 28, 29 and 31, and a version-1 shard, which predates `names`, is
+have 27, 28, 29, 31, 33 and 34, and a version-1 shard, which predates `names`, is
 refused whatever its sections (a version-1 shard with 25 or 29 included).
 `names` and `rule_use` (29) are independent: a verify shard may have
 either, both or neither, and neither's rows refer to the other's. It is present **exactly when** `digests`
@@ -637,8 +641,11 @@ is: a shard with `digests` and without `names` is `Malformed` at the
 first byte of the `digests` payload, JSON path `sections.names` (a pre
 shard of an older build fails closed, not as "no note"); its own rows
 (§8.7) are checked after those of `spellings`, before `rule_use`'s and
-`negatives`'s. Those of `rebuilt_use` (33, `verify.md` §9.1) are
-checked after `rule_use`'s and before `negatives`'s.
+`negatives`'s. Those of `rebuilt_use` (33, `verify.md` §9.1) and
+`existing_use` (34, `verify.md` §9.1: `existing` strictly ascending,
+`local` strictly ascending, non-empty, phase `verify`, status `ok`, at
+`sections.existing_use` / `.existing[i]` / `.local[i]`) are checked after
+`rule_use`'s and before `negatives`'s.
 
 ### 8.1 Invariants
 

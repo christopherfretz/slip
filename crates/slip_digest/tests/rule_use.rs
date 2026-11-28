@@ -68,6 +68,8 @@ fn walk(input: &Input<'_>, rules: &RuleTable, rule_use: bool) -> Output {
             rules,
             // Every file owned (WP-110): §9.1's counts, as before ownership.
             read_only: slip_digest::ReadOnly::NO_FILE,
+            existing: &[],
+            existing_local: &[],
             detail: Detail::All,
             names: true,
             rule_use,
@@ -149,6 +151,7 @@ fn same_but_rule_use(on: &Output, off: &Output) -> Result<(), String> {
         made: Vec::new(),
         fixed: Vec::new(),
         rebuilt: slip_digest::RebuiltOutput::default(),
+        existing_use: slip_model::ExistingUse::default(),
         ..on.clone()
     };
     if cleared != *off {
@@ -180,11 +183,12 @@ fn case(dir: &Path) -> Result<(), String> {
         std::fs::read_to_string(dir.join("rules.txt")).map_err(|x| format!("rules.txt: {x}"))?;
     let lines = read(&text)?;
     let pre = common::with_side(dir, Side::A, |input| {
-        records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE)
+        records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE, &[], &[])
     })?
     .map_err(|x| format!("records of the pre-image: {x}"))?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
-        let plain = records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE)?;
+        let plain =
+            records(input, &RuleTable::empty(), slip_digest::ReadOnly::EVERY_FILE, &[], &[])?;
         if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
             for (side, recs) in [("A", &pre), ("B", &plain)] {
                 for r in recs {

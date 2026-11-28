@@ -41,6 +41,7 @@ fn map_shard(edits: Edits) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 

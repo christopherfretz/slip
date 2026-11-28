@@ -1,0 +1,6 @@
+# (a) moved entity listed by mistake -> removed legacy::g(), added acme::g().
+added acme
+added acme::g()
+removed legacy
+removed legacy::g()
+use 1 via 0 direct 0

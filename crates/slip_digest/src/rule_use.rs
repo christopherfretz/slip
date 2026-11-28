@@ -133,6 +133,11 @@ struct Entry {
     /// a namespace and not a guide of a dependency template: counted for
     /// namespace rules if its parent is a namespace.
     member: bool,
+    /// WP-144: this member's key was formed unmapped (existing or
+    /// `only_by_inclusion`), so its namespace chain is climbed in the
+    /// dependency view (never `via`, only `direct` for a rule producing a
+    /// level of its unmapped chain).
+    dep_chain: bool,
 }
 
 impl Entry {
@@ -145,12 +150,19 @@ impl Entry {
 #[derive(Debug, Default)]
 pub(crate) struct Counting {
     entries: HashMap<DeclId, Entry>,
-    /// A dependency namespace's own key in the owned view (`key_in` with
-    /// `Some(true)`): the trace of the rules along it.
+    /// A dependency (or staying) namespace's own key in the owned view
+    /// (`key_in` with `Some(true)`): the trace of the rules along it.
     views: HashMap<DeclId, Option<Trace>>,
+    /// A namespace's key in the dependency (unmapped) view (`unmapped` for
+    /// a namespace, or `key_in` with `Some(false)`): the rule that
+    /// produces it, if any (WP-144).
+    dep_direct: HashMap<DeclId, Option<usize>>,
     /// An entity's namespace in the owned view: the parent its key was
     /// formed under, when that is a namespace.
     parents: HashMap<DeclId, DeclId>,
+    /// An unmapped entity's (or unmapped namespace's) parent namespace in
+    /// the dependency view (WP-144).
+    dep_parents: HashMap<DeclId, DeclId>,
     /// The dependency namespaces that have a unit of their own in the
     /// owned view (`units::view_units`, WP-140): the rule that matched
     /// that view's key counts `via` once for each.
@@ -223,7 +235,8 @@ pub(crate) fn map(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     let namespace = mapped.kind == KeyKind::Namespace;
     let member = !namespace && !guide_of_dependency(w, e, &mapped);
     if let Some(c) = w.rule_use.as_mut() {
-        let entry = Entry { trace, kept: c.kept_index(&mapped), namespace, member };
+        let entry =
+            Entry { trace, kept: c.kept_index(&mapped), namespace, member, dep_chain: false };
         c.set(e, entry);
     }
     mapped
@@ -262,18 +275,35 @@ pub(crate) fn unmapped(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
         return key;
     }
     let namespace = key.kind == KeyKind::Namespace;
-    let member = !namespace && w.only_by_inclusion(e) && !guide_of_dependency(w, e, &key);
-    let trace = w.rules.produces(&key).map(Trace::Direct);
+    let member =
+        !namespace && (w.owned(e) || w.only_by_inclusion(e)) && !guide_of_dependency(w, e, &key);
+    let produced = w.rules.produces(&key);
+    let trace = produced.map(Trace::Direct);
     if let Some(c) = w.rule_use.as_mut() {
-        let entry = Entry { trace, kept: c.kept_index(&key), namespace, member };
+        if namespace {
+            c.dep_direct.insert(e, produced);
+        }
+        let entry = Entry { trace, kept: c.kept_index(&key), namespace, member, dep_chain: true };
         c.set(e, entry);
     }
     key
 }
 
+/// Namespace `e`'s key in the dependency (unmapped) view (`Walk::key_in`
+/// with `Some(false)`): record the rule that produces it, if any (WP-144).
+pub(crate) fn in_dep_view(w: &mut Walk<'_>, e: DeclId, key: &Key) {
+    if w.rule_use.is_none() {
+        return;
+    }
+    let produced = w.rules.produces(key);
+    if let Some(c) = w.rule_use.as_mut() {
+        c.dep_direct.insert(e, produced);
+    }
+}
+
 /// Namespace `e`'s key in the owned view (`Walk::key_in` with
-/// `Some(true)`: a dependency namespace around an owned member), mapped
-/// with its trace kept as a level of the member's chain.
+/// `Some(true)`: a dependency or staying namespace around a mapped
+/// member), mapped with its trace kept as a level of the member's chain.
 pub(crate) fn in_owned_view(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     if w.rule_use.is_none() {
         return w.rules.map(key);
@@ -285,9 +315,9 @@ pub(crate) fn in_owned_view(w: &mut Walk<'_>, e: DeclId, key: Key) -> Key {
     mapped
 }
 
-/// Dependency namespace `e` has a unit under its key in the owned view
-/// (`units::view_units`, WP-140): the trace of that key
-/// (`Counting::views`) counts as the namespace's own, once.
+/// Dependency or staying namespace `e` has a unit under its key in the
+/// owned/mapped view (`units::view_units`, WP-140, WP-144): the trace of
+/// that key (`Counting::views`) counts as the namespace's own, once.
 pub(crate) fn view_unit(w: &mut Walk<'_>, e: DeclId) {
     if let Some(c) = w.rule_use.as_mut() {
         c.view_units.insert(e);
@@ -299,6 +329,14 @@ pub(crate) fn view_unit(w: &mut Walk<'_>, e: DeclId) {
 pub(crate) fn namespace_parent(w: &mut Walk<'_>, e: DeclId, ns: DeclId) {
     if let Some(c) = w.rule_use.as_mut() {
         c.parents.insert(e, ns);
+    }
+}
+
+/// Unmapped entity (or unmapped namespace) `e`'s parent in the dependency
+/// view is the namespace `ns` (`Walk::namespace_parent`, WP-144).
+pub(crate) fn dep_namespace_parent(w: &mut Walk<'_>, e: DeclId, ns: DeclId) {
+    if let Some(c) = w.rule_use.as_mut() {
+        c.dep_parents.insert(e, ns);
     }
 }
 
@@ -326,7 +364,9 @@ impl Counting {
             Some(true) => {
                 self.views.insert(e, None);
             }
-            Some(false) => {}
+            Some(false) => {
+                self.dep_direct.insert(e, None);
+            }
         }
     }
 }
@@ -342,10 +382,10 @@ pub(crate) fn made_by(c: &Counting, e: DeclId) -> Option<usize> {
     if let Some(Trace::Via(r)) = entry.trace {
         return Some(r);
     }
-    if !entry.member {
+    if !entry.member || entry.dep_chain {
         return None;
     }
-    chain(c, e).and_then(|(_, via)| via.first().copied())
+    chain(c, e, false).and_then(|(_, via)| via.first().copied())
 }
 
 /// Owned entity `e` has `rebuilt` entries `set` on its declarations'
@@ -396,7 +436,7 @@ fn ways(c: &Counting, e: DeclId, entry: &Entry) -> Ways {
         None => {}
     }
     if entry.member
-        && let Some((d, v)) = chain(c, e)
+        && let Some((d, v)) = chain(c, e, entry.dep_chain)
     {
         w.mapped.extend(v);
         produced.extend(d);
@@ -548,7 +588,7 @@ pub(crate) fn finish(c: Option<Counting>) -> (Vec<Use>, Vec<u64>) {
             Some(Trace::Direct(_)) | None => {}
         }
         if entry.member
-            && let Some((d, v)) = chain(&c, *e)
+            && let Some((d, v)) = chain(&c, *e, entry.dep_chain)
         {
             if entry.kept.is_some() {
                 kept_via.extend(v);
@@ -581,13 +621,28 @@ fn at(by_rule: &mut BTreeMap<usize, Use>, r: usize) -> &mut Use {
     by_rule.entry(r).or_insert(Use { rule: r as u64, via: 0, direct: 0, kept_via: 0 })
 }
 
-/// For an entity whose parent is a namespace: the rule that produces the
-/// own key of each namespace around it no rule matched, and the rule that
-/// matched each other one; each once, ascending. `None` when its parent is not a
-/// namespace.
-fn chain(c: &Counting, e: DeclId) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> {
-    let mut ns = *c.parents.get(&e)?;
+/// For an entity whose parent is a namespace: when `dep_chain` is `false`
+/// (a mapped member), climbs the owned-view parent chain and returns the
+/// rules producing unmapped levels (`direct`) and matching mapped levels
+/// (`via`). When `dep_chain` is `true` (an existing or `only_by_inclusion`
+/// member, WP-144), climbs the dependency-view parent chain and returns
+/// only the rules producing unmapped levels (`direct`, never `via`).
+fn chain(c: &Counting, e: DeclId, dep_chain: bool) -> Option<(BTreeSet<usize>, BTreeSet<usize>)> {
     let (mut direct, mut via) = (BTreeSet::new(), BTreeSet::new());
+    if dep_chain {
+        let mut ns = *c.dep_parents.get(&e)?;
+        for _ in 0..CHAIN_LIMIT {
+            if let Some(Some(r)) = c.dep_direct.get(&ns) {
+                direct.insert(*r);
+            }
+            match c.dep_parents.get(&ns) {
+                Some(&p) => ns = p,
+                None => break,
+            }
+        }
+        return Some((direct, via));
+    }
+    let mut ns = *c.parents.get(&e)?;
     for _ in 0..CHAIN_LIMIT {
         match c.level(ns) {
             Some(Trace::Via(r)) => {

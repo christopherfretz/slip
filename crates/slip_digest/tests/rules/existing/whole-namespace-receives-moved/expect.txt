@@ -1,0 +1,6 @@
+# Amendment 4: moved entity inside whole-listed namespace -> finding.
+added acme::newlib::g()
+removed legacy
+removed legacy::newlib
+removed legacy::newlib::g()
+use 1 via 0 direct 0

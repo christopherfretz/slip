@@ -20,6 +20,7 @@
 use slip_digest::trace::{Trace, trace};
 use slip_digest::{Detail, Input, Options, ReadOnly, ReadOnlyFiles};
 use slip_model::Digest;
+use slip_model::declared::ExistingLocal;
 use slip_model::digests::GroupClass;
 use slip_model::keys::RuleTable;
 use slip_model::transform::Ownership;
@@ -119,12 +120,16 @@ pub fn take(
     input: &Input<'_>,
     rules: &RuleTable,
     files: Option<&Ownership>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
     keys: &[Digest],
 ) -> Side {
     let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
     let options = Options {
         rules,
         read_only: ReadOnly::files(&read_only),
+        existing,
+        existing_local,
         detail: Detail::All,
         names: true,
         rule_use: false,

@@ -31,6 +31,7 @@ fn map_shard(negatives: Option<Vec<Vec<u8>>>) -> Shard {
         negatives,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 

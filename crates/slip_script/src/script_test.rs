@@ -570,6 +570,8 @@ fn key_names(p: &slip_kiln::snippet::Parsed<'_>) -> BTreeMap<Digest, String> {
                     rules: &rules,
                     // The empty table reads no ownership (verify.md §2.1).
                     read_only: slip_digest::ReadOnly::EVERY_FILE,
+                    existing: &[],
+                    existing_local: &[],
                     detail: slip_digest::Detail::None,
                     names: true,
                     rule_use: false,

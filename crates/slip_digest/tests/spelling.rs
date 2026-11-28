@@ -193,11 +193,13 @@ fn run_with(c: &Case<'_>, extra: &[Obligation]) -> (Vec<Obligation>, Vec<Spellin
     let table = RuleTable::new(rules).expect("the rules make a table");
     let got = with_unit(&post, c.std, c.tables, |unit, input| {
         let files = read_only_files(input, c.read_only);
-        let got = check_spellings(unit, input, &table, ReadOnly::files(&files), &obligations);
+        let got =
+            check_spellings(unit, input, &table, ReadOnly::files(&files), &[], &[], &obligations);
         // WP-110: with an empty read-only list every answer is what it
         // was before ownership, with every file owned.
         if c.read_only.is_empty() {
-            let all = check_spellings(unit, input, &table, ReadOnly::NO_FILE, &obligations);
+            let all =
+                check_spellings(unit, input, &table, ReadOnly::NO_FILE, &[], &[], &obligations);
             assert_eq!(got, all, "an empty read-only list is every file owned");
         }
         got
@@ -906,12 +908,15 @@ fn attack_a_refused_table() {
             Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 1, key: k },
             Obligation { file: b"main.cpp".to_vec(), lo: call, hi: call + 2, key: k },
         ];
-        let got = check_spellings(unit, input, &table, ReadOnly::NO_FILE, &obs);
+        let got = check_spellings(unit, input, &table, ReadOnly::NO_FILE, &[], &[], &obs);
         assert_eq!(got[0], Spelling::Fails { found: None, found_name: "f(int)".into() });
         assert_eq!(got[1], NotSeen);
         // The same obligation holds under no rule.
         let none = RuleTable::empty();
-        assert_eq!(check_spellings(unit, input, &none, ReadOnly::NO_FILE, &obs[..1]), [Holds]);
+        assert_eq!(
+            check_spellings(unit, input, &none, ReadOnly::NO_FILE, &[], &[], &obs[..1]),
+            [Holds]
+        );
     });
 }
 
@@ -926,7 +931,7 @@ fn s10_6_unit_and_input_of_two_parses() {
     with_unit(&[("main.cpp", src)], "c++20", true, |unit, _| {
         with_unit(&[("main.cpp", src)], "c++20", true, |_, other| {
             let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check_spellings(unit, other, &RuleTable::empty(), ReadOnly::NO_FILE, &ob)
+                check_spellings(unit, other, &RuleTable::empty(), ReadOnly::NO_FILE, &[], &[], &ob)
             }));
             // A debug build asserts; a release build answers `NotSeen`.
             let debug = cfg!(debug_assertions);
@@ -1294,7 +1299,15 @@ fn f3_a_recoded_file_on_disk_is_not_seen() {
         let ob = |lo, hi, key| Obligation { file: b"main.cpp".to_vec(), lo, hi, key };
         let obligations =
             [ob(call + 2, call + 3, gk), ob(call + 2, call + 3, fk), ob(call, call + 1, gk)];
-        check_spellings(unit, &input, &RuleTable::empty(), ReadOnly::NO_FILE, &obligations)
+        check_spellings(
+            unit,
+            &input,
+            &RuleTable::empty(),
+            ReadOnly::NO_FILE,
+            &[],
+            &[],
+            &obligations,
+        )
     })
     .unwrap();
     std::fs::remove_dir_all(&dir).unwrap();

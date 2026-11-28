@@ -1211,6 +1211,7 @@ fn map_shard(obs: u8, read: &[&str]) -> slip_model::Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 

@@ -253,6 +253,11 @@ impl Walk<'_> {
             return KeyRes::None(Some(crate::local::IN_NUMBERING));
         }
         let e = self.entity(d);
+        // WP-144 amendment 2: in probe writing, a namespace is always
+        // keyed in its dependency view (never its own view or `ns_table`).
+        if self.probe > 0 && view.is_none() && self.ast.decls.get(e).kind() == DeclKind::Namespace {
+            return self.key_in(e, Some(false));
+        }
         let memo = match view {
             None => self.keys.get(&e),
             Some(b) => self.owned_state.views.get(&(e, b)),
@@ -265,6 +270,13 @@ impl Walk<'_> {
             // reached the cycle: not memoised, as for a depth abort.
             self.aborts += 1;
             return KeyRes::None(Some(KEY_CYCLE));
+        }
+        // WP-144: resolve `entity_view(e)` (which may run `probe_u(e)` or
+        // build `ns_table`) before marking `e` in `keys_in_progress`, so
+        // `probe_u(e)` does not mistake the outer `key_in(e, None)` for a
+        // cycle on `e`.
+        if view.is_none() && !self.rules.is_empty() && self.has_existing() {
+            let _ = self.entity_view(e);
         }
         if !self.enter() {
             crate::rule_use::forget(self, e, view);
@@ -308,7 +320,11 @@ impl Walk<'_> {
                         crate::rule_use::unmapped(self, e, key)
                     }
                     Some(true) => crate::rule_use::in_owned_view(self, e, key),
-                    Some(false) => self.map_key(e, view, key),
+                    Some(false) => {
+                        let mapped = self.map_key(e, view, key);
+                        crate::rule_use::in_dep_view(self, e, &mapped);
+                        mapped
+                    }
                 };
                 self.bytes += key.to_bytes().len() as u64;
                 KeyRes::Key { id: key.id(), kind, cause }
@@ -424,7 +440,7 @@ impl Walk<'_> {
 
     /// [`Walk::compute_key`], with the parent of a namespace taken in
     /// `view` (see [`Walk::key_in`]).
-    fn compute_key_in(
+    pub(crate) fn compute_key_in(
         &mut self,
         e: DeclId,
         view: Option<bool>,
@@ -906,15 +922,33 @@ impl Walk<'_> {
         }
         let b = match view {
             Some(b) => b,
-            None => self.owned(member),
+            None => self.entity_view(member),
         };
-        // The chain a namespace rule's counts climb (WP-111): of an owned
-        // member, and of one a dependency entity by the per-inclusion rule
-        // alone (WP-111 review F2), whose parent is then keyed in its own,
-        // dependency, view.
-        if b || (self.rule_use.is_some() && self.only_by_inclusion(member)) {
+        if self.probe > 0 {
+            // Amendment 2: no probe reads `ns_table` or a namespace's own
+            // key; a parent namespace is keyed in the member's view
+            // directly.
+            return match self.key_in(ns, Some(b)) {
+                KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
+                KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),
+            };
+        }
+        // The chain a namespace rule's counts climb (WP-111, WP-144):
+        // owned-view parents for mapped entities (`b`), and dependency-view
+        // parents for unmapped members that still count (existing entities,
+        // `only_by_inclusion` entities, and namespaces along their chain).
+        if b {
             let (e, n) = (self.entity(member), self.entity(ns));
             crate::rule_use::namespace_parent(self, e, n);
+        } else if self.rule_use.is_some() {
+            let e = self.entity(member);
+            if self.ast.decls.get(e).kind() == DeclKind::Namespace
+                || self.owned(e)
+                || self.only_by_inclusion(e)
+            {
+                let n = self.entity(ns);
+                crate::rule_use::dep_namespace_parent(self, e, n);
+            }
         }
         // The chain `own_lists.rs` climbs (WP-146). What a namespace holds
         // in a view is `Walk::ns_holds`, from the declarations (WP-141).
@@ -922,7 +956,7 @@ impl Walk<'_> {
             let (n, m) = (self.entity(ns), self.entity(member));
             self.owned_state.ns_parents.insert(m, n);
         }
-        let res = if b == self.owned(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
+        let res = if b == self.ns_own_view(ns) { self.key(ns) } else { self.key_in(ns, Some(b)) };
         match res {
             KeyRes::Key { id, cause, .. } => Ok((Parent::Unit(id), cause)),
             KeyRes::None(c) => Err(Some(c.unwrap_or(BAD_PARENT))),

@@ -43,6 +43,8 @@ fn digested(p: &Parsed<'_>) -> Digested {
                 let options = slip_digest::Options {
                     rules: &rules,
                     read_only: slip_digest::ReadOnly::EVERY_FILE,
+                    existing: &[],
+                    existing_local: &[],
                     detail: slip_digest::Detail::All,
                     names: true,
                     rule_use: false,

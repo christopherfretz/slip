@@ -38,6 +38,7 @@ use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_model::Digest;
+use slip_model::declared::ExistingLocal;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Rule, RuleTable};
 
@@ -98,6 +99,8 @@ pub struct Keys<'a> {
     input: &'a Input<'a>,
     rules: &'a RuleTable,
     read_only: crate::ReadOnly<'a>,
+    existing: &'a [Digest],
+    existing_local: &'a [ExistingLocal],
     w: Walk<'a>,
     units: HashMap<DeclId, Option<DeclId>>,
     /// The edges [`Keys::derived`] follows, built on first use.
@@ -117,7 +120,7 @@ impl<'a> Keys<'a> {
     /// The keys of `input`, with no rules: the pre-image's key space.
     /// Runs nothing.
     pub fn new(input: &'a Input<'a>) -> Keys<'a> {
-        Keys::with_rules(input, &NO_RULES, crate::ReadOnly::EVERY_FILE)
+        Keys::with_rules(input, &NO_RULES, crate::ReadOnly::EVERY_FILE, &[], &[])
     }
 
     /// The same over a post-image, with the Slip run's rules: the keys
@@ -129,6 +132,7 @@ impl<'a> Keys<'a> {
     /// rule renames owned entities only, so these keys are the verify
     /// job's only when given the job's files. `ReadOnly::NO_FILE` maps as
     /// "every file owned"; `ReadOnly::EVERY_FILE` maps nothing.
+    /// `existing` and `existing_local` are `Declared`'s (WP-144).
     ///
     /// A table that holds a rule §2.1 refuses (`RuleTable::refused`) is
     /// taken as the walk takes it: nothing is keyed under it. Every
@@ -138,10 +142,24 @@ impl<'a> Keys<'a> {
         input: &'a Input<'a>,
         rules: &'a RuleTable,
         read_only: crate::ReadOnly<'a>,
+        existing: &'a [Digest],
+        existing_local: &'a [ExistingLocal],
     ) -> Keys<'a> {
         let mut w = Walk::new(input, rules);
         w.read_only = read_only;
-        Keys { input, rules, read_only, w, units: HashMap::new(), origins: None, written: None }
+        w.existing = existing;
+        w.existing_local = existing_local;
+        Keys {
+            input,
+            rules,
+            read_only,
+            existing,
+            existing_local,
+            w,
+            units: HashMap::new(),
+            origins: None,
+            written: None,
+        }
     }
 
     /// The declaration the digest treats as the entity of `d`
@@ -319,11 +337,12 @@ impl<'a> Keys<'a> {
                 }
             }
         }
-        let (input, rules, read_only) = (self.input, self.rules, self.read_only);
+        let (input, rules, read_only, existing, existing_local) =
+            (self.input, self.rules, self.read_only, self.existing, self.existing_local);
         let ast = self.w.ast;
         let written = self.written.get_or_insert_with(|| {
             let mut by: HashMap<DeclId, Vec<WalkUnit>> = HashMap::new();
-            for u in walk_units(input, rules, read_only) {
+            for u in walk_units(input, rules, read_only, existing, existing_local) {
                 by.entry(u.entity).or_default().push(u);
             }
             by
@@ -477,10 +496,14 @@ pub fn walk_units(
     input: &Input<'_>,
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
 ) -> Vec<WalkUnit> {
     let options = crate::Options {
         rules,
         read_only,
+        existing,
+        existing_local,
         detail: crate::Detail::None,
         names: false,
         rule_use: false,

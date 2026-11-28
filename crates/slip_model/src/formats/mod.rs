@@ -40,6 +40,7 @@ mod declared;
 mod digests;
 mod edits;
 mod editset;
+mod existing_use;
 mod found;
 mod names;
 mod negatives;
@@ -373,7 +374,7 @@ macro_rules! format_impl {
 format_impl!(Plan, plan, b"PLAN", 1);
 format_impl!(Shard, shard, b"SHRD", 2);
 format_impl!(RunRecord, run, b"RUNR", 1);
-format_impl!(Declared, declared, b"DECL", 3);
+format_impl!(Declared, declared, b"DECL", 4);
 format_impl!(Transform, transform, b"TRFM", 3);
 format_impl!(EditSet, editset, b"EDTS", 3);
 format_impl!(Overlay, overlay, b"OVLY", 1);

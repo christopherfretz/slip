@@ -1,0 +1,2 @@
+# Probe: existing function template whose signature names acme::h(t), acme in two views -> equal.
+use 1 via 1 direct 0

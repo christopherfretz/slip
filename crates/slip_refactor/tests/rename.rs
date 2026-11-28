@@ -560,7 +560,8 @@ fn rules_give_the_ids_in_the_post_image() {
             slip_digest::map::with_input(u, &subject, |input| {
                 // Every file owned: a run with a subject declared in a
                 // read-only file is flagged `read_only` and skipped above.
-                let mut keys = Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE);
+                let mut keys =
+                    Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE, &[], &[]);
                 let mut ids = BTreeSet::new();
                 let mut insert = |keys: &mut Keys<'_>, e: DeclId| match keys.key_id(e) {
                     Ok(id) => {
@@ -953,7 +954,8 @@ fn followers_of_class_template_members_map_with_their_seed() {
                 let prefix = format!("{root}/");
                 let subject = |p: &[u8]| p.strip_prefix(prefix.as_bytes()).unwrap_or(p).to_vec();
                 slip_digest::map::with_input(u, &subject, |input| {
-                    let mut keys = Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE);
+                    let mut keys =
+                        Keys::with_rules(input, &table, slip_digest::ReadOnly::NO_FILE, &[], &[]);
                     let mut ids = BTreeSet::new();
                     let mut causes = Vec::new();
                     for d in u.ast().decls.ids() {
@@ -1426,6 +1428,8 @@ fn digest_units(
                     &slip_digest::Options {
                         rules,
                         read_only: slip_digest::ReadOnly::NO_FILE,
+                        existing: &[],
+                        existing_local: &[],
                         detail: slip_digest::Detail::All,
                         names: true,
                         rule_use: !rules.is_empty(),

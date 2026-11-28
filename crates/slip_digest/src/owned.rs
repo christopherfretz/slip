@@ -33,11 +33,14 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use slip_kiln::kiln::ast::DeclId;
 use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind};
+use slip_kiln::kiln::ast::linkage::Linkage;
 use slip_kiln::kiln::ast::names::DeclNameView;
 use slip_kiln::kiln::source::{FileId, Loc, SourceManager};
+use slip_model::Digest;
+use slip_model::keys::KeyKind;
 use slip_model::transform::{FileClass, Ownership};
 
-use crate::keys::{KeyRes, info};
+use crate::keys::{KeyRes, Role, info};
 use crate::units::REDECL_LIMIT;
 use crate::walk::Walk;
 
@@ -312,17 +315,286 @@ pub(crate) struct OwnedState {
     pub keyed: HashMap<DeclId, (bool, slip_model::keys::Key)>,
 }
 
+/// The walk's state for `Declared.existing` and `Declared.existing_local`
+/// (`spec/verify.md` §2.1, WP-144).
+#[derive(Default)]
+pub(crate) struct ExistingState {
+    /// Whether an owned namespace entity is listed (directly or through
+    /// an enclosing namespace).
+    listed: HashMap<DeclId, bool>,
+    listed_in_progress: HashSet<DeclId>,
+    /// Whether an owned non-namespace entity is existing (`Walk::existing`).
+    memo: HashMap<DeclId, bool>,
+    in_progress: HashSet<DeclId>,
+    /// Cycles met while deciding `listed` or `existing`: nothing decided
+    /// above one is memoised.
+    cycles: u64,
+    /// Memo of probe keys `U(e)` (amendment 2), by entity.
+    pub(crate) probe_u: HashMap<DeclId, Option<Digest>>,
+    /// Indices into `Walk::existing` matched by some entity (section 34).
+    pub(crate) used_existing: BTreeSet<usize>,
+    /// Indices into `Walk::existing_local` matched by some entity (section 34).
+    pub(crate) used_local: BTreeSet<usize>,
+}
+
 impl Walk<'_> {
+    /// Whether either `existing` list is non-empty.
+    pub(crate) fn has_existing(&self) -> bool {
+        !self.existing.is_empty() || !self.existing_local.is_empty()
+    }
+
+    /// Whether non-namespace entity `e` of key kind `kind` is program-wide
+    /// (WP-144 amendment 1, shared with `own_lists.rs` `candidate` less
+    /// its deduction-guide clause): not a namespace, not repeatable, not a
+    /// part (`resolved`/`default_argument`), not internal linkage, not in
+    /// or under an unnamed namespace.
+    pub(crate) fn is_program_wide(&self, e: DeclId, kind: KeyKind) -> bool {
+        if kind == KeyKind::Namespace
+            || crate::units::repeatable(kind)
+            || matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
+        {
+            return false;
+        }
+        let rep = self.representative(e);
+        self.ast.linkage(rep) != Linkage::Internal && !self.ast.in_anonymous_namespace(rep)
+    }
+
+    /// The `KeyKind` entity `e` has, structurally without forming its key.
+    fn key_kind_of(&self, e: DeclId) -> Option<KeyKind> {
+        let r = self.representative(e);
+        match self.ast.templ_link(r).get() {
+            Some((TemplLinkKind::Specialization, _)) if self.ast.spec_info(r).is_some() => {
+                return Some(KeyKind::Specialisation);
+            }
+            Some((TemplLinkKind::PartialSpecialization, _))
+                if self.ast.partial_spec_info(r).is_some() =>
+            {
+                return Some(KeyKind::PartialSpecialisation);
+            }
+            Some(_) | None => {}
+        }
+        match info(self.ast.decls.get(r).kind()).role {
+            Role::Entity(KeyKind::Variable) if self.ast.decls.is_decomposition(r) => {
+                Some(KeyKind::Decomposition)
+            }
+            Role::Entity(k) | Role::Content(k) => Some(k),
+            Role::Unsupported(_)
+            | Role::Nothing
+            | Role::Transparent
+            | Role::Root
+            | Role::Local
+            | Role::InParent => None,
+        }
+    }
+
+    /// Probe key `U(e)` (WP-144 amendment 2): `e`'s key formed as a
+    /// dependency entity's (namespace parents in dependency view, no rule
+    /// on own key) in probe writing (no R1, no R2, no `ns_table`). `None`
+    /// if it cannot be formed or carries a cause.
+    pub(crate) fn probe_u(&mut self, e: DeclId) -> Option<Digest> {
+        let e = self.entity(e);
+        if let Some(&u) = self.existing_state.probe_u.get(&e) {
+            return u;
+        }
+        let saved_probe = self.enter_probe();
+        let res = if self.keys_in_progress.contains(&e) {
+            self.aborts += 1;
+            None
+        } else if !self.enter() {
+            None
+        } else {
+            let aborts = self.aborts;
+            let rooted = self.local.self_rooted;
+            self.keys_in_progress.insert(e);
+            let saved = self.take_unit();
+            let types = self.take_types();
+            self.in_key += 1;
+            let computed = self.compute_key_in(self.representative(e), Some(false));
+            self.in_key -= 1;
+            self.restore_types(types);
+            self.unit = saved;
+            self.keys_in_progress.remove(&e);
+            self.leave();
+            let out = match computed {
+                Ok((key, None)) => Some(key.id()),
+                Ok((_, Some(_))) | Err(_) => None,
+            };
+            if self.aborts == aborts && self.local.self_rooted == rooted {
+                self.existing_state.probe_u.insert(e, out);
+            }
+            out
+        };
+        self.leave_probe(saved_probe);
+        res
+    }
+
+    /// `listed(n)` (WP-144 amendment 4): for an owned namespace `n`,
+    /// `U(n)` is in `existing` (named namespaces only), or the namespace
+    /// it is keyed under is listed.
+    pub(crate) fn listed(&mut self, d: DeclId) -> bool {
+        if self.existing.is_empty() || self.rules.is_empty() {
+            return false;
+        }
+        let n = self.entity(d);
+        if self.ast.decls.get(n).kind() != DeclKind::Namespace {
+            return false;
+        }
+        if let Some(&ans) = self.existing_state.listed.get(&n) {
+            return ans;
+        }
+        if !self.owned(n) {
+            return false;
+        }
+        if !self.existing_state.listed_in_progress.insert(n) {
+            self.existing_state.cycles += 1;
+            self.aborts += 1;
+            return false;
+        }
+        let cycles = self.existing_state.cycles;
+        let aborts = self.aborts;
+        let unnamed =
+            matches!(self.ast.names.view(self.ast.decls.get(n).name()), DeclNameView::Empty);
+        let direct = if !unnamed
+            && let Some(u) = self.probe_u(n)
+            && let Ok(idx) = self.existing.binary_search(&u)
+        {
+            if self.aborts == aborts {
+                self.existing_state.used_existing.insert(idx);
+            }
+            true
+        } else {
+            false
+        };
+        let ans = direct || self.key_namespace(n).is_some_and(|p| self.listed(p));
+        self.existing_state.listed_in_progress.remove(&n);
+        if self.existing_state.cycles == cycles && self.aborts == aborts {
+            self.existing_state.listed.insert(n, ans);
+        }
+        ans
+    }
+
+    /// `existing(e)` (WP-144): for an owned non-namespace entity `e` whose
+    /// key's parent is a namespace `n`, `listed(n)`; or `e` is program-wide
+    /// and `U(e)` is in `existing`; or `e` is local and `(U(e), file(d))`
+    /// is in `existing_local` for every declaration `d` of `e`.
+    pub(crate) fn existing(&mut self, d: DeclId) -> bool {
+        if !self.has_existing() || self.rules.is_empty() {
+            return false;
+        }
+        let e = self.entity(d);
+        if self.ast.decls.get(e).kind() == DeclKind::Namespace {
+            return false;
+        }
+        if let Some(&ans) = self.existing_state.memo.get(&e) {
+            return ans;
+        }
+        if !self.owned(e) {
+            return false;
+        }
+        let Some(n) = self.key_namespace(e) else {
+            return false;
+        };
+        if !self.existing_state.in_progress.insert(e) {
+            self.existing_state.cycles += 1;
+            self.aborts += 1;
+            return false;
+        }
+        let cycles = self.existing_state.cycles;
+        let aborts = self.aborts;
+        let ans = if self.listed(n) {
+            true
+        } else if let Some(kind) = self.key_kind_of(e) {
+            if self.is_program_wide(e, kind) {
+                if !self.existing.is_empty()
+                    && let Some(u) = self.probe_u(e)
+                    && let Ok(idx) = self.existing.binary_search(&u)
+                {
+                    if self.aborts == aborts {
+                        self.existing_state.used_existing.insert(idx);
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else if !self.existing_local.is_empty()
+                && let Some(u) = self.probe_u(e)
+            {
+                let chain = self.chain(e);
+                if chain.is_empty() || chain.len() > REDECL_LIMIT {
+                    false
+                } else {
+                    let mut idxs = Vec::with_capacity(chain.len());
+                    let mut all = true;
+                    for decl in chain {
+                        let loc = self.sm.expansion_loc(self.ast.decls.get(decl).loc());
+                        let Some(fid) = self.buffer_of(loc) else {
+                            all = false;
+                            break;
+                        };
+                        let path = (self.subject_path)(fid);
+                        if let Ok(idx) = self.existing_local.binary_search_by(|x| {
+                            (&x.key, x.file.as_slice()).cmp(&(&u, path.as_slice()))
+                        }) {
+                            idxs.push(idx);
+                        } else {
+                            all = false;
+                            break;
+                        }
+                    }
+                    if all {
+                        if self.aborts == aborts {
+                            self.existing_state.used_local.extend(idxs);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        self.existing_state.in_progress.remove(&e);
+        if self.existing_state.cycles == cycles && self.aborts == aborts {
+            self.existing_state.memo.insert(e, ans);
+        }
+        ans
+    }
+
+    /// `mapped(e) := owned(e) && !existing(e)` (WP-144 amendment 5).
+    pub(crate) fn mapped(&mut self, d: DeclId) -> bool {
+        let e = self.entity(d);
+        if !self.owned(e) {
+            return false;
+        }
+        !self.existing(e)
+    }
+
+    /// The view of entity `d` (`true`: mapped/owned; `false`:
+    /// unmapped/dependency): for a namespace, its own view (`ns_own_view`,
+    /// which is `owned && !stays`); for any other entity, `mapped`.
+    pub(crate) fn entity_view(&mut self, d: DeclId) -> bool {
+        let e = self.entity(d);
+        if self.ast.decls.get(e).kind() == DeclKind::Namespace {
+            if self.probe > 0 { false } else { self.ns_own_view(e) }
+        } else {
+            self.mapped(e)
+        }
+    }
+
     /// Whether a rule may apply to the key of `d`'s entity (rule 1 of
     /// `spec/verify.md` §2.1): the table is not empty and the entity is
-    /// owned; for a namespace keyed in a member's view, the view.
+    /// mapped (owned and not existing; for a namespace, its own view); for
+    /// a namespace keyed in a member's view, the view.
     pub(crate) fn rule_applies(&mut self, d: DeclId, view: Option<bool>) -> bool {
         if self.rules.is_empty() {
             return false;
         }
         match view {
             Some(b) => b,
-            None => self.owned(d),
+            None => self.entity_view(d),
         }
     }
 

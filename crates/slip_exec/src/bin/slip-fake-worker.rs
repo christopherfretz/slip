@@ -104,6 +104,7 @@ fn ok_shard(job: &Job) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 

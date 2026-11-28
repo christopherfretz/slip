@@ -97,8 +97,10 @@ impl Walk<'_> {
         match self.key(d) {
             KeyRes::Key { id, cause, .. } => {
                 s.uv(REF_UNIT).digest(&id).absorb(cause);
-                let e = self.entity(d);
-                crate::units::demand(self, e);
+                if self.probe == 0 {
+                    let e = self.entity(d);
+                    crate::units::demand(self, e);
+                }
             }
             KeyRes::None(cause) => {
                 s.uv(REF_NONE);

@@ -94,6 +94,8 @@ fn walk(
     let options = Options {
         rules: &rules,
         read_only: slip_digest::ReadOnly::NO_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::All,
         names: true,
         rule_use: false,
@@ -113,6 +115,8 @@ fn map_shard(o: &Observer) -> Result<Shard, String> {
     let options = Options {
         rules: &rules,
         read_only: slip_digest::ReadOnly::NO_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::None,
         names: false,
         rule_use: false,
@@ -322,6 +326,7 @@ fn s8_5_cause_counters() {
         made: Vec::new(),
         fixed: Vec::new(),
         rebuilt: slip_digest::RebuiltOutput::default(),
+        existing_use: slip_model::ExistingUse::default(),
     };
     let got: Vec<(String, u64)> =
         counters(&output).into_iter().map(|c| (c.name, c.value)).collect();
@@ -674,6 +679,8 @@ fn s9_5_map_unit_passes_rule_use_through() {
                 input,
                 &RuleTable::empty(),
                 slip_digest::ReadOnly::EVERY_FILE,
+                &[],
+                &[],
             )
         })
         .unwrap()
@@ -693,6 +700,8 @@ fn s9_5_map_unit_passes_rule_use_through() {
         let on = Options {
             rules: &rules,
             read_only: slip_digest::ReadOnly::NO_FILE,
+            existing: &[],
+            existing_local: &[],
             detail: Detail::None,
             names: false,
             rule_use: true,

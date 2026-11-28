@@ -24,6 +24,8 @@ fn walk_with(files: &[(&str, &str)], rules: &RuleTable, detail: Detail<'_>) -> O
             &Options {
                 rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail,
                 names: true,
                 rule_use: false,
@@ -226,6 +228,7 @@ fn written(key: u8, digest: u8, kind: KeyKind) -> Written {
         owner: None,
         collided: false,
         view: None,
+        stays: false,
         denotes: None,
         emitted: false,
     }
@@ -579,6 +582,8 @@ fn a_key_keeps_its_parents_cause() {
             &Options {
                 rules: &rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: Detail::All,
                 names: true,
                 rule_use: false,
@@ -721,6 +726,8 @@ fn view_units_of(
         let options = Options {
             rules,
             read_only: crate::ReadOnly::new(&pred),
+            existing: &[],
+            existing_local: &[],
             detail: Detail::None,
             names: false,
             rule_use: true,

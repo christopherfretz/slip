@@ -1,0 +1,2 @@
+acme::<using other::v> @ new_part.h
+acme::<shadow other::v> @ new_part.h

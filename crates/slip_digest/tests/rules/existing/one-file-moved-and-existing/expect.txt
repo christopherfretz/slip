@@ -1,0 +1,2 @@
+# (d) one file holds both moved and existing declarations -> equal.
+use 1 via 1 direct 0

@@ -28,7 +28,7 @@ use slip_digest::{
 use slip_exec::store::Store;
 use slip_exec::worker::Job;
 use slip_kiln::Lookups;
-use slip_model::agreement::{Binding, Declares, RebuiltUse, RuleUse};
+use slip_model::agreement::{Binding, Declares, ExistingUse, RebuiltUse, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
 use slip_model::formats::content_id;
@@ -215,7 +215,11 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     let locate_n = params.locate;
     if v.total > 0 && locate_n > 0 {
         let keys = locate::wanted(&v.findings, locate_n);
-        let take = |input: &slip_digest::Input<'_>| locate::take(input, rules, files, &keys);
+        let existing = params.declared.existing();
+        let existing_local = params.declared.existing_local();
+        let take = |input: &slip_digest::Input<'_>| {
+            locate::take(input, rules, files, existing, existing_local, &keys)
+        };
         let again = post_again(params, through.as_ref(), observer, job.round, take);
         post.reparsed += 1;
         let (again_shard, post_side) = again?;
@@ -253,6 +257,8 @@ fn post_walk(
 ) -> Result<(Shard, Option<(Output, Lookups)>), String> {
     let (rules, files) = (params.declared.rules(), params.declared.files());
     let kept = params.declared.kept();
+    let existing = params.declared.existing();
+    let existing_local = params.declared.existing_local();
     params
         .image
         .parse_looking(observer, Side::Post, Phase::Verify, round, |input| {
@@ -260,6 +266,8 @@ fn post_walk(
             let options = Options {
                 rules,
                 read_only: ReadOnly::files(&read_only),
+                existing,
+                existing_local,
                 detail,
                 names: false,
                 rule_use: !rules.is_empty(),
@@ -367,6 +375,8 @@ fn overlay_walk<'o>(
     };
     let (rules, files, kept) =
         (params.declared.rules(), params.declared.files(), params.declared.kept());
+    let existing = params.declared.existing();
+    let existing_local = params.declared.existing_local();
     let limit = params.image.loading_limit();
     let mut parses = 0usize;
     loop {
@@ -392,6 +402,8 @@ fn overlay_walk<'o>(
                     let options = Options {
                         rules,
                         read_only: ReadOnly::files(&read_only),
+                        existing,
+                        existing_local,
                         detail,
                         names: false,
                         rule_use: !rules.is_empty(),
@@ -400,7 +412,18 @@ fn overlay_walk<'o>(
                     let checked = (!l.overlay().spellings.is_empty()).then(|| {
                         let (obligations, indices) = l.obligations(unit.inputs())?;
                         let ro = ReadOnly::files(&read_only);
-                        Ok((check_spellings(unit, input, rules, ro, &obligations), indices))
+                        Ok((
+                            check_spellings(
+                                unit,
+                                input,
+                                rules,
+                                ro,
+                                existing,
+                                existing_local,
+                                &obligations,
+                            ),
+                            indices,
+                        ))
                     });
                     (output, checked)
                 });
@@ -573,6 +596,8 @@ fn pre_image(
     let options = Options {
         rules: &no_rules,
         read_only: ReadOnly::EVERY_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::Groups(g),
         names: false,
         rule_use: false,
@@ -585,7 +610,7 @@ fn pre_image(
             let side = match &comparison {
                 Ok(c) if !c.findings.is_empty() && locate_n > 0 => {
                     let keys = locate::wanted(&c.findings[..c.findings.len().min(limit)], locate_n);
-                    Some(locate::take(input, &no_rules, None, &keys))
+                    Some(locate::take(input, &no_rules, None, &[], &[], &keys))
                 }
                 _ => None,
             };
@@ -645,6 +670,8 @@ struct Post {
     spellings: Option<(Spellings, Vec<Counter>)>,
     /// Section 33 (WP-118), when it is not empty.
     rebuilt_use: Option<RebuiltUse>,
+    /// Section 34 (WP-144), when it is not empty.
+    existing_use: Option<ExistingUse>,
 }
 
 impl Post {
@@ -656,6 +683,7 @@ impl Post {
     fn new(shard: &mut Shard, output: Output, rules_id: Digest, counted: bool) -> Post {
         let mut counters = std::mem::take(&mut shard.counters);
         counters.extend(walk_counters(&output));
+        let existing_use = (!output.existing_use.is_empty()).then_some(output.existing_use);
         Post {
             counters,
             rule_use: counted.then_some(RuleUse {
@@ -680,6 +708,7 @@ impl Post {
             panicked: 0,
             spellings: None,
             rebuilt_use: None,
+            existing_use,
         }
     }
 
@@ -714,6 +743,7 @@ impl Post {
             panicked,
             spellings,
             rebuilt_use,
+            existing_use,
         } = self;
         let by_name = [
             ("verify.groups.differing", differing),
@@ -760,6 +790,7 @@ impl Post {
         out.rule_use = rule_use;
         out.spellings = spellings;
         out.rebuilt_use = rebuilt_use;
+        out.existing_use = existing_use;
         out
     }
 }

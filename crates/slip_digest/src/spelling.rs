@@ -45,6 +45,7 @@ use slip_kiln::kiln::source::{FileId, Loc, SourceManager, Span};
 use slip_kiln::ranges;
 use slip_kiln::written::{self, Role};
 use slip_model::Digest;
+use slip_model::declared::ExistingLocal;
 use slip_model::keys::{KeyKind, RuleTable};
 
 use crate::query::Keys;
@@ -126,6 +127,8 @@ pub fn check_spellings(
     input: &Input<'_>,
     rules: &RuleTable,
     read_only: ReadOnly<'_>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
     obligations: &[Obligation],
 ) -> Vec<Spelling> {
     let not_seen = || vec![Spelling::NotSeen; obligations.len()];
@@ -143,9 +146,11 @@ pub fn check_spellings(
     let mut check = Check {
         unit,
         input,
-        keys: Keys::with_rules(input, rules, read_only),
+        keys: Keys::with_rules(input, rules, read_only, existing, existing_local),
         rules,
         read_only,
+        existing,
+        existing_local,
         origins: HashMap::new(),
         walk: None,
     };
@@ -293,6 +298,8 @@ struct Check<'a, 'u> {
     keys: Keys<'a>,
     rules: &'a RuleTable,
     read_only: ReadOnly<'a>,
+    existing: &'a [Digest],
+    existing_local: &'a [ExistingLocal],
     /// The key of each origin asked for, memoised: `None` when it has
     /// none or its key is not one entity's.
     origins: HashMap<DeclId, Option<Digest>>,
@@ -546,8 +553,10 @@ impl Check<'_, '_> {
 
     /// The walk's collisions and names, made on first use.
     fn walk(&mut self) -> &Collisions {
-        let (input, rules, read_only) = (self.input, self.rules, self.read_only);
-        self.walk.get_or_insert_with(|| collisions(input, rules, read_only))
+        let (input, rules, read_only, existing, existing_local) =
+            (self.input, self.rules, self.read_only, self.existing, self.existing_local);
+        self.walk
+            .get_or_insert_with(|| collisions(input, rules, read_only, existing, existing_local))
     }
 
     /// The name of the entity found (`spec/verify.md` §6.1): the walk's
@@ -594,8 +603,22 @@ const NAME_LIMIT: usize = 4096;
 /// cause; so on a copy of the units the order unit's cause is put aside
 /// and the mapped collisions are marked again (the units' other marks on
 /// the copy are not read).
-fn collisions(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Collisions {
-    let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
+fn collisions(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: ReadOnly<'_>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
+) -> Collisions {
+    let options = Options {
+        rules,
+        read_only,
+        existing,
+        existing_local,
+        detail: Detail::None,
+        names: true,
+        rule_use: false,
+    };
     crate::walk::run_with(input, &options, |w, written, output| {
         let mut keys = HashSet::new();
         let mut with_unit = HashSet::new();
@@ -677,12 +700,14 @@ mod tests {
             let rename = keys.rename_rule(f, b"g").expect("a rule");
             let renamed = RuleTable::new(vec![rename]).expect("a table");
             for rules in [&none, &renamed] {
-                let mut keys = Keys::with_rules(&input, rules, ReadOnly::NO_FILE);
+                let mut keys = Keys::with_rules(&input, rules, ReadOnly::NO_FILE, &[], &[]);
                 let origins: HashSet<Digest> =
                     p.ast.decls.ids().filter_map(|d| keys.key_id(d).ok()).collect();
                 let options = Options {
                     rules,
                     read_only: ReadOnly::NO_FILE,
+                    existing: &[],
+                    existing_local: &[],
                     detail: Detail::None,
                     names: false,
                     rule_use: false,

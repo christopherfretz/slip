@@ -78,6 +78,8 @@ fn digest(dep: &str, body: &str) -> Output {
         let options = Options {
             rules: &table,
             read_only: ReadOnly::files(&ro),
+            existing: &[],
+            existing_local: &[],
             detail: Detail::All,
             names: true,
             rule_use: false,
@@ -134,4 +136,101 @@ fn e_k_does_not_depend_on_the_order_of_members() {
 #[test]
 fn e_k_does_not_depend_on_the_order_of_members_one_view_key_each() {
     same_in_both_orders(DEP_NO_ACME);
+}
+
+// WP-144 amendment 2: two using-declarations in two namespaces, each
+// naming the other's namespace, walked in both orders produce one answer
+// (probe writing reads neither `ns_table` nor a namespace's own key).
+#[test]
+fn wp144_mutual_using_declarations_order_independent() {
+    let rules = RuleTable::new(vec![
+        Rule {
+            parent: Parent::Root,
+            kind: KeyKind::Namespace,
+            name: Name::Identifier(b"a".to_vec()),
+            disc: None,
+            to_parent: Parent::Root,
+            to_name: Name::Identifier(b"old_a".to_vec()),
+        },
+        Rule {
+            parent: Parent::Root,
+            kind: KeyKind::Namespace,
+            name: Name::Identifier(b"b".to_vec()),
+            disc: None,
+            to_parent: Parent::Root,
+            to_name: Name::Identifier(b"old_b".to_vec()),
+        },
+    ])
+    .expect("two rules");
+    let run_order = |src: &str| -> Output {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let extra = slip_kiln::snippet::Extra::default();
+        slip_kiln::snippet::parse_with(&snippet, &extra, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let paths: Vec<Vec<u8>> =
+                p.sm.file_ids()
+                    .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                    .collect();
+            let path = |f: FileId| paths.get(f.index()).cloned().unwrap_or_default();
+            let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            // Resolve the unruled keys of the two existing using-declarations
+            // and the existing members so both orders list the exact same entries.
+            let plain = slip_digest::records::records(
+                &input,
+                &RuleTable::empty(),
+                ReadOnly::EVERY_FILE,
+                &[],
+                &[],
+            )
+            .unwrap();
+            let key_of = |name: &str| -> Digest {
+                plain.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no {name}")).id
+            };
+            let mut existing = vec![key_of("a::ex_a()"), key_of("b::ex_b()")];
+            existing.sort();
+            let mut existing_local = vec![
+                slip_model::declared::ExistingLocal {
+                    key: key_of("a::<using b::ex_b>"),
+                    file: b"main.cpp".to_vec(),
+                },
+                slip_model::declared::ExistingLocal {
+                    key: key_of("b::<using a::ex_a>"),
+                    file: b"main.cpp".to_vec(),
+                },
+            ];
+            existing_local.sort();
+            let options = Options {
+                rules: &rules,
+                read_only: ReadOnly::NO_FILE,
+                existing: &existing,
+                existing_local: &existing_local,
+                detail: Detail::All,
+                names: true,
+                rule_use: true,
+            };
+            slip_digest::digest(&input, &options)
+        })
+        .unwrap_or_else(|e| panic!("does not parse: {e}"))
+    };
+    let ab = "namespace a { int ex_a(); int mv_a(); }\n\
+              namespace b { int ex_b(); int mv_b(); }\n\
+              namespace a { using b::ex_b; }\n\
+              namespace b { using a::ex_a; }\n";
+    let ba = "namespace b { int ex_b(); int mv_b(); }\n\
+              namespace a { int ex_a(); int mv_a(); }\n\
+              namespace b { using a::ex_a; }\n\
+              namespace a { using b::ex_b; }\n";
+    let out_ab = run_order(ab);
+    let out_ba = run_order(ba);
+    assert_eq!(out_ab.digests, out_ba.digests);
+    assert_eq!(out_ab.names, out_ba.names);
+    assert_eq!(out_ab.existing_use, out_ba.existing_use);
+    assert_eq!(out_ab.existing_use.existing, vec![0, 1]);
+    assert_eq!(out_ab.existing_use.local, vec![0, 1]);
 }

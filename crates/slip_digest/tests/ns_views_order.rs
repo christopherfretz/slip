@@ -84,6 +84,8 @@ fn with_post<R>(
         let options = Options {
             rules: &table,
             read_only: ReadOnly::files(&ro),
+            existing: &[],
+            existing_local: &[],
             detail: Detail::All,
             names: true,
             rule_use: false,

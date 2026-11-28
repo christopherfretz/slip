@@ -71,6 +71,8 @@ fn wp067_written_changes_no_digest() {
                         let options = Options {
                             rules: &rules,
                             read_only: slip_digest::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
                             detail: Detail::All,
                             names: true,
                             rule_use: false,

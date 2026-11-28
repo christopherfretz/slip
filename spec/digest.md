@@ -640,84 +640,102 @@ rules come from, and why this is sound, is `verify.md`. A walk under
 rules also counts how each rule was used, so that a run can check that no
 observer still has a renamed entity under its old name (`verify.md` §9).
 
-**Ownership.** With rules the walk is also given which files are
-read-only (`verify.md` §2, `Declared.files`; `Options::read_only`, a
-predicate over the image's files that the caller makes: every file
-read-only when the caller has none, so that every key is the key of the
-empty table). A rule matches only an
-**owned** entity, and the namespaces that enclose a namespace member are
-mapped only when the member is owned; a dependency entity (one with a
-declaration in a read-only file, by its expansion location or its name
-token's spelling location, a file read-only per inclusion when its
-include chain passes through a read-only file; a
-specialisation of such a template; an implicit member of such a class)
-keeps its own name and its namespaces theirs, with only what its
-discriminators mention mapped. The definition and the reason are
-`verify.md` §2.1 "Rules rename owned entities only". A file may also be
-**rebuilt** (`verify.md` §2.1, WP-118): for everything in this section
-it is read as an owned file, except that an entity with C language
-linkage declared in one is a dependency entity. "Map its parent"
+**Ownership and existing entities.** With rules the walk is also given
+which files are read-only (`verify.md` §2, `Declared.files`;
+`Options::read_only`, a predicate over the image's files that the caller
+makes: every file read-only when the caller has none, so that every key
+is the key of the empty table), and which owned entities were already in
+a rule's target (`Declared.existing` and `Declared.existing_local`,
+WP-144; `Options::existing` and `Options::existing_local`). A rule
+matches only a **mapped** entity (`mapped(e) := owned(e) && !existing(e)`),
+and the namespaces that enclose a namespace member are mapped only when
+the member is mapped; a dependency entity (one with a declaration in a
+read-only file, by its expansion location or its name token's spelling
+location, a file read-only per inclusion when its include chain passes
+through a read-only file; a specialisation of such a template; an
+implicit member of such a class) or an existing entity keeps its own name
+and its namespaces theirs, with only what its discriminators mention
+mapped. (Because a rule's parent is written in mapped terms without the
+existing lists, a rule on a member of an existing entity cannot match
+either and fails closed; `verify.md` §2.1 limit 1,
+`rules/existing/member-of-existing-renamed`.) The definition and the reason are `verify.md` §2.1 "Rules rename
+owned entities only" and "Entities that were already there". A file may
+also be **rebuilt** (`verify.md` §2.1, WP-118): for everything in this
+section it is read as an owned file, except that an entity with C
+language linkage declared in one is a dependency entity. "Map its parent"
 above is therefore: a parent that is not a namespace has its own key; a
 namespace parent is mapped from the point of view of the entity being
-keyed: the same namespace can have two keys in one walk, one for its
-owned members and one for its dependency members, and its own unit has
-the key of its own ownership.
+keyed: the same namespace can have two keys in one walk, one in the
+**mapped** (owned, moved) view and one in the **unmapped** (dependency or
+existing) view, and its own unit has the key of its own view.
 
-**A namespace's unit in each view** (WP-140). A namespace is owned iff
-none of its openings lies in a read-only file (`verify.md` §2.1); its
-own unit is keyed in that view. It has a unit in the **other** view too
-when that view exists. **A view of a namespace exists iff a member of
-that ownership exists in it**, where a member is (a) an entity whose
-semantic parent is the namespace, declared by the source or made by the
-compiler (`std::__va_list`, the implicit `std::align_val_t`); an entity
-with C language linkage, which is keyed under `c_linkage`, is a member
-of every namespace one of its declarations is in, through linkage
-specifications, as lookup finds it there (WP-141 second review F1), (b) a
-written content-keyed declaration (using-directive, namespace alias,
-using-declaration, `static_assert`), or (c) a nested namespace, named,
-inline or unnamed, one of whose views of that ownership exists. A
-read-only opening holds in the dependency view even when it is empty
-(Addendum A4: what a dependency opens, lookup finds); an empty owned
-opening is nothing (what a transform leaves behind); a declaration the
-compiler makes that is no entity (the using-directive an unnamed namespace implies) is nothing.
-The predicate is decided from the declarations of the image, never from
-what the walk keyed (`Walk::ns_holds`, one function for this unit and
-for `E(k)` below; WP-141). The **owned view** applies the rules along the chain; the
-**dependency view** applies none. So an empty owned opening, one that holds only empty nested namespaces, or one
-that holds only an explicit specialisation (keyed under its template, not
-under the namespace) holds nothing (WP-140 review F3, the definition of
-`docs/wp/WP-141.md` Addendum A4; fixtures `tests/rules/views/untouched-*`).
-The unit in the other view is written only when its key differs from the
-namespace's own key, so that a table that maps nothing adds none (and the
-dedup below is not relied on). It has the namespace's **one digest**, the
-digest of its own unit (every opening: the `inline` bit and the
-attributes of the whole chain), and the own unit's cause. The digest is
-not per view: a fact that one view's openings hold (an `inline` written
-only by the dependency, a `[[deprecated]]` added by an owned opening)
-changes what the other view's members mean
-(`spec/landed/digest/WP-140.md`, why option A, a digest per view, was
-rejected; fixtures `tests/rules/views/inline-reopened-plain`,
-`deprecated-owned-opening`, `deprecated-dependency-opening`). Its cost:
-an attribute that applies only to the declarations of its own opening
-(`visibility`) changes both views' units, and fails closed
+**A namespace's unit in each view** (WP-140, WP-144). A namespace is
+owned iff none of its openings lies in a read-only file (`verify.md`
+§2.1); it **stays** iff it is listed in `Declared.existing`, holds an
+existing member, or holds a nested namespace that stays. Its **own view**
+is the mapped view iff it is owned and does not stay (`owned && !stays`);
+otherwise its own unit is keyed in the unmapped (dependency) view. It has
+a unit in the **other** view too when that view exists. **A view of a
+namespace exists iff a member of that view exists in it**, where a member
+is (a) an entity whose semantic parent is the namespace, declared by the
+source or made by the compiler (`std::__va_list`, the implicit
+`std::align_val_t`); an entity with C language linkage, which is keyed
+under `c_linkage`, is a member of every namespace one of its declarations
+is in, through linkage specifications, as lookup finds it there (WP-141
+second review F1; mapped iff the declaration is in an owned file and the
+namespace is not listed whole), (b) a written content-keyed declaration
+(using-directive, namespace alias, using-declaration, `static_assert`),
+or (c) a nested namespace, named, inline or unnamed, one of whose views
+of that view exists. A read-only opening (decided per inclusion,
+`in_owned_file`, WP-144) or a namespace listed whole in
+`Declared.existing` holds in the unmapped view even when it is empty
+(Addendum A4, WP-144: what a dependency opens or what was already there,
+lookup finds); an empty owned opening is nothing (what a transform leaves
+behind); a declaration the compiler makes that is no entity (the
+using-directive an unnamed namespace implies) is nothing. The predicate
+is decided from the declarations of the image, never from what the walk
+keyed (`Walk::ns_holds`, one function for this unit and for `E(k)` below;
+WP-141). The **mapped** view applies the rules along the chain; the
+**unmapped** view applies none. So an empty owned opening, one that holds
+only empty nested namespaces, or one that holds only an explicit
+specialisation (keyed under its template, not under the namespace) holds
+nothing (WP-140 review F3, the definition of `docs/wp/WP-141.md` Addendum
+A4; fixtures `tests/rules/views/untouched-*`). The unit in the other view
+is written only when its key differs from the namespace's own key, so
+that a table that maps nothing adds none (and the dedup below is not
+relied on). It has the namespace's **one digest**, the digest of its own
+unit (every opening: the `inline` bit and the attributes of the whole
+chain), and the own unit's cause. The digest is not per view: a fact that
+one view's openings hold (an `inline` written only by the dependency, a
+`[[deprecated]]` added by an owned opening) changes what the other view's
+members mean (`spec/landed/digest/WP-140.md`, why option A, a digest per
+view, was rejected; fixtures `tests/rules/views/inline-reopened-plain`,
+`deprecated-owned-opening`, `deprecated-dependency-opening`,
+`existing/shared-detail-deprecated-opening`,
+`existing/shared-detail-inline-opening`). Its cost: an attribute that
+applies only to the declarations of its own opening (`visibility`)
+changes both views' units, and fails closed
 (`views/visibility-owned-opening`). So a move into a namespace that a
-dependency also opens compares the owned view's unit with the pre-image's
-namespace (`verify.md` §2.1). A view unit is **named** by the name its
-key denotes and the namespace it is a part of: `legacy (the owned part of
-acme)`, `acme (the dependency's part of acme)` (review F4), in findings,
-record errors and `slip units`, and `slip declare` takes that name.
-**Units are only added**: no key, digest or cause of another unit moves
-(no member's key, and not the own unit's), and no pre-image (digested
-under the empty table) has a unit in a view. The view key's cause and a
-view key that cannot be formed are guards: a namespace key's cause and
-errors are made of its names' and its parents', the same namespaces' in
-either view, so the view key's are the own key's, which the own unit
-already has (`units::view_units`). A **reference** to a namespace is
-written as the next paragraph says (WP-141).
+dependency also opens or that already holds existing owned code compares
+the mapped view's unit with the pre-image's namespace (`verify.md` §2.1).
+A view unit is **named** by the name its key denotes and the namespace it
+is a part of: `legacy (the moved part of acme)` when the namespace stays
+(WP-144; its existing members are owned and are not in that part),
+`legacy (the owned part of acme)` when it does not stay (a dependency
+namespace), and `acme (the dependency's part of acme)` for an unmapped
+view unit (review F4), in findings, record errors and `slip units`, and
+`slip declare` takes that name. **Units are only added**: no key, digest
+or cause of another unit moves (no member's key, and not the own unit's),
+and no pre-image (digested under the empty table) has a unit in a view.
+The view key's cause and a view key that cannot be formed are guards: a
+namespace key's cause and errors are made of its names' and its parents',
+the same namespaces' in either view, so the view key's are the own key's,
+which the own unit already has (`units::view_units`). A **reference** to
+a namespace is written as the next paragraph says (WP-141).
 
-**A reference to a namespace** (WP-141, build A). A namespace is
-referred to by a view key. With one view key there is nothing to
-choose, and the reference is `Ref::unit` of the own key, as anywhere.
+**A reference to a namespace** (WP-141, build A; WP-144). A namespace is
+referred to by a view key. With one view key there is nothing to choose,
+and the reference is `Ref::unit` of the own key, as anywhere.
 
 *Named to find members*: the scope of a using-declaration in its key,
 the qualifier of a name left unresolved when the qualifier is a
@@ -728,11 +746,12 @@ unresolved name's set; the concept). Each gives the key of the part of
 the named namespace that holds it, by its **route**, in this order:
 
 1. a member of the named namespace or of its inline namespace set: its
-   own view (the view of its ownership);
+   own view (`mapped(e)` for a non-namespace entity, `ns_own_view(e)`
+   for a namespace);
 2. else, reached through using-directives written in the named
    namespace or its inline set, followed transitively as
-   [namespace.qual] follows them: the view of each such directive (the
-   ownership of the file it is written in), both keys if both;
+   [namespace.qual] follows them: the view of each such directive
+   (`mapped(d)`, decided per inclusion), both keys if both;
 3. else the route is not known (it came through a using-declaration,
    whose shadow Kiln does not keep in a found set): every view key, and
    the counter `digest.ref.namespace_route_unknown` counts it. The
@@ -747,22 +766,41 @@ named namespace has two view keys.
 *Named whole*: the namespace a using-directive at namespace scope
 nominates, and the target of a namespace alias. In a read-only file
 (by the path of the file the declaration is written in) it is written
-with its key in the dependency view (its one view key if it has no
-dependency part), never `Ref::part`. In an owned file it has a
-**reading** for each of its view keys `k`. A namespace **holds
-something under `k`** if a view of it whose key is `k` exists, by the
-definition of the paragraph above (the same predicate). `E(k)` is the set of namespaces
-of the image that hold something under `k`. The reference is **whole
-for `k`** if every namespace of `E(k)` is named: by this alias; or, for
-a using-directive, by the using-directives of the same enclosing
-namespace **entity** in the same file, taken together (never by those of
-another namespace that has the same mapped key). The reading for `k` is
-`Ref::unit(k)` if the reference is whole for `k`, else `Ref::part(k,
-view)`, `view` the ownership of the named namespace's own unit. The
-unit is written with the reading of the namespace's own key. A
-directive or an alias at block scope is written as before. *(The other
-readings, the alternates of `verify.md` §4 step 1a, are WP-143's and
-not built: a unit has no alternate, and §11 has no `tu_alt`.)*
+with its key in the unmapped view (its one view key if it has no unmapped
+part), never `Ref::part`. In an owned file it has a **reading** for each
+of its view keys `k`. A namespace **holds something under `k`** if a view
+of it whose key is `k` exists, by the definition of the paragraph above
+(the same predicate). `E(k)` is the set of namespaces of the image that
+hold something under `k`. The reference is **whole for `k`** if every
+namespace of `E(k)` is named: by this alias; or, for a using-directive,
+by the using-directives of the same enclosing namespace **entity** in the
+same file, taken together (never by those of another namespace that has
+the same mapped key). The reading for `k` is `Ref::unit(k)` if the
+reference is whole for `k`, else `Ref::part(k, view)`, `view` the own
+view of the named namespace's own unit. The unit is written with the
+reading of the namespace's own key. A directive or an alias at block
+scope is written as before. *(The other readings, the alternates of
+`verify.md` §4 step 1a, are WP-143's and not built: a unit has no
+alternate, and §11 has no `tu_alt`.)*
+
+**Probe writing** (WP-144 amendment 2). To test whether an owned entity
+or namespace is in `Declared.existing` or `Declared.existing_local`, the
+walk computes its **probe key** `U(e)` without consulting `ns_table`, R1
+or R2: `e`'s key formed with namespace parents in the unmapped view and
+no rule applied to `e`'s own key, in probe writing. In probe writing:
+(a) any namespace named (by `write_ref`, `write_ns_found` or
+`write_ns_whole`, or as a key) is written by its unmapped view key, never
+consulting R1, R2 or `ns_table`; (b) a parent namespace is keyed directly
+in the member's view (`key_in(ns, Some(b))`) without reading `ns_own_view`;
+(c) any other entity mentioned in a discriminator is written by its own
+key formed in probe writing (mapped or unmapped by its own `mapped(e)`);
+(d) probe memos (types, keys, views, content digests, constants) are kept
+separate from the walk's main memos, and probe work writes no `rule_use`
+or `bytes`. The namespace table is built in two passes that never
+re-enter it: pass 1 records namespaces (`owned`, `listed`, read-only
+openings), and pass 2 classifies members and using-directives using
+probes. Nothing depends on the order units are walked in
+(`tests/ns_holds_order.rs` `wp144_mutual_using_declarations_order_independent`).
 
 The guard: R1 asks the route only when the named namespace has two view
 keys; R2 writes a reference plain iff the named namespace has one view
@@ -1638,6 +1676,19 @@ inherits from a later declaration (Kiln WP-3407), and a class's hidden
 using-shadow is made in either member order (Kiln WP-3145). No baseline
 of scheme 3 is recorded since WP-158, so it shares the number 3. The
 supervisor confirms that at the merge.
+
+WP-144 (`Declared.existing` and `Declared.existing_local`, §3.4) adds
+`existing: &'a [Digest]` and `existing_local: &'a [ExistingLocal]` to
+`Options` (passed by every caller that walks under a non-empty rule
+table: the verify job, `records`, `query.rs`, `spelling.rs`) and
+`existing_use: slip_model::ExistingUse` to `Output` (section 34 of the
+verify shard when non-empty). `scheme` stays unchanged (at 3): the
+`existing` lists are covered by `rules_id` (`slip.rules.v4`) and the
+`DECL`'s content id in the shard's `binding`, the pre shard is walked
+under no rule, and with both lists empty no byte changes. The separate
+`ns_refs.rs` per-inclusion alignment (`:563` and `:580`) only moves a
+whole reading toward a part or routes through the dependency view (zero
+existing fixtures changed from a difference to equal).
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.

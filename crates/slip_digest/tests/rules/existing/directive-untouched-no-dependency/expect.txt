@@ -1,0 +1,2 @@
+# Amendment 3: untouched using namespace acme with no dependency -> equal.
+use 1 via 1 direct 0

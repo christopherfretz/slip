@@ -857,10 +857,10 @@ impl InProcess {
     ) -> commands::Result<Option<Vec<Record>>> {
         let walk = |input: &slip_digest::Input<'_>| {
             if rules.rules().is_empty() {
-                return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE);
+                return slip_digest::records::records(input, rules, ReadOnly::EVERY_FILE, &[], &[]);
             }
             let read_only = ReadOnlyFiles::new(files, input.sm, input.subject_path);
-            slip_digest::records::records(input, rules, ReadOnly::files(&read_only))
+            slip_digest::records::records(input, rules, ReadOnly::files(&read_only), &[], &[])
         };
         self.walk(command, o, side, walk, err)
     }
@@ -1019,7 +1019,8 @@ fn declare(a: &DeclareArgs, out: &mut dyn Write, err: &mut dyn Write) -> command
     let mut read: BTreeSet<Vec<u8>> = BTreeSet::new();
     for (i, o) in run.observers.iter().enumerate() {
         let walk = |input: &slip_digest::Input<'_>| {
-            let records = slip_digest::records::records(input, &none, ReadOnly::EVERY_FILE)?;
+            let records =
+                slip_digest::records::records(input, &none, ReadOnly::EVERY_FILE, &[], &[])?;
             let mut paths = Vec::new();
             let mut facts = None;
             if let Some(files) = files.as_ref() {

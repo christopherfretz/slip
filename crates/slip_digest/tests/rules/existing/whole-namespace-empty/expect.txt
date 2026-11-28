@@ -1,0 +1,2 @@
+# Amendment 4: empty listed namespace holds in dependency view -> equal.
+use 1 via 1 direct 0

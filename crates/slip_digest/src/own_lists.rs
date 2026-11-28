@@ -62,7 +62,6 @@
 use std::collections::{HashMap, HashSet};
 
 use slip_kiln::kiln::ast::DeclId;
-use slip_kiln::kiln::ast::linkage::Linkage;
 use slip_model::Digest;
 use slip_model::keys::{Key, KeyKind};
 
@@ -191,16 +190,11 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
 }
 
 /// Whether entity `e`, of key kind `kind`, may be in a list (the module's
-/// first three bullets).
+/// first three bullets): program-wide (`Walk::is_program_wide`, shared
+/// with WP-144's `existing`) and not a deduction guide of a dependency
+/// template.
 fn candidate(w: &mut Walk<'_>, e: DeclId, kind: KeyKind) -> bool {
-    if kind == KeyKind::Namespace
-        || crate::units::repeatable(kind)
-        || matches!(kind, KeyKind::Resolved | KeyKind::DefaultArgument)
-    {
-        return false;
-    }
-    let rep = w.representative(e);
-    if w.ast.linkage(rep) == Linkage::Internal || w.ast.in_anonymous_namespace(rep) {
+    if !w.is_program_wide(e, kind) {
         return false;
     }
     if kind == KeyKind::DeductionGuide

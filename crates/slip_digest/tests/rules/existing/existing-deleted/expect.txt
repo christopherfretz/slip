@@ -1,0 +1,4 @@
+# (a) listed existing entity deleted -> removed acme::x().
+removed acme
+removed acme::x()
+use 1 via 1 direct 0

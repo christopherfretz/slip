@@ -33,6 +33,8 @@ fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool) {
                         let options = Options {
                             rules: &rules,
                             read_only: slip_digest::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
                             detail: Detail::All,
                             names: true,
                             rule_use: false,
