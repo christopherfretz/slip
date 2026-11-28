@@ -213,10 +213,15 @@ fn a_list_changes_only_the_units_that_write_one() {
         // A content-keyed unit's key is its digest (`spec/digest.md`
         // §3.3): its list moves it, and the units that hold the key
         // change with it. No other key moves.
+        // An operand unit's key holds its parent's (WP-156), so it moves
+        // with a content-keyed parent.
         let moved: BTreeSet<String> = with
             .iter()
             .filter(|(name, u)| without.get(*name).is_none_or(|v| v.key != u.key))
             .map(|(name, _)| name.clone())
+            .filter(|name| {
+                !name.strip_suffix("::<operands>").is_some_and(|p| content_listed.contains(p))
+            })
             .collect();
         assert_eq!(with.len(), without.len(), "{}", dir.display());
         assert_eq!(

@@ -1928,35 +1928,39 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let paths: Vec<Vec<u8>> =
-                p.sm.file_ids()
-                    .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
-                    .collect();
-            let (ast, sm) = (p.ast, p.sm);
-            let out = std::thread::scope(|s| {
-                std::thread::Builder::new()
-                    .stack_size(crate::STACK_SIZE)
-                    .spawn_scoped(s, || {
-                        let path = |f: slip_kiln::kiln::source::FileId| {
-                            paths.get(f.index()).cloned().unwrap_or_default()
-                        };
-                        let input = crate::Input { ast, sm, subject_path: &path };
-                        let options = crate::Options {
-                            rules: &rules,
-                            read_only: crate::ReadOnly::NO_FILE,
-                            detail: crate::Detail::All,
-                            names: true,
-                            rule_use: false,
-                        };
-                        crate::digest(&input, &options)
-                    })
-                    .expect("spawn")
-                    .join()
-                    .expect("join")
-            });
-            (out, p.errors)
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let paths: Vec<Vec<u8>> =
+                    p.sm.file_ids()
+                        .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                        .collect();
+                let (ast, sm) = (p.ast, p.sm);
+                let out = std::thread::scope(|s| {
+                    std::thread::Builder::new()
+                        .stack_size(crate::STACK_SIZE)
+                        .spawn_scoped(s, || {
+                            let path = |f: slip_kiln::kiln::source::FileId| {
+                                paths.get(f.index()).cloned().unwrap_or_default()
+                            };
+                            let input = crate::Input { ast, sm, subject_path: &path };
+                            let options = crate::Options {
+                                rules: &rules,
+                                read_only: crate::ReadOnly::NO_FILE,
+                                detail: crate::Detail::All,
+                                names: true,
+                                rule_use: false,
+                            };
+                            crate::digest(&input, &options)
+                        })
+                        .expect("spawn")
+                        .join()
+                        .expect("join")
+                });
+                (out, p.errors)
+            },
+        )
         .expect("parse")
     }
 
@@ -2190,80 +2194,87 @@ mod tests {
             std: "c++20",
         };
         let rules = RuleTable::empty();
-        slip_kiln::snippet::parse(&snippet, |p| {
-            let bytes = slip_kiln::kiln::snap::to_bytes(p.ast);
-            let mut ast: Ast = slip_kiln::kiln::snap::from_bytes(&bytes).expect("decode ast");
-            let x = ast
-                .decls
-                .ids()
-                .find(|&d| {
-                    ast.decls.get(d).kind() == DeclKind::Var
-                        && ast
-                            .decls
-                            .get(d)
-                            .name()
-                            .as_ident()
-                            .is_some_and(|s| ast.symbols().as_str(s) == "x")
-                })
-                .expect("var x");
-            ast.decls.set_flags(x, DeclFlags::INVALID);
-            ast.decls.set_subst_failed(x, SubstFailedKind::OtherTrapped);
-            assert_eq!(
-                super::invalid_cause(&ast, x),
-                Some(crate::Cause::Unaccounted("decl/trapped"))
-            );
-            assert!(!super::is_no_entity_failed_substitution(&ast, x));
-            assert_eq!(super::unmarked_invalid(&ast), 0);
-
-            let paths: Vec<Vec<u8>> =
-                p.sm.file_ids()
-                    .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
-                    .collect();
-            let sm = p.sm;
-            let out = std::thread::scope(|sc| {
-                std::thread::Builder::new()
-                    .stack_size(crate::STACK_SIZE)
-                    .spawn_scoped(sc, || {
-                        let path = |f: slip_kiln::kiln::source::FileId| {
-                            paths.get(f.index()).cloned().unwrap_or_default()
-                        };
-                        let input = crate::Input { ast: &ast, sm, subject_path: &path };
-                        let options = crate::Options {
-                            rules: &rules,
-                            read_only: crate::ReadOnly::NO_FILE,
-                            detail: crate::Detail::All,
-                            names: true,
-                            rule_use: false,
-                        };
-                        crate::digest(&input, &options)
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                let bytes = slip_kiln::kiln::snap::to_bytes(p.ast);
+                let mut ast: Ast = slip_kiln::kiln::snap::from_bytes(&bytes).expect("decode ast");
+                // The AST's bytes carry no written-reference section (spec/ast.md
+                // §18.10.1); the parse's table goes with the decoded AST (WP-156).
+                ast.written_refs = p.ast.written_refs.clone();
+                let x = ast
+                    .decls
+                    .ids()
+                    .find(|&d| {
+                        ast.decls.get(d).kind() == DeclKind::Var
+                            && ast
+                                .decls
+                                .get(d)
+                                .name()
+                                .as_ident()
+                                .is_some_and(|s| ast.symbols().as_str(s) == "x")
                     })
-                    .expect("spawn")
-                    .join()
-                    .expect("join")
-            });
-            assert_eq!(out.causes.len(), 1, "{:?}", out.causes);
-            assert_eq!(out.causes[0].1, crate::Cause::Unaccounted("decl/trapped"));
-            assert_eq!(counter(&out, "digest.invalid.unmarked"), 0);
+                    .expect("var x");
+                ast.decls.set_flags(x, DeclFlags::INVALID);
+                ast.decls.set_subst_failed(x, SubstFailedKind::OtherTrapped);
+                assert_eq!(
+                    super::invalid_cause(&ast, x),
+                    Some(crate::Cause::Unaccounted("decl/trapped"))
+                );
+                assert!(!super::is_no_entity_failed_substitution(&ast, x));
+                assert_eq!(super::unmarked_invalid(&ast), 0);
 
-            // Kind 4 (`ClassPartialAmbiguity`) on an incomplete record has no
-            // indeterminate cause.
-            let s_decl = ast
-                .decls
-                .ids()
-                .find(|&d| {
-                    ast.decls.get(d).kind() == DeclKind::CXXRecord
-                        && ast
-                            .decls
-                            .get(d)
-                            .name()
-                            .as_ident()
-                            .is_some_and(|sym| ast.symbols().as_str(sym) == "S")
-                })
-                .expect("struct S");
-            ast.decls.set_flags(s_decl, DeclFlags::INVALID);
-            ast.decls.set_subst_failed(s_decl, SubstFailedKind::ClassPartialAmbiguity);
-            assert_eq!(super::invalid_cause(&ast, s_decl), None);
-        })
+                let paths: Vec<Vec<u8>> =
+                    p.sm.file_ids()
+                        .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                        .collect();
+                let sm = p.sm;
+                let out = std::thread::scope(|sc| {
+                    std::thread::Builder::new()
+                        .stack_size(crate::STACK_SIZE)
+                        .spawn_scoped(sc, || {
+                            let path = |f: slip_kiln::kiln::source::FileId| {
+                                paths.get(f.index()).cloned().unwrap_or_default()
+                            };
+                            let input = crate::Input { ast: &ast, sm, subject_path: &path };
+                            let options = crate::Options {
+                                rules: &rules,
+                                read_only: crate::ReadOnly::NO_FILE,
+                                detail: crate::Detail::All,
+                                names: true,
+                                rule_use: false,
+                            };
+                            crate::digest(&input, &options)
+                        })
+                        .expect("spawn")
+                        .join()
+                        .expect("join")
+                });
+                assert_eq!(out.causes.len(), 1, "{:?}", out.causes);
+                assert_eq!(out.causes[0].1, crate::Cause::Unaccounted("decl/trapped"));
+                assert_eq!(counter(&out, "digest.invalid.unmarked"), 0);
+
+                // Kind 4 (`ClassPartialAmbiguity`) on an incomplete record has no
+                // indeterminate cause.
+                let s_decl = ast
+                    .decls
+                    .ids()
+                    .find(|&d| {
+                        ast.decls.get(d).kind() == DeclKind::CXXRecord
+                            && ast
+                                .decls
+                                .get(d)
+                                .name()
+                                .as_ident()
+                                .is_some_and(|sym| ast.symbols().as_str(sym) == "S")
+                    })
+                    .expect("struct S");
+                ast.decls.set_flags(s_decl, DeclFlags::INVALID);
+                ast.decls.set_subst_failed(s_decl, SubstFailedKind::ClassPartialAmbiguity);
+                assert_eq!(super::invalid_cause(&ast, s_decl), None);
+            },
+        )
         .expect("parse");
     }
 
@@ -2523,21 +2534,25 @@ mod tests {
             include: &[""],
             std: "c++20",
         };
-        slip_kiln::snippet::parse(&snippet, |p| {
-            assert_eq!(p.errors, 0, "{}", p.diagnostics);
-            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
-            let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
-            let mut keys = crate::query::Keys::new(&input);
-            let failed = p
-                .ast
-                .decls
-                .subst_failed_decls()
-                .into_iter()
-                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
-                .map(|(d, _)| d)
-                .expect("failed g<int>");
-            assert_eq!(keys.unit_of(failed), None);
-        })
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+                let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let mut keys = crate::query::Keys::new(&input);
+                let failed = p
+                    .ast
+                    .decls
+                    .subst_failed_decls()
+                    .into_iter()
+                    .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                    .map(|(d, _)| d)
+                    .expect("failed g<int>");
+                assert_eq!(keys.unit_of(failed), None);
+            },
+        )
         .expect("parse");
     }
 
@@ -2556,37 +2571,42 @@ mod tests {
                 std: "c++20",
             };
             let rules = RuleTable::empty();
-            slip_kiln::snippet::parse(&snippet, |p| {
-                assert_eq!(p.errors, 0, "{}", p.diagnostics);
-                let paths: Vec<Vec<u8>> =
-                    p.sm.file_ids()
+            slip_kiln::snippet::parse_with_tables(
+                &snippet,
+                &slip_kiln::snippet::Extra::default(),
+                |p| {
+                    assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                    let paths: Vec<Vec<u8>> = p
+                        .sm
+                        .file_ids()
                         .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
                         .collect();
-                let (ast, sm) = (p.ast, p.sm);
-                std::thread::scope(|s| {
-                    std::thread::Builder::new()
-                        .stack_size(crate::STACK_SIZE)
-                        .spawn_scoped(s, || {
-                            with_subst_failed_limit(limit, || {
-                                let path = |f: slip_kiln::kiln::source::FileId| {
-                                    paths.get(f.index()).cloned().unwrap_or_default()
-                                };
-                                let input = crate::Input { ast, sm, subject_path: &path };
-                                let options = crate::Options {
-                                    rules: &rules,
-                                    read_only: crate::ReadOnly::NO_FILE,
-                                    detail: crate::Detail::All,
-                                    names: true,
-                                    rule_use: false,
-                                };
-                                crate::digest(&input, &options)
+                    let (ast, sm) = (p.ast, p.sm);
+                    std::thread::scope(|s| {
+                        std::thread::Builder::new()
+                            .stack_size(crate::STACK_SIZE)
+                            .spawn_scoped(s, || {
+                                with_subst_failed_limit(limit, || {
+                                    let path = |f: slip_kiln::kiln::source::FileId| {
+                                        paths.get(f.index()).cloned().unwrap_or_default()
+                                    };
+                                    let input = crate::Input { ast, sm, subject_path: &path };
+                                    let options = crate::Options {
+                                        rules: &rules,
+                                        read_only: crate::ReadOnly::NO_FILE,
+                                        detail: crate::Detail::All,
+                                        names: true,
+                                        rule_use: false,
+                                    };
+                                    crate::digest(&input, &options)
+                                })
                             })
-                        })
-                        .expect("spawn")
-                        .join()
-                        .expect("join")
-                })
-            })
+                            .expect("spawn")
+                            .join()
+                            .expect("join")
+                    })
+                },
+            )
             .expect("parse")
         };
 
