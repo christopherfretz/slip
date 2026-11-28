@@ -2,3 +2,5 @@
 exact derived
 changed u()
 indeterminate template <class> decltype(...() , t.size()) a::f(type-parameter-0-0) (undeclared_local)
+# WP-156: the operand unit of the indeterminate pattern is indeterminate with the same cause.
+indeterminate template <class> decltype(...() , t.size()) a::f(type-parameter-0-0)::<operands> (undeclared_local)
