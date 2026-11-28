@@ -418,6 +418,9 @@ fn write_node(
         return;
     };
     s.mark(NodeRef::Expr(e));
+    // A name expression this stream keeps (`operands::mark`, the ledger's
+    // L3), a back-reference to one too.
+    crate::operands::mark(w, e);
     let ast = w.ast;
     let words = ast.exprs.get(e);
     if let Some(count) = written_before(w, s, e, words.kind()) {

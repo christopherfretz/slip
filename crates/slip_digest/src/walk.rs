@@ -386,6 +386,12 @@ pub(crate) struct Walk<'a> {
     /// The operand unit of each content-keyed entity's stream
     /// (`Walk::content_hash`), read when its unit is written.
     pub content_operands: HashMap<DeclId, Option<Hashed>>,
+    /// The ledger of written names (`operands::ledger`, WP-156 fix round
+    /// 3), built once.
+    pub ledger: Option<crate::operands::ledger::Ledger>,
+    /// `<order>`'s site-9 entries (`operands::order_names`): their count
+    /// and stream, written by `operands::order`.
+    pub order_names: Option<(usize, Stream)>,
 }
 
 /// `H("slip.names.v1", entries)`: the names digest of a unit or a constant
@@ -471,6 +477,8 @@ impl<'a> Walk<'a> {
             pending_operands: None,
             part_operands: Vec::new(),
             content_operands: HashMap::new(),
+            ledger: None,
+            order_names: None,
         }
     }
 
@@ -834,16 +842,26 @@ pub(crate) fn run_kept<R>(
     // mutation MC). It is kept so that a unit only such a default demands
     // (a `Ref` to an on-demand unit) is written all the same.
     let mut local_defaults = false;
+    // The ledger of written names (`operands::ledger`), indexed before the
+    // first unit; `<order>`'s names are written once the queue is drained,
+    // and the queue drained again for the units their references demand.
+    crate::operands::ensure_ledger(&mut w);
+    let mut order_names = false;
     loop {
         if i == w.queue.len() {
-            if local_defaults {
-                break;
+            if !local_defaults {
+                local_defaults = true;
+                w.hold_begin();
+                crate::demand::local_default_arguments(&mut w, &mut written);
+                w.hold_end(true);
+                continue;
             }
-            local_defaults = true;
-            w.hold_begin();
-            crate::demand::local_default_arguments(&mut w, &mut written);
-            w.hold_end(true);
-            continue;
+            if !order_names {
+                order_names = true;
+                crate::operands::order_names(&mut w);
+                continue;
+            }
+            break;
         }
         let (e, class) = w.queue[i];
         i += 1;

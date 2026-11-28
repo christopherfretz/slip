@@ -1,6 +1,8 @@
 # WP-158 fix round (the review's zz_rv158/erasure): hand-written type erasure; the constructor template is indeterminate (kiln/pattern-mem-initializers).
 # The call keeps binding X::mf(long) / X::f(long), renamed, so it binds the
 # other overload: the instantiation's unit differs.
+# WP-156 fix round 3 (L5): the names of the unkept initialisers are site-9 entries; the operand unit inherits the cause.
 exact derived
 indeterminate template <class> E::E(type-parameter-0-0 &)
+indeterminate template <class> E::E(type-parameter-0-0 &)::<operands>
 derived-changed w()::local(0)::operator()<X>(X) const::<definition>

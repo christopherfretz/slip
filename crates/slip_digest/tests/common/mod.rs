@@ -409,6 +409,15 @@ enum Tables<'a> {
     Renamed(Vec<slip_model::keys::Rule>, &'a [Rename]),
 }
 
+/// The counter `name` of `output` is there and 0.
+fn zero(output: &Output, side: Side, name: &str) -> Result<(), String> {
+    let c = output.counters.iter().find(|c| c.name == name);
+    if c.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: {name} is {c:?}, not 0"));
+    }
+    Ok(())
+}
+
 fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Digested, String> {
     let (list, head) = side_files(&files(dir)?, side)?;
     // `// module:` (WP-048): each file is another file of the snippet.
@@ -476,17 +485,14 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     // WP-155 (second fix round, rule 3): every local function with
     // `constructor`, `destructor` or `used` the mark could place, it
     // placed, in every fixture of every runner.
-    let unplaced = output.counters.iter().find(|c| c.name == "digest.emitted.unplaced");
-    if unplaced.is_none_or(|c| c.value != 0) {
-        return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
-    }
+    zero(&output, side, "digest.emitted.unplaced")?;
     // WP-158 (`spec/digest.md` §13): every function body and default
     // argument Kiln instantiated is held by a unit, in every fixture of
     // every runner.
-    let unheld = output.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
-    if unheld.is_none_or(|c| c.value != 0) {
-        return Err(format!("side {side:?}: digest.instantiated.unheld is {unheld:?}, not 0"));
-    }
+    zero(&output, side, "digest.instantiated.unheld")?;
+    // WP-156 fix round 3 (L6): every written name of the ledger is
+    // decided by the unit that holds it, in every fixture of every runner.
+    zero(&output, side, "digest.operands.names.unclaimed")?;
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",

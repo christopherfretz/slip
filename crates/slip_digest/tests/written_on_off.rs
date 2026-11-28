@@ -4,9 +4,11 @@
 //! standard headers, macros, templates, default arguments and an
 //! inheriting constructor, the declaration arena and the shard are the
 //! same with the written-reference and declaration-extent tables recorded
-//! and without them, and the `slip_digest::digest` output without them is
-//! the output with them and one more unit: the operand unit of `<order>`,
-//! indeterminate with `kiln/written-refs-not-recorded`.
+//! and without them, and the `slip_digest::digest` output without them
+//! differs from the output with them in operand units alone: the site-9
+//! entries of the ledger are written with the table (WP-156 fix round 3,
+//! L5), and without it the operand unit of `<order>` is indeterminate
+//! with `kiln/written-refs-not-recorded`.
 //!
 //! The parse is the production one (`parse_observer_with`), in a tree
 //! under the work root (`common::work_root()`); `slip_kiln`'s own test of this
@@ -105,21 +107,36 @@ fn wp067_written_changes_only_the_ledger_cause() {
         v.sort_unstable();
         v
     };
-    let (on, off) = (units(&on_digest), units(&off_digest));
-    let extra: Vec<_> = off.iter().filter(|u| on.binary_search(u).is_err()).collect();
-    assert!(
-        on.iter().all(|u| off.binary_search(u).is_ok()),
-        "every unit of the parse with the table"
-    );
-    assert_eq!(extra.len(), 1, "one more unit without the table: {extra:?}");
+    // The operand units: with the table, the ledger's site-9 entries
+    // (WP-156 fix round 3, L5); without it, none of those, and the
+    // operand unit of `<order>` with the ledger's cause (L0).
+    let operands = |o: &slip_digest::Output, k: [u8; 32]| {
+        o.names.iter().any(|(n, s)| n.0 == k && s.ends_with("::<operands>"))
+    };
+    let plain = |o: &slip_digest::Output| {
+        let mut v = units(o);
+        v.retain(|u| !operands(o, u.0));
+        v
+    };
+    assert_eq!(plain(&on_digest), plain(&off_digest), "every unit that is no operand unit");
+    let order: Vec<_> =
+        off_digest.names.iter().filter(|(_, s)| s == "<order>::<operands>").collect();
+    assert_eq!(order.len(), 1, "the operand unit of `<order>` without the table");
     let not_recorded = slip_digest::Cause::Unsupported("kiln/written-refs-not-recorded");
     assert!(
-        off_digest.causes.iter().any(|(k, c)| k.0 == extra[0].0 && *c == not_recorded),
+        off_digest.causes.iter().any(|(k, c)| *k == order[0].0 && *c == not_recorded),
         "the ledger's cause: {:?}",
         off_digest.causes
     );
     assert!(on_digest.causes.iter().all(|(_, c)| *c != not_recorded), "{:?}", on_digest.causes);
-    assert!(on_digest.names.iter().all(|n| off_digest.names.contains(n)), "the names");
+    assert!(
+        on_digest
+            .names
+            .iter()
+            .filter(|(_, s)| !s.ends_with("::<operands>"))
+            .all(|n| off_digest.names.contains(n)),
+        "the names"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

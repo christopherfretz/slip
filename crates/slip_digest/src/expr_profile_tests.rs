@@ -448,7 +448,9 @@ fn the_nets_hold_on_their_own_sources() {
 /// Digests `src` with names; the keys and causes of the units whose name
 /// starts with `name`.
 fn digest_named(src: &str, name: &str) -> Vec<(slip_model::Digest, Vec<crate::Cause>)> {
-    digest_filtered(src, |n| names(n, name))
+    // Not its operand unit (a parameter named in a dependent `decltype`
+    // is a site-9 entry of it, WP-156 fix round 3).
+    digest_filtered(src, |n| names(n, name) && !n.ends_with("::<operands>"))
 }
 
 /// Whether display name `n` is of an entity named `name` (`f(`): it

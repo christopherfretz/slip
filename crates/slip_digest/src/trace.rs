@@ -174,6 +174,7 @@ fn traces_into(w: &mut Walk<'_>, written: &[Written], keys: &[Digest], out: &mut
             continue;
         }
         let again = match (u.entity, u.owner) {
+            (None, Some(_)) if u.operands.is_some() => Some(crate::operands::order_again(w)),
             (None, _) => Some(order(w)),
             (Some(e), Some(parent))
                 if u.operands.is_some() && u.resolved.is_none() && u.default_argument.is_none() =>

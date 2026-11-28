@@ -1,7 +1,9 @@
 # WP-156 (B4): the holders of a written type in an expression.
+# WP-156 fix round 3 (L5): a site-9 entry in the operand unit of the unit that holds the name and walks it in no stream (a friend's holder; `<order>` for a parameter of a function type, which no unit holds).
 exact derived
 removed lib::make(lib::X)
 derived-changed Fr2::<friend arr<char, 4>>::<operands>
+derived-changed Fr2::<operands>
 derived-changed Rr::<operands>
 derived-changed e_alignof::<operands>
 derived-changed e_carr()::<operands>

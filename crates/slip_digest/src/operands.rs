@@ -65,6 +65,7 @@ use slip_kiln::kiln::ast::expr::{
 use slip_kiln::kiln::ast::friend_form::{FriendFormAnswer, FriendFormKind};
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
 use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, ExprOperand, Nns, TypeOfOperand, TypeView};
+use slip_kiln::kiln::ast::written_refs::RefRole;
 use slip_kiln::kiln::ast::{
     ArgListId, Ast, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
 };
@@ -77,8 +78,10 @@ use crate::Cause;
 use crate::stream::{Hashed, Stream, UNIT_TAG};
 use crate::units::{Written, merge};
 use crate::walk::Walk;
+use ledger::Claim;
 
 pub(crate) mod census;
+pub(crate) mod ledger;
 mod slots;
 
 pub(crate) use slots::{Part, Slot, slots};
@@ -90,6 +93,9 @@ pub(crate) const TYPEOF: u8 = 2;
 pub(crate) const EXPR_ARG: u8 = 4;
 pub(crate) const NOEXCEPT: u8 = 6;
 pub(crate) const ALIAS_ARGS: u8 = 8;
+/// Site 9: a written name no stream of its unit walked (WP-156 fix round
+/// 3, L5): the entity it names.
+pub(crate) const NAME: u8 = 9;
 /// The entry of a holder Kiln does not keep ([`Op::Unkept`]): no site,
 /// indeterminate.
 pub(crate) const UNKEPT: u8 = 0;
@@ -171,6 +177,9 @@ pub(crate) enum Op {
     /// A holder whose operands Kiln does not keep (fails closed): the
     /// entry is indeterminate for the cause.
     Unkept(Cause),
+    /// Site 9 (L5): a written name of the unit that no stream of it
+    /// walked, by the entity it names.
+    Name(DeclId),
 }
 
 /// The operand state of the unit being written (`UnitState::operands`).
@@ -196,6 +205,17 @@ pub(crate) struct State {
     /// streams are no unit's: the entries are walked so that the local
     /// types and objects in them are numbered ([`number`]).
     numbering: bool,
+    /// The entity of the unit (the owner's, for a part): whose entries of
+    /// the ledger [`finish`] decides (L2).
+    entity: Option<DeclId>,
+    /// The declaration the unit's stream is read from; `None` for a part.
+    from: Option<DeclId>,
+    /// Which part this is, for a part ([`set_part`]).
+    part: Option<ledger::PartOf>,
+    /// The name expressions the unit's kept streams wrote (L3): the
+    /// location and declaration of each `DeclRefExpr` and `MemberExpr`,
+    /// and of an operator call's callee ([`mark`]).
+    marks: Vec<(Loc, DeclId)>,
 }
 
 /// The counters of `spec/digest.md` §12 for operand units (WP-156 item 9).
@@ -203,7 +223,11 @@ pub(crate) struct State {
 pub(crate) struct Counts {
     pub units: u64,
     /// Written operands by site (index: the site).
-    pub sites: [u64; 9],
+    pub sites: [u64; 10],
+    /// L6: the entries no unit decided (`<order>` is then indeterminate).
+    pub unclaimed: u64,
+    /// L6: the entries deferred to a part that was never written.
+    pub undemanded: u64,
     /// Operands of sites 1, 2, 4, 6 whose walk wrote no reference (S5).
     pub unreferenced: u64,
     /// Instantiation-dependent operands, not written.
@@ -330,7 +354,77 @@ pub(crate) fn begin(w: &mut Walk<'_>, e: DeclId, from: Option<DeclId>) {
         writing: 0,
         folded: false,
         numbering,
+        entity: Some(w.entity(e)),
+        from,
+        part: None,
+        marks: Vec::new(),
     };
+}
+
+/// Says which part the unit begun with `from` `None` is
+/// (`demand::write_part`): what [`finish`] decides of the entries its
+/// owner deferred (L3).
+pub(crate) fn set_part(w: &mut Walk<'_>, part: ledger::PartOf) {
+    w.unit.operands.part = Some(part);
+}
+
+/// The hook of `expr::write_node` (L3): records the name expression `e`
+/// written in a kept stream of the unit (its own, or an operand entry's;
+/// those of an entry that is not written are dropped, [`entry`]). A
+/// stream walked and dropped, or for the numbering of an owner, has a
+/// state of its own, which no [`finish`] reads.
+pub(crate) fn mark(w: &mut Walk<'_>, e: ExprId) {
+    if !collecting(w) {
+        return;
+    }
+    let ast = w.ast;
+    let n = ast.exprs.get(e);
+    match n.kind() {
+        K::DeclRefExpr | K::MemberExpr => {
+            let d = ast.exprs.decl(e);
+            w.unit.operands.marks.push((n.loc(), d));
+        }
+        // The operator join (Kiln §18.13.7): the entry is at the call's
+        // location and names the callee's function. Its callee
+        // `DeclRefExpr` is at the same token and is marked as it is
+        // written; this marks the call when the callee is reached
+        // otherwise.
+        K::CXXOperatorCallExpr => {
+            if let Some(d) = callee(ast, e) {
+                w.unit.operands.marks.push((n.loc(), d));
+            }
+        }
+        // Stage 6c of the operator join (Kiln §18.13.7): a new- or
+        // delete-expression's entry names the function it selected, and
+        // its qualified name begins at the expression's location (its
+        // `::`, else its keyword; `decide` reads `qualified_lo` for an
+        // `Operator` entry).
+        K::CXXNewExpr => {
+            if let Some(d) = ast.exprs.new_extra(e).operator_new {
+                w.unit.operands.marks.push((n.loc(), d));
+            }
+        }
+        K::CXXDeleteExpr => {
+            if let Some(d) = ast.exprs.operator_delete(e) {
+                w.unit.operands.marks.push((n.loc(), d));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The function the callee of operator call `e` (its first child) names,
+/// through implicit casts.
+fn callee(ast: &Ast, e: ExprId) -> Option<DeclId> {
+    let mut x = ast.exprs.children(e, &ast.lists).first().copied()?;
+    for _ in 0..8 {
+        match ast.exprs.get(x).kind() {
+            K::DeclRefExpr => return Some(ast.exprs.decl(x)),
+            K::ImplicitCastExpr => x = ast.exprs.children(x, &ast.lists).first().copied()?,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Walks the entries [`begin`] and the owner's stream collected while an
@@ -1684,7 +1778,7 @@ pub(crate) fn exception_spec(w: &mut Walk<'_>, spec: ExcSpec) {
 fn is_dependent(w: &Walk<'_>, op: Op) -> bool {
     match op {
         Op::Expr(_, e) => w.ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION),
-        Op::Alias(_) | Op::Unkept(_) => false,
+        Op::Alias(_) | Op::Unkept(_) | Op::Name(_) => false,
     }
 }
 
@@ -2247,6 +2341,26 @@ pub(crate) fn finish(w: &mut Walk<'_>) -> Option<Hashed> {
             total += count;
         }
     }
+    // L3 and L5: the written names of the unit (or deferred to this part)
+    // that no stream of it walked, as one more group, in table order.
+    let names = decide(w);
+    if !names.is_empty() {
+        let mut gs = Stream::new();
+        let mut count = 0usize;
+        for op in names {
+            entries += 1;
+            if entries > MAX_ENTRIES {
+                s.indeterminate(TOO_MANY);
+                break;
+            }
+            let (es, _, _) = entry(w, op);
+            count += 1;
+            gs.raw(es.as_bytes()).absorb(es.cause());
+        }
+        s.count(count);
+        s.raw(gs.as_bytes()).absorb(gs.cause());
+        total += count;
+    }
     w.unit.operands.on = false;
     let h = if total > 0 {
         crate::own_spelling::write_unit_list(w, &mut s);
@@ -2261,12 +2375,175 @@ pub(crate) fn finish(w: &mut Walk<'_>) -> Option<Hashed> {
     h
 }
 
+/// The ledger of the translation unit ([`ledger::build`]), built on first
+/// use (`walk::run_kept` builds it before the first unit).
+pub(crate) fn ensure_ledger(w: &mut Walk<'_>) {
+    if w.ledger.is_none() {
+        let l = ledger::build(w);
+        w.ledger = Some(l);
+    }
+}
+
+/// L3 at [`finish`] of the unit being written, whose kept streams are
+/// written: decides each entry of the ledger the unit holds (for a part,
+/// each its owner deferred to it) and returns, in table order, the site-9
+/// operands (L5) of those no stream of it walked.
+///
+/// - **met**: a mark of the unit has the entry's `name_lo` and entity;
+///   nothing is written;
+/// - **deferred** (the unit's own `finish`): its `name_lo` is that of a
+///   name expression under a root a part of the unit walks (the
+///   `noexcept` operand of `exception_spec`, a `default_argument`
+///   unit's expression); the part decides it;
+/// - **unmet**: written here.
+///
+/// An entry of a role L3 does not join (a type, template or concept name)
+/// is claimed by the unit's own `finish` and written by nothing (L4's
+/// triggers are not yet read).
+fn decide(w: &mut Walk<'_>) -> Vec<Op> {
+    let st = &w.unit.operands;
+    let (Some(e), part, from) = (st.entity, st.part, st.from) else {
+        return Vec::new();
+    };
+    // A part `demand::write_part` did not name (none is begun so), or a
+    // part nothing is deferred to.
+    if matches!((part, from), (None, None) | (Some(ledger::PartOf::Other), _)) {
+        return Vec::new();
+    }
+    ensure_ledger(w);
+    let Some(mut book) = w.ledger.take() else { return Vec::new() };
+    let ast = w.ast;
+    let refs = &ast.written_refs;
+    let mut marks = std::mem::take(&mut w.unit.operands.marks);
+    marks.sort_unstable();
+    marks.dedup();
+    let mut out = Vec::new();
+    let mut roots: Option<HashMap<Loc, ledger::PartOf>> = None;
+    for i in book.of(Some(e)) {
+        let row = &mut book.rows[i];
+        let met = || {
+            let at = |l: Loc| marks.binary_search(&(l, row.entity)).is_ok();
+            at(refs.name_lo(row.entry))
+                || (refs.get(row.entry).role == RefRole::Operator
+                    && at(refs.qualified_lo(row.entry)))
+        };
+        match part {
+            None => {
+                if matches!(row.claim, Claim::ByPart(_)) {
+                    continue;
+                }
+                if !row.joined || met() {
+                    row.claim = Claim::Claimed;
+                    continue;
+                }
+                let at = roots.get_or_insert_with(|| deferral_roots(w, e, from));
+                if let Some(&p) = at.get(&refs.name_lo(row.entry)) {
+                    row.claim = Claim::Deferred(p);
+                    continue;
+                }
+                row.claim = Claim::Claimed;
+                out.push(Op::Name(row.entity));
+            }
+            Some(p) => {
+                match row.claim {
+                    Claim::Deferred(q) | Claim::ByPart(q) if q == p => {}
+                    Claim::Open | Claim::Claimed | Claim::Deferred(_) | Claim::ByPart(_) => {
+                        continue;
+                    }
+                }
+                let met = met();
+                row.claim = Claim::ByPart(p);
+                if !met {
+                    out.push(Op::Name(row.entity));
+                }
+            }
+        }
+    }
+    w.ledger = Some(book);
+    w.unit.operands.marks = marks;
+    out
+}
+
+/// The locations of the name expressions under the roots the parts of the
+/// unit of entity `e`, read from `from`, walk (L3 "deferred"): the
+/// `noexcept` operand the resolved unit `exception_spec` writes
+/// (`demand::exception_spec_operand`) and the expressions of its
+/// `default_argument` units (`demand::default_argument_exprs`), found
+/// with `ExprArena::children` from each root.
+fn deferral_roots(w: &Walk<'_>, e: DeclId, from: Option<DeclId>) -> HashMap<Loc, ledger::PartOf> {
+    let mut at = HashMap::new();
+    let Some(from) = from else { return at };
+    let ast = w.ast;
+    let mut roots = Vec::new();
+    if let Some(x) = crate::demand::exception_spec_operand(w, from) {
+        roots.push((x, ledger::PartOf::ExceptionSpec));
+    }
+    for (i, x) in crate::demand::default_argument_exprs(w, e, from) {
+        roots.push((x, ledger::PartOf::DefaultArgument(i)));
+    }
+    for (root, p) in roots {
+        let mut stack = vec![root];
+        let mut nodes = 0usize;
+        while let Some(x) = stack.pop() {
+            nodes += 1;
+            if nodes > MAX_ENTRIES {
+                // Not deferred: written by the unit (a duplicate at most).
+                break;
+            }
+            let n = ast.exprs.get(x);
+            if matches!(
+                n.kind(),
+                K::DeclRefExpr | K::MemberExpr | K::CXXOperatorCallExpr | K::UserDefinedLiteral
+            ) {
+                at.entry(n.loc()).or_insert(p);
+            }
+            stack.extend(ast.exprs.children(x, &ast.lists));
+        }
+    }
+    at
+}
+
+/// L5 for `<order>`: the entries the translation unit holds, and those of
+/// a declaration no unit holds (L2). `<order>`'s stream walks no
+/// expression, so each of a role L3 joins is written. Called once the
+/// queue is drained (`walk::run_kept`), in a unit state of its own, so
+/// that the units the references demand are then written; [`order`]
+/// writes the group.
+pub(crate) fn order_names(w: &mut Walk<'_>) {
+    ensure_ledger(w);
+    let Some(mut book) = w.ledger.take() else { return };
+    let mut ops = Vec::new();
+    for i in book.of(None) {
+        let row = &mut book.rows[i];
+        row.claim = Claim::Claimed;
+        if row.joined {
+            ops.push(Op::Name(row.entity));
+        }
+    }
+    w.ledger = Some(book);
+    let saved = w.take_unit();
+    let mut gs = Stream::new();
+    let mut count = 0usize;
+    for op in ops {
+        let (es, _, _) = entry(w, op);
+        count += 1;
+        gs.raw(es.as_bytes()).absorb(es.cause());
+    }
+    w.unit = saved;
+    w.order_names = Some((count, gs));
+}
+
+/// L6: an entry of the ledger no unit decided (its unit was never
+/// written). `<order>`'s operand unit is indeterminate with it.
+pub(crate) const UNCLAIMED: Cause = Cause::Unaccounted("operands/unclaimed-name");
+
 /// Writes one entry: its stream, whether it is written (S5), and the
 /// operands its walk met (S7).
 fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
     let saved = w.unit.operands.nested.replace(Vec::new());
     w.unit.operands.writing += 1;
     let refs = w.op_refs;
+    let marks = w.unit.operands.marks.len();
     // The names digest (digest §9) is fed by a written entry only.
     let outer_names = w.names.take();
     if outer_names.is_some() {
@@ -2289,10 +2566,27 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
             es.indeterminate(cause);
             UNKEPT
         }
+        // L5: the entity, in the unit's state (a parameter or a local has
+        // the unit's number); one `write_ref` cannot write is
+        // indeterminate.
+        Op::Name(d) => {
+            es.uv(u64::from(NAME));
+            w.write_ref(&mut es, d);
+            NAME
+        }
     };
     w.unit.operands.writing -= 1;
     let nested = std::mem::replace(&mut w.unit.operands.nested, saved).unwrap_or_default();
-    let written = site == ALIAS_ARGS || site == UNKEPT || w.op_refs != refs || es.cause().is_some();
+    let written = site == ALIAS_ARGS
+        || site == UNKEPT
+        || site == NAME
+        || w.op_refs != refs
+        || es.cause().is_some();
+    // S5: what the walk of an entry that is not written met was not kept
+    // (L3).
+    if !written {
+        w.unit.operands.marks.truncate(marks);
+    }
     let mine = std::mem::replace(&mut w.names, outer_names);
     if written && let (Some(outer), Some(mine)) = (w.names.as_mut(), mine) {
         for &b in mine.as_bytes() {
@@ -2327,20 +2621,71 @@ pub(crate) fn unit(w: &mut Walk<'_>, e: DeclId, parent: &Written, h: Hashed) -> 
 pub(crate) const NOT_RECORDED: Cause = Cause::Unsupported("kiln/written-refs-not-recorded");
 
 /// The operand unit of the translation unit's `<order>` unit (`parent`,
-/// written): one [`Op::Unkept`] entry of [`NOT_RECORDED`] when the
-/// written-reference table is not on or not whole (L0); `None` otherwise.
+/// written), after the sweep of the ledger (L6): its groups are one
+/// [`Op::Unkept`] entry of [`NOT_RECORDED`] when the written-reference
+/// table is not on or not whole (L0), the site-9 entries of
+/// [`order_names`] (L5), and one [`Op::Unkept`] entry of [`UNCLAIMED`]
+/// when an entry of the ledger was decided by no unit (L6); `None` when
+/// there is none of these.
 pub(crate) fn order(w: &mut Walk<'_>, parent: &Written) -> Option<Written> {
     let refs = &w.ast.written_refs;
-    if refs.is_on() && refs.unrecorded().is_empty() {
+    let not_recorded = !(refs.is_on() && refs.unrecorded().is_empty());
+    let (unclaimed, undemanded) = w.ledger.as_ref().map_or((0, 0), ledger::Ledger::sweep);
+    w.op_counts.unclaimed = unclaimed;
+    w.op_counts.undemanded = undemanded;
+    let names = w.order_names.take();
+    let mut s = Stream::new();
+    if order_stream(w, &mut s, not_recorded, names, unclaimed) == 0 {
         return None;
     }
-    let (es, _, _) = entry(w, Op::Unkept(NOT_RECORDED));
-    let mut s = Stream::new();
-    s.count(1);
-    s.raw(es.as_bytes()).absorb(es.cause());
     let h = s.finish(UNIT_TAG);
     let h = w.hashed(h);
     Some(unit_of(w, None, parent, h))
+}
+
+/// The second writing of `<order>`'s operand unit (the trace, §6.1): its
+/// site-9 entries again ([`order_names`] claims what it claimed), into a
+/// traced stream.
+pub(crate) fn order_again(w: &mut Walk<'_>) -> crate::stream::Recording {
+    let refs = &w.ast.written_refs;
+    let not_recorded = !(refs.is_on() && refs.unrecorded().is_empty());
+    order_names(w);
+    let (unclaimed, _) = w.ledger.as_ref().map_or((0, 0), ledger::Ledger::sweep);
+    let names = w.order_names.take();
+    let mut s = Stream::traced();
+    order_stream(w, &mut s, not_recorded, names, unclaimed);
+    s.into_recording()
+}
+
+/// The groups of `<order>`'s operand unit ([`order`]); how many entries.
+fn order_stream(
+    w: &mut Walk<'_>,
+    s: &mut Stream,
+    not_recorded: bool,
+    names: Option<(usize, Stream)>,
+    unclaimed: u64,
+) -> usize {
+    let mut total = 0usize;
+    if not_recorded {
+        let (es, _, _) = entry(w, Op::Unkept(NOT_RECORDED));
+        s.count(1);
+        s.raw(es.as_bytes()).absorb(es.cause());
+        total += 1;
+    }
+    if let Some((count, gs)) = names
+        && count > 0
+    {
+        s.count(count);
+        s.raw(gs.as_bytes()).absorb(gs.cause());
+        total += count;
+    }
+    if unclaimed > 0 {
+        let (es, _, _) = entry(w, Op::Unkept(UNCLAIMED));
+        s.count(1);
+        s.raw(es.as_bytes()).absorb(es.cause());
+        total += 1;
+    }
+    total
 }
 
 fn unit_of(w: &mut Walk<'_>, e: Option<DeclId>, parent: &Written, h: Hashed) -> Written {
@@ -2423,13 +2768,19 @@ pub(crate) fn counters(w: &Walk<'_>, out: &mut Vec<slip_model::Counter>) {
         }
     };
     push("units", c.units);
-    for site in [DECLTYPE, TYPEOF, EXPR_ARG, NOEXCEPT, ALIAS_ARGS] {
+    for site in [DECLTYPE, TYPEOF, EXPR_ARG, NOEXCEPT, ALIAS_ARGS, NAME] {
         push(&format!("site.{site}"), c.sites[usize::from(site)]);
     }
     push("unreferenced", c.unreferenced);
     push("dependent", c.dependent);
     push("deduced", c.deduced);
     push("unkept", c.unkept);
+    push("names.undemanded", c.undemanded);
+    // Always (L6): 0 on both sides of every fixture (`tests/common`).
+    out.push(slip_model::Counter {
+        name: "digest.operands.names.unclaimed".to_owned(),
+        value: c.unclaimed,
+    });
 }
 
 #[cfg(test)]

@@ -113,6 +113,8 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
                     }
                     name
                 }
+                // `<order>`'s operand unit (WP-156 fix round 3, L0, L5, L6).
+                None if u.operands.is_some() => "<order>::<operands>".to_owned(),
                 None => "<order>".to_owned(),
             };
             (u.key, name)

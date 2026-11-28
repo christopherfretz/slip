@@ -85,9 +85,6 @@ const LOCAL_ENTITY: Cause = Cause::Unaccounted("key/local");
 /// walk memoised: an internal defect, never met (test 8).
 const KEY_AGAIN: Cause = Cause::Unaccounted("query/key-again");
 
-/// How far a chain of contexts is followed.
-const CTX_LIMIT: u32 = 4096;
-
 /// The rule table of [`Keys::new`]: none.
 static NO_RULES: LazyLock<RuleTable> = LazyLock::new(RuleTable::empty);
 
@@ -177,46 +174,7 @@ impl<'a> Keys<'a> {
     }
 
     fn find_unit(&mut self, d: DeclId) -> Option<DeclId> {
-        let w = &mut self.w;
-        let ast = w.ast;
-        let mut x = w.entity(d);
-        for _ in 0..CTX_LIMIT {
-            let kind = ast.decls.get(x).kind();
-            match info(kind).role {
-                Role::Root => return None,
-                Role::InParent => {
-                    // A template parameter: its template's unit holds it
-                    // (Kiln gives it the template's context, which does
-                    // not). Any other (a lifetime-extended temporary):
-                    // no unit is said to hold it.
-                    if !matches!(
-                        kind,
-                        DeclKind::TemplateTypeParm
-                            | DeclKind::NonTypeTemplateParm
-                            | DeclKind::TemplateTemplateParm
-                    ) {
-                        return None;
-                    }
-                    crate::local::param_templates(w);
-                    x = w.entity(crate::local::param_template(w, x)?);
-                    continue;
-                }
-                Role::Entity(_) | Role::Content(_) => {
-                    if crate::units::unit_class(w, x).is_some() {
-                        return Some(x);
-                    }
-                }
-                Role::Nothing | Role::Transparent | Role::Local | Role::Unsupported(_) => {}
-            }
-            if w.is_local(x)
-                && !w.is_local_extern(x)
-                && let Some(u) = crate::local::unit_of(w, x)
-            {
-                return Some(u);
-            }
-            x = w.entity(ast.decls.get(x).ctx()?);
-        }
-        None
+        crate::units::holding_unit(&mut self.w, d)
     }
 
     /// The key id of the unit `e` (of `e`'s entity), mapped under this

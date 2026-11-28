@@ -193,6 +193,16 @@ fn write_part(
 ) -> Written {
     let saved = w.take_unit();
     crate::operands::begin(w, e, None);
+    crate::operands::set_part(
+        w,
+        match what {
+            Part::Resolved(Resolved { property: Property::ExceptionSpec, .. }) => {
+                crate::operands::ledger::PartOf::ExceptionSpec
+            }
+            Part::Resolved(_) => crate::operands::ledger::PartOf::Other,
+            Part::DefaultArgument(i) => crate::operands::ledger::PartOf::DefaultArgument(i),
+        },
+    );
     let mut stream = Stream::new();
     body(w, &mut stream);
     let emits = std::mem::take(&mut w.unit.emits);
@@ -718,6 +728,7 @@ fn subject(w: &Walk<'_>, d: DeclId) -> DeclId {
 /// of the deferrable class, `enum ExcSpec` in normal form, present when
 /// its type no longer holds `Deferred`.
 fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
+    // `exception_spec_operand` reads the same facts, for the ledger.
     let ast = w.ast;
     let f = subject(w, read_of(w, e, owner));
     if ast.decls.function(f).is_none() || !deferrable(w, f) {
@@ -738,6 +749,24 @@ fn exception_spec(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Wr
         crate::operands::exception_spec(w, spec);
     });
     out.push(u);
+}
+
+/// The `noexcept` operand the resolved unit `exception_spec` of the unit
+/// read from `from` writes, as [`exception_spec`] decides it (WP-156 fix
+/// round 3, L3 "deferred"): the operand of a written `noexcept(e)` of a
+/// function of the deferrable class whose specification is no longer
+/// `Deferred`.
+pub(crate) fn exception_spec_operand(w: &Walk<'_>, from: DeclId) -> Option<ExprId> {
+    let ast = w.ast;
+    let f = subject(w, from);
+    if ast.decls.function(f).is_none() || !deferrable(w, f) {
+        return None;
+    }
+    let proto = w.own_proto(f)?;
+    match ast.types.exc_spec(&proto) {
+        ExcSpec::NoexceptExpr { expr, .. } => Some(expr),
+        _ => None,
+    }
 }
 
 /// Property 2, `value` (§11.3): what the Oven found for a variable
@@ -947,28 +976,53 @@ pub(crate) fn record_immediate(w: &mut Walk<'_>, _: &mut Stream, e: ExprId) {
 fn default_arguments(w: &mut Walk<'_>, e: DeclId, owner: &Written, out: &mut Vec<Written>) {
     let ast = w.ast;
     let d = read_of(w, e, owner);
+    let found = default_argument_exprs(w, e, d);
+    if found.is_empty() {
+        return;
+    }
+    if ast.decls.function(d).is_some() {
+        let params = chain_params(w, e);
+        for (i, x) in found {
+            default_argument(w, e, owner, i, &params, x, Some(i), out);
+        }
+    } else {
+        for (_, x) in found {
+            default_argument(w, e, owner, 0, &[], x, None, out);
+        }
+    }
+}
+
+/// The `default_argument` units [`default_arguments`] writes for the unit
+/// of entity `e` read from `d`: each one's index (0 for a field) and
+/// expression (also the ledger's roots, WP-156 fix round 3 L3).
+pub(crate) fn default_argument_exprs(w: &Walk<'_>, e: DeclId, d: DeclId) -> Vec<(u64, ExprId)> {
+    let ast = w.ast;
+    let mut out = Vec::new();
     if ast.decls.function(d).is_some() {
         let mut chain = w.redecls(ast.first(e));
         chain.reverse();
         let decls: Vec<DeclId> =
             chain.into_iter().filter(|&x| crate::decl_func::instantiated_decl(w, x)).collect();
-        let params = chain_params(w, e);
-        for i in 0..params.len() {
+        if decls.is_empty() {
+            return out;
+        }
+        for i in 0..chain_params(w, e).len() {
             let default = decls.iter().find_map(|&x| {
                 let func = ast.decls.function(x)?;
                 let param = ast.lists.iter::<DeclId>(func.params).nth(i)?;
                 ast.decls.param(param)?.default_arg
             });
             if let Some(x) = default {
-                default_argument(w, e, owner, i as u64, &params, x, Some(i as u64), out);
+                out.push((i as u64, x));
             }
         }
     } else if let Some(f) = ast.decls.field(d)
         && let Some(x) = f.init
         && crate::decl_class::instantiated_field(w, d)
     {
-        default_argument(w, e, owner, 0, &[], x, None, out);
+        out.push((0, x));
     }
+    out
 }
 
 /// The `default_argument` units of every local function that is no unit

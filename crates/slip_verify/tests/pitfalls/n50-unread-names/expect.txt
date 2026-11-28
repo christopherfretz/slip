@@ -1,0 +1,29 @@
+# N50 (WP-156 fix round 3): the holders fix round 2's review found unread (A1 to A4, G01's c10), and the two shapes fix round 2 refused (`at<sizeof(make(0))>`, `Q3<int, decltype(make(0))>::s`). The name is an entry of Kiln's written-reference table that no stream walks: a site-9 entry of the holder's operand unit (L3, L5), `derived_changed` on `bad`, `verified` on `good`. Subjects 1 to 3 are held by the namespace, 4 by the class the qualifier enters (KT1 2.9 (a)), 5 by the befriending class (2.9 (c)).
+good: verified
+bad: mismatch derived_changed legacy::<operands> @ main.cpp:6
+good-2: verified
+bad-2: mismatch derived_changed legacy::<operands> @ main.cpp:6
+good-3: verified
+bad-3: mismatch derived_changed legacy::<operands> @ main.cpp:6
+good-4: verified
+bad-4: mismatch derived_changed legacy::GM<int>::<operands> @ main.cpp:7
+good-5: verified
+bad-5: mismatch derived_changed legacy::FN::<operands> @ main.cpp:8
+good-6: verified
+bad-6: mismatch derived_changed legacy::c37()::<operands> @ main.cpp:8
+good-7: verified
+bad-7: mismatch derived_changed legacy::c38()::<operands> @ main.cpp:8
+good-8: verified
+bad-8: mismatch derived_changed legacy::v4::<operands> @ main.cpp:7
+good-9: verified
+bad-9: mismatch derived_changed legacy::v8::<operands> @ main.cpp:7
+good-10: verified
+bad-10: mismatch derived_changed legacy::d10()::<operands> @ main.cpp:7
+good-11: verified
+bad-11: mismatch derived_changed legacy::<operands> @ main.cpp:6
+good-12: verified
+bad-12: mismatch derived_changed legacy::f13()::<operands> @ main.cpp:10
+xfail good-10: the destructor check (`kiln/destructor-name`) is deleted in fix round 3's commit 5 ("What is deleted")
+xfail bad-10: the destructor check (`kiln/destructor-name`) is deleted in fix round 3's commit 5 ("What is deleted")
+xfail good-11: `kiln/explicit-instantiation-written` is deleted in fix round 3's commit 5 (T1)
+xfail good-12: `kiln/declarator-qualifier` is deleted in fix round 3's commit 5 (T2)

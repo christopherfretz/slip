@@ -1,6 +1,8 @@
 # WP-156 fix round 1 (S4).
+# WP-156 fix round 3 (L5): a site-9 entry in the operand unit of the unit that holds the name and walks it in no stream (a friend's holder; `<order>` for a parameter of a function type, which no unit holds).
 exact derived
 removed lib::make(lib::X)
+derived-changed <order>::<operands>
 derived-changed at::<operands>
 derived-changed fpp::<operands>
 derived-changed pm::<operands>

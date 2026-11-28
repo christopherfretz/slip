@@ -125,7 +125,10 @@ fn nested_lambdas_reach_the_depth_limit() {
     let (shallow, _, _) = digest(&nested(40));
     assert!(hard(&shallow).is_empty(), "indeterminate: {:?}", hard(&shallow));
     let (deep, _, _) = digest(&nested(150));
-    assert_eq!(hard(&deep), vec![Cause::Unaccounted("walk/depth")]);
+    // The unit and its operand unit: the names past the limit are walked
+    // by no stream, so they are site-9 entries (WP-156 fix round 3, L5),
+    // and the operand unit inherits the unit's cause.
+    assert_eq!(hard(&deep), vec![Cause::Unaccounted("walk/depth"); 2]);
     // The lambda in the deepest place a numbering can be asked for: the
     // nested closures named from another unit.
     let src = format!("{}auto g() {{ return f(); }}\n", nested(150));

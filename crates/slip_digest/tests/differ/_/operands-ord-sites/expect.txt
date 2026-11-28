@@ -1,7 +1,8 @@
 # WP-156: the review's pair `ord-sites` (lib::make against ::make<lib::X>). Every
 # row the review found equal although the binding moved is a finding of
-# the operand unit, but the array bounds (o_bound, o_param, o_local2: the
-# limit of spec/digest.md §2.3, B1).
+# the operand unit. Fix round 3 (L5): the array bounds (o_bound, o_param,
+# o_local2), the limit of spec/digest.md §2.3 until then, are site-9
+# entries (acceptance item 3), and the friend's holder has its name too.
 exact derived
 changed E::E(int)
 changed F::bf
@@ -19,9 +20,11 @@ removed lib::make(lib::X)
 removed o_req
 derived-changed D::<operands>
 derived-changed F2::fld::<operands>
+derived-changed Fr::<friend fr_f()>::<operands>
 derived-changed arr<int, 4>::<operands>
 derived-changed fr_f()::<operands>
 derived-changed o_alias::<operands>
+derived-changed o_bound::<operands>
 derived-changed o_cast::<operands>
 derived-changed o_decltype::<operands>
 derived-changed o_es<4>::<operands>
@@ -29,8 +32,10 @@ derived-changed o_fp::<operands>
 derived-changed o_ft::<operands>
 derived-changed o_lambda::<operands>
 derived-changed o_local()::<operands>
+derived-changed o_local2()::<operands>
 derived-changed o_local3()::<operands>
 derived-changed o_noexcept()::<operands>
+derived-changed o_param(int *)::<operands>
 derived-changed o_param2(int)::<operands>
 derived-changed o_sizeof_type::<operands>
 derived-changed o_targ::<operands>

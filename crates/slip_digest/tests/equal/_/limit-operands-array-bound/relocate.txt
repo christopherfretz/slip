@@ -1,1 +1,1 @@
-rename n::S::h() => s
+rename n::S::h => s

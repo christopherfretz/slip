@@ -417,6 +417,54 @@ fn enclosing_entity(w: &Walk<'_>, d: DeclId) -> Option<DeclId> {
     None
 }
 
+/// The entity that is the digest unit holding the declaration `d`
+/// (digest §2.1; `Keys::unit_of`, and the unit of a written name, WP-156
+/// fix round 3 L2): `d`'s entity when it is a unit, else the innermost
+/// enclosing entity that is. A local entity's is `local::unit_of`'s; a
+/// template parameter's is its template's. `None` for the translation
+/// unit, a lifetime-extended temporary, and a declaration no unit holds.
+pub(crate) fn holding_unit(w: &mut Walk<'_>, d: DeclId) -> Option<DeclId> {
+    let ast = w.ast;
+    let mut x = w.entity(d);
+    for _ in 0..4096 {
+        let kind = ast.decls.get(x).kind();
+        match info(kind).role {
+            Role::Root => return None,
+            Role::InParent => {
+                // A template parameter: its template's unit holds it
+                // (Kiln gives it the template's context, which does
+                // not). Any other (a lifetime-extended temporary):
+                // no unit is said to hold it.
+                if !matches!(
+                    kind,
+                    DeclKind::TemplateTypeParm
+                        | DeclKind::NonTypeTemplateParm
+                        | DeclKind::TemplateTemplateParm
+                ) {
+                    return None;
+                }
+                crate::local::param_templates(w);
+                x = w.entity(crate::local::param_template(w, x)?);
+                continue;
+            }
+            Role::Entity(_) | Role::Content(_) => {
+                if unit_class(w, x).is_some() {
+                    return Some(x);
+                }
+            }
+            Role::Nothing | Role::Transparent | Role::Local | Role::Unsupported(_) => {}
+        }
+        if w.is_local(x)
+            && !w.is_local_extern(x)
+            && let Some(u) = crate::local::unit_of(w, x)
+        {
+            return Some(u);
+        }
+        x = w.entity(ast.decls.get(x).ctx()?);
+    }
+    None
+}
+
 /// `spec/digest-kinds.md` §9: which specialisations are units.
 fn spec_class(kind: SpecKind) -> Option<UnitClass> {
     match kind {

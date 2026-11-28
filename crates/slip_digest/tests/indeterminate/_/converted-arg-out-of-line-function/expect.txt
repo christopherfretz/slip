@@ -1,1 +1,3 @@
 indeterminate P<type-parameter-0-0, 0>::f()
+# WP-156 fix round 3 (L5): its names that no stream walks are site-9 entries of an operand unit, which inherits the unit's cause.
+indeterminate P<type-parameter-0-0, 0>::f()::<operands>

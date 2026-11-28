@@ -1,0 +1,4 @@
+# N51 (WP-156 fix round 3, A5): N50's hazard in a dynamic exception specification's type, read by Layer S (`ExcSpec::Dynamic`'s types are `Type` slots): `make` is a site-1 entry of the function's operand unit. A row of its own: a row has one `std:` line, and `throw(T)` is gone from C++17.
+std: c++14
+good: verified
+bad: mismatch derived_changed legacy::g()::<operands> @ main.cpp:7

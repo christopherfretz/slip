@@ -1,0 +1,4 @@
+# WP-156 fix round 3 (L3, L5; acceptance item 3).
+exact derived
+derived-changed F::m::<operands>
+derived-changed buf::<operands>
