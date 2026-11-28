@@ -1234,6 +1234,11 @@ counts):
   image format 101; `4a83f6e3c` from WP-066). The numbers of this
   section are as of `913a490bb`: no corpus run has been made at either
   later pin, so they are not yet its numbers.
+- From WP-156 fix round 3 every digested parse records Kiln's
+  written-reference table (`spec/digest.md` §2.4, L0), about +10% parse
+  time and +37% peak memory by Kiln's figure. `bench/baselines/llvm.json`
+  is not yet re-measured with it: the coordinator measures it after
+  WP-156 merges.
 - The counts of `bench/baselines/llvm.json` are those of the map task
   (WP-050: the parse task and the semantic digest's walk, `spec/model.md`
   §8.5) at `913a490bb`, so they hold the `digest.*` counters of every

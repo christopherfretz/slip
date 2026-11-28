@@ -191,7 +191,8 @@ stated promise with a test, or a correction if it is not so:
    macro's body or argument, and the operator join of §18.13.7 for an
    operator and a literal suffix.
 4. `enclosing` never names a declaration of an instantiation for an
-   entry of the main table.
+   entry of the main table, except the class an explicit
+   instantiation's qualifier enters (fact (a) below).
 5. An entry of a type-constraint has role `Concept`, and the entries
    of a declaration are in source order up to its `Redecl` entry.
 
@@ -213,16 +214,23 @@ worded, or against §18.3:
   qualifier's own names, the parameters' and the body's are held by
   the declaration. (Presumably the class is created after the
   declaration's mark, so the claim keeps it as a nested holder.)
+  Slip takes what this gives (the coordinator's ruling): the entry
+  belongs to the class's unit, which does not walk it, so it is a
+  site-9 entry there, the same on both sides; if the class's unit is
+  not written, the entry is unclaimed and the translation unit fails
+  closed. The corpus command counts the shape by its own label. Asked:
+  the declaration as the holder, as §18.3 says.
 - (c) Against §18.3: a late-parsed exception specification in a class
   (`struct ND { void f() noexcept(e); };`, a friend's `noexcept`) holds
   `e`'s names by the class, not by the function; a late-parsed default
   argument is held by its parameter, as §18.3 says.
-- (d) Against 5: a function definition's `Redecl` entry is recorded
-  after its parameters' and its body's entries (`template <> void
-  QF<4>::f() { make(x); }`: qualifier, body, then `Redecl`). A
-  variable's is recorded after its qualifier and before its
-  initializer. So "the entries recorded before `Redecl`" are a
-  definition's whole text, not its decl-specifiers and qualifier.
+- (d) An observation, not a request: a function definition's
+  `Redecl` entry is recorded after its parameters' and its body's
+  entries (`template <> void QF<4>::f() { make(x); }`: qualifier,
+  body, then `Redecl`); a variable's after its qualifier and before
+  its initializer. Slip depends on no order beyond the qualifier
+  chain: T2's range ends at the last entry of the `Redecl` entry's
+  qualifier chain (the coordinator's ruling of 2026-11-28).
 - (e) Against 3 (§18.11.1): a destructor named by `decltype`
   (`wv.~decltype(e)()`) has no `member` entry: the `MemberExpr` at the
   `decltype` joins nothing. Its operand's names have entries.
