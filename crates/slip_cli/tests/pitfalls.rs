@@ -2051,7 +2051,9 @@ fn wp171_compiler_crash_fails_the_run() {
     // Every crash mode must produce Outcome::Error naming the tree, even for
     // `not_parsed` and `xfail`.
     for (tag, body, needle) in [
+        ("exit2", "exit 2", "exit 2"),
         ("exit139", "echo 'Segmentation fault' >&2; exit 139", "exit 139"),
+        ("exit254", "exit 254", "exit 254"),
         (
             "bug-report",
             "echo 'PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/' >&2; exit 1",
@@ -2066,6 +2068,13 @@ fn wp171_compiler_crash_fails_the_run() {
     ] {
         let cc = make_cc(&format!("cc-{tag}"), body);
         let env = Env { cc: Some(cc), require_all: false };
+        let direct_err =
+            compile(&env, &dir.join("bad"), "c++20", &root.join(format!("compile-tmp-{tag}")))
+                .unwrap_err();
+        assert!(
+            direct_err.contains("clang crashed on") && direct_err.contains(needle),
+            "{tag}: unexpected direct compile error: {direct_err}"
+        );
         let r = run_row(&dir, &root.join(format!("work-{tag}")), &env, Places::Mandatory);
         let o: Vec<(&str, Outcome)> = r.iter().map(|r| (r.tree.as_str(), r.outcome)).collect();
         assert_eq!(

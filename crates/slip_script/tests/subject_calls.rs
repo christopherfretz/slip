@@ -2282,10 +2282,12 @@ fn classify_clang_dump(too_large: bool, code: Option<i32>, stderr: &str, json: V
 
 /// Verifies that the observed `crashed` `(label, detail)` list matches
 /// `allowlist` `(label, reason)` exactly: any unlisted crash or stale entry
-/// returns `Err`.
+/// returns `Err`, naming `clang_version` (the first line of
+/// `clang++-19 --version`) so a different clang build explains itself.
 fn check_clang_crashes(
     crashed: &[(String, String)],
     allowlist: &[(&str, &str)],
+    clang_version: &str,
 ) -> Result<(), String> {
     let allowed: std::collections::BTreeMap<&str, &str> = allowlist.iter().copied().collect();
     let observed: std::collections::BTreeMap<&str, &str> =
@@ -2303,7 +2305,11 @@ fn check_clang_crashes(
             ));
         }
     }
-    if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("clang crash allowlist mismatch ({clang_version}):\n{}", problems.join("\n")))
+    }
 }
 
 /// Removes a side's scratch directory. The host's shared file system has
@@ -2821,11 +2827,12 @@ fn item7_differential_against_clang() {
     d.differences.sort();
     d.unmatched_at.sort();
     d.missing_at.sort();
+    let version_line = version.lines().next().unwrap_or(CLANG);
     eprintln!(
         "item 7 against {}: {} tests, {} units ({} with a Kiln error, {} with a clang \
          error, {} clang crashed); {} calls ({} closed by a macro's `)`, {} with no clang call); extents: {} equal, \
          {} equal through a macro, {} null ({} of calls closed by a macro), {} clang's through a macro not comparable, {} different",
-        version.lines().next().unwrap_or(CLANG),
+        version_line,
         jobs.len(),
         d.units,
         d.kiln_errors,
@@ -2888,8 +2895,8 @@ fn item7_differential_against_clang() {
         d.dump_skipped,
         d.units
     );
-    if let Err(e) = check_clang_crashes(&d.crashed, KNOWN_CLANG19_CRASHES) {
-        panic!("clang crash allowlist mismatch:\n{e}");
+    if let Err(e) = check_clang_crashes(&d.crashed, KNOWN_CLANG19_CRASHES, version_line) {
+        panic!("{e}");
     }
 }
 
@@ -3033,9 +3040,11 @@ fn wp171_clang_crash_classification_and_allowlist() {
     ));
     assert!(matches!(classify_clang_dump(true, None, "", Vec::new()), Dumped::TooLarge));
 
+    let ver = "Debian clang version 19.1.7 (3+b1)";
     let list = &[("case-a side 0", "known ICE")];
     assert!(
-        check_clang_crashes(&[("case-a side 0".to_owned(), "exit 139".to_owned())], list).is_ok()
+        check_clang_crashes(&[("case-a side 0".to_owned(), "exit 139".to_owned())], list, ver)
+            .is_ok()
     );
     let unlisted = check_clang_crashes(
         &[
@@ -3043,10 +3052,13 @@ fn wp171_clang_crash_classification_and_allowlist() {
             ("case-b side 0".to_owned(), "exit 139".to_owned()),
         ],
         list,
+        ver,
     )
     .unwrap_err();
+    assert!(unlisted.contains(ver), "{unlisted}");
     assert!(unlisted.contains("unlisted clang crash: case-b side 0"), "{unlisted}");
-    let stale = check_clang_crashes(&[], list).unwrap_err();
+    let stale = check_clang_crashes(&[], list, ver).unwrap_err();
+    assert!(stale.contains(ver), "{stale}");
     assert!(stale.contains("stale clang crash allowlist entry"), "{stale}");
     assert!(stale.contains("case-a side 0"), "{stale}");
 }

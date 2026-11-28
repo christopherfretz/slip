@@ -744,7 +744,9 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   standard error (rejected) may match across images; any other exit
   status, termination by signal, timeout, or crash text on standard
   error (`PLEASE submit a bug report`, `frontend command failed due to
-  signal`) fails the check, naming the command. Up to 20 failing
+  signal`) fails the check, naming the command. Source text containing
+  a crash marker, when quoted in a compiler diagnostic, reads as a
+  crash; that direction fails loudly. Up to 20 failing
   commands are printed with their exit description and first crash or
   error line.
 - **4.** Before `slip` runs: the tools are found, the file system of the
