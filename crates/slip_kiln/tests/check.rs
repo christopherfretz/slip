@@ -3,7 +3,6 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 use slip_cdb::check::{ByExtension, FrontEndCheck, Rejection};
 use slip_kiln::{KilnCheck, parse_observer};
@@ -25,14 +24,10 @@ fn check(args: &[&str]) -> Result<Language, Rejection> {
     result
 }
 
-/// The parse changes the current directory: one at a time.
-static PARSE: Mutex<()> = Mutex::new(());
-
 /// Parses `args` in a fresh directory where each relative argument that
 /// does not start with `-` is an empty file.
 fn parse_in_fixture(args: &[&str]) -> Shard {
     static N: AtomicU32 = AtomicU32::new(0);
-    let _lock = PARSE.lock().unwrap_or_else(PoisonError::into_inner);
     let dir = std::env::temp_dir().join(format!(
         "slip-kiln-check-{}-{}",
         std::process::id(),
@@ -216,11 +211,11 @@ fn s6_unknown_flag_refused() {
         check(&["clang++", "--language=c", "a.cpp"]),
         Err(Rejection::UnsupportedFlag("--language=c".into()))
     );
-    // WP-163: a flag that reads a file or names a search directory Slip
-    // does not model is refused as written, as Kiln's driver refused it
-    // before Kiln WP-2822 (`c52c27ba8`), though Kiln accepts it now
-    // (`slip_kiln::check::not_modelled`).
+    // WP-163 / WP-148: flags Slip does not model are refused as written,
+    // though Kiln accepts them at this pin (`slip_kiln::check::not_modelled`).
     for (argv, flag) in [
+        (&["clang++", "-working-directory=sub", "a.cpp"][..], "-working-directory=sub"),
+        (&["clang++", "-working-directory", "sub", "a.cpp"][..], "-working-directory"),
         (&["clang++", "-imacros", "m.h", "a.cpp"][..], "-imacros"),
         (&["clang++", "--imacros=m.h", "a.cpp"][..], "--imacros=m.h"),
         (&["clang++", "-iprefix", "p/", "a.cpp"][..], "-iprefix"),
@@ -409,4 +404,48 @@ fn s6_1_checked_line() {
     assert_eq!(check(&["clang++", "-fkiln-reproducible-time", "a.cpp"]), Ok(Language::Cxx));
     // `-o` takes the input, which leaves none.
     assert!(matches!(check(&["clang++", "-o", "a.cpp"]), Err(Rejection::UnsupportedLanguage(_))));
+}
+
+// WP-148 fix round 1 (M10): an unmodelled flag (`-imacros`) inside a relative
+// response file is expanded relative to the entry's directory by
+// `slip_cdb::normalise` and refused by `KilnCheck`; and if passed directly to
+// `parse_observer` without normalisation, `response_files = false` refuses the
+// `@` word without reading the response file.
+#[test]
+fn s6_2_unmodelled_flag_in_relative_rsp_is_refused() {
+    let dir = std::env::temp_dir().join(format!("slip-kiln-check-rsp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    std::fs::write(dir.join("m.h"), "#define M 1\n").unwrap();
+    std::fs::write(dir.join("flags.rsp"), "-imacros m.h\n").unwrap();
+    std::fs::write(dir.join("main.cpp"), "int x = 1;\n").unwrap();
+
+    let raw: Vec<String> =
+        ["c++", "-c", "@flags.rsp", "main.cpp"].into_iter().map(str::to_owned).collect();
+    let norm = slip_cdb::normalise::normalise(dir.to_str().unwrap(), &raw, "main.cpp")
+        .expect("normalise expands relative @flags.rsp");
+    assert_eq!(
+        KilnCheck.check(&norm.command, norm.main.to_str().unwrap().as_bytes()),
+        Err(Rejection::UnsupportedFlag("-imacros".into()))
+    );
+
+    let obs = Observer {
+        id: Digest([2; 32]),
+        command: Command {
+            directory: dir.to_str().unwrap().as_bytes().to_vec(),
+            argv: ["c++", "@flags.rsp", "main.cpp"]
+                .into_iter()
+                .map(|a| a.as_bytes().to_vec())
+                .collect(),
+            env: Vec::new(),
+        },
+        language: Language::Cxx,
+        main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+        cost_hint: 1,
+        origins: vec![Origin { configuration: 0, entry: 0 }],
+    };
+    let shard = parse_observer(&obs, Phase::Map, 0).expect("parse_observer");
+    assert_eq!(shard.outcome.status, Status::Rejected, "{:?}", shard.outcome);
+    let _ = std::fs::remove_dir_all(&dir);
 }

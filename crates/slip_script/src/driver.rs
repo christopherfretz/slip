@@ -32,8 +32,8 @@ use std::time::Instant;
 
 pub use slip_kiln::session::SourcePlace;
 use slip_kiln::session::{
-    self, Budget, Cancel, CompileError, Entry, EntryError, ReadFile, RunDiagnostic, RunFailure,
-    RunReport, Session, Severity, TransformCommand,
+    self, Budget, Cancel, Class, CompileError, Entry, EntryError, ReadFile, RunDiagnostic,
+    RunFailure, RunReport, Session, Severity, ThrownRecord, TransformCommand,
 };
 use slip_model::wire::Encoder;
 use slip_model::{Counter, Digest};
@@ -52,13 +52,6 @@ pub const ENTRY: &str = "transform";
 
 /// The names reserved for entries of later versions (§2.3 rule 3).
 pub const RESERVED: [&str; 3] = ["reduce", "prepare", "repair"];
-
-/// The type of the exception every function of `<slip/meta.h>` throws
-/// (`slip::v0::error`), as Kiln names the type of an uncaught exception
-/// since its WP-2480: fully qualified, as `display_string_of` spells it
-/// (`kiln/crates/kiln_sema/src/session.rs:276-280`). Before, it was the
-/// type as written, unqualified (`error`).
-pub const ERROR_TYPE: &str = "slip::v0::error";
 
 /// The stack the thread that loads a transform must have, in bytes
 /// (`spec/api.md` §2.5 rule 5): reserved address space, touched only as
@@ -233,10 +226,10 @@ pub struct Failure {
     /// The run's diagnostics as Kiln renders them, the call stack
     /// included.
     pub rendered: String,
-    /// For an uncaught `slip::error`: the refusal of the run's failure
-    /// list it reports (the most recent; `spec/api.md` §2.8 rule 3 says
-    /// when that is wrong), with the place in the subject the refused
-    /// value denotes.
+    /// For an uncaught `slip::error` (or class derived from it): the
+    /// refusal of the thrown object's own failure ordinal (`spec/api.md`
+    /// §2.8 rule 3, Kiln WP-2480), with the place in the subject the
+    /// refused value denotes.
     pub refusal: Option<host::Failure>,
 }
 
@@ -271,6 +264,8 @@ pub struct Loaded<'s> {
     thread: ThreadId,
     /// `<resource>/include`, whose headers are the host's.
     include: PathBuf,
+    /// The `slip::v0::error` class entity from `<slip/meta.h>`, if included.
+    error_class: Option<Class>,
     /// Why the use of the transform ended, once it has.
     retired: Option<String>,
 }
@@ -395,12 +390,14 @@ fn load<'s>(
         session.predefines(),
         session.files(),
     );
+    let error_class = session.class(&["slip", "v0"], "error", Some(cmd.resource_include()));
     Ok(Loaded {
         session,
         entry,
         id,
         thread: std::thread::current().id(),
         include: cmd.resource_include().to_path_buf(),
+        error_class,
         retired: None,
     })
 }
@@ -564,7 +561,7 @@ impl Loaded<'_> {
             peak_bytes: report.peak_bytes,
             wall_ns,
         };
-        match classify(report, handler, stack_exhausted, &self.include) {
+        match classify(report, handler, stack_exhausted, &self.include, self.error_class) {
             Classified::Outcome(Outcome::Completed(out)) => {
                 Ok((Outcome::Completed(with_evaluator_counters(out, &stats)), stats))
             }
@@ -763,6 +760,31 @@ fn host_failure(message: String, place: Option<SourcePlace>, rendered: String) -
     Classified::Retire(Outcome::Failed(failure), why)
 }
 
+/// Walks `record` (the thrown object and its direct and virtual base
+/// subobjects) for subobjects whose class entity is `error_class`
+/// (`slip::v0::error` from `<slip/meta.h>`) and returns the unique failure
+/// ordinal `__n` when at least one matches and every matching subobject
+/// agrees on the ordinal.
+fn slip_error_ordinal(record: &ThrownRecord, error_class: Class) -> Option<u64> {
+    fn walk(r: &ThrownRecord, error_class: Class, found: &mut Vec<Option<u64>>) {
+        if r.class == Some(error_class) {
+            let ord = r
+                .members
+                .iter()
+                .find(|(name, _)| name == "__n")
+                .and_then(|(_, v)| u64::try_from(*v).ok());
+            found.push(ord);
+        }
+        for base in &r.bases {
+            walk(base, error_class, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(record, error_class, &mut found);
+    let first = (*found.first()?)?;
+    found.iter().all(|&o| o == Some(first)).then_some(first)
+}
+
 /// §2.8: what a run's report means, given whether Kiln's stack guard is
 /// tripped after it and what the handler saw. The host's error first,
 /// then the stack, then the run's own result (`spec/landed/api/WP-089.md`,
@@ -772,6 +794,7 @@ fn classify(
     handler: Calls<'_>,
     stack_exhausted: bool,
     include: &Path,
+    error_class: Option<Class>,
 ) -> Classified {
     let RunReport { result, rendered, diagnostics, .. } = report;
     let cause = |fallback: &str| cause(&diagnostics, include, fallback);
@@ -827,20 +850,21 @@ fn classify(
             cause("the depth limit is reached"),
             rendered,
         )),
-        // Kiln names the type fully qualified since its WP-2480, so a
-        // class of the transform's own named `error` no longer has the
-        // name of `slip::error`; a rethrown older `slip::error` and a class
-        // derived from it are still as §2.8 rule 3 says (WP-138).
-        // The refusal is reported only when the run has one, and it is the
-        // most recent (decision 4 of the landed file; §2.8 rule 3 says when
-        // that is wrong).
-        Err(RunFailure::Uncaught { type_name }) => {
+        // Kiln WP-2480 gives the thrown object's class entity and frozen
+        // value: match `slip::v0::error` (directly or as a base subobject)
+        // by entity and look up its own failure ordinal `__n` in the host's
+        // failure table (`spec/api.md` §2.8 rule 3).
+        Err(RunFailure::Uncaught { type_name, record }) => {
             let (own, place) = cause(&format!("an uncaught exception of type '{type_name}'"));
-            match handler.host.last_failure().filter(|_| type_name == ERROR_TYPE) {
+            let refusal = error_class
+                .zip(record.as_ref())
+                .and_then(|(cls, rec)| slip_error_ordinal(rec, cls))
+                .and_then(|ord| handler.host.failure(ord));
+            match refusal {
                 Some(f) => Classified::Outcome(Outcome::Failed(Failure {
                     kind: FailureKind::Uncaught,
                     message: format!(
-                        "an uncaught slip::error; the most recent refusal was: {} ({})",
+                        "an uncaught slip::error: {} ({})",
                         f.message,
                         status_name(f.errc)
                     ),
@@ -972,7 +996,7 @@ mod tests {
     }
 
     fn classify_(r: RunReport, c: Calls<'_>, stack: bool) -> Classified {
-        classify(r, c, stack, Path::new(INCLUDE))
+        classify(r, c, stack, Path::new(INCLUDE), None)
     }
 
     fn failure(c: &Classified) -> &Failure {
@@ -1065,7 +1089,7 @@ mod tests {
         for result in [
             Ok(()),
             Err(RunFailure::NotConstant),
-            Err(RunFailure::Uncaught { type_name: "error".to_owned() }),
+            Err(RunFailure::Uncaught { type_name: "error".to_owned(), record: None }),
             Err(RunFailure::Host("host call failed: x".to_owned())),
         ] {
             let mut c = calls(&s);

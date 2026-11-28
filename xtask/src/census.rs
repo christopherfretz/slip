@@ -893,3 +893,93 @@ fn parse_into(
     let loaded = perf::load(&run_path)?;
     Ok((loaded, run_path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::perf::RunPath;
+    use slip_model::{Outcome, Phase, Plan, Run, RunRecord, Shard};
+
+    fn loaded_with_shard(has_inputs: bool, has_negatives: bool) -> Loaded {
+        let obs = Digest([0; 32]);
+        let shard = Shard {
+            observer: obs,
+            phase: Phase::Map,
+            round: 0,
+            outcome: Outcome { status: Status::Ok, errors: 0, warnings: 0, message: String::new() },
+            inputs: has_inputs.then(Vec::new),
+            counters: Vec::new(),
+            digests: None,
+            verdict: None,
+            edits: None,
+            binding: None,
+            rule_use: None,
+            spellings: None,
+            names: None,
+            negatives: has_negatives.then(Vec::new),
+            found: None,
+            rebuilt_use: None,
+            existing_use: None,
+        };
+        Loaded {
+            path: RunPath {
+                store: PathBuf::from("."),
+                plan: Digest([0; 32]),
+                phase: Phase::Map,
+                round: 0,
+                started_unix_ns: 0,
+            },
+            record: RunRecord {
+                run: Run {
+                    tool_slip: "0.0.0".into(),
+                    tool_kiln: "1.3.0".into(),
+                    plan: Digest([0; 32]),
+                    phase: Phase::Map,
+                    round: 0,
+                    started_unix_ns: 0,
+                    wall_ns: 0,
+                    cores: 1,
+                    workers_max: 1,
+                    memory_budget: 0,
+                    peak_rss_sum: 0,
+                },
+                jobs: Vec::new(),
+            },
+            plan: Plan {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                configurations: Vec::new(),
+                observers: Vec::new(),
+                excluded: Vec::new(),
+            },
+            shards: BTreeMap::from([(obs, Some(shard))]),
+        }
+    }
+
+    // WP-166 follow-up: `Shard::from_bytes` rejects `inputs: None` paired with
+    // `negatives: Some(_)` through `negatives::violation` in every build (both
+    // decoders), and `perf::load` reads shards only through `Shard::from_bytes`,
+    // so that shape cannot come off disk. Test `inputs_current` directly on an
+    // in-memory shard to exercise both `shard.inputs` and `shard.negatives`
+    // fail-closed guards independently (kills mutant 5).
+    #[test]
+    fn inputs_current_rejects_missing_inputs_even_when_negatives_present() {
+        let both_present = loaded_with_shard(true, true);
+        assert!(
+            inputs_current(&both_present),
+            "empty inputs and empty negatives should be current"
+        );
+
+        let missing_inputs = loaded_with_shard(false, true);
+        assert!(
+            !inputs_current(&missing_inputs),
+            "inputs: None with negatives: Some([]) must be treated as stale"
+        );
+
+        let missing_negatives = loaded_with_shard(true, false);
+        assert!(
+            !inputs_current(&missing_negatives),
+            "inputs: Some([]) with negatives: None must be treated as stale"
+        );
+    }
+}

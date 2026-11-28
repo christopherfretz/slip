@@ -295,6 +295,20 @@ impl<'s> Host<'s> {
         self.last.as_ref()
     }
 
+    /// The failure with `ordinal` (from 1), when its record is kept (the
+    /// first [`Limits::kept_failures`] failures or the most recent).
+    pub fn failure(&self, ordinal: u64) -> Option<&Failure> {
+        if ordinal == 0 || ordinal > self.failure_count {
+            return None;
+        }
+        if let Some(i) = usize::try_from(ordinal - 1).ok()
+            && let Some(f) = self.kept.get(i)
+        {
+            return Some(f);
+        }
+        self.last.as_ref().filter(|f| f.ordinal == ordinal)
+    }
+
     /// How many failures the run has had (the last ordinal issued).
     pub fn failure_count(&self) -> u64 {
         self.failure_count

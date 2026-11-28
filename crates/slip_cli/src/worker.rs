@@ -4,9 +4,10 @@
 //! digest's walk run on the finished unit) or the verify task
 //! (`spec/verify.md` §5, [`crate::verify_job`]).
 //!
-//! The worker changes its current directory during a parse
-//! (`slip_kiln::parse_observer`), so every path it uses is absolute: the
-//! job's store path is (§2 "Path"). Its standard output carries protocol
+//! The worker passes each observer's working directory per run to Kiln
+//! (`slip_kiln::parse_observer`, Kiln WP-2121), without changing the
+//! process's current directory; every path it uses is still absolute
+//! (`Job.store` is, §2 "Path"). Its standard output carries protocol
 //! messages only: nothing here prints there.
 
 use std::io::Write;
@@ -390,14 +391,10 @@ mod tests {
     //! composition of the parse task and the walk.
 
     use std::path::PathBuf;
-    use std::sync::{Mutex, PoisonError};
 
     use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Status};
 
     use super::{checked_edits, map_observer};
-
-    /// The parse changes the current directory: one at a time.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     /// Writes `files` to a directory of its own and returns the map shard
     /// of `argv` there.
@@ -406,7 +403,6 @@ mod tests {
         files: &[(&str, &str)],
         argv: &[&str],
     ) -> Result<slip_model::Shard, String> {
-        let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let dir: PathBuf =
             std::env::temp_dir().join(format!("slip-cli-map-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

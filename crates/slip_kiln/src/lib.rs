@@ -64,6 +64,7 @@ pub mod kiln {
     pub use kiln_ast as ast;
     pub use kiln_lex as lex;
     pub use kiln_oven as oven;
+    pub use kiln_parse as parse;
     pub use kiln_pp as pp;
     pub use kiln_snap as snap;
     pub use kiln_source as source;

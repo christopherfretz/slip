@@ -17,9 +17,22 @@
 #                 `<target>:<file>` builds one generated file of a target
 #                 (`make -f <its build.make> <file>`), for a generated source
 #                 that is not a target of its own
+#   expected_unparsed  optional array of `<outcome>:<path>:<reason>` entries
+#                 for observers that `corpus rename`'s `coverage` check
+#                 expects to end with a non-`ok` map outcome (`diagnosed`,
+#                 `rejected` or `failed`); `<path>` is relative to `src/`
+#   expected_excluded  optional array of `<reason>:<path>:<note>` entries for
+#                 database entries that `corpus rename`'s `coverage` check
+#                 expects the plan to exclude (`not_a_compile`,
+#                 `unsupported_language`, `unsupported_flag`, `missing_file`,
+#                 `malformed_entry`, `unsupported_compiler`); `<path>` is
+#                 relative to `src/`
 #
-# All keys are required. Changing a row makes the next `configure` run
-# CMake (and the generate step) again.
+# All keys except `expected_unparsed` and `expected_excluded` are required.
+# Changing the pin or configure settings makes the next `configure` run CMake
+# (and the generate step) again; changing `generate` runs only the generate
+# step; changing `expected_unparsed` or `expected_excluded` does not
+# reconfigure or regenerate.
 
 [llvm]
 kiln = "llvm_project"
@@ -64,4 +77,9 @@ generate = [
   "ScanDepsOptsTableGen", "clangAnalysisFlowSensitiveResources",
   # clang's revision header: a source of clangBasic, not a target of its own
   "obj.clangBasic:tools/clang/lib/Basic/VCSVersion.inc",
+]
+# The two `diagnosed` units of spec/harness.md §8.7.
+expected_unparsed = [
+  "diagnosed:clang/tools/clang-fuzzer/ClangFuzzer.cpp:names uint8_t without including a header that declares it",
+  "diagnosed:clang/tools/clang-fuzzer/ClangObjectiveCFuzzer.cpp:names uint8_t without including a header that declares it",
 ]

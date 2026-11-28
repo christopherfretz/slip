@@ -39,11 +39,13 @@ pub fn old_shard(
     let directory = PathBuf::from(String::from_utf8(observer.command.directory.clone()).unwrap());
     let dep = scratch.join(format!("oracle-{}.d", std::process::id()));
     std::fs::write(&dep, b"").map_err(|e| e.to_string())?;
-    std::env::set_current_dir(&directory).map_err(|e| format!("cannot enter: {e}"))?;
 
+    let dir_arg = directory.to_str().ok_or("directory is not UTF-8")?.to_owned();
     let dep_arg = dep.to_str().unwrap().to_owned();
     let mut line: Vec<String> =
-        ["-fsyntax-only", "-MD", "-MF", &dep_arg, "-MT", "slip.d"].map(str::to_owned).to_vec();
+        ["-working-directory", &dir_arg, "-fsyntax-only", "-MD", "-MF", &dep_arg, "-MT", "slip.d"]
+            .map(str::to_owned)
+            .to_vec();
     line.extend(rest.iter().cloned());
     line.push("-fdiagnostics-format=json".to_owned());
 
