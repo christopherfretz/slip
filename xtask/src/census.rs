@@ -955,10 +955,12 @@ mod tests {
         }
     }
 
-    // WP-166 follow-up: `Shard::to_bytes` rejects `inputs: None` paired with
-    // `negatives: Some(_)` on disk, so test `inputs_current` directly on an
-    // in-memory shard to exercise the `shard.inputs` fail-closed guard
-    // independently of `shard.negatives` (kills mutant 5).
+    // WP-166 follow-up: `Shard::from_bytes` rejects `inputs: None` paired with
+    // `negatives: Some(_)` through `negatives::violation` in every build (both
+    // decoders), and `perf::load` reads shards only through `Shard::from_bytes`,
+    // so that shape cannot come off disk. Test `inputs_current` directly on an
+    // in-memory shard to exercise both `shard.inputs` and `shard.negatives`
+    // fail-closed guards independently (kills mutant 5).
     #[test]
     fn inputs_current_rejects_missing_inputs_even_when_negatives_present() {
         let both_present = loaded_with_shard(true, true);
@@ -971,6 +973,12 @@ mod tests {
         assert!(
             !inputs_current(&missing_inputs),
             "inputs: None with negatives: Some([]) must be treated as stale"
+        );
+
+        let missing_negatives = loaded_with_shard(true, false);
+        assert!(
+            !inputs_current(&missing_negatives),
+            "inputs: Some([]) with negatives: None must be treated as stale"
         );
     }
 }
