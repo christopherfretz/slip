@@ -46,8 +46,9 @@ use slip_model::{Counter, Digest, FileRef, Transform};
 /// `ParseOptions::pp_record`, a claim in a buffer
 /// `files` does not know, a unit without a main file. Everything about
 /// the subject is in the `Edits`, which has passed `Edits::normalise`,
-/// satisfies §4.7, and has `failure`, `groups`, `reports` and `renamed`
-/// empty (§9.6).
+/// satisfies §4.7, and has `failure`, `groups` and `renamed` empty (§9.6;
+/// `reports` holds only `Severity::Note` entries for `captured_at_instance`
+/// refusals, §9.4).
 ///
 /// `run` is a function of the unit: two parses of the same inputs give
 /// equal `Edits`.

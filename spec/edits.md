@@ -509,7 +509,7 @@ Piece := literal = 0: bytes                         not empty
 
 Reason := none = 0 | macro_body = 1 | pasted = 2 | crossing = 3 | not_a_file = 4 | not_owned = 5
         | file_recoded = 6 | not_plain = 7 | mixed_set = 8 | mixed_instances = 9
-        | directive = 10 | instantiated = 11 | rebuilt = 13
+        | directive = 10 | instantiated = 11 | rebuilt = 13 | captured_at_instance = 14
 
 MacroSite := name_start: uv          offset, in the claim's file, of the name token of the outermost
                                       macro invocation the bytes are an argument of or were produced by
@@ -528,7 +528,11 @@ round added `no_holder` = 12; its second review removed it before any
 release, with the exemption it guarded: 12 is unlisted, and stays so.)
 `rebuilt` = 13 (WP-118): the bytes are in a rebuilt file (§2.1). Slip
 does not write them; the build does. It was added without a change of
-format version, as `instantiated` was.
+format version, as `instantiated` was. `captured_at_instance` = 14
+(WP-152): a dependent name edited on instances (§9.4) would be captured
+in an instantiation by a non-subject declaration named like the new
+name. Added without a change of format version, as `instantiated` and
+`rebuilt` were.
 
 **Pieces** are those of `api.md` §7.1, and mean what it says:
 
@@ -2343,7 +2347,7 @@ identifier is part of the pattern's digest (`digest.md` §8).
 | The name is | The front end gives | Claim |
 |---|---|---|
 | the unqualified callee of a dependent call | the declarations `S` found at the definition | `S` not empty and all subjects: `replace`. `S` not empty and none a subject: `keep`. Mixed: `refuse(mixed_set)`. `S` empty: next row |
-| any other dependent name (`T::f`, `x.f`, `x->f`, a call found only by argument-dependent lookup, `this->f` with a dependent base) | per instantiated specialisation, the entity the name resolved to | under `dependent: offer` (§3): every one a subject: `replace` (`refuse(instantiated)` under `dependent: refuse`). None a subject, and one a declaration named like the old name: `keep`. Mixed: `refuse(mixed_instances)`. No instantiation is evidence: `unresolved`. Under `dependent: leave` (the default): `unresolved`, row 2 not read |
+| any other dependent name (`T::f`, `x.f`, `x->f`, a call found only by argument-dependent lookup, `this->f` with a dependent base) | per instantiated specialisation, the entity the name resolved to | under `dependent: offer` (§3): every one a subject, and no instance captures `new_name`: `replace` (some instance captures `new_name`: `refuse(captured_at_instance)`, with a `note` report naming the specialisation and the declaration found; `refuse(instantiated)` under `dependent: refuse`). None a subject, and one a declaration named like the old name: `keep`. Mixed: `refuse(mixed_instances)`. No instantiation is evidence: `unresolved`. Under `dependent: leave` (the default): `unresolved`, row 2 not read |
 
 A `replace` here has a literal piece and **no `changed` entry**: no unit
 is withdrawn from the comparison for a token. The unit that holds the
@@ -2468,11 +2472,86 @@ This is where rename guesses, and where it leans on verification most:
   tell the two apart until the comparison maps edited dependent tokens
   (`docs/wp/WP-154.md`), and the tests WP-154 must turn around are named
   in `spec/landed/edits/WP-139.md`, "Second review".
-- A row-2 `replace` does not ask what `new_name` finds in the
-  instantiation: a member of the instantiating class named `new_name`
-  (`this->g()` in `D : T`, `D::g`) captures it, and verification fails
-  the run (loud; `spec/landed/edits/WP-139.md`, "Findings"). A check of
-  what `new_name` finds per instance is a package of its own.
+- **Per-instance capture checks** (`docs/wp/WP-152.md`). One list of
+  what guards a dependent name edited on instances against capture by a
+  non-subject declaration named `new_name` — what it **inherits** from
+  §9 and what WP-152 **adds**:
+  1. *Inherited — `name_taken` (§9.5)*: a scope a subject's name enters
+     (transparent scopes, bases of the subject's class at any depth, and
+     non-template derived classes visible in the observer) already
+     declares `new_name`, or a macro named `new_name` is defined in the
+     unit.
+  2. *Inherited — derived-unit verification (`verify.md` §1, §4)*: every
+     specialisation an observer made before is made again and compared
+     in the post-image, so any rebinding in an instantiation differs
+     (`derived_changed` or a compile error). A row-2 `replace` carries a
+     literal piece rather than a spelled piece (`verify.md` §10),
+     because one pattern token can resolve to different specialisations
+     per instance; it therefore does not carry a `spelled(K, new)`
+     obligation and relies on the derived units' digests.
+  3. *Added (WP-152) — class member access (`t.f`, `p->f`, `this->f`,
+     `t.B::f`; `RefLookup::Member`)*: in every instance where the
+     specialisation's AST keeps the rebuilt `MemberExpr`, post-image
+     `[class.member.lookup]` for `new_name` runs in the qualifier class
+     (when qualified) or the object class (with implicit derived-to-base
+     and qualification adjustments peeled; never explicit casts). A class
+     on the lookup path whose own name is `new_name` (injected-class-name,
+     `[class.pre]/2`), or any non-subject `new_name` in the starting
+     class, a derived class above the subject's class, the subject's own
+     class, or any other base (virtual or non-virtual — no virtual-base
+     dominance rule is applied), is a capture:
+     `refuse(captured_at_instance)` with a `note` report naming the
+     specialisation and the declaration or class found. A non-subject
+     `new_name` declared only in a proper base directly hidden by a
+     subject's class is hidden by the renamed entity in the post-image
+     and is **not** a capture. Whenever no lookup class can be recovered
+     from `spec`'s AST (default arguments, `decltype` in a local type
+     alias, alias templates, requires-clauses, substituted signatures, …)
+     or a walk/depth limit (`WALK_LIMIT`, `BASE_DEPTH_LIMIT`) is hit, the
+     check **fails closed** (`refuse(captured_at_instance)` with a `note`
+     report saying the context was not recovered or the limit was hit),
+     with the one exception that if no class in the translation unit
+     declares a member named `new_name` and no class is itself named
+     `new_name`, no member or qualified class lookup can capture it and
+     the check accepts.
+  4. *Added (WP-152) — qualified name (`T::f`, `&T::f`, `D::f`;
+     `RefLookup::Qualified`)*: the same post-image
+     `[class.member.lookup]` in the instance's nominated class, read
+     from the rebuilt `DeclRefExpr` (or qualified `MemberExpr`) in the
+     specialisation, with the same fail-closed rule when no context is
+     recovered or a limit is hit.
+  5. *Added (WP-152) — argument-dependent lookup (`f(t)`;
+     `RefLookup::Adl`, `RefLookup::Both`)*: `[basic.lookup.argdep]/4`
+     lookup for `new_name` in `SpecRef::adl`'s associated namespaces and
+     classes (functions and function templates, admitting an `ADL_ONLY`
+     hidden friend only when lexically in an associated class; ignoring
+     non-functions and friends of non-associated classes). Any
+     non-subject found is `refuse(captured_at_instance)` with a `note`
+     naming the candidate found — **deliberately including non-viable
+     overloads**, because Slip does not perform overload resolution
+     (pending Kiln's overload facts). Missing `SpecRef::adl` fails
+     closed.
+  6. *Added (WP-152, fail-closed) — ordinary unqualified lookup at the
+     pattern's definition (`RefLookup::Unqualified`, and the ordinary
+     half of `RefLookup::Adl` / `Both`)*: walks enclosing scopes from
+     `DependentName::enclosing` outwards (classes via post-image member
+     lookup, functions via `lookup_local` and declared locals, parameters
+     and template parameters, namespaces and the translation unit via
+     `lookup_local` and `using_directives`), stopping at a scope that
+     declares a subject named `old_name` and no non-subject `new_name`.
+     Any non-subject `new_name` found is `refuse(captured_at_instance)`.
+  7. *Waiting on Kiln (now fail-closed, not accepted unchecked)*:
+     (a) `Member` and `Qualified` dependent names whose lookup context
+     class is not recovered from `spec` (alias templates,
+     requires-clauses, substituted signatures, default arguments,
+     `decltype` in a local type alias) refuse `captured_at_instance`
+     whenever any class in the translation unit declares or is named
+     `new_name` (waiting on `SpecRef` to carry the lookup-context class);
+     (b) ordinary unqualified lookup at the pattern's definition refuses
+     conservatively over enclosing scopes without point-of-declaration or
+     nested-block precision (waiting on Kiln's post-parse lexical
+     unqualified lookup at a `WrittenRef` entry;
+     `spec/landed/edits/WP-152.md`, "For Kiln").
 - A dependent name inside its holder's key (a trailing return type, a
   parameter type, a trailing requires-clause; `digest-kinds.md` §3.3,
   §3.4): the edit changes the holder's own key, so the post-image lacks a
@@ -2509,7 +2588,8 @@ Rename sets a subject's flags (§4.1), which refuse the run (§5.2):
 
 and claims `refuse` (§4.2) at a reference it found and cannot edit (§2.3),
 and at a name what it names cannot be told or the edit cannot verify:
-`mixed_set` (§9.2), `mixed_instances` and `instantiated` (§9.4).
+`mixed_set` (§9.2), `mixed_instances`, `instantiated` and
+`captured_at_instance` (§9.4).
 
 **A name in a rebuilt file** (WP-118). A declaration of a subject, or
 a reference to one, whose name is in a rebuilt file is a `refuse`
@@ -2547,14 +2627,15 @@ the member's body is not): `L::f` is kept
 it are `contested`
 (`wp120_local_class_dependent_base_over_two_observers_is_contested`).
 
-Not refused, and left to verification: a use that would resolve to
-another entity once renamed (the new name hides, or is hidden by, a
-declaration in another scope, or a local or a template parameter named
-`new_name` in a function that uses the subject), which a spelled piece
-reports as `denotes_other` (the verifier's spelled-entity check,
-`docs/wp/WP-096.md`) and a digest as a difference; a reference without a token
-(§9.3); a string that names the entity for the linker (`alias`, `ifunc`:
-"Open questions").
+Not refused, and left to verification: a non-dependent use that would
+resolve to another entity once renamed (the new name hides, or is hidden
+by, a declaration in another scope, or a local or a template parameter
+named `new_name` in a function that uses the subject), which a spelled
+piece reports as `denotes_other` (the verifier's spelled-entity check,
+`docs/wp/WP-096.md`) and a digest as a difference (for a dependent name
+edited on instances, see the unified capture-check list in §9.4); a
+reference without a token (§9.3); a string that names the entity for the
+linker (`alias`, `ifunc`: "Open questions").
 
 ### 9.6 What a rename declares
 
@@ -2562,7 +2643,8 @@ By §6.2: the rule of every selected subject and follower; `changed` is
 empty (no holder of an edited dependent name is exempt, §9.4). `renamed` is
 empty (every rule of a rename is a subject's, in force only if the
 subject is selected); nothing is `created` or `removed`; there is no
-group and no report.
+group, and `reports` holds only `note` reports attached to
+`captured_at_instance` refusals (§9.4).
 
 The claim verified is that of `verify.md` §1: in every selected observer
 the post-image is the same program as the pre-image except that the
