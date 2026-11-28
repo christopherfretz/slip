@@ -350,10 +350,15 @@ In this order; the first that applies decides.
      names a search directory Slip's lookup guards do not model
      (`spec/verify.md` §5.3): `-imacros` (`Args::imacros`), `-iprefix`
      (`Args::iprefix`), `-iwithprefix`, `-iwithprefixbefore`
-     (`Args::prefixed_dirs`), each with its aliases. Kiln's driver refused
-     them as unknown arguments until Kiln WP-2822 (`c52c27ba8`); Slip
-     refuses them since WP-163 as it did, and its parse refuses them too
-     (`rejected`, before Kiln runs).
+     (`Args::prefixed_dirs`), each with its aliases; and Kiln's
+     tooling-client recording, dump and verification flags
+     (`-fkiln-written-ref-keys`, `-fkiln-static-init-facts`,
+     `-fkiln-fn-names`, `-fkiln-dump-fn-names`, `-fkiln-builtin-literals`,
+     `-fkiln-verify-subst-failed`, `-fkiln-dump-friend-forms`;
+     `slip_kiln::check::not_modelled`). Kiln's driver refused them as
+     unknown arguments at earlier pins; Slip keeps refusing them (WP-163,
+     WP-173), and its parse refuses them too (`rejected`, before Kiln
+     runs).
 
    `UnsupportedFlag`, detail the argument responsible: the last argument
    of the shortest prefix `argv[1..=k]` of the command that is refused (in

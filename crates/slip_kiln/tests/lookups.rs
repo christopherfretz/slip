@@ -248,8 +248,10 @@ fn dash_imacros_kiln_accepts_slip_does_not_pass() {
         vec!["--include-prefix", &prefix, "--include-with-prefix", "inc"],
         vec!["--include-with-prefix-after", &inc],
         vec!["--include-with-prefix-before", &inc],
-        // The tables, checks and dumps of `not_modelled` (fix round 1).
+        // The tables, checks and dumps of `not_modelled` (WP-163 fix round 1;
+        // `-fkiln-static-init-facts`, WP-173 / Kiln WP-3650).
         vec!["-fkiln-written-ref-keys"],
+        vec!["-fkiln-static-init-facts"],
         vec!["-fkiln-fn-names"],
         vec!["-fkiln-builtin-literals"],
         vec!["-fkiln-verify-subst-failed"],

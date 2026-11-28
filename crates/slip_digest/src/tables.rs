@@ -1680,6 +1680,7 @@ pub(crate) mod var_spec {
         ("0-cxx-for-range", Decision::In),
         ("0-inline-implied", Decision::In),
         ("0-placeholder", Decision::Out),
+        ("0-static-init-fact", Decision::Out),
     ];
 }
 
@@ -2163,6 +2164,7 @@ pub(crate) mod cold_decl_data {
         ("shadow_named", Decision::Out),
         ("friend_form", Decision::Out),
         ("subst_failed", Decision::Unsupported),
+        ("written_decl_type", Decision::Unsupported),
     ];
 }
 
@@ -6166,9 +6168,9 @@ pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::ast::oper_lookup::Op
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::source::Loc>, 0x961f_29c8_7288_c276);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::ExprId, kiln::source::symbol::Symbol>, 0x606a_dfbd_bb9a_cf74);
 pin!(kiln::ast::slot::ColdMap<kiln::ast::ids::StmtId, kiln::ast::stmt::ContractSite>, 0x9dfd_ba51_15ad_9f92);
-pin!(kiln::ast::decl::ColdDeclData, 0x2c1e_9c64_10a6_2ca8);
+pin!(kiln::ast::decl::ColdDeclData, 0xaacf_3d0e_cc3b_005c);
 pin!(kiln::ast::decl::SubstFailedKind, 0x0f5d_3a9f_227b_348b);
-pin!(kiln::ast::decl::DeclArena, 0x854a_649a_1ad0_aa79);
+pin!(kiln::ast::decl::DeclArena, 0x9c64_fe1e_86c1_bc90);
 pin!(kiln::ast::journal::Journal<(u32, u32)>, 0x8477_87e4_b631_299d);
 pin!(kiln::ast::journal::Journal<kiln::ast::ids::DeclId>, 0x1664_736a_fc45_fedd);
 pin!(kiln::ast::redecl::RedeclGroup, 0xdcb6_beb1_06bc_57f4);
@@ -6323,7 +6325,7 @@ pin!(kiln::ast::modules::UnitKind, 0x543e_2228_e73a_14b9);
 pin!(kiln::ast::reflect::Reflectee, 0xa074_c3ec_bac7_39a6);
 pin!(kiln::ast::reflect::DmsDesc, 0x85e8_b3e6_0c93_3925);
 pin!(kiln::ast::reflect::ReflectionTable, 0x7320_84d8_1d3e_3d36);
-pin!(kiln::ast::ast::Ast, 0xfd03_add6_b0ae_6717);
+pin!(kiln::ast::ast::Ast, 0x039e_5a5c_a14a_35ba);
 pin!(kiln::ast::decl_extents::DeclExtents, 0x9d55_6258_ac68_9006);
 pin!(kiln::ast::decl_extents::DeclExtent, 0xcb1f_faf8_1d30_8082);
 pin!(kiln::ast::decl_extents::ModuleDeclExtent, 0xe965_1c4f_4509_7ce4);

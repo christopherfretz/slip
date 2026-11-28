@@ -64,18 +64,20 @@ fn refused(args: &Args, whole: bool) -> bool {
 ///   reads neither), and a file read by a flag Slip does not model would
 ///   be a hole in them;
 /// - tables and checks for a tooling client and dumps
-///   (`-fkiln-written-ref-keys`, WP-3540; `-fkiln-fn-names` and
-///   `-fkiln-dump-fn-names`, WP-3280, WP-3164; `-fkiln-builtin-literals`,
-///   WP-2821; `-fkiln-verify-subst-failed`, WP-3281;
-///   `-fkiln-dump-friend-forms`, WP-3164): a dump writes to the standard
-///   output Slip does not own, and a table or a check changes what Kiln
-///   records or reports in a way Slip's reading of the AST does not know.
+///   (`-fkiln-written-ref-keys`, WP-3540; `-fkiln-static-init-facts`,
+///   WP-3650; `-fkiln-fn-names` and `-fkiln-dump-fn-names`, WP-3280,
+///   WP-3164; `-fkiln-builtin-literals`, WP-2821;
+///   `-fkiln-verify-subst-failed`, WP-3281; `-fkiln-dump-friend-forms`,
+///   WP-3164): a dump writes to the standard output Slip does not own, and
+///   a table or a check changes what Kiln records or reports in a way
+///   Slip's reading of the AST does not know.
 pub(crate) fn not_modelled(args: &Args) -> Option<&'static str> {
-    let flags: [(bool, &'static str); 9] = [
+    let flags: [(bool, &'static str); 10] = [
         (!args.imacros.is_empty(), "-imacros"),
         (!args.prefixed_dirs.is_empty(), "-iwithprefix"),
         (!args.iprefix.is_empty(), "-iprefix"),
         (args.written_ref_keys, "-fkiln-written-ref-keys"),
+        (args.static_init_facts, "-fkiln-static-init-facts"),
         (args.dump_fn_names, "-fkiln-dump-fn-names"),
         (args.fn_names, "-fkiln-fn-names"),
         (args.builtin_literals, "-fkiln-builtin-literals"),

@@ -253,14 +253,15 @@ member).
 
 Kiln's account of what in the AST exists only because the translation unit
 used it (Kiln `62afe3289`), and where each goes. At the pinned
-`60fb5ab9d` (WP-163; `4a83f6e3c` from WP-066) it
+`040bc36bf` (WP-173; `60fb5ab9d` from WP-163, `4a83f6e3c` from WP-066) it
 still holds: what Kiln added since (the definition-context operator sets,
 the names of an overloaded member access, the shadows of a
 using-declaration, the owner of a closure, the checked mark of an
-attribute) is recorded where the source is parsed, whatever the unit
-uses, and the written-reference and declaration-extent tables exist only
-when a client turns them on, as does the preprocessing record, which is
-the preprocessor's and not the AST's.
+attribute, `ColdDeclData::written_decl_type` for deduced placeholders) is
+recorded where the source is parsed, whatever the unit uses, and the
+written-reference, declaration-extent and static-initialization-fact
+tables exist only when a client turns them on, as does the preprocessing
+record, which is the preprocessor's and not the AST's.
 
 | State | In the digest as |
 |---|---|
@@ -1638,6 +1639,12 @@ inherits from a later declaration (Kiln WP-3407), and a class's hidden
 using-shadow is made in either member order (Kiln WP-3145). No baseline
 of scheme 3 is recorded since WP-158, so it shares the number 3. The
 supervisor confirms that at the merge.
+WP-173 (the Kiln pin `040bc36bf`) adds two rows, `ColdDeclData`
+`written_decl_type` (`unsupported`, WP-156) and `VarSpec`
+`0-static-init-fact` (`out`, off by default); no stream reads either,
+and no existing determinate unit's stream, key or tag changes
+(`spec/landed/digest-kinds/WP-173.md`). `scheme` stays 3 (confirmed by
+the supervisor at the merge).
 
 **The mark** (`crates/slip_digest/src/emitted.rs`). A unit is marked by
 either of two ways; the mark is their union.
