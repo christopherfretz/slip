@@ -1,18 +1,19 @@
 //! The file range of a token span, its tier, and unit order
 //! (`spec/api.md` §1 and §5.4, `spec/edits.md` §2.2; work package WP-084,
-//! `spec/landed/api/WP-084.md`).
+//! `spec/landed/api/WP-084.md`; split `>` located by WP-148).
 //!
 //! **The range is Kiln's.** Which characters of a file editing a span of
 //! tokens edits is `SourceManager::editable_file_range` (Kiln
 //! `spec/source.md` "Editable file ranges"), and where a token ends is
-//! `kiln_lex::token_end` (Kiln `spec/lex.md` "End of a token", reached
+//! `kiln_lex::token_end_split` with `Ast::split_greaters` (Kiln
+//! `spec/lex.md` "End of a token", "Split `>` tokens", WP-2542, reached
 //! through [`Unit::token_end`]); whether a location starts a token is
-//! Kiln's lexer ([`Unit::is_token_start`]). This module has no rule of its
-//! own for a range of file characters or for what a token is; it only
-//! refuses ranges Kiln gives: empty or reversed ones, ones in a
-//! `<scratch space>` buffer, and two interim refusals until Kiln records
-//! what they guess at (a possibly split `>`, a directive line;
-//! `spec/landed/api/WP-084.md` "Until Kiln answers").
+//! Kiln's lexer plus `Ast::split_greaters` ([`Unit::is_token_start`]).
+//! This module has no rule of its own for a range of file characters or
+//! for what a token is; it only refuses ranges Kiln gives: empty or
+//! reversed ones, ones in a `<scratch space>` buffer, and the one interim
+//! refusal until Kiln records directive lines
+//! (`spec/landed/api/WP-084.md` "Until Kiln answers").
 //!
 //! What is Slip's:
 //!
@@ -188,17 +189,12 @@ pub fn spelled_range(sm: &SourceManager, span: Span) -> Option<(FileId, u32, u32
 /// `begin_loc` and `end_loc` are), or `None`.
 ///
 /// `None` unless `first` and `last` are each the start of a token as
-/// Kiln's lexer lexes the buffer ([`Unit::is_token_start`]: an AST node
+/// Kiln's lexer and parser see it ([`Unit::is_token_start`]: an AST node
 /// can begin inside a token, as a call of a user-defined literal begins
-/// at its suffix). The span ends at Kiln's end of the last token
-/// ([`Unit::token_end`]); `None` when that has none, else
-/// [`file_range_of_span`].
-///
-/// INTERIM (`spec/landed/api/WP-084.md` "Until Kiln answers"): `None`
-/// when the last token, as `token_end` lexes it, begins with `>` and is
-/// longer than one byte (`>>`, `>=`, `>>=`). The parser may have split
-/// it (`B<vt<1>> y;` ends `vt<1>` at the first `>` of `>>`), which
-/// `token_end` cannot know, and the end would be a byte too far.
+/// at its suffix; a split `>` and its remainder token are token starts).
+/// The span ends at Kiln's split-aware end of the last token
+/// ([`Unit::token_end`], using `Ast::split_greaters`, Kiln WP-2542);
+/// `None` when that has none, else [`file_range_of_span`].
 pub fn file_range(unit: &Unit<'_>, first: Loc, last: Loc) -> Option<FileRange> {
     file_range_of_tokens(&unit.tokens(), first, last)
 }
@@ -210,16 +206,7 @@ pub fn file_range_of_tokens(tokens: &Tokens<'_>, first: Loc, last: Loc) -> Optio
         return None;
     }
     let end = tokens.token_end(last)?;
-    if may_be_split(tokens.sm(), last, end) {
-        return None;
-    }
     file_range_of_span(tokens.sm(), Span::new(first, end))
-}
-
-/// Whether the token `last..end` is one the parser can split at its
-/// first `>` (INTERIM, [`file_range`]).
-fn may_be_split(sm: &SourceManager, last: Loc, end: Loc) -> bool {
-    sm.span_text(Span::new(last, end)).is_some_and(|t| t.len() > 1 && t.starts_with('>'))
 }
 
 /// INTERIM: whether the bytes `lo..hi` of `text` hold a directive line or

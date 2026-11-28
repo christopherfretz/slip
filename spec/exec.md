@@ -100,14 +100,15 @@ took (§8.7).
   for what the front end writes) keeps them in the directory
   `tmp/<process id>.d/`, which is a `tmp/` entry like any other.
 - **Path.** The store's path is made absolute when it is opened; that is the
-  path a `Job` carries (§5.2), since a worker changes its current directory.
+  path a `Job` carries (§5.2), so a worker never depends on its process
+  working directory.
 
 ### 2.1 Store rules
 
 - **Root.** `open` makes the directory absolute against the current
   directory (`std::path::absolute`: not canonicalised, symbolic links
-  kept), so `root()` and a `Job.store` made from it stay valid after a
-  worker changes its current directory.
+  kept), so `root()` and a `Job.store` made from it stay valid whatever
+  the worker's process working directory is.
 - **Opening.** `VERSION` must be exactly the bytes `2\n`; anything else
   (including `2` without the newline) is `Version` with the text, lossily
   decoded; for `1\n` the message says that an earlier Slip wrote the
@@ -674,6 +675,31 @@ by a new process. With the default every observer gets a fresh process, so
 `peak_rss` is that observer's alone. With a larger value the worker resets
 its peak counter between jobs where the system allows it
 (`/proc/self/clear_refs`); where it does not, `peak_rss` is reported as 0.
+Since WP-148 (Kiln WP-2121), `slip_kiln` passes each observer's
+`Command.directory` per run (`FrontEndOptions::working_directory`) and
+never changes the process's current directory: a worker serving
+`--worker-jobs > 1` (or an in-process command such as `slip units` or
+`slip declare`) can therefore parse observers from different directories
+sequentially or concurrently without cross-directory interference. What
+still keeps `--worker-jobs 1` as the default (and limits reuse or
+in-worker concurrency) is:
+
+- the worker protocol (§5.2) is synchronous, one job in flight per worker
+  process;
+- `peak_rss` attribution depends on `/proc/self/clear_refs`, and allocator
+  retention from earlier observers remains in the worker's RSS (counting
+  against its memory cap and admission estimates);
+- standard error log splitting between consecutive jobs follows
+  coordinator assignment rather than worker timing (§5.6 "Logs"), and
+  concurrent jobs in one process would interleave standard error;
+- `slip_spelling`'s process-wide directory spelling cache (`spec/edits.md`
+  §2.1 "The tree does not change during a run") persists across jobs in a
+  reused worker;
+- for a script transform, `Loaded::run` is pinned to the compiling thread
+  and exclusive (`&mut self`), and a retired transform ends the worker
+  (`spec/api.md` §2.5 rule 5, §2.8);
+- a crash or memory-cap kill of a reused worker stops the worker rather
+  than isolating one observer per fresh process.
 
 Anything else is a **protocol violation** and is treated as a crash: a
 message that does not decode, a `Done` for another observer, a `Done` whose

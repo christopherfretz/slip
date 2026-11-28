@@ -3,25 +3,18 @@
 //! `spec/verify.md` §5.3 reads it. Each test names a form and the place
 //! it must show; a form the log does not hold is pinned as such, so that
 //! the day Kiln records it the test says so.
-//!
-//! The parse changes the process's current directory: every test holds
-//! [`LOCK`] and uses absolute paths only.
 
 mod common;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_kiln::{Lookups, ParseOptions, parse_observer_with};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
 struct Dir {
     root: PathBuf,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for Dir {
@@ -33,14 +26,13 @@ impl Drop for Dir {
 impl Dir {
     fn new(name: &str) -> Dir {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let root =
             common::work_root().join(format!("wp052-lookups-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(&root).unwrap();
-        Dir { root, _lock: lock }
+        Dir { root }
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -241,6 +233,8 @@ fn dash_imacros_kiln_accepts_slip_does_not_pass() {
     let (m, inc) = (d.at("m.h"), d.at("inc"));
     let prefix = format!("{}/", d.at(""));
     for flags in [
+        vec!["-working-directory=sub"],
+        vec!["-working-directory", "sub"],
         vec!["-imacros", &m],
         vec!["-iprefix", &prefix, "-iwithprefix", "inc"],
         vec!["-iwithprefixbefore", &inc],
