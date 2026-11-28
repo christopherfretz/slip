@@ -1,0 +1,4 @@
+exact derived
+added operator,(N::X, N::X)
+changed template <class...> void f(type-parameter-0-0...)
+changed template <class...> decltype((t , ...)) g(type-parameter-0-0...)

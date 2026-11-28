@@ -108,9 +108,10 @@ fn raise(w: &mut Walk<'_>, e: ExprId) {
 }
 
 /// Raises `Walk::left_out` for a fact left out of the profile at `e` that
-/// no list holds, the unit of a spelling being indeterminate for it (a
-/// fold over an overloadable operator, the rounding mode of an operation
-/// that may be floating): marks the type for rule 5.
+/// no list holds or that is tracked separately from `RAISED` (the rounding
+/// mode of an operation that may be floating, a qualifier with a type
+/// level, a resolved member or specialisation name): marks the type for
+/// rule 5.
 fn raise_unlisted(w: &mut Walk<'_>) {
     w.left_out += 1;
 }
@@ -126,48 +127,6 @@ fn may_round_here(w: &Walk<'_>, e: ExprId) -> bool {
     }
     let q = n.ty();
     w.ast.types.is_floating(q) || w.ast.types.is_dependent(q)
-}
-
-/// Whether a fold over `op` may find a candidate at instantiation that
-/// Kiln did not record (rule 9): `op` is overloadable and some declaration
-/// in the translation unit that is not a member function is named for it
-/// (for a comparison, for any comparison: C++20 rewrites them into one
-/// another). With no such declaration the definition context finds no
-/// operator in every spelling. A function of the profile within one
-/// translation unit.
-pub(crate) fn fold_left_out(w: &mut Walk<'_>, op: BinaryOp) -> bool {
-    const COMPARISONS: [&str; 7] = ["==", "!=", "<", "<=", ">", ">=", "<=>"];
-    if op == BinaryOp::PtrMemD {
-        return false;
-    }
-    let ast = w.ast;
-    let declared = w.declared_operators.get_or_insert_with(|| {
-        let mut set = std::collections::HashSet::new();
-        for d in ast.decls.ids() {
-            let n = ast.decls.get(d);
-            let mut k = n.kind();
-            if k == DeclKind::FunctionTemplate {
-                k = ast
-                    .template_info(d)
-                    .and_then(|i| i.pattern)
-                    .map_or(k, |p| ast.decls.get(p).kind());
-            }
-            if k == DeclKind::CXXMethod {
-                continue;
-            }
-            if let slip_kiln::kiln::ast::names::DeclNameView::Operator(o) = ast.names.view(n.name())
-            {
-                set.insert(o.spelling());
-            }
-        }
-        set
-    });
-    let spelling = op.spelling();
-    if COMPARISONS.contains(&spelling) {
-        COMPARISONS.iter().any(|c| declared.contains(c))
-    } else {
-        declared.contains(spelling)
-    }
 }
 
 /// The kinds met since the last call (tests only).
@@ -771,22 +730,15 @@ fn node(w: &mut Walk<'_>, s: &mut Stream, e: ExprId, stack: &mut Vec<P>) {
             stack.extend([P::Opt(id(n.a())), P::Expr(t), P::Expr(f)]);
         }
         K::CXXFoldExpr => {
-            // The fold's definition-context operator set (`oper_lookups`,
-            // Kiln WP-2625) is left out as a dependent operator's is.
-            oper_left_out(w, e);
-            // What an overloadable operator finds at instantiation beyond
-            // that set stays outside the digest (rule 9; fail closed until
-            // WP-138 reads the set in its place).
-            if BinaryOp::from_u8(aux).is_some_and(|o| fold_left_out(w, o)) {
-                s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
-                raise_unlisted(w);
-            }
             tag(s, k);
             aux_tag(
                 s,
                 BinaryOp::from_u8(aux).map(|o| binary_op::row(&o)),
                 "profile/CXXFoldExpr.aux",
             );
+            // The fold's definition-context operator set (`oper_lookups`,
+            // Kiln WP-2625) is left out as a dependent operator's is (WP-138).
+            oper_left_out(w, e);
             stack.extend([P::Opt(id(n.a())), P::Opt(id(n.b()))]);
         }
         K::CallExpr | K::CXXMemberCallExpr => {

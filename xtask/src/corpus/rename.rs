@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]
+//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+//!         [-j <n>] [--slip <path>]
 //! ```
 //!
 //! The command never edits C++ itself: it hands names to `slip rename`,
@@ -25,6 +26,7 @@
 //! ([`result_json`]); `<target>` is `--from` with `::` written `.`
 //! ([`target_name`]).
 
+use crate::census;
 use crate::corpus::{self, Corpus, Ctx, Layout, build_tree, rows};
 use crate::invariants::Failure;
 use crate::perf::{self, Measured};
@@ -49,8 +51,8 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
 usage: cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-               [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
-               [--slip <path>]";
+               [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+               [-j <n>] [--slip <path>]";
 
 /// The clang runs of `--accept` that take longer than this are a failure
 /// of the check, not a wait without end.
@@ -83,9 +85,20 @@ pub struct Options {
     pub expect: Option<State>,
     pub accept: bool,
     pub build: bool,
+    pub skip_census: bool,
     pub jobs: Option<usize>,
     /// The `slip` executable (as `invariants` and `demo` take it).
     pub slip: Option<PathBuf>,
+}
+
+/// Whether this rename requires a clean census before its map phase
+/// (`spec/harness.md` §6.5): every run whose expected state is `verified` or
+/// `verified_with_residue` — including runs with no `--expect` (since
+/// [`check_state`] defaults to `verified` or `verified_with_residue`). Only
+/// runs whose `--expect` names a non-verified state (`refused`,
+/// `not_verified`, `incomplete`) skip the census.
+pub fn needs_census(o: &Options) -> bool {
+    !matches!(o.expect, Some(State::Refused | State::NotVerified | State::Incomplete))
 }
 
 /// The state named `name` (`spec/edits.md` §8.5).
@@ -121,6 +134,7 @@ pub fn parse_args(args: &[String]) -> Result<(String, Options), String> {
             }
             "--accept" if !o.accept => o.accept = true,
             "--build" if !o.build => o.build = true,
+            "--skip-census" if !o.skip_census => o.skip_census = true,
             "-j" if o.jobs.is_none() => {
                 let v = value()?;
                 let n = v
@@ -131,8 +145,8 @@ pub fn parse_args(args: &[String]) -> Result<(String, Options), String> {
                 o.jobs = Some(n);
             }
             "--slip" if o.slip.is_none() => o.slip = Some(PathBuf::from(value()?)),
-            "--from" | "--to" | "--kind" | "--expect" | "--accept" | "--build" | "-j"
-            | "--slip" => return Err(twice()),
+            "--from" | "--to" | "--kind" | "--expect" | "--accept" | "--build"
+            | "--skip-census" | "-j" | "--slip" => return Err(twice()),
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
@@ -506,6 +520,7 @@ pub fn result_json(h: &Header<'_>, r: &Records, checks: &[Check]) -> Value {
                 ("expect", o.expect.map_or(Value::Null, |e| s(e.name()))),
                 ("accept", Value::Bool(o.accept)),
                 ("build", Value::Bool(o.build)),
+                ("skip_census", Value::Bool(o.skip_census)),
                 ("jobs", o.jobs.map_or(Value::Null, |j| int(j as u64))),
             ]),
         ),
@@ -895,10 +910,11 @@ struct Unit {
     command: slip_model::Command,
 }
 
-fn clang_run(u: &Unit, vfs: Option<&Path>) -> Result<(Exit, String), String> {
+fn clang_run(u: &Unit, vfs: Option<&Path>, tmp: &Path) -> Result<(Exit, String), String> {
     let mut cmd = Command::new(&u.clang);
     cmd.args(u.command.argv.iter().skip(1).map(|a| OsStr::from_bytes(a)))
         .arg("-fsyntax-only")
+        .arg("-fno-crash-diagnostics")
         .current_dir(OsStr::from_bytes(&u.command.directory));
     if let Some(v) = vfs {
         cmd.arg("-ivfsoverlay").arg(v);
@@ -906,6 +922,7 @@ fn clang_run(u: &Unit, vfs: Option<&Path>) -> Result<(Exit, String), String> {
     for e in &u.command.env {
         cmd.env(OsStr::from_bytes(&e.name), OsStr::from_bytes(&e.value));
     }
+    cmd.env("TMPDIR", tmp);
     match run_bounded(cmd, CLANG_TIMEOUT) {
         Ok(f) => {
             let err = String::from_utf8_lossy(&f.stderr);
@@ -1142,9 +1159,39 @@ impl Rename<'_> {
         Ok(())
     }
 
+    /// Pre-flight census check (§6.5): returns `Ok(true)` to continue,
+    /// `Ok(false)` when refused because the census is not clean.
+    fn check_census(&self, out: &mut dyn Write) -> Result<bool, String> {
+        let mut census_opts = census::Options::default();
+        census_opts.common.jobs = self.opts.jobs.map(|j| j.to_string());
+        let outcome = census::execute(self.repo, self.c, &self.layout, &self.slip, &census_opts)
+            .map_err(|e| format!("census: {e}"))?;
+        say(out, &outcome.last_line());
+        if outcome.census.is_clean() {
+            return Ok(true);
+        }
+        say(
+            out,
+            &format!(
+                "corpus rename: refused: census is not clean; run `cargo xtask census {}` to \
+                 inspect, or pass `--skip-census`",
+                self.c.name
+            ),
+        );
+        Ok(false)
+    }
+
     fn execute(&self, out: &mut dyn Write) -> Result<bool, String> {
         say(out, &format!("corpus rename {}: {} to {}", self.c.name, self.opts.from, self.opts.to));
         let owned = self.owned()?;
+        let check_census = needs_census(self.opts);
+        if check_census {
+            if self.opts.skip_census {
+                say(out, "census: skipped (--skip-census)");
+            } else if !self.check_census(out)? {
+                return Ok(false);
+            }
+        }
         if self.opts.build {
             self.prepare_build(out)?;
         }
@@ -1233,10 +1280,11 @@ impl Rename<'_> {
             .map(|c| c.name)
             .chain((!same).then_some("counters"))
             .collect();
+        let skipped = if check_census && self.opts.skip_census { " (census skipped)" } else { "" };
         if failed.is_empty() {
-            say(out, "corpus rename: ok");
+            say(out, &format!("corpus rename: ok{skipped}"));
         } else {
-            say(out, &format!("corpus rename: FAILED ({})", failed.join(", ")));
+            say(out, &format!("corpus rename: FAILED ({}){skipped}", failed.join(", ")));
         }
         Ok(failed.is_empty())
     }
@@ -1401,7 +1449,12 @@ impl Rename<'_> {
                 self.paths.vfs.display()
             ),
         );
-        let results = run_units(&units, &self.paths.vfs, &pool, jobs, out)?;
+        let accept_tmp = self.paths.files.join("accept-tmp");
+        std::fs::create_dir_all(&accept_tmp)
+            .map_err(|e| format!("cannot create {}: {e}", accept_tmp.display()))?;
+        let results = run_units(&units, &self.paths.vfs, &accept_tmp, &pool, jobs, out);
+        let _ = std::fs::remove_dir_all(&accept_tmp);
+        let results = results?;
         say(out, &format!("step accept: done in {}", secs(t)));
         let mut both = 0u64;
         let mut differ = Vec::new();
@@ -1680,6 +1733,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 fn run_units(
     units: &[Unit],
     vfs: &Path,
+    tmp: &Path,
     pool: &Pool,
     jobs: usize,
     out: &mut dyn Write,
@@ -1696,8 +1750,8 @@ fn run_units(
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(u) = units.get(i) else { break };
                     let token = pool.acquire();
-                    let pair =
-                        clang_run(u, None).and_then(|pre| Ok((pre, clang_run(u, Some(vfs))?)));
+                    let pair = clang_run(u, None, tmp)
+                        .and_then(|pre| Ok((pre, clang_run(u, Some(vfs), tmp)?)));
                     drop(token);
                     if tx.send((i, pair)).is_err() {
                         break;

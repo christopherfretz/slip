@@ -48,7 +48,9 @@ is checked against: the run's own counters are the record.
   beside them (§4). If WP-2320 lands first, the runs use it and the
   record says so; the runs are not repeated only to have both.
 - M1 closed for the corpus: every `ok` unit has digests with no
-  indeterminate unit, or each remaining cause is listed.
+  indeterminate unit, or each remaining cause is listed — checked before
+  a `verified` or `--accept` run by `cargo xtask census <corpus>`
+  (`spec/harness.md` §9.5).
 
 ## 2. The targets
 
@@ -150,6 +152,7 @@ justify, and the trusted base said no.
 
 ```
 cargo xtask corpus configure llvm            # once; the corpus as fetched and generated
+cargo xtask census llvm -j 12                # check the precondition (§1; also run automatically by --accept / --expect verified)
 
 cargo xtask corpus rename llvm --from llvm::getAsUnsignedInteger --to parseAsUnsignedInteger \
       --kind function --accept --build -j 12
