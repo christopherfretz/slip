@@ -351,8 +351,9 @@ fn size_of_pack_partial_arguments_are_written() {
 
 /// WP-138 item 1: what Kiln records in `oper_lookups` for every fold form
 /// (unary left, unary right, binary left, binary right, empty set, `,`, `&&`,
-/// `||`, comparisons with C++20 rewritten `==` and `<=>`, member-only `=`,
-/// non-overloadable `.*`), and that every form walks determinately.
+/// `||`, comparisons with C++20 rewritten `==` and `<=>`, compound assignment
+/// `+=`, pointer-to-member `->*`, member-only `=`, non-overloadable `.*`),
+/// and that every form walks determinately.
 #[test]
 fn fold_oper_lookups_by_form() {
     let src = "namespace N { struct X {}; }\n\
@@ -362,6 +363,8 @@ fn fold_oper_lookups_by_form() {
                bool operator||(N::X, N::X);\n\
                bool operator==(N::X, N::X);\n\
                int operator<=>(N::X, N::X);\n\
+               N::X &operator+=(N::X &, N::X);\n\
+               N::X operator->*(N::X, N::X);\n\
                template<class... T> auto uleft(T... t) { return (... + t); }\n\
                template<class... T> auto uright(T... t) { return (t + ...); }\n\
                template<class... T> auto bleft(T... t) { return (0 + ... + t); }\n\
@@ -372,11 +375,13 @@ fn fold_oper_lookups_by_form() {
                template<class... T> bool lor(T... t) { return (... || t); }\n\
                template<class... T> bool neq(T... t) { return (t != ...); }\n\
                template<class... T> bool lt(T... t) { return (t < ...); }\n\
+               template<class... T> auto add_assign(T... t) { return (t += ...); }\n\
+               template<class M, class... P> auto ptrmem_i(M m, P... p) { return (m ->* ... ->* p); }\n\
                template<class... T> auto assign(T... t) { return (t = ...); }\n\
                template<class M, class... P> auto ptrmem(M m, P... p) { return (m .* ... .* p); }\n";
     with_walk(src, |w| {
         let folds = of_expr_kind(w, ExprKind::CXXFoldExpr);
-        assert_eq!(folds.len(), 12);
+        assert_eq!(folds.len(), 14);
         let summary: Vec<Option<usize>> = folds
             .iter()
             .map(|&e| {
@@ -399,6 +404,8 @@ fn fold_oper_lookups_by_form() {
                 Some(1), // (... || t)
                 Some(1), // (t != ...): finds rewritten operator==
                 Some(1), // (t < ...): finds rewritten operator<=>
+                Some(1), // (t += ...): compound assignment admits non-member candidates
+                Some(1), // (m ->* ... ->* p): pointer-to-member ->* admits non-member candidates
                 None,    // (t = ...): member-only, no non-member candidates
                 None,    // (m .* ... .* p): not overloadable
             ]
