@@ -44,10 +44,10 @@ deduced, as a side table of the AST keyed by the declaration (the
 `Auto` type with its `concept` and `args`, as written). Also for a
 `new` of a placeholder type (`new C<…> auto(1)`).
 
-Slip's cause today: `kiln/placeholder-constraint`, when an operand of a
-constrained placeholder's arguments that no declaration links is
-located between the bounds around the declaration's name (or inside
-the `new`).
+What Slip does at its pin (fix round 3; the cause
+`kiln/placeholder-constraint` is deleted): the constraint's expression
+names are written by their entities where no stream walks them (L3,
+site 9), its type names by trigger T4 (`spec/digest.md` §2.4).
 
 ### 2.2 An explicit instantiation's arguments and declarator as written
 
@@ -74,11 +74,11 @@ can be named by several), its declarator's type as written (with its
 exception specification), its qualifier as written (2.3) and its
 location.
 
-Slip's cause today: `kiln/explicit-instantiation-written`, when the
-directive may have spelt an operand (a non-type argument, a type
-argument that is canonically a held type no declaration links, a
-function type equal up to its exception specification to such a
-function type, a qualifier of 2.3).
+What Slip does at its pin (fix round 3; the cause
+`kiln/explicit-instantiation-written` is deleted): the directive's
+names are held by the namespace or the class its qualifier enters;
+the expression names are written where no stream walks them (L3),
+the type names by triggers T1 and T1b.
 
 ### 2.3 A declarator's qualifier as written
 
@@ -94,11 +94,9 @@ Asked: the nested-name-specifier written on a declarator-id (and on a
 template arguments as written (Kiln keeps a specialisation's converted
 arguments: `Q<1>` and `Q<sizeof(make(0))>` are one).
 
-Slip's cause today: `kiln/declarator-qualifier`, for a declaration
-written outside its class when a class around it is named by a
-template-id with an operand that no declaration links, or is a
-specialisation whose non-type argument may have been written with an
-expression located before the declaration's name.
+What Slip does at its pin (fix round 3; the cause
+`kiln/declarator-qualifier` is deleted): the qualifier's expression
+names are written by L3, its type names by trigger T2.
 
 ### 2.4 A friend specialisation's declarator
 
@@ -113,8 +111,11 @@ image carries no row at all.
 Asked: the friend's declarator type as written, in the row; the row for
 a friend read from a module image.
 
-Slip's causes today: `kiln/friend-specialization-declarator`,
-`kiln/friend-form-not-carried`.
+What Slip does at its pin (fix round 3; the cause
+`kiln/friend-specialization-declarator` is deleted): the declarator's
+expression names are written by L3, its type names by trigger T5
+(the parameters' by the befriending class, 2.9 (f)). A friend read
+from a module image still fails closed: `kiln/friend-form-not-carried`.
 
 ### 2.5 A destructor named by a template-id or `decltype`
 
@@ -126,9 +127,10 @@ in a template Slip's spelling level already refuses,
 Asked: the destroyed type as written on a member access that names a
 destructor, as `CXXPseudoDestructorExpr` keeps it.
 
-Slip's cause today: `kiln/destructor-name`, for a member access naming
-a destructor of a class that a template-id or `decltype` with an
-operand no declaration links names.
+What Slip does at its pin (fix round 3; the cause `kiln/destructor-name`
+is deleted): the expression names of the template-id or `decltype`
+are written by L3. A type name alone there is a named limit that
+stays `equal` (`spec/digest.md` §2.4; 2.8 closes it).
 
 ### 2.6 A `_BitInt`'s width as written
 
@@ -138,9 +140,9 @@ not kept.
 
 Asked: the width expression as written, on both.
 
-Slip's cause today: `kiln/bit-int-width`, for a pattern's `_BitInt(e)`,
-and for another's where an expression that is no literal is located
-within the declaration's bounds (2.7) or inside the expression.
+What Slip does at its pin (fix round 3): a pattern's `_BitInt(e)`
+stays `kiln/bit-int-width`; another's width is a folded value, whose
+expression names L3 writes and whose type names trigger T3 writes.
 
 ### 2.7 Where a declaration ends
 
@@ -200,7 +202,7 @@ What the probes found at `60fb5ab9d` (fix round 3, commit 1,
 `crates/slip_digest/tests/ledger_facts.rs`; every listed shape has its
 entry, entity and holder, and every walked name, operator and literal
 suffix joins, in macros too). Five facts go against the promises as
-worded, or against §18.3:
+worded, or against §18.3 (a sixth, (f), was found in commit 5):
 
 - (a) 4 as worded: an explicit instantiation of a member,
   `template auto GM<int>::f() noexcept(e);`, holds `e`'s names by the
@@ -234,6 +236,15 @@ worded, or against §18.3:
 - (e) Against 3 (§18.11.1): a destructor named by `decltype`
   (`wv.~decltype(e)()`) has no `member` entry: the `MemberExpr` at the
   `decltype` joins nothing. Its operand's names have entries.
+- (f) Found in fix round 3's commit 5, against §18.3: a parameter
+  written in a friend specialisation's declarator
+  (`struct FN { friend void ftn<>(int (*)[sizeof(X)]); };`) is a
+  `ParmVar` whose context is the class `FN`, the parameter of no
+  function (the friend's function has substituted parameters of its
+  own), and it holds the parameter's entries. Slip takes what this
+  gives: T5 writes every entry of the befriending class's unit too.
+  Asked: the parameter linked to the friend (or to its function as
+  written, 2.4).
 
 A note from fix round 3's commit 4, not a request (the coordinator's
 ruling): a local class declared in a lambda inside an array bound
@@ -277,6 +288,7 @@ WP-3641 (no deduced-return expressions there) changes nothing for it.
 
 ## 4. What Slip does on delivery
 
-Reads each as a holder (`operands.rs` `signature`, `expr_node`), removes
-the matching cause, and turns the indeterminate tests
-(`tests/indeterminate/_/operands-*`) into `differ` pairs.
+Reads each as a holder (Layer S, `operands::slots`), so the names in
+it are met by a stream, and drops the trigger that wrote them (T4 at
+the pin move to WP-3640; T1 to T5 when 2.8 lands). Fix round 3 already
+turned the indeterminate tests of 2.1 to 2.6 into `differ` pairs.

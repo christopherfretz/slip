@@ -1,5 +1,0 @@
-indeterminate v::<operands>
-indeterminate g()::<operands>
-indeterminate t()::<operands>
-indeterminate n2::<operands>
-indeterminate z3::<operands>

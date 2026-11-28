@@ -1,0 +1,5 @@
+# WP-156 fix round 3 (L4).
+exact derived
+removed n::X
+removed n::X::a
+derived-changed n::v::<operands>

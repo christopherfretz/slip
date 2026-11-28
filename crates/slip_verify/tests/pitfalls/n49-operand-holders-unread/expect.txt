@@ -1,10 +1,10 @@
-# N49 (WP-156 fix round 2): the holders its second review found unread (X1 to X8), N47's shape. Read: the name binds otherwise, `derived_changed` (subjects 1, 4, 5, 6, 7). Not kept by Kiln (subjects 2, 3, 8): the operand unit fails closed on both trees, `derived_indeterminate` (`kiln/...`, `docs/requests/KT1-written-placeholder-and-qualifier.md`).
+# N49 (WP-156 fix round 2): the holders its second review found unread (X1 to X8), N47's shape. Read: the name binds otherwise, `derived_changed` (subjects 1, 4, 5, 6, 7). Not kept by Kiln (subjects 2, 3, 8): they failed closed on both trees until fix round 3, whose ledger writes the name at site 9 (L3, L5; the namespace's operand unit for the explicit instantiation of subject 3, which declares nothing, L4's T1): `derived_changed` on `bad`, `verified` on `good`.
 good: verified
 bad: mismatch derived_changed legacy::F::<friend legacy::Q<4>::f()>::<operands> @ main.cpp:10
-good-2: mismatch derived_indeterminate legacy::d()::<operands> @ main.cpp:10
-bad-2: mismatch derived_indeterminate legacy::d()::<operands> @ main.cpp:10
-good-3: mismatch derived_indeterminate legacy::g<int>(int)::<operands> @ main.cpp:9
-bad-3: mismatch derived_indeterminate legacy::g<int>(int)::<operands> @ main.cpp:9
+good-2: verified
+bad-2: mismatch derived_changed legacy::d()::<operands> @ main.cpp:10
+good-3: verified
+bad-3: mismatch derived_changed legacy::<operands> @ main.cpp:8
 good-4: verified
 bad-4: mismatch derived_changed template <class> decltype(t , W2<sizeof (make(0))>()) legacy::f(type-parameter-0-0)::<operands> @ main.cpp:9
 good-5: verified
@@ -13,5 +13,5 @@ good-6: verified
 bad-6: mismatch derived_changed template <class> int legacy::fb(type-parameter-0-0)::<operands> @ main.cpp:9
 good-7: verified
 bad-7: mismatch derived_changed legacy::FF::<friend legacy::ftf<4>()>::<operands> @ main.cpp:10
-good-8: mismatch derived_indeterminate legacy::bi::<operands> @ main.cpp:9
-bad-8: mismatch derived_indeterminate legacy::bi::<operands> @ main.cpp:9
+good-8: verified
+bad-8: mismatch derived_changed legacy::bi::<operands> @ main.cpp:9

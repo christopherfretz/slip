@@ -1,2 +1,14 @@
-# WP-156 fix round 1: no operand unit on either side, none indeterminate
-# (the negative control of the three `kiln/...` causes).
+# WP-156 fix round 1: none indeterminate on either side (the negative
+# control of the `kiln/...` causes fix round 3 deletes). Fix round 3,
+# commit 5 (L4): the operand units the triggers give, equal on both sides
+# and determinate: T4 writes the concept names of `v` and `v2`, T2 the
+# qualifiers' template names of the members written outside their class,
+# T1 the explicit instantiation's names in `<order>`'s.
+operands <order>
+operands v
+operands v2
+operands Q::s
+operands Q<char>::s
+operands Info<K>::hash()
+operands Q2<1>::s
+operands Q2<1>::f()

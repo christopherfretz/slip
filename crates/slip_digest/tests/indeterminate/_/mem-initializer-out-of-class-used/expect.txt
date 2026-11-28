@@ -1,1 +1,3 @@
 indeterminate S::S<T>()
+# WP-156 fix round 3, commit 5 (L4): the operand unit L4's triggers give the unit above inherits its cause.
+indeterminate S::S<T>()::<operands>

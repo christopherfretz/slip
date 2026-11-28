@@ -48,6 +48,10 @@ pub(crate) struct Row {
     /// The unit's entity; `None` for the translation unit's `<order>`.
     pub unit: Option<DeclId>,
     pub entry: WrittenRefId,
+    /// The declaration that holds the entry (the first of its group's in
+    /// this unit for a `REF_GROUP` entry); `None` when nothing holds it.
+    /// L4's ranges are a holder's entries.
+    pub holder: Option<DeclId>,
     /// The entry's entity.
     pub entity: DeclId,
     /// Its role is one L3 joins (`Expr`, `Member`, `Operator`,
@@ -101,10 +105,11 @@ pub(crate) fn build(w: &mut Walk<'_>) -> Ledger {
     for (id, r) in refs.iter() {
         let Some(entity) = takes_part(ast, r) else { continue };
         let joined = joined(r.role);
-        let row = |unit| Row { unit, entry: id, entity, joined, claim: Claim::Open };
+        let row =
+            |unit, holder| Row { unit, entry: id, holder, entity, joined, claim: Claim::Open };
         let holders = refs.holders(id);
         if holders.is_empty() {
-            rows.push(row(None));
+            rows.push(row(None, None));
             continue;
         }
         for &d in holders {
@@ -115,7 +120,7 @@ pub(crate) fn build(w: &mut Walk<'_>) -> Ledger {
                 units.insert(d, u);
                 u
             };
-            rows.push(row(u));
+            rows.push(row(u, Some(d)));
         }
     }
     rows.sort_by_key(|r| (r.unit, r.entry));

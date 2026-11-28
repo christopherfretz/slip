@@ -1,0 +1,9 @@
+# WP-156 fix round 3 (L3 to L5).
+exact derived
+removed lib::make(lib::X)
+derived-changed g()::<operands>
+derived-changed n2::<operands>
+derived-changed t()::<operands>
+derived-changed v::<operands>
+derived-changed z3::<operands>
+derived-added make<lib::X>(lib::X)

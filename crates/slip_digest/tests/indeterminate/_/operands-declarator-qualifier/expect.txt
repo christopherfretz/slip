@@ -1,9 +1,0 @@
-indeterminate Q<4>::s::<operands>
-indeterminate Pl::s::<operands>
-indeterminate Q2<int>::s::<operands>
-indeterminate ns::Q4<4>::s::<operands>
-indeterminate Q3<Wr<char[4]>>::s::<operands>
-indeterminate Pl2::s::<operands>
-indeterminate O<4>::I::s::<operands>
-indeterminate <using_enum QE<4>::E>::<operands>
-indeterminate <using_enum QD::F>::<operands>

@@ -1,0 +1,6 @@
+# WP-156 fix round 3 (KT1 2.9 (b)).
+exact derived
+removed lib::make(lib::X)
+changed Q<4>::s
+derived-changed Q<4>::<operands>
+derived-added make<lib::X>(lib::X)

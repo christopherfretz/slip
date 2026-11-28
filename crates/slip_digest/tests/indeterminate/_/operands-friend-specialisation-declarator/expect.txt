@@ -1,1 +1,0 @@
-indeterminate F2::<friend tf<Wr<int>>(Wr<int>)>::<operands>

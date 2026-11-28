@@ -1,1 +1,0 @@
-indeterminate Q3<int, int>::s::<operands>

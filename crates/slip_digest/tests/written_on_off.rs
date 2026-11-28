@@ -96,29 +96,18 @@ fn wp067_written_changes_only_the_ledger_cause() {
     assert!(off_decls > 10_000, "the standard headers were parsed: {off_decls}");
     assert_eq!(on_decls, off_decls, "the declaration arena");
     assert_eq!(on_shard.to_bytes(), off_shard.to_bytes(), "the shard");
-    let units = |o: &slip_digest::Output| {
-        let mut v: Vec<([u8; 32], [u8; 32])> = o
-            .digests
-            .groups
-            .iter()
-            .flat_map(|g| g.units.iter().flatten())
-            .map(|u| (u.key.0, u.digest.0))
-            .collect();
-        v.sort_unstable();
-        v
+    // Every unit that is no operand unit is the same with and without the
+    // table, but the units the site-9 entries' references demand (L5: a
+    // written name's entity has its unit), which only the table adds.
+    let (on_plain, off_plain) = (plain(&on_digest), plain(&off_digest));
+    let name = |k: [u8; 32]| {
+        on_digest.names.iter().find(|(n, _)| n.0 == k).map_or_else(String::new, |(_, s)| s.clone())
     };
-    // The operand units: with the table, the ledger's site-9 entries
-    // (WP-156 fix round 3, L5); without it, none of those, and the
-    // operand unit of `<order>` with the ledger's cause (L0).
-    let operands = |o: &slip_digest::Output, k: [u8; 32]| {
-        o.names.iter().any(|(n, s)| n.0 == k && s.ends_with("::<operands>"))
-    };
-    let plain = |o: &slip_digest::Output| {
-        let mut v = units(o);
-        v.retain(|u| !operands(o, u.0));
-        v
-    };
-    assert_eq!(plain(&on_digest), plain(&off_digest), "every unit that is no operand unit");
+    let lost: Vec<_> = off_plain.iter().filter(|u| !on_plain.contains(u)).collect();
+    assert!(lost.is_empty(), "every unit without the table is the same with it: {lost:?}");
+    let added: Vec<String> =
+        on_plain.iter().filter(|u| !off_plain.contains(u)).map(|u| name(u.0)).collect();
+    assert_eq!(added, ["__builtin_va_list"], "the units only a site-9 entry demands");
     let order: Vec<_> =
         off_digest.names.iter().filter(|(_, s)| s == "<order>::<operands>").collect();
     assert_eq!(order.len(), 1, "the operand unit of `<order>` without the table");
@@ -133,11 +122,30 @@ fn wp067_written_changes_only_the_ledger_cause() {
         on_digest
             .names
             .iter()
-            .filter(|(_, s)| !s.ends_with("::<operands>"))
+            .filter(|(_, s)| !s.ends_with("::<operands>") && !added.contains(s))
             .all(|n| off_digest.names.contains(n)),
         "the names"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The (key, digest) of every unit of `o` that is no operand unit. The
+/// operand units: with the table, the ledger's site-9 entries (WP-156
+/// fix round 3, L5); without it, none of those, and the operand unit of
+/// `<order>` with the ledger's cause (L0).
+fn plain(o: &slip_digest::Output) -> Vec<([u8; 32], [u8; 32])> {
+    let operands =
+        |k: [u8; 32]| o.names.iter().any(|(n, s)| n.0 == k && s.ends_with("::<operands>"));
+    let mut v: Vec<([u8; 32], [u8; 32])> = o
+        .digests
+        .groups
+        .iter()
+        .flat_map(|g| g.units.iter().flatten())
+        .map(|u| (u.key.0, u.digest.0))
+        .filter(|u| !operands(u.0))
+        .collect();
+    v.sort_unstable();
+    v
 }
 
 // spec/harness.md §11.5: this crate's work directories follow the rule.

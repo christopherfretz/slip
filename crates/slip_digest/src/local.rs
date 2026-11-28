@@ -2043,7 +2043,19 @@ mod tests {
         }
         let mut written = Vec::new();
         let mut i = 0;
-        while i < w.queue.len() {
+        // `<order>`'s names once the queue is drained, then the units
+        // their references demand, as `run_kept` does.
+        crate::operands::ensure_ledger(w);
+        let mut order_names = false;
+        loop {
+            if i == w.queue.len() {
+                if order_names {
+                    break;
+                }
+                order_names = true;
+                crate::operands::order_names(w);
+                continue;
+            }
             let (e, class) = w.queue[i];
             i += 1;
             if let Some(mut u) = crate::units::write(w, e, class) {
@@ -2059,7 +2071,10 @@ mod tests {
                 written.append(&mut resolved);
             }
         }
-        written.push(crate::units::order_unit(w));
+        let order = crate::units::order_unit(w);
+        let order_operands = crate::operands::order(w, &order);
+        written.push(order);
+        written.extend(order_operands);
         keys_and_digests(&written)
     }
 

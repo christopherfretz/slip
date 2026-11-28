@@ -1,7 +1,5 @@
 # WP-156 fix round 3 (L3, L5).
-# Until commit 5 deletes `kiln/destructor-name`, the unit still fails closed.
 exact derived
 removed lib::make(lib::X)
 derived-changed d10()::<operands>
 derived-added make<lib::X>(lib::X)
-indeterminate d10()::<operands>

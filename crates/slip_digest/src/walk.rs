@@ -371,12 +371,6 @@ pub(crate) struct Walk<'a> {
     pub op_refs: u64,
     /// The counters of operand units (`operands::counters`).
     pub op_counts: crate::operands::Counts,
-    /// What the operand units read of the whole translation unit
-    /// (`operands::Tu`), computed on first use.
-    pub op_tu: Option<crate::operands::Tu>,
-    /// Where the operand walk reads a written type now
-    /// (`operands::At`).
-    pub op_at: Option<crate::operands::At>,
     /// The operand unit of the entity's unit `units::write` wrote last,
     /// taken by `run_kept`.
     pub pending_operands: Option<Hashed>,
@@ -472,8 +466,6 @@ impl<'a> Walk<'a> {
             const_names: HashMap::new(),
             op_refs: 0,
             op_counts: crate::operands::Counts::default(),
-            op_tu: None,
-            op_at: None,
             pending_operands: None,
             part_operands: Vec::new(),
             content_operands: HashMap::new(),
