@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use slip_kiln::snippet::{Extra, Parsed, Snippet, parse_with_tables};
 use slip_script::host::parse_qualified_name;
-use slip_script::kiln_subject::{KilnSubject, NoExtent};
+use slip_script::kiln_subject::KilnSubject;
 use slip_script::subject::{Entity, Expression, PlaceOf, Range, Subject, Value};
 use slip_script::wire::{self, Errc};
 
@@ -166,6 +166,38 @@ int g(S s) { return s.f(2); }
     });
 }
 
+/// Kiln hole (`docs/wp/WP-148.md` "For Kiln" #2, `kiln_ast/src/expr_extent.rs:238`):
+/// `WrittenExtents::written_first` starts an explicit-object-parameter member
+/// call `s.f(2)` at the callee `f` rather than the object `s`, returning `f(2)`
+/// instead of `s.f(2)`. `calls::expr_tokens` adjusts `first` for `Object::Before`
+/// (`calls.rs:1038-1049`). This test pins the defect so it fails once Kiln fixes
+/// it and the adjustment can be deleted.
+#[test]
+fn kiln_hole_explicit_object_call_written_extent_starts_at_callee() {
+    use slip_kiln::kiln::ast::expr::ExprKind;
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::parse::ExprExtents;
+    let src = "\
+struct S { int f(this S, int); };
+int g(S s) { return s.f(2); }
+";
+    with(&[("main.cpp", src)], |p, _| {
+        let u = p.unit();
+        let ee = ExprExtents::new(u.ast(), u.sm(), u.tokens().interner(), u.tokens().lex_options());
+        let call = (1..=u.ast().exprs.len())
+            .filter_map(|i| ExprId::try_new(u32::try_from(i).ok()?))
+            .find(|&e| u.ast().exprs.get(e).kind() == ExprKind::CallExpr)
+            .expect("explicit-object CallExpr");
+        let (first, last) = ee.written_extent(call).expect("written extent");
+        let r = slip_kiln::ranges::file_range(u, first, last).expect("file range");
+        let text = &u.sm().text(r.file)[r.lo as usize..r.hi as usize];
+        assert_eq!(
+            text, "f(2)",
+            "Kiln fixed WrittenExtents::written_first: delete calls.rs Object::Before adjustment"
+        );
+    });
+}
+
 /// `calls_to` of something not a function is `wrong_kind` (rule 3); of a
 /// function template, the calls of its specialisations.
 #[test]
@@ -288,9 +320,9 @@ int g(S s, T t, short c) {
 ";
     with(&[("main.cpp", src)], |p, s| {
         let a: Vec<_> = calls_of(s, one(s, "h")).into_iter().map(|x| args(s, x)).collect();
-        // `h({3})`: a construction at `{` from `3`; the braces are in no
-        // node, so the argument is the construction, which has no extent.
-        assert_eq!(a, vec![some(&["1"]), some(&["s"]), vec![None]]);
+        // `h({3})`: a construction at `{` from `3`; not transparent, and
+        // `ExprExtents` (Kiln WP-2327, WP-2723) gives its braced extent.
+        assert_eq!(a, vec![some(&["1"]), some(&["s"]), some(&["{3}"])]);
         // The construction is skipped only where it begins at its operand.
         let kind = |x| {
             let a = s.arguments(x).unwrap()[0];
@@ -534,8 +566,9 @@ struct S {
 };
 "#;
 
-/// Every kind of the table of `spec/landed/api/WP-086.md` has its exact
-/// bytes; three kinds outside the table have none.
+/// Every kind of the table of `spec/landed/api/WP-086.md`, plus `new`,
+/// user-defined literals and `noexcept` via `kiln_parse::ExprExtents`
+/// (Kiln WP-2327, WP-148 item 5), has its exact bytes.
 #[test]
 fn s6_6_rule3_the_extent_of_every_kind_of_the_table() {
     with(&[("main.cpp", KINDS)], |_, s| {
@@ -580,26 +613,17 @@ fn s6_6_rule3_the_extent_of_every_kind_of_the_table() {
             "o++",
             "o(3)",
             "o[4]",
+            "new int(1)",
+            "1_km",
+            "noexcept(v)",
         ]
         .iter()
         .map(|t| Some((*t).to_owned()))
-        .chain([None, None, None])
         .collect();
         assert_eq!(got, want);
         let kp = calls_of(s, one(s, "kp"));
         assert_eq!(args(s, kp[0]), some(&["{1, 2}"]));
-        // The three nulls say which kind stopped the rule.
         let xs = calls_of(s, one(s, "k"));
-        let n = xs.len();
-        let why: Vec<NoExtent> = xs[n - 3..]
-            .iter()
-            .map(|&x| s.no_extent(s.arguments(x).unwrap()[0]).expect("null"))
-            .collect();
-        let kinds: Vec<String> = why.iter().map(|w| format!("{:?}", w.kind)).collect();
-        // A user-defined literal is a `CallExpr` in Kiln, whose `)` is the
-        // literal, before its callee (the suffix): not a postfix call.
-        assert_eq!(kinds, ["CXXNewExpr", "CallExpr", "CXXNoexceptExpr"]);
-        assert_eq!(why[1].reason, "not a postfix call");
         assert_eq!(s.calls_without_reference(), 0);
         // Every call of `k` has its extent: `k(` to `)`.
         for x in xs {
@@ -609,10 +633,12 @@ fn s6_6_rule3_the_extent_of_every_kind_of_the_table() {
     });
 }
 
-/// Rule 4: a name with template arguments has no last token Kiln
-/// stores, so an argument that ends with one has no extent, while the
-/// call it is the callee of has one; an operator function named as a
-/// function has no last token either.
+/// Rule 3: expressions whose extent the old table left null — a template
+/// specialisation name (`t<int>`), an operator function named as a function
+/// (`&S::operator+`), a `decltype` qualifier (`decltype(o)::x`,
+/// `decltype(o)::sx`, `decltype(o)::B::z`), `::S(1)` and `decltype(x)(2)` —
+/// all now have exact extents via `kiln_parse::ExprExtents` (Kiln WP-2327,
+/// WP-148 item 5).
 #[test]
 fn s6_6_rule4_null_where_the_last_token_is_unknown() {
     let src = "\
@@ -625,21 +651,27 @@ int S::m() { S o(1); return k(decltype(o)::x) + k(decltype(o)::sx) + k(::S(1)) +
   + k(decltype(o)::B::z); }
 ";
     with(&[("main.cpp", src)], |_, s| {
-        // A `decltype` qualifier ends the table's chain; `::S(1)` begins
-        // with a `::` the table does not place; a type named by
-        // `decltype` is not named by an entry.
         let m: Vec<_> = calls_of(s, one(s, "k"))[2..].iter().flat_map(|&x| args(s, x)).collect();
-        assert_eq!(m, vec![None, None, None, None, None]);
+        assert_eq!(
+            m,
+            some(&[
+                "decltype(o)::x",
+                "decltype(o)::sx",
+                "::S(1)",
+                "decltype(x)(2)",
+                "decltype(o)::B::z",
+            ])
+        );
         let xs = calls_of(s, one(s, "k"));
-        assert_eq!(args(s, xs[0]), vec![None]);
+        assert_eq!(args(s, xs[0]), some(&["t<int>"]));
         assert_eq!(calls(s, "t"), some(&["t<long>(1)"]));
-        assert_eq!(args(s, xs[1]), vec![None]);
+        assert_eq!(args(s, xs[1]), some(&["&S::operator+"]));
     });
 }
 
-/// Rule 3 for a callee named after a `decltype` qualifier: the table's
-/// chain ends at `decltype`, so the call has no first token (null, not
-/// `B::sz(1)`). And a conversion of `(t)` is no written call: its stored
+/// Rule 3 for a callee named after a `decltype` qualifier: `ExprExtents`
+/// (Kiln WP-2327, WP-148 item 5) gives the exact extent starting at
+/// `decltype`. And a conversion of `(t)` is no written call: its stored
 /// last token is the `)` of the parentheses, not one after a callee.
 #[test]
 fn s6_6_rule3_a_callee_after_decltype_and_a_conversion_in_parentheses() {
@@ -654,7 +686,7 @@ int S::m() { S o(1); T t; return i((t)) + i(t) + decltype(o)::B::sz(1) + decltyp
         let c = s.extent_census();
         assert_eq!((c.calls, c.not_written, c.visited), (4, 2, 6));
         assert_eq!(calls(s, "i"), some(&["i((t))", "i(t)"]));
-        assert_eq!(calls(s, "B::sz"), vec![None, None]);
+        assert_eq!(calls(s, "B::sz"), some(&["decltype(o)::B::sz(1)", "decltype(o)::sz(2)"]));
     });
 }
 
@@ -697,29 +729,30 @@ int use(O x) { return f({x}) + g({x}) + g({x,}) + g2(1, {x}, 2) + f(x) + h(1 /* 
             .flat_map(|f| calls_of(s, one(s, f)))
             .map(|x| args(s, x))
             .collect();
-        let none = vec![None];
         let want = vec![
-            none.clone(),
+            vec![None],
             some(&["x"]),
-            none.clone(),
-            none,
-            vec![Some("1".to_owned()), None, Some("2".to_owned())],
+            some(&["{x}"]),
+            some(&["{x,}"]),
+            some(&["1", "{x}", "2"]),
             some(&["1"]),
             some(&["(2)"]),
         ];
         assert_eq!(a, want);
-        let x = calls_of(s, one(s, "g"))[0];
+        // `f({x})` (reference binding to a single-element list) still has
+        // `x` as its AST node with no node for `{}` (`init.rs:2236`), so
+        // the expanded-token argument guard catches it. `g({x})` (copy
+        // construction, Kiln WP-2723) now has its exact extent via
+        // `ExprExtents` (Kiln WP-2327, WP-148 item 5).
+        let x = calls_of(s, one(s, "f"))[0];
         let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
-        // Since Kiln WP-2723 (`dececca4e`, in the pin since WP-163) the copy
-        // of a one-element list is the list's construction, a kind outside
-        // the table: still no extent (`not all of the argument` before).
-        assert_eq!(why.reason, "kind outside the table", "{why:?}");
+        assert_eq!(why.reason, "not all of the argument", "{why:?}");
     });
 }
 
-/// Rule 4: a member variable template named with template arguments
-/// (`d.twice<7>`): its last token is not known (the name's arguments are
-/// not read; Kiln records them on the member access since WP-2724).
+/// Rule 3: a member variable template named with template arguments
+/// (`d.twice<7>`, `p->twice<2>`, `V::twice<3>`) now has its exact extent
+/// via `kiln_parse::ExprExtents` (Kiln WP-2327, WP-2724; WP-148 item 5).
 #[test]
 fn s6_6_rule4_a_member_variable_template() {
     let src = "\
@@ -729,20 +762,15 @@ int use(V d, V* p) { return k(d.twice<7>) + k(p->twice<2>) + k(d.one) + k(V::twi
 ";
     with(&[("main.cpp", src)], |_, s| {
         let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
-        assert_eq!(a, vec![None, None, Some("d.one".to_owned()), None]);
-        let x = calls_of(s, one(s, "k"))[0];
-        let why = s.no_extent(s.arguments(x).unwrap()[0]).unwrap();
-        // Since Kiln WP-2724 (`dececca4e`, in the pin since WP-163) the
-        // member access records its template arguments: still no extent
-        // (`specialisation` before).
-        assert_eq!(why.reason, "template arguments", "{why:?}");
+        assert_eq!(a, some(&["d.twice<7>", "p->twice<2>", "d.one", "V::twice<3>"]));
     });
 }
 
-/// Rule 4 with a reversed rewritten comparison (WP-084 "must not
-/// assume" point 7: its begin and end are out of order): no extent.
+/// Rule 3 with a reversed or synthesized rewritten comparison: `ExprExtents`
+/// (Kiln WP-2327, WP-148 item 5) uses the written operands rather than
+/// semantic `begin_loc`/`end_loc`, giving exact written extents.
 #[test]
-fn s6_6_rule4_a_rewritten_comparison_has_none() {
+fn s6_6_rule3_a_rewritten_comparison_has_its_written_extent() {
     let src = "\
 struct S { bool operator==(int) const; };
 int k(bool);
@@ -750,7 +778,7 @@ int g(S s) { return k(1 == s) + k(s == 1) + k(s != 1); }
 ";
     with(&[("main.cpp", src)], |_, s| {
         let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
-        assert_eq!(a, vec![None, Some("s == 1".to_owned()), None]);
+        assert_eq!(a, some(&["1 == s", "s == 1", "s != 1"]));
     });
 }
 
@@ -790,7 +818,7 @@ int use(O x, int a) { return M(x) + N(x) + g({x}) + P(a) + Q(a) + R(a) + R2(a) +
         assert_eq!(f.iter().map(|&x| args(s, x)).collect::<Vec<_>>(), vec![vec![None]]);
         assert_eq!(arg_reasons(s, f[0]), [Some("not all of the argument")]);
         let g: Vec<_> = calls_of(s, one(s, "g")).into_iter().map(|x| args(s, x)).collect();
-        assert_eq!(g, vec![vec![None], vec![None]]);
+        assert_eq!(g, vec![vec![None], some(&["{x}"])]);
         let h: Vec<_> = calls_of(s, one(s, "h")).into_iter().map(|x| args(s, x)).collect();
         // `P(a)`: the parentheses are the body's; `Q(a)`: `a` is part of
         // the argument; `R(a)` and `R2(a)` (forwarded through two
@@ -1120,8 +1148,8 @@ struct Q {
     });
 }
 
-/// §6.6 rule 3 for `T<…>(x)`: the type's name is a template's, written
-/// first; `::T<…>(x)` begins at `::`, where no entry starts: null.
+/// §6.6 rule 3 for `T<…>(x)`: `ExprExtents` (Kiln WP-2327, WP-148 item 5)
+/// gives exact extents for `W<int>(1)`, `::W<int>(2)` and `W<int>{3}`.
 #[test]
 fn s6_6_rule3_a_construction_named_by_a_template() {
     let src = "\
@@ -1131,7 +1159,7 @@ int use() { return k(W<int>(1)) + k(::W<int>(2)) + k(W<int>{3}); }
 ";
     with(&[("main.cpp", src)], |_, s| {
         let a: Vec<_> = calls_of(s, one(s, "k")).into_iter().flat_map(|x| args(s, x)).collect();
-        assert_eq!(a, vec![Some("W<int>(1)".to_owned()), None, Some("W<int>{3}".to_owned())]);
+        assert_eq!(a, some(&["W<int>(1)", "::W<int>(2)", "W<int>{3}"]));
     });
 }
 
@@ -1293,12 +1321,11 @@ fn wp084_point6_a_recoded_file_gives_no_extent() {
     }
 }
 
-/// Point 7: begin and end out of order (a reversed rewritten comparison)
-/// give no range in `ranges`; the extent of the written form is none
-/// either (test `s6_6_rule4_a_rewritten_comparison_has_none`), never one
-/// computed from the semantic form.
+/// Point 7: a reversed rewritten comparison's semantic `begin_loc`/`end_loc`
+/// are out of order, so `ExprExtents` (Kiln WP-2327, WP-148 item 5) uses
+/// the written operands (`1 == s`), never the reversed semantic form.
 #[test]
-fn wp084_point7_out_of_order_has_no_extent() {
+fn wp084_point7_out_of_order_uses_written_extent() {
     let src = "\
 struct S { bool operator==(int) const; };
 int k(bool);
@@ -1307,8 +1334,7 @@ int g(S s) { return k(1 == s); }
     with(&[("main.cpp", src)], |_, s| {
         let xs = calls_of(s, one(s, "k"));
         let a = s.arguments(xs[0]).unwrap()[0];
-        assert_eq!(ext(s, a), None);
-        assert_eq!(format!("{:?}", s.no_extent(a).unwrap().kind), "CXXRewrittenBinaryOperator");
+        assert_eq!(ext(s, a).as_deref(), Some("1 == s"));
         assert_eq!(ext(s, xs[0]).as_deref(), Some("k(1 == s)"));
     });
 }
@@ -1356,7 +1382,11 @@ fn s7_4_rule3_the_place_of_an_expression() {
     let src = "\
 int f(int);
 #define CALL f(2)
-int a = f(1) + CALL + f(new int(3) != nullptr);
+int a = f(1) + CALL + f(new int(3) != nullptr) + f(1
+#if 1
++ 2
+#endif
+);
 ";
     with(&[("main.cpp", src)], |_, s| {
         let xs = calls_of(s, one(s, "f"));
@@ -1371,8 +1401,15 @@ int a = f(1) + CALL + f(new int(3) != nullptr);
         assert_eq!(ext(s, two), None);
         let PlaceOf::Nearest(r) = place(two) else { panic!("nearest") };
         assert_eq!(s.text(r), b"CALL");
-        let a = s.arguments(xs[2]).unwrap()[0];
-        assert_eq!(s.place(Value::Expression(a)), PlaceOf::Unnamed);
+        // `new int(3) != nullptr` now has its own extent (`ExprExtents`,
+        // Kiln WP-2327).
+        let new_cmp = s.arguments(xs[2]).unwrap()[0];
+        let PlaceOf::Own(r) = place(new_cmp) else { panic!("own") };
+        assert_eq!(s.text(r), b"new int(3) != nullptr");
+        // An expression holding a directive line has no extent and is not
+        // in a macro: unnamed.
+        let dir_arg = s.arguments(xs[3]).unwrap()[0];
+        assert_eq!(s.place(Value::Expression(dir_arg)), PlaceOf::Unnamed);
         assert!(s.display(Value::Expression(xs[0])).starts_with("a call at main.cpp:3:"));
     });
 }

@@ -10,10 +10,6 @@
 //! is mapped to bytes of the file and compared byte for byte with the
 //! source at the place the test expects.
 //!
-//! The parse changes the process's current directory, so every test
-//! holds [`LOCK`]; the pair-test sweep parses on several threads, all
-//! with one directory.
-//!
 //! A test named `kiln_hole_…` pins what Kiln's tables lack at this pin
 //! (a finding for Kiln, in the package's handback): it asserts the hole,
 //! so that it fails, and is turned around, the day Kiln fills it.
@@ -22,7 +18,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::names::{DeclNameKind as NameKind, DeclNameView};
@@ -35,12 +30,6 @@ use slip_kiln::written::{
 };
 use slip_kiln::{ParseOptions, Unit, parse_observer_with};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
-
-static LOCK: Mutex<()> = Mutex::new(());
-
-fn lock() -> MutexGuard<'static, ()> {
-    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// A directory under the work root, emptied first.
 fn tree(name: &str) -> PathBuf {
@@ -74,7 +63,6 @@ fn options(written: bool) -> ParseOptions<'static> {
 /// Parses `src` as `main.cpp` (C++20) with `written` on, expects no error,
 /// and calls `f` on the unit.
 fn with_unit<R: Send>(name: &str, src: &str, f: impl FnOnce(&Unit<'_>) -> R + Send) -> R {
-    let _l = lock();
     let dir = tree(name);
     std::fs::write(dir.join("main.cpp"), src).unwrap();
     let argv: Vec<String> =
@@ -795,7 +783,6 @@ void use() {
 
 #[test]
 fn s8_4_written_off_records_nothing_and_changes_no_shard() {
-    let _l = lock();
     let dir = tree("off");
     std::fs::write(dir.join("main.cpp"), CALLS).unwrap();
     let argv: Vec<String> =
@@ -1079,7 +1066,6 @@ fn sweep_one(line: &[String], root: &Path, label: &str) -> Tally {
 
 #[test]
 fn wp085_9_every_reference_of_every_pair_test_names_its_referent() {
-    let _l = lock();
     let digest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../slip_digest/tests");
     let mut support = Vec::new();
     for e in std::fs::read_dir(digest.join("support")).unwrap().flatten() {
@@ -1727,7 +1713,6 @@ template <> struct Q<int> {};
 // same (`crates/slip_digest/tests/written_on_off.rs` compares the digest).
 #[test]
 fn s8_4_written_changes_nothing_the_digest_reads() {
-    let _l = lock();
     let dir = tree("on-off-std");
     std::fs::write(dir.join("h.h"), ON_OFF_HEADER).unwrap();
     std::fs::write(dir.join("main.cpp"), ON_OFF_MAIN).unwrap();
@@ -1768,7 +1753,6 @@ v.push_back(\"x\"); Der d(1); return M(b.t); }
 // record (they are the command's), and the lists are the same.
 #[test]
 fn s8_4_command_already_carrying_the_words() {
-    let _l = lock();
     let dir = tree("carrying");
     std::fs::write(dir.join("main.cpp"), CALLS).unwrap();
     let run = |extra: &[&str], written: bool| {
