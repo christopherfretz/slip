@@ -1,1 +1,0 @@
-indeterminate template <class...> auto g(type-parameter-0-0...)

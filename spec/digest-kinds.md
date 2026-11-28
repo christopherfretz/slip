@@ -1332,7 +1332,7 @@ The rest of profile mode:
   counts it (`Walk::left_out`), whatever the first spelling's value: every
   `UnresolvedLookupExpr` (an empty found set too), every expression with an
   `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
-  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, a resolved
+  `CXXDeleteExpr`, a resolved
   `DeclRefExpr` or `MemberExpr` whose referent is a member of a class or
   enumeration or a specialisation (rule 10: it may have been named through
   a qualifier or arguments that hold more), a qualifier with a level that
@@ -1464,21 +1464,20 @@ The rest of profile mode:
      entry, by pre-order position. Every node of an expression in a unit is
      either in its bytes (walked in full) or read by rule 1, so every
      rounding mode a unit's spellings were written under is in its digest.
-  9. *Folds.* A `CXXFoldExpr` over an operator other than `.*` finds its
-     operator's candidates at instantiation, from the operands' types and
-     the definition context. Since Kiln WP-2625 Kiln keeps the fold's
-     definition-context set in `oper_lookups`, which is written and left
-     out like a dependent operator's (rule 6; `OperLookups`); what the
-     operator finds beyond it is still not read (`For WP-138` in
-     `spec/landed/digest-kinds/WP-066.md`). In profile mode
-     and in the full walk it is `Unaccounted("spelling/fold-operator")`,
-     and it raises the mark, when some declaration in the translation unit
-     that is not a member function (a function template's pattern
-     included) is named for its operator, or for a comparison for any
-     comparison operator (C++20 rewrites them)
-     (`expr_profile::fold_left_out`). With no such declaration the
-     definition context finds nothing in any spelling, and only members
-     of the operands' classes, which the profile holds, can be found.
+  9. *Folds* (WP-138). A `CXXFoldExpr` over any operator that admits
+     non-member candidates (every fold-operator except `.*`, which is not
+     overloadable, and `=`, which is member-only) records its
+     definition-context operator set in `TemplateTables` `oper_lookups`
+     (Kiln WP-2625, including C++20 rewritten comparison candidates:
+     `operator==` for `!=` and `operator<=>` for `<`, `>`, `<=`, `>=`;
+     empty when nothing is found, absent for `.*` and `=`, and recorded
+     even when no operand is type-dependent, which can only add
+     differences). In the full
+     walk `templ::expr_maps` writes that set (`ref*sorted?`), and in
+     profile mode `oper_left_out` raises the mark while `own_spelling`
+     reads it as a `Fact::Oper` entry, identically to a dependent binary
+     operator. `spelling/fold-operator` is gone;
+     `spec/landed/digest-kinds/WP-138.md` gives the per-form table.
   10. *Prefixes and arguments of a resolved name.* A resolved name's
      qualifier as written (`DeclRefExtra` `qualifier`) and its own
      arguments when the referent is a specialisation (`template_args`)
@@ -1597,7 +1596,7 @@ The rest of profile mode:
   sets is a difference of the units. No hazard of first spellings is
   accepted: where a unit's meaning depends on a fact its digest does not
   hold, the unit is indeterminate with a named cause (rule 5, rule 7's
-  `spelling/array-size` and `spelling/bit-int-width`, rule 9,
+  `spelling/array-size` and `spelling/bit-int-width`,
   `spelling/profile`, `spelling/conversion-name`), and the mark that
   decides rule 5 is a function of the profile.
 - **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
@@ -3953,7 +3952,7 @@ Rules the rows refer to:
 | `ConceptSpecializationExpr.b` | value | in | enum ArgView* | a raw `ArgListId` |
 | `LambdaExpr.a` | child | in | decl | the closure type of the `LambdaData` that `a` indexes, written whole (§2.4); its `RecordData` `lambda` row writes the rest of the record (§10.4) |
 | `PackExpansionExpr.a` | child | in | child |  |
-| `CXXFoldExpr.aux` | flag | in | enum BinaryOp |  |
+| `CXXFoldExpr.aux` | flag | in | enum BinaryOp | definition-context operator set in `TemplateTables` `oper_lookups` (§9.5, WP-138) |
 | `CXXFoldExpr.a` | child | in | child? |  |
 | `CXXFoldExpr.b` | child | in | child? |  |
 | `PackIndexingExpr.a` | child | in | child |  |
@@ -5409,8 +5408,9 @@ item 5), so no row below reaches a stream.
 | `param_object_values` | value | in | value? | by `TemplateParamObject`: the object's value, which is its unit's whole stream |
 
 `oper_lookups` holds, for a unary, binary or compound-assignment
-operator expression with a type-dependent operand in a template, the
-non-member operator functions unqualified lookup found at the definition
+operator expression with a type-dependent operand in a template, and for
+a fold-expression (Kiln WP-2625, WP-138), the non-member operator
+functions unqualified lookup found at the definition
 ([temp.dep.candidate]/1, [over.match.oper]/3.2). Instantiation uses that
 set and argument-dependent lookup at the point of instantiation, never a
 new unqualified lookup. The expression writes `by_expr` as the
