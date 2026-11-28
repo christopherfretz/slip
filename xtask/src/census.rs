@@ -6,16 +6,18 @@
 //!                    [--store <dir>]
 //! ```
 //!
-//! Runs `slip parse` into `<corpus dir>/stores/census` (or `--store <dir>`),
-//! or reuses the newest map run already in that store when its plan, Kiln
+//! Runs `slip parse` into `<corpus dir>/stores/census` (or
+//! `<corpus dir>/stores/census-<hex16>` for a `--only`/`--limit` selection,
+//! or `--store <dir>`), or reuses the newest map run already in that store
+//! when it is the exact run recorded in `census.json` and its plan, Kiln
 //! pin, `slip` binary digest, tool versions, selection, and every reused
-//! shard's recorded inputs on disk all match. Reads every selected observer's
-//! own map shard through `perf::load` and `invariants::side`, writes
-//! `<store>/census.json`, and prints per-cause counts (with the first five
-//! observers by path), per-cause text counts, unparsed (`diagnosed`,
-//! `rejected`, not counted toward uncleanliness) and unclean non-`ok`
-//! (`failed`, `incomplete`, `no_digests`) shards by status, and the verdict
-//! line.
+//! shard's recorded positive and negative inputs on disk all match. Reads
+//! every selected observer's own map shard through `perf::load` and
+//! `invariants::side`, writes `<store>/census.json`, and prints per-cause
+//! counts (with the first five observers by path), per-cause text counts,
+//! unparsed (`diagnosed`, `rejected`, not counted toward uncleanliness) and
+//! unclean non-`ok` (`failed`, `incomplete`, `no_digests`) shards by status,
+//! and the verdict line.
 //!
 //! Exit status: 0 clean, 1 not clean, 2 for an error of the command.
 
@@ -112,6 +114,8 @@ pub struct CauseTextRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Census {
     pub observers: u64,
+    /// Plan observers left out by the selection (`plan.observers.len() - observers`).
+    pub omitted: u64,
     pub ok: u64,
     /// Unparsed observers (`diagnosed` and `rejected`): listed with their
     /// counts, not counted toward uncleanliness.
@@ -326,8 +330,11 @@ pub fn summarize(loaded: &Loaded, selected: &[Digest]) -> Result<Census, String>
         .collect();
     cause_texts.sort_by(|a, b| b.keys.cmp(&a.keys).then_with(|| a.name.cmp(&b.name)));
 
+    let omitted = (loaded.plan.observers.len() as u64).saturating_sub(observers);
+
     Ok(Census {
         observers,
+        omitted,
         ok,
         unparsed,
         unparsed_by_status,
@@ -353,6 +360,9 @@ pub fn render(
     let _ = writeln!(o, "census {corpus}");
     let _ = writeln!(o, "plan {plan}");
     let _ = writeln!(o, "observers {}", c.observers);
+    if selection {
+        let _ = writeln!(o, "omitted {}", c.omitted);
+    }
     let _ = writeln!(o, "ok {}", c.ok);
     let _ = writeln!(o, "unparsed {}", c.unparsed);
     for (status, count) in &c.unparsed_by_status {
@@ -460,6 +470,7 @@ pub fn to_json(meta: &Meta, c: &Census) -> Value {
         ("selection", selection),
         ("clean", Value::Bool(c.is_clean())),
         ("observers", int(c.observers)),
+        ("omitted", int(c.omitted)),
         ("ok", int(c.ok)),
         ("unparsed", int(c.unparsed)),
         ("unparsed_by_status", unparsed_obj),
@@ -579,6 +590,26 @@ pub fn run(repo: &Path, args: &[String], env: &Env, out: &mut dyn Write) -> Resu
     Ok(outcome.census.is_clean())
 }
 
+/// The default store path for `opts` (`spec/harness.md` §9.5):
+/// `<corpus dir>/stores/census` for a full-corpus run, or
+/// `<corpus dir>/stores/census-<hex16>` when `--only` or `--limit` is given,
+/// where `<hex16>` is the first 16 lowercase hex digits of `content_digest`
+/// over the compact JSON `{"only":[...],"limit":...}`.
+pub fn default_store(layout: &Layout, opts: &invariants::Options) -> PathBuf {
+    let stores = layout.dir.join("stores");
+    if !opts.selection() {
+        return stores.join("census");
+    }
+    let selection = obj(vec![
+        ("only", Value::Array(opts.only.iter().map(|x| s(x)).collect())),
+        ("limit", opts.limit.as_ref().map_or(Value::Null, |(_, n)| int(*n))),
+    ]);
+    let bytes = json::write_compact(&selection)
+        .unwrap_or_else(|e| unreachable!("selection JSON is always valid: {e}"));
+    let digest = content_digest(bytes.as_bytes()).to_string();
+    stores.join(format!("census-{}", &digest[..16]))
+}
+
 /// Runs a census for an already-located corpus and `slip` executable
 /// (shared with `cargo xtask corpus rename`).
 pub fn execute(
@@ -588,7 +619,8 @@ pub fn execute(
     slip: &Path,
     opts: &Options,
 ) -> Result<Outcome, String> {
-    let store = opts.store.clone().unwrap_or_else(|| layout.dir.join("stores").join("census"));
+    let default = default_store(layout, &opts.common);
+    let store = opts.store.clone().unwrap_or_else(|| default.clone());
     let json_path = store.join("census.json");
     let tools = versions(slip)?;
     let slip_bytes = std::fs::read(slip).map_err(|e| format!("{}: {e}", slip.display()))?;
@@ -600,7 +632,7 @@ pub fn execute(
     {
         (loaded, run_path, true)
     } else {
-        let (loaded, run_path) = parse_into(layout, slip, &store, opts)?;
+        let (loaded, run_path) = parse_into(layout, slip, &store, &default, opts)?;
         (loaded, run_path, false)
     };
 
@@ -659,14 +691,29 @@ fn kiln_pin_of(repo: &Path, c: &Corpus) -> String {
     c.tag.clone()
 }
 
-/// Returns `true` only when every loaded shard records its inputs and every
-/// recorded input file still exists on disk as a regular file with the exact
-/// recorded size and content digest. When in doubt, returns `false` so the
-/// census parses again.
+/// Returns `true` only when `path` is confirmed absent on disk
+/// (`ErrorKind::NotFound`). Any existing entry — including a regular file,
+/// directory, or dangling symlink — and any other error (such as
+/// `PermissionDenied`) fails closed (`false`), forcing a fresh parse.
+fn negative_absent(path: &[u8]) -> bool {
+    let p = Path::new(OsStr::from_bytes(path));
+    matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Returns `true` only when every loaded shard records both its positive
+/// `inputs` and its negative inputs (`negatives`, `spec/model.md` §8.6),
+/// every recorded positive input file still exists on disk as a regular file
+/// with the exact recorded size and content digest, and every recorded
+/// negative path is still confirmed absent on disk. When in doubt, returns
+/// `false` so the census parses again.
 fn inputs_current(loaded: &Loaded) -> bool {
     let mut seen: BTreeMap<&[u8], (u64, Digest)> = BTreeMap::new();
+    let mut seen_neg: BTreeSet<&[u8]> = BTreeSet::new();
     for shard in loaded.shards.values().flatten() {
         let Some(inputs) = &shard.inputs else {
+            return false;
+        };
+        let Some(negatives) = &shard.negatives else {
             return false;
         };
         for f in inputs {
@@ -691,15 +738,23 @@ fn inputs_current(loaded: &Loaded) -> bool {
             }
             seen.insert(f.path.as_slice(), (f.size, f.content));
         }
+        for neg in negatives {
+            if !seen_neg.insert(neg.as_slice()) {
+                continue;
+            }
+            if !negative_absent(neg) {
+                return false;
+            }
+        }
     }
     true
 }
 
 /// Whether `parse_into` is allowed to remove an existing non-reusable `store`:
-/// only the default store (`<corpus dir>/stores/census`), or a direct child
-/// directory of `<corpus dir>/stores/` that contains a regular `census.json`
-/// file.
-fn can_remove_store(layout: &Layout, store: &Path) -> bool {
+/// only the current run's default store (`<corpus dir>/stores/census` or
+/// `<corpus dir>/stores/census-<hex16>`), or a direct child directory of
+/// `<corpus dir>/stores/` that contains a regular `census.json` file.
+fn can_remove_store(layout: &Layout, store: &Path, default_store: &Path) -> bool {
     let plain = |p: &Path| {
         p.is_absolute()
             && p.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
@@ -711,7 +766,6 @@ fn can_remove_store(layout: &Layout, store: &Path) -> bool {
     if !std::fs::symlink_metadata(&stores_dir).is_ok_and(|m| m.is_dir()) {
         return false;
     }
-    let default_store = stores_dir.join("census");
     if store == default_store {
         return true;
     }
@@ -767,6 +821,12 @@ fn try_reuse(
     let Some(run_path) = latest_map_run(store, &plan)? else {
         return Ok(None);
     };
+    let Some(run_rel) = run_path.strip_prefix(store).ok().map(|p| p.to_string_lossy()) else {
+        return Ok(None);
+    };
+    if run_rel != prev.run {
+        return Ok(None);
+    }
     let Ok(loaded) = perf::load(&run_path) else {
         return Ok(None);
     };
@@ -785,14 +845,14 @@ fn parse_into(
     layout: &Layout,
     slip: &Path,
     store: &Path,
+    default_store: &Path,
     opts: &Options,
 ) -> Result<(Loaded, PathBuf), String> {
     if std::fs::symlink_metadata(store).is_ok() {
-        if can_remove_store(layout, store) {
+        if can_remove_store(layout, store, default_store) {
             slip_run::remove_tree(&layout.dir, store)?;
         } else {
             let stores_dir = layout.dir.join("stores");
-            let default_store = stores_dir.join("census");
             return Err(format!(
                 "{} exists and cannot be reused; refusing to remove it (only {} or a direct \
                  child of {} containing census.json is removed automatically); remove it or pass \

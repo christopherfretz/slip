@@ -113,7 +113,7 @@ fn shard_with(observer: Digest, status: Status, counters: Vec<(&str, u64)>) -> S
         rule_use: None,
         spellings: None,
         names: (status == Status::Ok).then(slip_model::names::Names::default),
-        negatives: None,
+        negatives: (status != Status::Failed).then(Vec::new),
         found: None,
         rebuilt_use: None,
     }
@@ -420,6 +420,7 @@ fn s9_5_is_clean_guards_and_counter_edge_cases() {
     //    `indeterminate_keys == 0`.
     let base = Census {
         observers: 1,
+        omitted: 0,
         ok: 1,
         unparsed: 0,
         unparsed_by_status: BTreeMap::new(),
@@ -832,6 +833,8 @@ fn s9_5_reuse_invalidation_rules() {
     assert_eq!(w.parse_calls(), 2, "missing shard must invalidate reuse");
 
     // 4. Observer set mismatch (`observers != selected`) -> invalidates reuse.
+    //    Update `census.json`'s `run` to the 2-observer run so `run_rel == prev.run`
+    //    passes and `observers == selected` is the sole reason reuse is rejected.
     let w = World::new("census-reuse-observers");
     let shards: Vec<Shard> = w
         .plan
@@ -878,21 +881,37 @@ fn s9_5_reuse_invalidation_rules() {
             jobs,
         };
         st.publish_run(&w.plan_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
+        let new_rel = st
+            .run_path(&w.plan_id, Phase::Map, 0, started)
+            .strip_prefix(&census_store)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        drop(st);
+        rewrite_census_run(&census_store.join("census.json"), &new_rel);
     }
     assert_eq!(w.run(&[]).0, Ok(true));
     assert_eq!(w.parse_calls(), 2, "observer set mismatch must invalidate reuse");
 
-    // 5. Selection change (`--only` and `--limit`) even when selected observers match.
+    // 5. Selection change (`--only` and `--limit`) against the same `--store`
+    //    even when selected observers match.
     let w = World::new("census-reuse-selection");
+    let shared_sel = w.f.path("corpora/toy/stores/sel-reuse");
+    let shared_sel_s = shared_sel.to_str().unwrap();
     w.seed(&[shard_with(w.plan.observers[0].id, Status::Ok, vec![("digest.indeterminate", 0)])]);
-    assert_eq!(w.run(&["--only", "a.cpp"]).0, Ok(true));
+    assert_eq!(w.run(&["--store", shared_sel_s, "--only", "a.cpp"]).0, Ok(true));
     assert_eq!(w.parse_calls(), 1);
-    assert_eq!(w.run(&["--only", "/src/a.cpp"]).0, Ok(true));
+    assert_eq!(w.run(&["--store", shared_sel_s, "--only", "/src/a.cpp"]).0, Ok(true));
     assert_eq!(w.parse_calls(), 2, "changed --only must invalidate reuse");
-    assert_eq!(w.run(&["--only", "/src/a.cpp", "--limit", "1"]).0, Ok(true));
+    assert_eq!(
+        w.run(&["--store", shared_sel_s, "--only", "/src/a.cpp", "--limit", "1"]).0,
+        Ok(true)
+    );
     assert_eq!(w.parse_calls(), 3, "changed --limit must invalidate reuse");
 
-    // 6. Round != 0: a newer round-1 map run in the store must invalidate reuse.
+    // 6. Round != 0: a round-1 map run in the store must invalidate reuse.
+    //    Update `census.json`'s `run` to the round-1 run so `run_rel == prev.run`
+    //    passes and `run.round == 0` is the sole reason reuse is rejected.
     let w = World::new("census-reuse-round");
     let shards: Vec<Shard> = w
         .plan
@@ -943,9 +962,314 @@ fn s9_5_reuse_invalidation_rules() {
             jobs,
         };
         st.publish_run(&w.plan_id, Phase::Map, 1, started, &rec.to_bytes()).unwrap();
+        let new_rel = st
+            .run_path(&w.plan_id, Phase::Map, 1, started)
+            .strip_prefix(&census_store)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        drop(st);
+        rewrite_census_run(&census_store.join("census.json"), &new_rel);
     }
     assert_eq!(w.run(&[]).0, Ok(true));
     assert_eq!(w.parse_calls(), 2, "round != 0 map run must invalidate reuse");
+}
+
+/// Replaces the `"run"` member of an existing `census.json` in place so tests
+/// can isolate later reuse checks from the `run_rel == prev.run` guard.
+fn rewrite_census_run(json_path: &Path, new_run: &str) {
+    let mut doc = json::parse(&std::fs::read(json_path).unwrap()).unwrap();
+    if let json::Value::Object(ref mut members) = doc {
+        for (k, v) in members.iter_mut() {
+            if k == "run" {
+                *v = json::Value::Str(new_run.to_owned());
+            }
+        }
+    }
+    std::fs::write(json_path, json::write_pretty(&doc).unwrap()).unwrap();
+}
+
+// §9.5: negative-input invalidation (`spec/model.md` §8.6):
+// - creating a regular file or dangling symlink at any recorded negative path
+//   invalidates reuse and triggers a fresh parse;
+// - a shard with `inputs: Some(...)` and `negatives: None` is treated as stale;
+// - a shard with `inputs: None` (and `negatives: None`) is treated as stale.
+#[test]
+fn s9_5_reuse_negative_inputs_and_missing_sections() {
+    // 1. Creating a file or dangling symlink at a recorded negative path invalidates reuse.
+    let w = World::new("census-reuse-negatives");
+    let missed = w.f.path("corpora/toy/src/early_inc.h");
+    let missed_bytes = missed.as_os_str().as_bytes().to_vec();
+    let shards_with_neg = || -> Vec<Shard> {
+        w.plan
+            .observers
+            .iter()
+            .map(|o| {
+                let mut sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+                sh.negatives = Some(vec![missed_bytes.clone()]);
+                sh
+            })
+            .collect()
+    };
+    w.seed(&shards_with_neg());
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    // Negative path still absent -> reuses.
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+
+    // Regular file appears at the recorded negative path -> invalidates reuse.
+    std::fs::write(&missed, "int shadowed = 1;\n").unwrap();
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "creating a file at a negative path must invalidate reuse");
+
+    // Dangling symlink at the recorded negative path -> fails closed, invalidates reuse.
+    std::fs::remove_file(&missed).unwrap();
+    std::os::unix::fs::symlink("/no/such/target/header.h", &missed).unwrap();
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 3, "dangling symlink at a negative path must invalidate reuse");
+
+    // Remove the dangling symlink -> fresh parse then reuses again.
+    std::fs::remove_file(&missed).unwrap();
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 3, "once absent again, store is reusable");
+
+    // 2. Shard with `inputs: Some(...)` and `negatives: None` must fail closed (stale).
+    let w = World::new("census-reuse-missing-negatives");
+    let shards_no_neg: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| {
+            let mut sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+            sh.inputs = Some(Vec::new());
+            sh.negatives = None;
+            sh
+        })
+        .collect();
+    w.seed(&shards_no_neg);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "inputs: Some(_) with negatives: None must invalidate reuse");
+
+    // 3. Shard with `inputs: None` (and `negatives: None`) must fail closed (stale).
+    let w = World::new("census-reuse-missing-inputs");
+    let shards_no_inputs: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| {
+            let mut sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+            sh.inputs = None;
+            sh.negatives = None;
+            sh
+        })
+        .collect();
+    w.seed(&shards_no_inputs);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "inputs: None must invalidate reuse");
+}
+
+// §9.5: a newer map run record written into the store (even with the same
+// `--version` string, same plan, round 0, all observers, and current inputs)
+// does not match `prev.run` in `census.json`, so reuse is rejected and a fresh
+// parse runs (preventing a foreign run from turning an unclean census clean).
+#[test]
+fn s9_5_reuse_rejects_foreign_newer_run() {
+    let w = World::new("census-reuse-foreign-run");
+    let obs = &w.plan.observers;
+    let dirty_shards = vec![
+        shard_with(
+            obs[0].id,
+            Status::Ok,
+            vec![("digest.indeterminate", 1), ("digest.indeterminate.unsupported", 1)],
+        ),
+        shard_with(obs[1].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+        shard_with(obs[2].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+    ];
+    w.seed(&dirty_shards);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(false), "{out}");
+    assert_eq!(w.parse_calls(), 1);
+
+    // Another `slip` with the same `--version` string writes a newer round-0
+    // clean run directly into the census store without updating `census.json`.
+    let census_store = w.f.path("corpora/toy/stores/census");
+    {
+        let st = Store::open(&census_store, Access::Exclusive).unwrap();
+        let mut jobs = Vec::new();
+        for o in obs {
+            let sh = shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]);
+            let bytes = sh.to_bytes();
+            let sid = formats::content_id(&bytes).unwrap();
+            st.publish_shard(&w.plan_id, Phase::Map, 0, &o.id, &bytes).unwrap();
+            jobs.push(Job {
+                observer: o.id,
+                attempt: 1,
+                end: End::Completed,
+                shard: Some(sid),
+                queued_ns: 0,
+                wall_ns: 1_000,
+                cpu_ns: 1_000,
+                peak_rss: 1 << 20,
+                estimate: 1 << 20,
+            });
+        }
+        let started = 1_700_000_000_000_009_000;
+        let rec = RunRecord {
+            run: Run {
+                tool_slip: "0.0.0".into(),
+                tool_kiln: "1.3.0".into(),
+                plan: w.plan_id,
+                phase: Phase::Map,
+                round: 0,
+                started_unix_ns: started,
+                wall_ns: 5_000,
+                cores: 4,
+                workers_max: 2,
+                memory_budget: 1 << 30,
+                peak_rss_sum: 0,
+            },
+            jobs,
+        };
+        st.publish_run(&w.plan_id, Phase::Map, 0, started, &rec.to_bytes()).unwrap();
+    }
+
+    // Must NOT reuse the foreign newer run; must re-parse and stay unclean!
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(false), "foreign newer run must not turn unclean census clean:\n{out}");
+    assert_eq!(w.parse_calls(), 2, "latest_map_run != prev.run must invalidate reuse");
+}
+
+// §9.5: changing `kiln_pin` invalidates reuse even when `slip`, `plan`,
+// `run`, selection, and shard inputs/negatives are unchanged.
+#[test]
+fn s9_5_reuse_kiln_pin_invalidation() {
+    let w = World::new("census-reuse-kiln-pin");
+    let shards: Vec<Shard> = w
+        .plan
+        .observers
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&shards);
+
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+    let json_path = w.f.path("corpora/toy/stores/census/census.json");
+    let doc = json::parse(&std::fs::read(&json_path).unwrap()).unwrap();
+    assert_eq!(doc.get("kiln_pin").unwrap().as_str(), Some("v1.0"));
+
+    // Unchanged pin -> reuses.
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 1);
+
+    // Bump the pin (`v1.0` -> `v2.0`) and refresh fetch stamp (keeping commit,
+    // database, plan, slip binary, and store untouched).
+    w.f.write(
+        "repo/kiln/scripts/oss/projects.toml",
+        "[toy]\nurl = \"https://example.org/toy.git\"\ntag = \"v2.0\"\n",
+    );
+    let corpora = rows::load(&w.f.path("repo")).unwrap();
+    let c = rows::find(&corpora, "toy").unwrap();
+    let layout = Layout::new(&w.f.path("corpora"), "toy");
+    let commit = "c".repeat(40);
+    std::fs::write(layout.fetch_stamp(), corpus::fetch_stamp(c, &commit)).unwrap();
+
+    assert_eq!(w.run(&[]).0, Ok(true));
+    assert_eq!(w.parse_calls(), 2, "different kiln_pin must invalidate reuse");
+    let doc = json::parse(&std::fs::read(&json_path).unwrap()).unwrap();
+    assert_eq!(doc.get("kiln_pin").unwrap().as_str(), Some("v2.0"));
+}
+
+// §9.5: selections (`--only` / `--limit`) without `--store` use their own
+// deterministic store under `<corpus dir>/stores/census-<hex16>`, leaving
+// `<corpus dir>/stores/census` untouched, reusing on repeat runs, and printing
+// `omitted <k>` for plan entries left out by the selection.
+#[test]
+fn s9_5_selection_default_store_and_omitted_count() {
+    let w = World::new("census-selection-store");
+    let obs = &w.plan.observers;
+    let all_shards: Vec<Shard> = obs
+        .iter()
+        .map(|o| shard_with(o.id, Status::Ok, vec![("digest.indeterminate", 0)]))
+        .collect();
+    w.seed(&all_shards);
+
+    // 1. Full census into default `<corpus>/stores/census`.
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert_eq!(w.parse_calls(), 1);
+    assert!(out.contains("observers 3\n"), "{out}");
+    assert!(!out.contains("omitted "), "full run must not print omitted:\n{out}");
+    let full_json_path = w.f.path("corpora/toy/stores/census/census.json");
+    let full_json_before = std::fs::read(&full_json_path).unwrap();
+    let full_doc = json::parse(&full_json_before).unwrap();
+    assert_eq!(full_doc.get("omitted").unwrap().as_u64(), Some(0));
+
+    // 2. `--only a.cpp` without `--store` uses its own selection store, leaves
+    //    `stores/census` untouched, and reports 2 omitted plan entries.
+    w.seed(&[shard_with(obs[0].id, Status::Ok, vec![("digest.indeterminate", 0)])]);
+    let (r, out) = w.run(&["--only", "a.cpp"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert_eq!(w.parse_calls(), 2);
+    assert!(out.contains("observers 1\nomitted 2\n"), "{out}");
+    assert!(out.ends_with("census: clean (1 observers) (selection)\n"), "{out}");
+
+    let layout = Layout::new(&w.f.path("corpora"), "toy");
+    let only_opts =
+        xtask::invariants::Options { only: vec!["a.cpp".to_owned()], ..Default::default() };
+    let only_store = census::default_store(&layout, &only_opts);
+    assert_ne!(only_store, w.f.path("corpora/toy/stores/census"));
+    assert_eq!(only_store.parent(), Some(w.f.path("corpora/toy/stores").as_path()));
+    assert!(
+        only_store.file_name().unwrap().to_str().unwrap().starts_with("census-"),
+        "{}",
+        only_store.display()
+    );
+    let only_doc = json::parse(&std::fs::read(only_store.join("census.json")).unwrap()).unwrap();
+    assert_eq!(only_doc.get("observers").unwrap().as_u64(), Some(1));
+    assert_eq!(only_doc.get("omitted").unwrap().as_u64(), Some(2));
+    assert_eq!(
+        std::fs::read(&full_json_path).unwrap(),
+        full_json_before,
+        "selection census must leave stores/census untouched"
+    );
+
+    // 3. Repeat `--only a.cpp` reuses its selection store without re-parsing.
+    let (r, out) = w.run(&["--only", "a.cpp"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert_eq!(w.parse_calls(), 2, "repeat --only must reuse its own selection store");
+    assert!(out.contains("observers 1\nomitted 2\n"), "{out}");
+
+    // 4. Repeat full census still reuses `stores/census` without re-parsing!
+    w.seed(&all_shards);
+    let (r, out) = w.run(&[]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert_eq!(w.parse_calls(), 2, "full census must still reuse untouched stores/census");
+
+    // 5. `--limit 2` without `--store` gets its own store and reports 1 omitted.
+    w.seed(&[
+        shard_with(obs[0].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+        shard_with(obs[1].id, Status::Ok, vec![("digest.indeterminate", 0)]),
+    ]);
+    let (r, out) = w.run(&["--limit", "2"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert_eq!(w.parse_calls(), 3);
+    assert!(out.contains("observers 2\nomitted 1\n"), "{out}");
+    let limit_opts =
+        xtask::invariants::Options { limit: Some(("2".to_owned(), 2)), ..Default::default() };
+    let limit_store = census::default_store(&layout, &limit_opts);
+    assert_ne!(limit_store, only_store);
+    assert_ne!(limit_store, w.f.path("corpora/toy/stores/census"));
+    assert!(limit_store.join("census.json").is_file());
+    let (r, _) = w.run(&["--limit", "2"]);
+    assert_eq!(r, Ok(true));
+    assert_eq!(w.parse_calls(), 3, "repeat --limit must reuse its own selection store");
+    assert_eq!(std::fs::read(&full_json_path).unwrap(), full_json_before);
 }
 
 // §9.5: `--store` deletion guard refuses `<corpus>/src`, a subdir of `stores/`
@@ -1028,16 +1352,14 @@ fn s9_5_store_deletion_guard() {
     assert!(default_store.join("census.json").is_file());
 }
 
-// §9.5: indeterminate unit (using the real `ExprKind/CXXReflectExpr` cause
-// from `crates/slip_digest/tests/indeterminate/ExprKind/CXXReflectExpr/`),
-// non-ok shard, `--only` selection, and binary exit statuses (0 clean,
-// 1 not clean, 2 command/usage error).
+// §9.5: stand-in counters (matching the counter names of a known cause,
+// `digest.indeterminate.unsupported` and
+// `digest.cause.unsupported.exprkind.cxxreflectexpr`; `xtask` is Kiln-free
+// and does not run the real `slip` binary), non-ok shard, `--only` selection
+// with `omitted`, and binary exit statuses (0 clean, 1 not clean, 2
+// command/usage error).
 #[test]
-fn s9_5_indeterminate_non_ok_selection_and_exit_codes() {
-    let real_cause = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/slip_digest/tests/indeterminate/ExprKind/CXXReflectExpr/t.cpp");
-    assert!(real_cause.is_file(), "expected real cause fixture at {}", real_cause.display());
-
+fn s9_5_stand_in_counters_non_ok_selection_and_exit_codes() {
     let w = World::new("census-dirty");
     let obs = &w.plan.observers;
     w.seed(&[

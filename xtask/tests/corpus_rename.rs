@@ -540,7 +540,7 @@ impl World {
                 rule_use: None,
                 spellings: None,
                 names: Some(slip_model::names::Names::default()),
-                negatives: None,
+                negatives: Some(Vec::new()),
                 found: None,
                 rebuilt_use: None,
             };
@@ -1289,16 +1289,45 @@ fn s6_5_census_gate() {
     assert!(out.contains("census: skipped (--skip-census)\n"), "{out}");
 
     // 8. A census error inside `corpus rename` is surfaced as an error (never
-    //    treated as clean) and rename does not start.
+    //    treated as clean), rename does not start, and the binary exits 1.
     let w = World::new("rename-census-err");
     w.records(&Run1::of(State::Verified));
     std::fs::write(w.f.path("fake/census.fail"), "").unwrap();
     let (r, out) = w.run(&["--expect", "verified"]);
     assert!(matches!(&r, Err(Failure::Error(e)) if e.contains("census:")), "{r:?}\n{out}");
     assert!(!has_call(&w.log(), "rename "), "rename must not start on census error: {}", w.log());
+    let bin_err = std::process::Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "corpus",
+            "rename",
+            "tiny",
+            "--from",
+            "lib::f",
+            "--to",
+            "h",
+            "--expect",
+            "verified",
+            "--slip",
+            w.f.path("bin/slip").to_str().unwrap(),
+        ])
+        .env("CARGO_MANIFEST_DIR", w.f.path("repo/xtask"))
+        .env("SLIP_CORPUS_DIR", w.f.path("corpora"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        bin_err.status.code(),
+        Some(1),
+        "census error inside corpus rename must exit 1; stderr={}",
+        String::from_utf8_lossy(&bin_err.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&bin_err.stderr).contains("xtask corpus rename: census:"),
+        "stderr={}",
+        String::from_utf8_lossy(&bin_err.stderr)
+    );
 
-    // 9. `--expect refused`, `--expect not_verified`, and `--expect incomplete`
-    //    do not run the census.
+    // 9. `--expect refused`, `--expect not_verified` (including with
+    //    `--accept`), and `--expect incomplete` do not run the census.
     let w = World::new("rename-census-refused");
     w.records(&Run1::of(State::Refused));
     w.seed_census(2);
@@ -1312,6 +1341,17 @@ fn s6_5_census_gate() {
     let (r, out) = w.run(&["--expect", "not_verified"]);
     assert_eq!(r, Ok(true), "{out}");
     assert!(!has_call(&w.log(), "parse "), "not_verified must not run census: {}", w.log());
+
+    let w = World::new("rename-census-accept-not-verified");
+    w.records(&Run1::of(State::NotVerified));
+    w.seed_census(2);
+    let (r, out) = w.run(&["--accept", "--expect", "not_verified"]);
+    assert_eq!(r, Ok(true), "{out}");
+    assert!(
+        !has_call(&w.log(), "parse "),
+        "--accept --expect not_verified must not run census: {}",
+        w.log()
+    );
 
     let w = World::new("rename-census-incomplete");
     w.records(&Run1::of(State::Incomplete));
