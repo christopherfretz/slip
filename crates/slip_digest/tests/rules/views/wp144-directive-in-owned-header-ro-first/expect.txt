@@ -1,0 +1,8 @@
+# WP-144 ns_refs.rs:580 (ro-first): own_dir.h is entered through read-only ro_inc.h first,
+# so its using-directive in acme is a dependency entity (`in_owned_file` is false) and
+# routes `acme::forward<T>(t)` to the dependency view (`acme`), changing `f`.
+added acme::<using_directive std>
+changed template <class> type-parameter-0-0 f(type-parameter-0-0)
+removed legacy
+removed legacy::<using_directive std>
+use 1 via 0 direct 0

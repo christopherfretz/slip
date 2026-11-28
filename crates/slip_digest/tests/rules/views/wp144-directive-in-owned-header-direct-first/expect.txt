@@ -1,0 +1,4 @@
+# WP-144 ns_refs.rs:580 (direct-first): own_dir.h is entered directly first,
+# so its using-directive in acme is owned (`in_owned_file` is true) and routes
+# `acme::forward<T>(t)` to the owned view (`legacy`).
+use 1 via 1 direct 0

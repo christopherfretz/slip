@@ -556,11 +556,12 @@ impl Walk<'_> {
                 .insert(e, NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] });
             order.push(e);
         }
-        // Addendum A4: a read-only opening holds, even when empty (an
-        // empty owned opening is what a transform leaves behind, and holds
-        // nothing).
+        // Addendum A4 / WP-144: a read-only opening holds, even when empty
+        // (an empty owned opening is what a transform leaves behind, and
+        // holds nothing). Decided per inclusion (`in_owned_file`), as
+        // entity ownership is.
         for &d in &ids {
-            if ast.decls.get(d).kind() == DeclKind::Namespace && self.read_only_by_path(d) {
+            if ast.decls.get(d).kind() == DeclKind::Namespace && !self.in_owned_file(d) {
                 let e = self.entity(d);
                 if let Some(i) = info_of.get_mut(&e) {
                     i.member[0] = true;
@@ -577,7 +578,7 @@ impl Walk<'_> {
                 let t = self.entity(ast.resolve_alias(t));
                 named.entry((scope, file)).or_default().insert(t);
                 if let Some(n) = scope {
-                    let own = !self.read_only_by_path(d);
+                    let own = self.in_owned_file(d);
                     if own {
                         self.rebuilt_reference(d, t);
                     }
