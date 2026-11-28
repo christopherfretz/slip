@@ -822,6 +822,20 @@ impl Report {
                 }
                 _ => {}
             }
+            // WP-150 stage 2 (`spec/model.md` §8.9, `spec/verify.md` §9.3):
+            // section 35 (`ownership`) is always present (empty when the
+            // observer has no entries) on an `ok` verify shard of a run with
+            // rules, and absent without rules. Fail closed: an absent
+            // section is never read as "no entries".
+            match (&s.ownership, self.has_rules()) {
+                (None, true) => return Err("the shard has no ownership".to_owned()),
+                (Some(_), false) => {
+                    return Err(
+                        "the shard has an ownership section and the run has no rule".to_owned()
+                    );
+                }
+                _ => {}
+            }
         }
         Ok(())
     }

@@ -410,6 +410,7 @@ fn map_shard() -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 
@@ -516,6 +517,7 @@ fn verify_shard() -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 
@@ -749,6 +751,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

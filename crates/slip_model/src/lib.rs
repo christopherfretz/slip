@@ -22,6 +22,7 @@ pub mod json;
 pub mod keys;
 pub mod names;
 pub mod overlay;
+pub mod ownership;
 mod plan;
 pub mod result;
 mod run;
@@ -37,6 +38,7 @@ pub use digest::Digest;
 pub use edits::{Claim, Edits, Piece, Place};
 pub use editset::EditSet;
 pub use overlay::Overlay;
+pub use ownership::OwnershipList;
 pub use plan::{
     Command, Configuration, EnvVar, Excluded, FileRef, Language, Observer, Origin, Plan, Reason,
 };

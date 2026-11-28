@@ -102,6 +102,7 @@ pub fn old_shard(
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     })
 }
 

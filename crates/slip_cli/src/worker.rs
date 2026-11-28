@@ -10,6 +10,7 @@
 //! (`Job.store` is, §2 "Path"). Its standard output carries protocol
 //! messages only: nothing here prints there.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -26,7 +27,7 @@ use slip_model::{Counter, Digest, Observer, Phase, Shard, Status, Transform};
 
 use crate::args::WorkerArgs;
 use crate::image::Image;
-use crate::verify_job::{Params, verify};
+use crate::verify_job::{Params, verify_caching};
 
 pub mod post;
 pub mod transform;
@@ -254,13 +255,22 @@ pub struct VerifyTask {
     locate: usize,
     /// The parameters of the last job, by its `(declared, image)`.
     kept: Option<(Digest, PostImage, Params)>,
+    /// Content ids of ownership list blobs already published to `store`
+    /// by this worker (`spec/model.md` §8.9, WP-150 stage 2).
+    published: HashSet<Digest>,
 }
 
 impl VerifyTask {
     /// A task whose jobs keep `limit` findings and name `locate`.
     pub fn new(limit: u64, locate: u64) -> Self {
         let size = |n: u64| usize::try_from(n).unwrap_or(usize::MAX);
-        VerifyTask { store: None, limit: size(limit), locate: size(locate), kept: None }
+        VerifyTask {
+            store: None,
+            limit: size(limit),
+            locate: size(locate),
+            kept: None,
+            published: HashSet::new(),
+        }
     }
 }
 
@@ -330,10 +340,13 @@ impl Task for VerifyTask {
         let Some(post) = &job.post else {
             return Err("a verify job without a post".to_owned());
         };
+        if self.store.as_ref().is_some_and(|s| s.root() != job.store_path()) {
+            self.published.clear();
+        }
         let store = open_store(&mut self.store, job)?;
         let (declared, image, params) =
             make_params(store, post, self.limit, self.locate, self.kept.take())?;
-        let shard = verify(store, job, &params);
+        let shard = verify_caching(store, job, &params, &mut self.published);
         self.kept = Some((declared, image, params));
         shard
     }

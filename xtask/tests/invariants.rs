@@ -126,6 +126,7 @@ fn shard(observer: Digest, status: Status, digest: u8) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

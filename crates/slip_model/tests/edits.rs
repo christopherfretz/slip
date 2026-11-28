@@ -583,6 +583,7 @@ fn map_shard(edits: Edits) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 
@@ -644,6 +645,7 @@ fn small() -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

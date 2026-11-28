@@ -14,7 +14,8 @@ use super::common::{
 };
 use super::{
     At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
-    negatives, open, read_container, rebuilt_use, render_container, seal, spellings, verdict,
+    negatives, open, ownership, read_container, rebuilt_use, render_container, seal, spellings,
+    verdict,
 };
 
 const HEADER: u64 = 1;
@@ -31,6 +32,7 @@ const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
 const FOUND: u64 = found::ID;
 const REBUILT_USE: u64 = rebuilt_use::ID;
+const OWNERSHIP: u64 = ownership::ID;
 
 use super::MESSAGE_MAX;
 
@@ -55,6 +57,7 @@ enum Loc {
     Negatives(negatives::Loc),
     Found(found::Loc),
     RebuiltUse(rebuilt_use::Loc),
+    Ownership(ownership::Loc),
 }
 
 impl Loc {
@@ -75,6 +78,7 @@ impl Loc {
             Loc::Negatives(l) => l.path(),
             Loc::Found(l) => l.path(),
             Loc::RebuiltUse(l) => l.path(),
+            Loc::Ownership(l) => l.path(),
         }
     }
 }
@@ -181,11 +185,17 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::Found(l), what));
     }
-    // `edits`, id 32 since WP-139: last.
+    // `edits`, id 32 since WP-139.
     if let Some(e) = &s.edits
         && let Some((l, what)) = edits::violation(e, edits::Context { phase, status })
     {
         return Some((Loc::Edits(l), what));
+    }
+    // `ownership`, id 35 (WP-150): last.
+    if let Some(o) = &s.ownership
+        && let Some((l, what)) = ownership::violation(o, phase, status)
+    {
+        return Some((Loc::Ownership(l), what));
     }
     None
 }
@@ -246,6 +256,7 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         (FOUND, section(s.found.as_ref(), found::encode)),
         (EDITS, section(s.edits.as_ref(), edits::encode)),
         (REBUILT_USE, section(s.rebuilt_use.as_ref(), rebuilt_use::encode)),
+        (OWNERSHIP, section(s.ownership.as_ref(), |e, x| ownership::encode(e, x))),
     ];
     for (id, bytes) in &optional {
         if let Some(bytes) = bytes {
@@ -286,6 +297,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             FOUND,
             EDITS,
             REBUILT_USE,
+            OWNERSHIP,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -307,6 +319,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         found,
         edits,
         rebuilt_use,
+        ownership,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -422,6 +435,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (ownership, ownership_at) = match ownership {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = ownership::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -440,6 +461,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         negatives,
         found,
         rebuilt_use,
+        ownership,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -482,6 +504,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("a rebuilt_use violation without rebuilt_use"),
                 |o| o.of(l),
             ),
+            Loc::Ownership(l) => ownership_at.as_ref().map_or_else(
+                || unreachable!("an ownership violation without ownership"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }
@@ -491,7 +517,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 14] = [
+const SECTION_NAMES: [SectionName; 15] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -506,6 +532,7 @@ const SECTION_NAMES: [SectionName; 14] = [
     SectionName { id: FOUND, name: "found", required: false },
     SectionName { id: EDITS, name: "edits", required: false },
     SectionName { id: REBUILT_USE, name: "rebuilt_use", required: false },
+    SectionName { id: OWNERSHIP, name: "ownership", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -567,6 +594,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.rebuilt_use {
         sections.push(("rebuilt_use", rebuilt_use::render(x)));
     }
+    if let Some(x) = &s.ownership {
+        sections.push(("ownership", ownership::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -591,6 +621,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         found,
         edits,
         rebuilt_use,
+        ownership,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -639,6 +670,8 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
     let rebuilt_use =
         rebuilt_use.map(|v| rebuilt_use::read(v, &sections.key("rebuilt_use"))).transpose()?;
+    let ownership =
+        ownership.map(|v| ownership::read(v, &sections.key("ownership"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -657,6 +690,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         negatives,
         found,
         rebuilt_use,
+        ownership,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

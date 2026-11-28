@@ -2736,8 +2736,9 @@ release because no shard outlives the build that wrote it
 (`digest.md` §11).
 
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
-`binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
-is `spellings`, §10.4; 25 is retired, below.)
+`binding`**, **29, `rule_use`**, **33, `rebuilt_use`** and **35,
+`ownership`**. (Ids 22, 23 and 30 are not assigned; 26 is `spellings`,
+§10.4; 25 is retired, below; 34 is reserved for WP-144.)
 
 - `binding` is present in every shard a verify job writes, whatever the
   parse's outcome and whatever the rules, and is taken from `Job.post`:
@@ -2756,6 +2757,12 @@ is `spellings`, §10.4; 25 is retired, below.)
   unknown: a shard written before WP-111 is refused by its section 25,
   not read with a payload it does not have. `spec/landed/verify/
   WP-111.md` §5.)
+- `ownership` (section 35, WP-150 stage 2, `spec/model.md` §8.9) is
+  present when the outcome is `ok` and the rule table is not empty (empty
+  `[]` when the observer has no ownership list entries), and absent
+  otherwise. Each digest names a content-addressed `OwnershipList` blob
+  in the store. Stage 2 records and validates the section only; the
+  cross-observer fold and verdict change are stage 3.
 
 With the binding a verify shard says which declared changes, which
 overlay and which pre shards it was made with; M1's shards did not
@@ -2943,9 +2950,12 @@ the level their chain climbs.
 if a worker wrote it (its status is not `failed`), its `binding` is the
 run's (the same `declared`, the same `overlay` or the same absence of
 one, the same `pre`); and if it is `ok` and the run's rules are not
-empty, it has a `rule_use` whose `rules` is the run's `rules_id`. A shard
-that fails either is not this run's: the observer is `failed` (§7), as
+empty, it has a `rule_use` whose `rules` is the run's `rules_id` and an
+`ownership` section (section 35, empty when the observer has no entries,
+WP-150 stage 2). A shard
+that fails any of these is not this run's: the observer is `failed` (§7), as
 for any shard another run left. So is an `ok` shard with a `rule_use`
+or an `ownership` section
 under no rule or naming a rule past the table or a `kept` index past
 `Declared.kept`, and one whose `spellings`
 is absent although the overlay has obligations, present although it has

@@ -247,6 +247,7 @@ impl Run {
             negatives: None,
             found: None,
             rebuilt_use: None,
+            ownership: None,
         }
     }
 
@@ -275,6 +276,7 @@ impl Run {
                 uses: uses.to_vec(),
                 kept: vec![],
             });
+            s.ownership = Some(vec![]);
         }
         if let Some(o) = self.overlay.as_ref().filter(|o| !o.spellings.is_empty()) {
             s.spellings = Some(section(o, &inputs, &[], &[]));

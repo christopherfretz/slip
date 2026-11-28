@@ -1272,3 +1272,198 @@ fn s22_friend_of_class_template_today() {
 fn s22_friend_of_class_template_stage3() {
     ownership_finding(s22(), "old::peek(old::D<int> &)", &["dep/d.h", "u1.cpp"]);
 }
+
+// ---------------------------------------------------------------------------
+// WP-150 stage 2: section 35 (`ownership`), content-addressed OwnershipList
+// blobs, counters `verify.ownership.{made,fixed,lists,bytes}`, worker blob
+// deduplication, and inertness for verdicts (`spec/model.md` §8.9).
+
+fn counter_value(shard: &Shard, name: &str) -> Option<u64> {
+    shard.counters.iter().find(|c| c.name == name).map(|c| c.value)
+}
+
+fn read_lists(store: &Store, shard: &Shard) -> Vec<(Digest, slip_model::OwnershipList, usize)> {
+    let ids = shard.ownership.as_ref().expect("section 35 present");
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "section 35 not strictly ascending");
+    ids.iter()
+        .map(|id| {
+            let bytes = store
+                .read_blob(id)
+                .expect("read_blob")
+                .unwrap_or_else(|| panic!("blob {id} missing from store"));
+            let list = slip_model::OwnershipList::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("blob {id} failed to decode: {e}"));
+            let len = bytes.len();
+            (*id, list, len)
+        })
+        .collect()
+}
+
+#[test]
+fn wp150_stage2_blobs_and_counters_end_to_end() {
+    use slip_model::ownership::FixedAs;
+
+    // S1: u0 has fixed T old::hook(int) in dep/d.h; u1 has made fresh::hook(int) in u1.cpp.
+    let tree = Tree::new(
+        "wp150-s1",
+        &[("dep/d.h", S1_D), ("u1.cpp", S1_U1), ("u0.cpp", S1_U0)],
+        &[("u1.cpp", S1_U1_POST)],
+    );
+    let declared = Declared::new(vec![old_to_fresh()], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(RO)));
+    let params = tree.params(declared);
+    let u0 = tree.observer_of("u0.cpp", &[]);
+    let u1 = tree.observer_of("u1.cpp", &[]);
+    tree.map(&u0);
+    tree.map(&u1);
+
+    let s0 = tree.verify_with(&u0, &params);
+    let s1 = tree.verify_with(&u1, &params);
+
+    // Check u0's section 35, blob and counters.
+    let lists0 = read_lists(&tree.store, &s0);
+    assert_eq!(lists0.len(), 1);
+    let (_, l0, len0) = &lists0[0];
+    assert_eq!(l0.file, bytes(&tree.subject.join("dep/d.h")));
+    assert!(l0.through.is_empty());
+    assert!(l0.made.is_empty());
+    assert_eq!(l0.fixed.len(), 1);
+    assert_eq!(l0.fixed[0].as_, FixedAs::T);
+    assert_eq!(l0.fixed[0].name, "old::hook(int)");
+    assert_eq!(counter_value(&s0, "verify.ownership.made"), Some(0));
+    assert_eq!(counter_value(&s0, "verify.ownership.fixed"), Some(1));
+    assert_eq!(counter_value(&s0, "verify.ownership.lists"), Some(1));
+    assert_eq!(counter_value(&s0, "verify.ownership.bytes"), Some(*len0 as u64));
+
+    // Check u1's section 35, blob and counters, and verify T join key matches u0's fixed key.
+    let lists1 = read_lists(&tree.store, &s1);
+    assert_eq!(lists1.len(), 1);
+    let (_, l1, len1) = &lists1[0];
+    assert_eq!(l1.file, bytes(&tree.subject.join("u1.cpp")));
+    assert!(l1.through.is_empty());
+    assert!(l1.fixed.is_empty());
+    assert_eq!(l1.made.len(), 1);
+    assert_eq!(l1.made[0].rule, 0);
+    assert_eq!(l1.made[0].key, l0.fixed[0].key, "T join key matches across stored blobs");
+    assert!(l1.made[0].post.is_some());
+    assert_eq!(counter_value(&s1, "verify.ownership.made"), Some(1));
+    assert_eq!(counter_value(&s1, "verify.ownership.fixed"), Some(0));
+    assert_eq!(counter_value(&s1, "verify.ownership.lists"), Some(1));
+    assert_eq!(counter_value(&s1, "verify.ownership.bytes"), Some(*len1 as u64));
+
+    // S9: own/own.h entered through dep/ro_inc.h records `through`.
+    let includer_tree = Tree::new(
+        "wp150-s9",
+        &[
+            ("dep/ro_inc.h", "#include \"../own/own.h\"\n"),
+            ("own/own.h", "namespace old { int g(int); }\n"),
+            ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = old::g(1);\n"),
+        ],
+        &[
+            ("own/own.h", "namespace fresh { int g(int); }\n"),
+            ("u0.cpp", "#include \"dep/ro_inc.h\"\nint r = fresh::g(1);\n"),
+        ],
+    );
+    let includer_decl = Declared::new(vec![old_to_fresh()], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(includer_tree.files(RO)));
+    let includer_params = includer_tree.params(includer_decl);
+    let includer_obs = includer_tree.observer_of("u0.cpp", &[]);
+    includer_tree.map(&includer_obs);
+    let includer_shard = includer_tree.verify_with(&includer_obs, &includer_params);
+    let includer_lists = read_lists(&includer_tree.store, &includer_shard);
+    assert_eq!(includer_lists.len(), 1);
+    assert_eq!(includer_lists[0].1.file, bytes(&includer_tree.subject.join("own/own.h")));
+    assert_eq!(includer_lists[0].1.through, bytes(&includer_tree.subject.join("dep/ro_inc.h")));
+    assert_eq!(includer_lists[0].1.fixed.len(), 1);
+    assert_eq!(includer_lists[0].1.fixed[0].as_, FixedAs::M);
+
+    // Observer with 0 entries under rules (S19 internal linkage): section 35
+    // is present and empty `[]`, counters are all 0.
+    let internal_tree = Tree::new(
+        "wp150-s19",
+        &[("u.cpp", "namespace old { static int helper() { return 0; } }\n")],
+        &[("u.cpp", "namespace fresh { static int helper() { return 0; } }\n")],
+    );
+    let internal_decl = Declared::new(vec![old_to_fresh()], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(internal_tree.files(RO)));
+    let internal_params = internal_tree.params(internal_decl);
+    let internal_obs = internal_tree.observer_of("u.cpp", &[]);
+    internal_tree.map(&internal_obs);
+    let internal_shard = internal_tree.verify_with(&internal_obs, &internal_params);
+    assert_eq!(internal_shard.ownership, Some(vec![]));
+    for name in [
+        "verify.ownership.made",
+        "verify.ownership.fixed",
+        "verify.ownership.lists",
+        "verify.ownership.bytes",
+    ] {
+        assert_eq!(counter_value(&internal_shard, name), Some(0), "{name}");
+    }
+
+    // Empty rules: no section 35, no verify.ownership.* counters.
+    let empty_tree = Tree::new("wp150-empty", &[("a.cpp", "int x = 1;\n")], &[]);
+    let empty_params = empty_tree.params(Declared::none());
+    let empty_u = empty_tree.observer_of("a.cpp", &[]);
+    empty_tree.map(&empty_u);
+    let empty_shard = empty_tree.verify_with(&empty_u, &empty_params);
+    assert_eq!(empty_shard.ownership, None);
+    assert!(!empty_shard.counters.iter().any(|c| c.name.starts_with("verify.ownership.")));
+}
+
+#[test]
+fn wp150_stage2_worker_remembers_published_blobs() {
+    use slip_cli::verify_job::verify_caching;
+    use std::collections::HashSet;
+
+    let tree = Tree::new(
+        "wp150-dedup",
+        &[
+            ("dep/d.h", S1_D),
+            ("a.cpp", "#include \"dep/d.h\"\nint a = old::hook(1);\n"),
+            ("b.cpp", "#include \"dep/d.h\"\nint b = old::hook(2);\n"),
+        ],
+        &[],
+    );
+    let declared = Declared::new(vec![old_to_fresh()], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(RO)));
+    let params = tree.params(declared);
+    let oa = tree.observer_of("a.cpp", &[]);
+    let ob = tree.observer_of("b.cpp", &[]);
+    tree.map(&oa);
+    tree.map(&ob);
+
+    let mut published = HashSet::new();
+    let sa = verify_caching(&tree.store, &tree.job(&oa, Phase::Verify, 1), &params, &mut published)
+        .unwrap();
+    let ids_a = sa.ownership.as_ref().unwrap();
+    assert_eq!(ids_a.len(), 1);
+    let blob_id = ids_a[0];
+    assert!(published.contains(&blob_id));
+    let blob_path = tree.store.blob_path(&blob_id);
+    assert!(blob_path.exists());
+
+    // Remove the blob file on disk to prove the second job skips
+    // `publish_blob` when `published` already remembers `blob_id`, yet still
+    // records the same section 35 and deterministic counters!
+    std::fs::remove_file(&blob_path).unwrap();
+    let sb = verify_caching(&tree.store, &tree.job(&ob, Phase::Verify, 1), &params, &mut published)
+        .unwrap();
+    assert_eq!(sb.ownership.as_ref().unwrap(), &[blob_id]);
+    assert!(!blob_path.exists(), "worker skipped redundant publish_blob via cache");
+    assert_eq!(
+        counter_value(&sb, "verify.ownership.bytes"),
+        counter_value(&sa, "verify.ownership.bytes"),
+        "bytes counter stays deterministic regardless of cache"
+    );
+
+    // A fresh worker without the id in its cache republishes the blob.
+    let mut fresh = HashSet::new();
+    let sb2 =
+        verify_caching(&tree.store, &tree.job(&ob, Phase::Verify, 1), &params, &mut fresh).unwrap();
+    assert_eq!(sb2.ownership.as_ref().unwrap(), &[blob_id]);
+    assert!(blob_path.exists(), "fresh worker publishes the blob");
+}

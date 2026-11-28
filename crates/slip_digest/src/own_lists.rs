@@ -115,6 +115,10 @@ pub struct Fixed {
     pub column: u64,
     /// The entity as a person writes it.
     pub name: String,
+    /// Empty, else the subject path of the first read-only file on the
+    /// include chain of `file` when that declaration lies in a file that is
+    /// not read-only by its own path (WP-150 stage 2, additive).
+    pub through: Vec<u8>,
 }
 
 /// The two lists of the walk `w`, its rule use `counting` (taken from it):
@@ -175,13 +179,14 @@ pub(crate) fn lists(w: &mut Walk<'_>, counting: Option<&Counting>) -> (Vec<Made>
         }
         let at = first_read_only(w, e);
         let (file, line, column) = place(w, at);
+        let through = if file.is_empty() { Vec::new() } else { through_file(w, at) };
         let name = name(w, e, kind);
         if as_t {
-            let (file, name) = (file.clone(), name.clone());
-            fixed.push(Fixed { key: id, as_: FixedAs::T, file, line, column, name });
+            let (file, name, through) = (file.clone(), name.clone(), through.clone());
+            fixed.push(Fixed { key: id, as_: FixedAs::T, file, line, column, name, through });
         }
         if as_m {
-            fixed.push(Fixed { key: id, as_: FixedAs::M, file, line, column, name });
+            fixed.push(Fixed { key: id, as_: FixedAs::M, file, line, column, name, through });
         }
     }
     w.bytes = bytes;
@@ -304,6 +309,30 @@ fn place(w: &Walk<'_>, d: Option<DeclId>) -> (Vec<u8>, u64, u64) {
         Some(p) => ((w.subject_path)(p.file), u64::from(p.line), u64::from(p.col)),
         None => (Vec::new(), 0, 0),
     }
+}
+
+/// When `d`'s expansion location lies in a file that is not read-only by its
+/// own path and was entered through a read-only include chain, the subject
+/// path of the first read-only file on that chain; empty otherwise.
+fn through_file(w: &mut Walk<'_>, d: Option<DeclId>) -> Vec<u8> {
+    let Some(d) = d else { return Vec::new() };
+    let exp = w.sm.expansion_loc(w.ast.decls.get(d).loc());
+    let Some(file) = w.buffer_of(exp) else { return Vec::new() };
+    if w.file_read_only(file) {
+        return Vec::new();
+    }
+    let mut at = w.sm.include_loc(exp);
+    let mut steps = 0usize;
+    while at.is_valid() && steps <= CHAIN_LIMIT {
+        if let Some(f) = w.buffer_of(at)
+            && w.file_read_only(f)
+        {
+            return (w.subject_path)(f);
+        }
+        at = w.sm.include_loc(at);
+        steps += 1;
+    }
+    Vec::new()
 }
 
 fn name(w: &Walk<'_>, e: DeclId, kind: KeyKind) -> String {
