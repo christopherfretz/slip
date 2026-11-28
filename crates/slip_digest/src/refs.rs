@@ -36,6 +36,10 @@ impl Walk<'_> {
         }
         let ast = self.ast;
         let d = ast.strip_shadow(d);
+        if crate::units::in_failed_substitution(ast, d) {
+            s.uv(REF_NONE).indeterminate(Cause::Unaccounted("ref/failed-substitution"));
+            return;
+        }
         let kind = ast.decls.get(d).kind();
         if kind == DeclKind::TemplateTypeParm
             || kind == DeclKind::NonTypeTemplateParm

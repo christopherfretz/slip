@@ -177,9 +177,9 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         shadow_named: _,
         // `out` (§5.7): a friend's written form (Kiln WP-3164).
         friend_form: _,
-        // `unsupported` (§5.7, WP-136 reads it): Kiln marks only an
-        // invalid declaration, which `decl_node` makes indeterminate
-        // (`Cause::Error`) wherever the walk meets it.
+        // `out` (§5.7, WP-136): read by `units::in_failed_substitution`
+        // and `units::invalid_cause` to classify silent substitution
+        // failures (`DeclFlags::INVALID`); never written into a stream.
         subst_failed: _,
     } = &ast.decls.cold;
     let e = w.entity(d);

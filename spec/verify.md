@@ -2299,6 +2299,7 @@ only when it applies.
                       "findings": <n>, "indeterminate": <n>, "listed": <n> }, … ],
   "exemptions": [ { "list": "changed" | "created" | "removed", "key": <id>, "observers": <n> }, … ],
   "names_changed": { "total": <n>, "listed": [ <NameNote>, … ] },     only with a note
+  "unmarked_invalid": { "observers": <n>, "declarations": <n> },      only when > 0 (WP-136)
   "run": <path of the run record>
 }
 
@@ -2377,6 +2378,7 @@ findings <total> total, <listed> listed, <groups> group(s)
 exemption <list> <key, first 16 digits> observers <n>
 note: name-derived string changed: <name> @ <file>   per noted key, at most 100, in report order
 note: <n> more (see the report)                  when more than 100
+defect: unmarked invalid declarations: <decls> in <observers> observer(s)   only when > 0 (WP-136)
 wall <seconds, three decimals>
 peak_rss <bytes> <main file>                     as `parse` prints it (spec/exec.md §8.2)
 run <path of the run record>

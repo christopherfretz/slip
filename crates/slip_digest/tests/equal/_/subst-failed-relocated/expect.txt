@@ -1,0 +1,1 @@
+# Relocating a template whose specialisation fails substitution is equal.

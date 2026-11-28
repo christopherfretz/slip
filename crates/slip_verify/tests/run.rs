@@ -1417,3 +1417,36 @@ fn s7_1_strict_names_after_add_panics() {
     r.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
     r.strict_names();
 }
+
+// WP-136 (`spec/digest.md` §10, §12): an `ok` verify shard (no error
+// diagnostic) whose `digest.invalid.unmarked` counter is non-zero is a
+// defect of Kiln or Slip, reported as a line in the text report and a
+// member in JSON without panicking; when 0 or absent neither appears.
+#[test]
+fn wp136_unmarked_invalid_reported_in_text_and_json() {
+    let mut r_clean = Report::new(header(vec![], 1), &Declared::none());
+    r_clean.add(&d(1), b"/a.cpp", Some(&verified(1)), MAP_OK);
+    assert!(!r_clean.to_text().contains("unmarked invalid"), "{}", r_clean.to_text());
+    let clean_json = json::write_pretty(&r_clean.to_json()).unwrap();
+    assert!(!clean_json.contains("unmarked_invalid"), "{clean_json}");
+
+    let mut s1 = verified(1);
+    s1.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 2 });
+    s1.counters.sort();
+    let mut s2 = verified(2);
+    s2.counters.push(Counter { name: "digest.invalid.unmarked".to_owned(), value: 1 });
+    s2.counters.sort();
+
+    let mut r = Report::new(header(vec![], 2), &Declared::none());
+    r.add(&d(1), b"/a.cpp", Some(&s1), MAP_OK);
+    r.add(&d(2), b"/b.cpp", Some(&s2), MAP_OK);
+    let text = r.to_text();
+    assert!(text.contains("defect: unmarked invalid declarations: 3 in 2 observer(s)\n"), "{text}");
+    let j = json::write_pretty(&r.to_json()).unwrap();
+    assert!(
+        j.contains("\"unmarked_invalid\"")
+            && j.contains("\"observers\": 2")
+            && j.contains("\"declarations\": 3"),
+        "{j}"
+    );
+}

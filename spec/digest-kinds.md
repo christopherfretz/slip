@@ -2366,7 +2366,7 @@ Further rules:
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `0-invalid` | flag | unsupported | - | an invalid declaration: digest §10 |
+| `0-invalid` | flag | unsupported | - | an invalid declaration: digest §10 (`Cause::Error` unless `ColdDeclData` `subst_failed` marks a silent substitution failure, WP-136) |
 | `0-implicit` | flag | in | bit |  |
 | `0-used` | bookkeeping | demand | - | §11 |
 | `0-referenced` | bookkeeping | demand | - | §11 |
@@ -3065,7 +3065,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `written_ns` | entity | out | - | the namespace opening a namespace-scope declaration belongs to when it is not `ctx` (Kiln WP-2725, `kiln_ast/src/decl.rs:1786`): the latest opening when a qualified declarator's qualifier named the namespace, the one an explicit specialisation of a function template is written in. Its one reader is code generation's walk for visibility (`kiln_codegen/src/visibility.rs:455-464`), and what that walk gives is the row `enclosing` (§1.7 item 3), which starts at the same opening |
 | `shadow_named` | entity | out | - | the using-shadow a using-declaration's lookup found when it found one (Kiln WP-3401, `kiln_ast/src/decl.rs:1889`): the declaration the using-declaration introduces is its target, which each shadow's key holds (§5.2); the shadow it was found through is how the name was reached (digest §1 rule 2), as `oper_lookups`' `found` |
 | `friend_form` | bookkeeping | out | - | index of the friend's written form in `DeclArena` `friend_forms` (Kiln WP-3164, `decl.rs:1921`); the form's rows are `FriendForm`'s |
-| `subst_failed` | flag | unsupported | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`): read by `docs/wp/WP-136.md`. Kiln sets it only on a declaration with `DeclFlags` `0-invalid` (`decl.rs:393-400`), which makes the walk indeterminate (`Cause::Error`) wherever it is read, so it needs no reading of its own |
+| `subst_failed` | flag | out | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`; WP-136, digest §2.1, §8, §10): read by the walk to classify `DeclFlags` `0-invalid` — kinds 1, 2, 3 and 5 are no entity and no unit (a `Ref` to one is `Unaccounted("ref/failed-substitution")`), kind 4 is written as a never-instantiated class specialisation, kind 6 is `Unaccounted("decl/trapped")`; never written into a stream |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -3087,17 +3087,17 @@ differs from one only declared there by this row, which is why
 `kind=enum; pin=schema`
 
 What failed to form in a declaration Kiln made invalid while its errors
-were trapped (Kiln WP-3281, `kiln_ast/src/decl.rs:401`). Read only with
-`ColdDeclData` `subst_failed` (`unsupported`, `docs/wp/WP-136.md`).
+were trapped (Kiln WP-3281, `kiln_ast/src/decl.rs:401`). Read with
+`ColdDeclData` `subst_failed` (WP-136, digest §2.1, §8, §10).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `FunctionSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `ExplicitSpecifier` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `VariablePartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `ClassPartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `LocalOfFailedSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `OtherTrapped` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `FunctionSignature` | flag | out | - | kind 1: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `ExplicitSpecifier` | flag | out | - | kind 2: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `VariablePartialAmbiguity` | flag | out | - | kind 3: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `ClassPartialAmbiguity` | flag | out | - | kind 4: nameable incomplete type, written as a never-instantiated specialisation |
+| `LocalOfFailedSignature` | flag | out | - | kind 5: part of a failed signature, never reached; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `OtherTrapped` | flag | out | - | kind 6: indeterminate, `Unaccounted("decl/trapped")` |
 
 ### `kiln_ast::decl::DeclArena`
 

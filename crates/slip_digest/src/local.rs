@@ -415,6 +415,9 @@ pub(crate) fn param_templates(w: &mut Walk<'_>) {
     let mut m = HashMap::new();
     let mut blocks = HashMap::new();
     for d in ast.decls.ids() {
+        if crate::units::in_failed_substitution(ast, d) {
+            continue;
+        }
         if ast.decls.get(d).kind() == DeclKind::ConstevalBlock {
             blocks
                 .entry(ast.decls.get(d).loc())
@@ -519,6 +522,9 @@ pub(crate) fn numbering<'a>(w: &'a mut Walk<'_>, owner: DeclId) -> &'a Numbering
 pub(crate) fn number_all(w: &mut Walk<'_>) {
     let ast = w.ast;
     for d in ast.decls.ids() {
+        if crate::units::in_failed_substitution(ast, d) {
+            continue;
+        }
         // The owner of the variable a lifetime-extended temporary extends,
         // when it is in a template: Kiln shares a non-dependent temporary
         // of a pattern's body with its instantiations (a range-`for` over
@@ -530,6 +536,7 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
                 ast.decls.lifetime_extended(d)
             && w.is_local(extending)
             && let Ok(o) = owner_of(w, ast.first(extending))
+            && !crate::units::in_failed_substitution(ast, o)
             && in_template(w, o)
         {
             let _ = numbering(w, o);
@@ -537,7 +544,9 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
         if ast.first(d) != d || !is_local_type(w, d) {
             continue;
         }
-        if let Ok(o) = owner_of(w, d) {
+        if let Ok(o) = owner_of(w, d)
+            && !crate::units::in_failed_substitution(ast, o)
+        {
             let _ = numbering(w, o);
         }
         let op = ast
@@ -547,7 +556,9 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
             .and_then(|l| ast.exprs.lambdas.get(l).call_op);
         if let Some(op) = op {
             let e = w.entity(op);
-            let _ = numbering(w, e);
+            if !crate::units::in_failed_substitution(ast, e) {
+                let _ = numbering(w, e);
+            }
         }
     }
     // The owner of the variable of each expanded expansion statement:

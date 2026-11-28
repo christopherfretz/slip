@@ -144,6 +144,9 @@ pub(crate) fn fold_left_out(w: &mut Walk<'_>, op: BinaryOp) -> bool {
     let declared = w.declared_operators.get_or_insert_with(|| {
         let mut set = std::collections::HashSet::new();
         for d in ast.decls.ids() {
+            if crate::units::in_failed_substitution(ast, d) {
+                continue;
+            }
             let n = ast.decls.get(d);
             let mut k = n.kind();
             if k == DeclKind::FunctionTemplate {
