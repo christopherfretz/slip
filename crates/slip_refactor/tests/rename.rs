@@ -266,7 +266,21 @@ impl Validate for Edits {
         e.normalise();
         assert_eq!(&e, self, "{name}: the section is not normalised");
         assert!(self.failure.is_none() && self.groups.is_empty(), "{name}");
-        assert!(self.reports.is_empty() && self.renamed.is_empty(), "{name}");
+        assert!(self.renamed.is_empty(), "{name}");
+        let has_capture = self
+            .claims
+            .iter()
+            .any(|c| c.stance == Stance::Refuse && c.reason == Reason::CapturedAtInstance);
+        assert!(
+            self.reports.is_empty()
+                || (has_capture
+                    && self
+                        .reports
+                        .iter()
+                        .all(|r| r.severity == slip_model::edits::Severity::Note)),
+            "{name}: unexpected reports {:?}",
+            self.reports
+        );
         let ids: BTreeSet<Digest> = self.subjects.iter().map(|s| s.id).collect();
         for c in &self.claims {
             for s in &c.subjects {
@@ -663,6 +677,7 @@ fn reason_name(r: Reason) -> &'static str {
         Reason::MixedInstances => "mixed_instances",
         Reason::Directive => "directive",
         Reason::Instantiated => "instantiated",
+        Reason::CapturedAtInstance => "captured_at_instance",
     }
 }
 
@@ -1236,6 +1251,9 @@ struct EndToEnd {
     kept: usize,
     unresolved: usize,
     instances: Vec<String>,
+    /// The set's reports (`<severity>: <message>`, WP-152: naming the
+    /// specialisation and declaration found for `captured_at_instance`).
+    reports: Vec<String>,
     /// The keys of the units the set exempts (its `changed` in force).
     /// No row of §9.4 exempts a unit since WP-139's second review: always
     /// 0, asserted where a dependent name is edited.
@@ -1344,6 +1362,13 @@ fn end_to_end_with(
             )
         })
         .collect();
+    let reports: Vec<String> = set
+        .reports
+        .iter()
+        .map(|x| {
+            format!("{}: {}", x.report.severity.name(), String::from_utf8_lossy(&x.report.message))
+        })
+        .collect();
     let exempt: BTreeSet<Digest> =
         set.changed.iter().filter(|c| c.in_force).map(|c| c.key).collect();
     let mut out = EndToEnd {
@@ -1353,6 +1378,7 @@ fn end_to_end_with(
         kept: set.kept.len(),
         unresolved: set.unresolved.len(),
         instances,
+        reports,
         exempt: exempt.len(),
     };
     if set.state != slip_model::editset::SetState::Accepted {
@@ -2670,12 +2696,12 @@ fn wp139_no_row_with_a_fallback_is_residue() {
     assert_eq!(r.unresolved, 1, "{r:?}");
 }
 
-/// FINDING (Handback): the new name captured at an instantiation. In
+/// WP-139 finding 1, resolved by WP-152 (`spec/edits.md` §9.4): the new
+/// name captured at an instantiation. In
 /// `template <class T> struct D : T { int g() { return this->f(); } }`,
-/// renaming `n::S::f` to `g` edits `this->f()` (every instantiation binds
-/// it to the subject), and in the post-image `this->g()` finds `D::g`
-/// itself. The rename does not check what the new name finds in the
-/// instantiation; verification does, and the run is not verified.
+/// renaming `n::S::f` to `g` would write `this->g()`, which finds `D::g`.
+/// The per-instance capture check refuses it (`captured_at_instance`),
+/// naming the specialisation and the declaration found.
 #[test]
 fn wp139_new_name_captured_in_an_instantiation_is_not_verified() {
     let text = format!(
@@ -2683,8 +2709,430 @@ fn wp139_new_name_captured_in_an_instantiation_is_not_verified() {
     );
     let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
     let r = end_to_end("wp139-captured", &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
-    assert!(r.refusals.is_empty(), "{r:?}");
-    assert!(!r.differences.is_empty(), "the captured name verified: {r:?}");
+    assert_eq!(causes(&r), ["SiteRefused"], "{r:?}");
+    assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r:?}");
+    assert!(
+        r.instances
+            .iter()
+            .any(|i| i.starts_with("refused main.cpp:") && i.contains("D<n::S<int>>::g()")),
+        "{r:?}"
+    );
+    assert!(
+        r.reports.iter().any(|m| {
+            m.contains("D<n::S<int>>::g()") && m.contains("new name 'g' finds D<n::S<int>>::g()")
+        }),
+        "{r:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// WP-152 (`spec/edits.md` §9.4, §9.5): per-instance capture check for
+// every row-2 `replace`.
+
+/// WP-152 item 1 (`spec/edits.md` §9.4): member access (`t.f()`,
+/// `(&t)->f()`, `t->f()` via `operator->`, `this->f()` with an inherited
+/// capture, and a sibling base in multiple inheritance). Each pattern's
+/// own context has no `g`, so checking the pattern's context instead of
+/// the instance's misses all of them.
+#[test]
+fn wp152_member_access_capture_refused() {
+    let defs = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ int g() {{ return 9; }} }};\n\
+template <class T> struct Other {{ int g() {{ return 8; }} }};\n"
+    );
+    let cases: [(&str, &str, &str, &str); 5] = [
+        (
+            "dot",
+            "template <class T> int call(T t) { return t.f(); }\nint u() { return call(Der<n::S<int>>()); }\n",
+            "call<Der<n::S<int>>>",
+            "Der<n::S<int>>::g()",
+        ),
+        (
+            "arrow",
+            "template <class T> int call(T t) { return (&t)->f(); }\nint u() { return call(Der<n::S<int>>()); }\n",
+            "call<Der<n::S<int>>>",
+            "Der<n::S<int>>::g()",
+        ),
+        (
+            "smart-arrow",
+            "struct PP { Der<n::S<int>> d; Der<n::S<int>>* operator->() { return &d; } };\ntemplate <class T> int call(T t) { return t->f(); }\nint u() { return call(PP()); }\n",
+            "call<PP>",
+            "Der<n::S<int>>::g()",
+        ),
+        (
+            "this-inherited-capture",
+            "template <class T> struct Wrap : T { int run() { return this->f(); } };\nint u() { return Wrap<Der<n::S<int>>>().run(); }\n",
+            "Wrap<Der<n::S<int>>>::run()",
+            "Der<n::S<int>>::g()",
+        ),
+        (
+            "sibling-base",
+            "template <class T, class U> struct Mix : T, U { int run() { return this->f(); } };\nint u() { return Mix<n::S<int>, Other<int>>().run(); }\n",
+            "Mix<n::S<int>, Other<int>>::run()",
+            "Other<int>::g()",
+        ),
+    ];
+    for (tag, body, want_spec, want_decl) in cases {
+        let text = format!("{defs}{body}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp152-member-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", "f"], "g", &right);
+        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{n}: {r:?}");
+        assert!(
+            r.instances.iter().any(|i| i.starts_with("refused ") && i.contains(want_spec)),
+            "{n}: {r:?}"
+        );
+        assert!(
+            r.reports.iter().any(|m| m.contains(want_spec) && m.contains(want_decl)),
+            "{n}: expected spec `{want_spec}` and decl `{want_decl}` in {:?}",
+            r.reports
+        );
+    }
+}
+
+/// WP-152 item 1 (`spec/edits.md` §9.4): qualified name (`T::s()`,
+/// `&T::f`, `D::f()`, constructor mem-initializer and default member
+/// initializer).
+#[test]
+fn wp152_qualified_name_capture_refused() {
+    let defs = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ int g() {{ return 9; }} static int sg() {{ return 9; }} }};\n"
+    );
+    let cases: [(&str, &str, &str, &str, &str, &str); 5] = [
+        (
+            "static-qual",
+            "s",
+            "sg",
+            "template <class T> int call() { return T::s(); }\nint u() { return call<Der<n::S<int>>>(); }\n",
+            "call<Der<n::S<int>>>()",
+            "Der<n::S<int>>::sg()",
+        ),
+        (
+            "ptr-to-member",
+            "f",
+            "g",
+            "template <class T> int call(T t) { int (T::*p)() = &T::f; return (t.*p)(); }\nint u() { return call(Der<n::S<int>>()); }\n",
+            "call<Der<n::S<int>>>",
+            "Der<n::S<int>>::g()",
+        ),
+        (
+            "derived-qual",
+            "f",
+            "g",
+            "template <class T> struct D : T { int g() { return 9; } int run() { return D::f(); } };\nint u() { return D<n::S<int>>().run(); }\n",
+            "D<n::S<int>>::run()",
+            "D<n::S<int>>::g()",
+        ),
+        (
+            "mem-init",
+            "s",
+            "sg",
+            "template <class T> struct M { int x; M() : x(T::s()) {} };\nint u() { M<Der<n::S<int>>> m; return m.x; }\n",
+            "M<Der<n::S<int>>>::M()",
+            "Der<n::S<int>>::sg()",
+        ),
+        (
+            "default-member-init",
+            "s",
+            "sg",
+            "template <class T> struct M { int x = T::s(); };\nint u() { M<Der<n::S<int>>> m; return m.x; }\n",
+            "M<Der<n::S<int>>>::x",
+            "Der<n::S<int>>::sg()",
+        ),
+    ];
+    for (tag, member, new, body, want_spec, want_decl) in cases {
+        let text = format!("{defs}{body}");
+        let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+        let n = format!("wp152-qual-{tag}");
+        let r = end_to_end(&n, &files, &["main.cpp"], &["n", "S", member], new, &right);
+        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{n}: {r:?}");
+        assert!(
+            r.instances.iter().any(|i| i.starts_with("refused ") && i.contains(want_spec)),
+            "{n}: {r:?}"
+        );
+        assert!(
+            r.reports.iter().any(|m| m.contains(want_spec) && m.contains(want_decl)),
+            "{n}: expected spec `{want_spec}` and decl `{want_decl}` in {:?}",
+            r.reports
+        );
+    }
+}
+
+/// WP-152 item 1 (`spec/edits.md` §9.4): argument-dependent lookup
+/// (`RefLookup::Adl`, read directly from `SpecRef::adl`). Captures: a
+/// function in another associated namespace (via a base class or a second
+/// argument), and a hidden friend of an associated class. Non-captures: a
+/// hidden friend of a non-associated class in an associated namespace, and
+/// a non-function type named `new_name` in an associated namespace.
+#[test]
+fn wp152_adl_capture_refused_and_non_captures_accepted() {
+    let run = |tag: &str, src: &str| {
+        end_to_end(tag, &[("main.cpp", src.as_bytes())], &["main.cpp"], &["m", "f"], "g", &right)
+    };
+    let refused: [(&str, &str, &str, &str); 4] = [
+        (
+            "wp152-adl-base-ns",
+            "namespace other { struct Base {}; int g(Base) { return 2; } }\n\
+             namespace m { struct A : other::Base {}; int f(A) { return 1; } }\n\
+             template <class T> int call(T t) { return f(t); }\n\
+             int u() { return call(m::A()); }\n",
+            "call<m::A>",
+            "other::g(other::Base)",
+        ),
+        (
+            "wp152-adl-two-arg",
+            "namespace other { struct B {}; int g(B, B) { return 2; } }\n\
+             namespace m { struct A {}; int f(A, other::B) { return 1; } }\n\
+             template <class T, class U> int call(T t, U u) { return f(t, u); }\n\
+             int u() { return call(m::A(), other::B()); }\n",
+            "call<m::A, other::B>",
+            "other::g(",
+        ),
+        (
+            "wp152-adl-hidden-friend",
+            "namespace other { struct Base { friend int g(Base) { return 2; } }; }\n\
+             namespace m { struct A : other::Base {}; int f(A) { return 1; } }\n\
+             template <class T> int call(T t) { return f(t); }\n\
+             int u() { return call(m::A()); }\n",
+            "call<m::A>",
+            "other::g(other::Base)",
+        ),
+        (
+            "wp152-adl-both",
+            "namespace other { struct Base {}; int g(Base) { return 2; } }\n\
+             namespace m { struct A : other::Base {}; int f(A) { return 1; }\n\
+             template <class T> int call(T t) { return f(t); } }\n\
+             int u() { return m::call(m::A()); }\n",
+            "m::call<m::A>",
+            "other::g(other::Base)",
+        ),
+    ];
+    for (tag, src, want_spec, want_decl) in refused {
+        let r = run(tag, src);
+        assert_eq!(causes(&r), ["SiteRefused"], "{tag}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{tag}: {r:?}");
+        assert!(
+            r.reports.iter().any(|m| m.contains(want_spec) && m.contains(want_decl)),
+            "{tag}: {r:?}"
+        );
+    }
+
+    // Non-captures: hidden friend of a non-associated class, and a non-function type.
+    for (tag, src) in [
+        (
+            "wp152-adl-unassoc-friend",
+            "namespace other { struct Base {}; struct Unrelated { friend int g(Unrelated) { return 2; } }; }\n\
+             namespace m { struct A : other::Base {}; int f(A) { return 1; } }\n\
+             template <class T> int call(T t) { return f(t); }\n\
+             int u() { return call(m::A()); }\n",
+        ),
+        (
+            "wp152-adl-non-fn",
+            "namespace other { struct Base {}; struct g {}; }\n\
+             namespace m { struct A : other::Base {}; int f(A) { return 1; } }\n\
+             template <class T> int call(T t) { return f(t); }\n\
+             int u() { return call(m::A()); }\n",
+        ),
+    ] {
+        let r = run(tag, src);
+        assert!(holder_differs(&r), "{tag} falsely refused: {r:?}");
+        assert!(r.differences.iter().all(|d| !d.contains("call<m::A>")), "{tag}: {r:?}");
+    }
+}
+
+/// WP-152 across two observers: observer A instantiates without capture
+/// (`replace`), observer B instantiates with capture (`refuse(captured_at_instance)`).
+/// Reduce refuses in both plan orders and keeps both specialisations and
+/// the capture note report.
+#[test]
+fn wp152_capture_in_one_of_two_observers_refuses() {
+    let header = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ int g() {{ return 9; }} }};\n\
+template <class T> int call(T t) {{ return t.f(); }}\n"
+    );
+    let files: [(&str, &[u8]); 3] = [
+        ("t.h", header.as_bytes()),
+        ("clean.cpp", b"#include \"t.h\"\nint uc() { return call(n::S<int>()); }\n"),
+        ("cap.cpp", b"#include \"t.h\"\nint ucap() { return call(Der<n::S<int>>()); }\n"),
+    ];
+    for mains in [["clean.cpp", "cap.cpp"], ["cap.cpp", "clean.cpp"]] {
+        let n = format!("wp152-two-obs-{}", mains[0].trim_end_matches(".cpp"));
+        let r = end_to_end(&n, &files, &mains, &["n", "S", "f"], "g", &right);
+        assert_eq!(causes(&r), ["SiteRefused"], "{n}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{n}: {r:?}");
+        assert_eq!(r.instances.len(), 2, "{n}: {r:?}");
+        assert!(
+            r.reports
+                .iter()
+                .any(|m| m.contains("call<Der<n::S<int>>>") && m.contains("Der<n::S<int>>::g()")),
+            "{n}: {r:?}"
+        );
+    }
+}
+
+/// WP-152 item 2 (`spec/edits.md` §9.4): a declaration named `new_name`
+/// that is hidden by the renamed entity (in a proper base of the renamed
+/// entity's class, or dominated via virtual inheritance), or in an
+/// unrelated enclosing class (`W::g` beside `t.f()`), or bypassed by a
+/// qualified member access (`this->T::f()`), is NOT a capture: it is
+/// edited, every instantiation compares equal (only the pattern differs
+/// until WP-154), and a non-dependent call verifies with zero differences.
+/// Contrast with a non-virtual diamond where the second base subobject is
+/// not dominated: refused `captured_at_instance`.
+#[test]
+fn wp152_hidden_new_name_is_not_a_capture() {
+    let run = |tag: &str, src: &str, target: &[&str], new: &str| {
+        end_to_end(tag, &[("main.cpp", src.as_bytes())], &["main.cpp"], target, new, &right)
+    };
+    // Base-class `g` / `sg` hidden by `S::f` / `S::s`, plus a non-dependent call.
+    let base_hidden = "\
+namespace n {\n\
+template <class U> struct Base { int g() { return 10; } static int sg() { return 10; } };\n\
+template <class U> struct S : Base<U> { int f() { return 1; } static int s() { return 1; } };\n\
+}\n\
+template <class T> struct D : T { int run() { return this->f(); } };\n\
+template <class T> int call_mem(T t) { return t.f(); }\n\
+template <class T> int call_qual() { return T::s(); }\n\
+int u() { return D<n::S<int>>().run() + call_mem(n::S<int>()) + call_qual<n::S<int>>() + n::S<int>().f(); }\n";
+    for (tag, member, new) in
+        [("wp152-hidden-base-member", "f", "g"), ("wp152-hidden-base-qual", "s", "sg")]
+    {
+        let r = run(tag, base_hidden, &["n", "S", member], new);
+        assert!(holder_differs(&r), "{tag}: hidden base falsely refused: {r:?}");
+        assert!(
+            r.differences.iter().all(|d| !d.contains("<n::S<int>>") && !d.contains(" u()")),
+            "{tag}: an instantiation or non-dependent caller differed: {r:?}"
+        );
+    }
+
+    // Non-dependent caller alone with hidden `Base<int>::g` verifies completely.
+    let non_dep = "\
+namespace n {\n\
+template <class U> struct Base { int g() { return 10; } };\n\
+template <class U> struct S : Base<U> { int f() { return 1; } };\n\
+}\n\
+int u() { return n::S<int>().f(); }\n";
+    let plain = run("wp152-hidden-base-nondep-verifies", non_dep, &["n", "S", "f"], "g");
+    assert!(plain.refusals.is_empty() && plain.differences.is_empty(), "{plain:?}");
+
+    // Enclosing `W::g` beside `t.f()` and qualified `this->T::f()` beside `D::g`:
+    // neither is in the class searched by the dependent lookup.
+    for (tag, pat) in [
+        (
+            "wp152-enclosing-class-not-object",
+            "template <class T> struct W { T t; int g() { return t.f(); } };\nint u() { return W<n::S<int>>().g(); }\n",
+        ),
+        (
+            "wp152-qualified-member-bypasses-derived",
+            "template <class T> struct D : T { int g() { return this->T::f(); } };\nint u() { return D<n::S<int>>().g(); }\n",
+        ),
+    ] {
+        let src = format!("{WP139_CLASSES}{pat}");
+        let r = run(tag, &src, &["n", "S", "f"], "g");
+        assert!(holder_differs(&r), "{tag} falsely refused: {r:?}");
+        assert!(r.differences.iter().all(|d| !d.contains("<n::S<int>>")), "{tag}: {r:?}");
+    }
+
+    // Virtual-base dominance (`[class.member.lookup]/6`): `L::g` dominates
+    // virtual base `V::g` -> NOT a capture; non-virtual diamond -> REFUSED.
+    let virt_diamond = "\
+namespace n {\n\
+template <class U> struct V { int g() { return 10; } };\n\
+template <class U> struct L : virtual V<U> { int f() { return 1; } };\n\
+template <class U> struct R : virtual V<U> {};\n\
+template <class U> struct Diamond : L<U>, R<U> {};\n\
+}\n\
+template <class T> int call(T t) { return t.f(); }\n\
+int u() { return call(n::Diamond<int>()); }\n";
+    let virt = run("wp152-virtual-diamond-dominates", virt_diamond, &["n", "L", "f"], "g");
+    assert!(holder_differs(&virt), "dominated virtual base falsely refused: {virt:?}");
+    assert!(virt.differences.iter().all(|d| !d.contains("<n::Diamond<int>>")), "{virt:?}");
+
+    let nonvirt_diamond = virt_diamond.replace("virtual ", "");
+    let nonvirt =
+        run("wp152-nonvirtual-diamond-ambiguous", &nonvirt_diamond, &["n", "L", "f"], "g");
+    assert_eq!(causes(&nonvirt), ["SiteRefused"], "{nonvirt:?}");
+    assert!(nonvirt.refusals[0].starts_with("SiteRefused captured_at_instance "), "{nonvirt:?}");
+}
+
+/// WP-152 item 1 ("For Kiln"): lookup shapes Kiln does not expose the
+/// lookup context for at pin `60fb5ab9d` stay accepted and not verified
+/// (loud, caught by verification):
+/// 1. `SpecRef` has no lookup-context class, and alias templates /
+///    substituted signatures do not keep the rebuilt expression in `spec`.
+/// 2. Ordinary unqualified lookup at the template definition capturing an
+///    ADL call (`::g(m::A)` outside `m::A`'s associated set `[m]`): Kiln
+///    exposes no post-parse lexical unqualified lookup at a `WrittenRef`.
+#[test]
+fn wp152_kiln_gaps_stay_accepted_and_not_verified() {
+    // Gap 1a: alias template `using A = decltype(T::s());` where `Der::sg()`
+    // returns `long` instead of `int` -> `SpecRef::spec` is `A` (no rebuilt
+    // expression), accepted, post-image differs loudly (`u` / `A` type changes).
+    let alias_gap = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ static long sg() {{ return 0; }} }};\n\
+template <class T> using A = decltype(T::s());\n\
+int u() {{ A<Der<n::S<int>>> x = 0; return (int)sizeof(x); }}\n"
+    );
+    let r_alias = end_to_end(
+        "wp152-gap-alias",
+        &[("main.cpp", alias_gap.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert!(r_alias.refusals.is_empty(), "{r_alias:?}");
+    assert!(!r_alias.differences.is_empty(), "alias capture verified: {r_alias:?}");
+
+    // Gap 1b: substituted signature `auto call() -> decltype(T::s())` where
+    // the rebuilt expression is not kept in `spec` (only the substituted
+    // return type `int` is kept).
+    let sig_gap = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ static long sg() {{ return 0; }} }};\n\
+template <class T> auto call() -> decltype(T::s()) {{ return 0; }}\n\
+int u() {{ return (int)sizeof(call<Der<n::S<int>>>()); }}\n"
+    );
+    let r_sig = end_to_end(
+        "wp152-gap-signature",
+        &[("main.cpp", sig_gap.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert!(r_sig.refusals.is_empty(), "{r_sig:?}");
+    assert!(!r_sig.differences.is_empty(), "signature capture verified: {r_sig:?}");
+
+    // Gap 2: ordinary unqualified lookup at the pattern's definition finds
+    // `::g(m::A)` (outside `m::A`'s associated set `[m]`), colliding with
+    // ADL `m::g(m::A)` in the post-image (fails to compile: ambiguous).
+    let unqual_gap = "\
+namespace m { struct A {}; int f(A) { return 1; } }\n\
+int g(m::A) { return 2; }\n\
+template <class T> int call(T t) { return f(t); }\n\
+int u() { return call(m::A()); }\n";
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        end_to_end(
+            "wp152-gap-unqual-def",
+            &[("main.cpp", unqual_gap.as_bytes())],
+            &["main.cpp"],
+            &["m", "f"],
+            "g",
+            &right,
+        )
+    }));
+    let Err(e) = failed else {
+        panic!("expected post-image ambiguity error, got {:?}", failed.unwrap());
+    };
+    let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("main.cpp has errors"), "{msg}");
 }
 
 /// A dependent name whose enclosing declaration the front end records as
