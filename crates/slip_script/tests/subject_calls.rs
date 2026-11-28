@@ -166,6 +166,38 @@ int g(S s) { return s.f(2); }
     });
 }
 
+/// Kiln hole (`docs/wp/WP-148.md` "For Kiln" #2, `kiln_ast/src/expr_extent.rs:238`):
+/// `WrittenExtents::written_first` starts an explicit-object-parameter member
+/// call `s.f(2)` at the callee `f` rather than the object `s`, returning `f(2)`
+/// instead of `s.f(2)`. `calls::expr_tokens` adjusts `first` for `Object::Before`
+/// (`calls.rs:1038-1049`). This test pins the defect so it fails once Kiln fixes
+/// it and the adjustment can be deleted.
+#[test]
+fn kiln_hole_explicit_object_call_written_extent_starts_at_callee() {
+    use slip_kiln::kiln::ast::expr::ExprKind;
+    use slip_kiln::kiln::ast::ids::ExprId;
+    use slip_kiln::kiln::parse::ExprExtents;
+    let src = "\
+struct S { int f(this S, int); };
+int g(S s) { return s.f(2); }
+";
+    with(&[("main.cpp", src)], |p, _| {
+        let u = p.unit();
+        let ee = ExprExtents::new(u.ast(), u.sm(), u.tokens().interner(), u.tokens().lex_options());
+        let call = (1..=u.ast().exprs.len())
+            .filter_map(|i| ExprId::try_new(u32::try_from(i).ok()?))
+            .find(|&e| u.ast().exprs.get(e).kind() == ExprKind::CallExpr)
+            .expect("explicit-object CallExpr");
+        let (first, last) = ee.written_extent(call).expect("written extent");
+        let r = slip_kiln::ranges::file_range(u, first, last).expect("file range");
+        let text = &u.sm().text(r.file)[r.lo as usize..r.hi as usize];
+        assert_eq!(
+            text, "f(2)",
+            "Kiln fixed WrittenExtents::written_first: delete calls.rs Object::Before adjustment"
+        );
+    });
+}
+
 /// `calls_to` of something not a function is `wrong_kind` (rule 3); of a
 /// function template, the calls of its specialisations.
 #[test]

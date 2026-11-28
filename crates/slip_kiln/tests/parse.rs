@@ -1166,7 +1166,7 @@ fn s8_4_run_editable_ranges_and_token_end_through_slip_kiln() {
 // WP-148 item 1 (Kiln WP-2121): two parses with different working
 // directories run concurrently in one process without mutating the
 // process's current directory; each resolves its own relative main file,
-// relative `-I` header, and relative `@file` response file. Fails with
+// relative `-I` header, and relative `-include` header. Fails with
 // process-wide `set_current_dir`; must pass 20x in a row.
 #[test]
 fn s8_4_two_directories_concurrently() {
@@ -1184,10 +1184,12 @@ fn s8_4_two_directories_concurrently() {
 
     let h_a = dir_a.join("inc/val.h");
     let h_b = dir_b.join("inc/val.h");
+    let def_a = dir_a.join("inc/defs.h");
+    let def_b = dir_b.join("inc/defs.h");
     std::fs::write(&h_a, "constexpr int VAL = 11;\n").unwrap();
     std::fs::write(&h_b, "constexpr int VAL = 22;\n").unwrap();
-    std::fs::write(dir_a.join("flags.rsp"), "-Iinc\n-DEXPECTED=11\n").unwrap();
-    std::fs::write(dir_b.join("flags.rsp"), "-Iinc\n-DEXPECTED=22\n").unwrap();
+    std::fs::write(&def_a, "#define EXPECTED 11\n").unwrap();
+    std::fs::write(&def_b, "#define EXPECTED 22\n").unwrap();
     let main_src =
         "#include <val.h>\nstatic_assert(VAL == EXPECTED, \"wrong dir\");\nint x = VAL;\n";
     let main_a = dir_a.join("main.cpp");
@@ -1195,10 +1197,12 @@ fn s8_4_two_directories_concurrently() {
     std::fs::write(&main_a, main_src).unwrap();
     std::fs::write(&main_b, main_src).unwrap();
 
-    let obs_a = observer(&dir_a, &["c++", "-std=c++20", "@flags.rsp", "main.cpp"]);
-    let obs_b = observer(&dir_b, &["c++", "-std=c++20", "@flags.rsp", "main.cpp"]);
-    let want_a = refs(&[&h_a, &main_a]);
-    let want_b = refs(&[&h_b, &main_b]);
+    let obs_a =
+        observer(&dir_a, &["c++", "-std=c++20", "-Iinc", "-include", "inc/defs.h", "main.cpp"]);
+    let obs_b =
+        observer(&dir_b, &["c++", "-std=c++20", "-Iinc", "-include", "inc/defs.h", "main.cpp"]);
+    let want_a = refs(&[&def_a, &h_a, &main_a]);
+    let want_b = refs(&[&def_b, &h_b, &main_b]);
 
     for round in 0..8u64 {
         let barrier = Arc::new(Barrier::new(2));
@@ -1222,6 +1226,55 @@ fn s8_4_two_directories_concurrently() {
     }
 
     assert_eq!(std::env::current_dir().unwrap(), before_cwd, "process current_dir must not change");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// WP-148 fix round 1 (item 1, M6): `-working-directory` in either spelling
+// (`-working-directory=sub` or `-working-directory sub`) is refused by both
+// `KilnCheck` and `parse_observer_with` (`slip_kiln::check::not_modelled`), so
+// relative lookup entries never diverge from `Command.directory`.
+#[test]
+fn s6_2_working_directory_flag_is_refused() {
+    use slip_cdb::check::Rejection;
+
+    let base = common::work_root().join(format!("slip-kiln-wd-flag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("sub/generated")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let main = base.join("sub/main.cpp");
+    std::fs::write(base.join("sub/generated/h.h"), "constexpr int H = 1;\n").unwrap();
+    std::fs::write(&main, "#include <h.h>\nint x = H;\n").unwrap();
+    let main_s = main.to_str().unwrap();
+
+    let cases: [(&[&str], &str); 2] = [
+        (
+            &["c++", "-std=c++20", "-working-directory=sub", "-Igenerated", "-nostdinc", main_s],
+            "-working-directory=sub",
+        ),
+        (
+            &["c++", "-std=c++20", "-working-directory", "sub", "-Igenerated", "-nostdinc", main_s],
+            "-working-directory",
+        ),
+    ];
+    let mut opts = ParseOptions::default();
+    opts.lookups = true;
+    for (argv, expected_flag) in cases {
+        let obs = observer(&base, argv);
+        assert_eq!(
+            KilnCheck.check(&obs.command, main_s.as_bytes()),
+            Err(Rejection::UnsupportedFlag(expected_flag.into())),
+            "{argv:?}"
+        );
+        let (shard, seen) =
+            parse_observer_with(&obs, Phase::Map, 0, opts, |_| ()).expect("parse_observer_with");
+        assert_eq!(shard.outcome.status, Status::Rejected, "{argv:?}: {:?}", shard.outcome);
+        assert!(seen.is_none(), "{argv:?}: refused unit must not run closure");
+        assert!(
+            shard.outcome.message.contains("-working-directory is not supported by Slip"),
+            "{argv:?}: {:?}",
+            shard.outcome
+        );
+    }
     let _ = std::fs::remove_dir_all(&base);
 }
 

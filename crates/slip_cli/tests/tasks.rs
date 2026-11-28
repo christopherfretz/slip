@@ -1195,16 +1195,19 @@ fn s5_3_left_behind_in_the_overlay_form() {
 }
 
 // spec/verify.md §5.3 G4 in the overlay form (review R4): a command that
-// names a response file.
+// names a response file. Since WP-148 fix round 1 sets
+// `FrontEndOptions::response_files = false`, pass the `@` word as a `-MT`
+// value so the parse succeeds and G4 is exercised.
 #[test]
 fn s5_3_g4_in_the_overlay_form() {
     let tree = Tree::new("g4");
     let s = tree.subject.clone();
     std::fs::write(s.join("flags.rsp"), "-DQ=1\n").unwrap();
-    std::fs::write(s.join("r.cpp"), "int r = Q;\n").unwrap();
+    std::fs::write(s.join("r.cpp"), "int r = 1;\n").unwrap();
     let mut o = observer_of(&s, "r.cpp", 11);
     let word = format!("@{}", s.join("flags.rsp").display());
-    o.command.argv.insert(2, word.as_bytes().to_vec());
+    o.command.argv.insert(2, b"-MT".to_vec());
+    o.command.argv.insert(3, word.as_bytes().to_vec());
     o.id = o.command.observer_id();
     let shard = tree.map(&o, None).unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);

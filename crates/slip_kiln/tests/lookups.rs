@@ -233,6 +233,8 @@ fn dash_imacros_kiln_accepts_slip_does_not_pass() {
     let (m, inc) = (d.at("m.h"), d.at("inc"));
     let prefix = format!("{}/", d.at(""));
     for flags in [
+        vec!["-working-directory=sub"],
+        vec!["-working-directory", "sub"],
         vec!["-imacros", &m],
         vec!["-iprefix", &prefix, "-iwithprefix", "inc"],
         vec!["-iwithprefixbefore", &inc],

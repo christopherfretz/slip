@@ -940,7 +940,9 @@ the front end read:
 
 `Virtual` buffers (the predefines, the command line's macros, token-paste
 results) are not inputs. Each name (`file_name`, the path as first loaded,
-or the consulted path) is resolved against `Command.directory` and to its
+or the consulted path) is resolved against the front end's working
+directory (`fe.sm.work_dir()`, which equals `Command.directory` because
+`-working-directory` is refused per `spec/cdb.md` §6.2) and to its
 real path, spelled on disk (failing that is `Err`). The list is sorted by path bytes and
 made unique; two entries with one real path and different sizes or digests
 are `Err` (`<path> changed during the parse: two buffers of it differ`).

@@ -56,6 +56,13 @@ fn refused(args: &Args, whole: bool) -> bool {
 /// as it was (parity). The list is the diff of Kiln's argument parser
 /// between the two pins (`kiln_driver/src/args.rs`):
 ///
+/// - `-working-directory` (`Args::working_directory`, Kiln WP-2121):
+///   `Lookups` and `spec/model.md` §8.4 resolve relative paths against
+///   the front end's working directory, whereas Slip's downstream lookup
+///   guards assume `Command.directory`; changing the working directory
+///   from the command line would make relative lookup entries disagree
+///   with `Command.directory`. Both spellings (`-working-directory=<dir>`
+///   and `-working-directory <dir>`) are refused.
 /// - files read and search directories named (`Args::imacros`,
 ///   `Args::prefixed_dirs`, `Args::iprefix`; Kiln WP-2822, `c52c27ba8`,
 ///   with their GCC spellings `--imacros`, `--include-prefix`,
@@ -71,7 +78,8 @@ fn refused(args: &Args, whole: bool) -> bool {
 ///   output Slip does not own, and a table or a check changes what Kiln
 ///   records or reports in a way Slip's reading of the AST does not know.
 pub(crate) fn not_modelled(args: &Args) -> Option<&'static str> {
-    let flags: [(bool, &'static str); 9] = [
+    let flags: [(bool, &'static str); 10] = [
+        (args.working_directory.is_some(), "-working-directory"),
         (!args.imacros.is_empty(), "-imacros"),
         (!args.prefixed_dirs.is_empty(), "-iwithprefix"),
         (!args.iprefix.is_empty(), "-iprefix"),

@@ -628,13 +628,15 @@ fn parse_observer_hooked<R: Send>(
         Some((ovl, real)) => (Some(ovl), real),
         None => (None, Vec::new()),
     };
-    let (work_dir, work_dir_path) = resolve_work_dir(&observer.command.directory)?;
+    let work_dir_path = resolve_work_dir(&observer.command.directory)?;
 
     let mut line = front_end_line(&rest);
     let words = written_words(options);
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
-    let args = Args::parse_as(&program, &kiln_driver::rsp::expand_in(&line, &work_dir));
+    // `fe_options` disables response-file expansion (`response_files = false`),
+    // so the driver sees `line` verbatim without reading any `@file`.
+    let args = Args::parse_as(&program, &line);
     if let Some(flag) = not_modelled(&args) {
         return Ok((shard(rejected(&not_modelled_message(flag)), None), None));
     }
@@ -650,7 +652,7 @@ fn parse_observer_hooked<R: Send>(
         let effective_dir = fe.sm.work_dir().dir().unwrap_or(dir);
         let (inputs, buffers, respelled) =
             collect_inputs(fe, effective_dir, overlay_ref, overlaid_real_ref)?;
-        let lookups = Lookups::of(fe, || driver(program_ref, line_ref, fe.sm.work_dir()));
+        let lookups = Lookups::of(fe, || driver(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
             sm: fe.sm,
@@ -721,9 +723,9 @@ fn parse_observer_hooked<R: Send>(
     }
 }
 
-/// Verifies that `directory` exists and is a directory and resolves it as a
-/// [`WorkDir`] with its absolute path for [`FrontEndOptions::working_directory`].
-fn resolve_work_dir(directory: &[u8]) -> Result<(WorkDir, PathBuf), String> {
+/// Verifies that `directory` exists and is a directory and resolves it to an
+/// absolute path for [`FrontEndOptions::working_directory`].
+fn resolve_work_dir(directory: &[u8]) -> Result<PathBuf, String> {
     let dir = bytes_path(directory)?;
     let meta =
         std::fs::metadata(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
@@ -731,18 +733,23 @@ fn resolve_work_dir(directory: &[u8]) -> Result<(WorkDir, PathBuf), String> {
         return Err(format!("cannot enter {}: not a directory", dir.display()));
     }
     let work_dir = WorkDir::at(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
-    let path = work_dir.dir().unwrap_or(&dir).to_path_buf();
-    Ok((work_dir, path))
+    Ok(work_dir.dir().unwrap_or(&dir).to_path_buf())
 }
 
 /// Kiln's options for `options`, with `overlay` (that of
 /// `options.overlay`) and the run's `working_directory`.
+///
+/// `response_files` is turned off (`false`, Kiln WP-2411) so that a parse
+/// never reads an `@file` response file that would be absent from the
+/// shard's `inputs` (`slip_cdb::normalise` already expands response files
+/// when building a plan).
 fn fe_options(
     options: ParseOptions<'_>,
     overlay: Option<Arc<Overlay>>,
     working_directory: PathBuf,
 ) -> FrontEndOptions {
     let mut fe = FrontEndOptions::default();
+    fe.response_files = false;
     fe.pp_record = options.pp_record;
     fe.written_refs = options.written;
     fe.record_lookups = options.lookups;
@@ -796,9 +803,9 @@ fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<(Arc<Overlay>, Overl
 
 /// What the lookup log does not name (the `--embed-dir` directories, the
 /// command's own search directories), from the front end's line as Kiln's
-/// driver parses it, as `run_front_end` reads it.
-fn driver(program: &str, line: &[String], work_dir: &WorkDir) -> Driver {
-    Driver::of(&Args::parse_as(program, &kiln_driver::rsp::expand_in(line, work_dir)))
+/// driver parses it, as `run_front_end` reads it (with `response_files` off).
+fn driver(program: &str, line: &[String]) -> Driver {
+    Driver::of(&Args::parse_as(program, line))
 }
 
 /// The message of a unit refused by [`kiln_switch_in_environment`].
@@ -872,9 +879,12 @@ fn collect_inputs(
         if respelled {
             respelled_paths.insert(real.clone());
         }
-        // A `__has_include` hit is a buffer; an `#embed` resource is not,
-        // unless the same file was also `#include`d in this unit: if so,
-        // verify that the consulted bytes match the buffer Kiln read.
+        // A `__has_include` hit is a buffer; an `#embed` resource is not.
+        // Note: this cross-check against `found[..buffers_end]` is dead code
+        // at Kiln `60fb5ab9d` and becomes live only once Kiln reports every
+        // read (`kiln_driver/src/front_end.rs:506-510, :519, :525` drops
+        // `#embed` of a file the preprocessor entered and keeps only the first
+        // content of a path read twice). Kept as a defensive check for then.
         if let Some((_, _, _, Some(buf))) = found[..buffers_end].iter().find(|(p, ..)| *p == real) {
             if let Some(bytes) = sm.original_bytes(*buf) {
                 verify_consulted_content(&real, &bytes, c.content)?;
@@ -1225,5 +1235,63 @@ mod tests {
             assert_eq!(d_ref.content, content_digest(&ovl_data));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    // WP-148 fix round 1 (item 4): `fe_options` sets `response_files = false`,
+    // so an `@file.rsp` word in `argv` is never expanded as a response file
+    // (and thus never reads an unlisted input from disk).
+    #[test]
+    fn s8_4_response_file_in_argv_is_not_expanded() {
+        let dir = test_dir("no-rsp");
+        std::fs::write(dir.join("flags.rsp"), "-DFROM_RSP=1\n").unwrap();
+        std::fs::write(dir.join("imacros.rsp"), "-imacros m.h\n").unwrap();
+        std::fs::write(dir.join("m.h"), "#define FROM_IMACROS 1\n").unwrap();
+        std::fs::write(dir.join("main.cpp"), "int x = FROM_RSP;\n").unwrap();
+        // Bare `@flags.rsp` beside `main.cpp`: treated as a second literal
+        // input (not expanded), so Kiln refuses it with `NotOneInput`.
+        for rsp_arg in ["@flags.rsp", "@imacros.rsp"] {
+            let obs = test_observer(&dir, &["c++", "-std=c++20", rsp_arg, "main.cpp"]);
+            let shard = super::parse_observer(&obs, Phase::Map, 0).expect("parse_observer");
+            assert_eq!(
+                shard.outcome.status,
+                Status::Rejected,
+                "{rsp_arg} must not be expanded: {:?}",
+                shard.outcome
+            );
+            assert!(
+                shard.outcome.message.contains("has not one source input"),
+                "{rsp_arg}: {:?}",
+                shard.outcome
+            );
+        }
+        // `@flags.rsp` passed as a separate value to `-I`: kept as a literal
+        // directory name, never expanded to `-DFROM_RSP=1`, so `FROM_RSP` stays
+        // undeclared (`Diagnosed`, not `Ok`).
+        let obs = test_observer(&dir, &["c++", "-std=c++20", "-I", "@flags.rsp", "main.cpp"]);
+        let shard = super::parse_observer(&obs, Phase::Map, 0).expect("parse_observer");
+        assert_eq!(
+            shard.outcome.status,
+            Status::Diagnosed,
+            "-I @flags.rsp must not expand flags.rsp: {:?}",
+            shard.outcome
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WP-148 fix round 1 (M11): a `Command.directory` that names an existing
+    // regular file (not a directory) is refused with `Err("cannot enter ...")`
+    // even when the source path is absolute.
+    #[test]
+    fn s8_4_directory_that_is_a_regular_file_is_refused() {
+        let dir = test_dir("dir-is-file");
+        let not_a_dir = dir.join("not_a_dir");
+        let main = dir.join("main.cpp");
+        std::fs::write(&not_a_dir, "plain file\n").unwrap();
+        std::fs::write(&main, "int x = 1;\n").unwrap();
+        let obs = test_observer(&not_a_dir, &["c++", "-std=c++20", main.to_str().unwrap()]);
+        let err = super::parse_observer(&obs, Phase::Map, 0)
+            .expect_err("regular file as Command.directory must be rejected");
+        assert!(err.contains("not a directory"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

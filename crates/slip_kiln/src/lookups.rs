@@ -17,7 +17,9 @@ use kiln_pp::{
 use crate::kiln::source::{FileId, FileOrigin, SourceManager, WorkDir};
 
 /// The places one unit's front end looked at for a file, as the front end
-/// spelled them: a relative one is relative to the command's `directory`.
+/// spelled them: a relative one is relative to the front end's working
+/// directory (`fe.sm.work_dir()`, which equals `Command.directory` because
+/// `-working-directory` is refused by `slip_kiln::check::not_modelled`).
 ///
 /// Every directory here is one the front end opened a name in, or would
 /// have, for a name it was asked for: what it found there and what it did

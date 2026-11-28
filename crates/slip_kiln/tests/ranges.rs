@@ -587,6 +587,35 @@ int f() {
         assert_eq!((u.text(r_inner), r_inner.tier), ("W<int>".to_owned(), T0));
         let r_outer = file_range(u.p.unit(), v_lo, second_gt).expect("v<W<int>> in >>=");
         assert_eq!((u.text(r_outer), r_outer.tier), ("v<W<int>>".to_owned(), T0));
+
+        // Remainder tokens immediately after a split `>` are token starts too
+        // (WP-148 fix round 1, M12): second `>` of `>>` (also in
+        // `split_greaters` per Kiln `parser.rs:1828`), `=` of `>=`, and `=` of
+        // `>>=` (neither `=` is in `split_greaters`, exercising the `prev` check
+        // in `Tokens::is_token_start`).
+        let unit = u.p.unit();
+        let b_lo = u.toks[u.nth("B", 1)].span.lo;
+        let outer_gt = u.toks[u.nth(">>", 0)].span.lo.with_offset(1);
+        assert!(unit.is_token_start(outer_gt), "remainder > of >> is a token start");
+        let r_b = file_range(unit, b_lo, outer_gt).expect("B<vt<1>> ending at remainder >");
+        assert_eq!((u.text(r_b), r_b.tier), ("B<vt<1>>".to_owned(), T0));
+
+        let eq_from_ge = u.toks[u.nth(">=", 0)].span.lo.with_offset(1);
+        let one_lo = u.toks[u.nth("1", 1)].span.lo;
+        assert!(!u.p.ast.split_greaters.contains(&eq_from_ge), "= of >= is not in split_greaters");
+        assert!(unit.is_token_start(eq_from_ge), "remainder = of >= is a token start");
+        let assign_one = file_range(unit, eq_from_ge, one_lo).expect("= 1 after split >=");
+        assert_eq!((u.text(assign_one), assign_one.tier), ("= 1".to_owned(), T0));
+
+        let eq_from_shift = gge_lo.with_offset(2);
+        let two_lo = u.toks[u.nth("2", 0)].span.lo;
+        assert!(
+            !u.p.ast.split_greaters.contains(&eq_from_shift),
+            "= of >>= is not in split_greaters"
+        );
+        assert!(unit.is_token_start(eq_from_shift), "remainder = of >>= is a token start");
+        let assign_two = file_range(unit, eq_from_shift, two_lo).expect("= 2 after split >>=");
+        assert_eq!((u.text(assign_two), assign_two.tier), ("= 2".to_owned(), T0));
     });
 }
 

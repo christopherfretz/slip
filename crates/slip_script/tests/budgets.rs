@@ -25,6 +25,7 @@ constexpr void hold() { char* p = new char[1 << 20]; delete[] p; }
 constexpr int down(int n) { return n == 0 ? 0 : down(n - 1) + 1; }
 struct mine { int code; };
 namespace own { struct error { int n; }; }
+struct fake_error { u64 __n; };
 struct derived : slip::error { constexpr derived(const slip::error& e) : slip::error(e) {} };
 consteval bool is(const char* m) { return !slip::lookup(std::string("mode::") + m).empty(); }
 consteval void misuse() { (void)slip::extent_of(slip::lookup("lib::foo")[0]); }
@@ -62,6 +63,7 @@ consteval void transform() {
     try { misuse(); } catch (const slip::error&) { try { misuse_name(); } catch (const slip::error&) {} throw; }
   }
   if (is("own_error")) { try { misuse(); } catch (const slip::error&) {} throw own::error{1}; }
+  if (is("fake_error")) { try { misuse(); } catch (const slip::error&) {} throw fake_error{1}; }
   if (is("derived")) { try { misuse(); } catch (const slip::error& e) { throw derived(e); } }
 }
 "#;
@@ -338,6 +340,19 @@ fn m1_a_type_derived_from_slip_error_carries_its_refusal() {
         let f = failure(&o);
         assert!(f.refusal.is_some(), "{f:?}");
         assert!(f.message.ends_with(EXTENT_OF), "{}", f.message);
+    });
+}
+
+// WP-148 fix round 1 (M15b): a thrown transform class that defines its own
+// `__n` member holding a valid failure ordinal is NOT matched as `slip::error`
+// (matching is by class entity, not by member name).
+#[test]
+fn m1_a_class_with_its_own_dunder_n_member_is_not_slip_error() {
+    with("fake_error", &with_meta(MODES), &[], |l| {
+        let (o, _) = run(l, &mode("fake_error")).unwrap();
+        let f = failure(&o);
+        assert_eq!((f.kind, &f.refusal), (FailureKind::Uncaught, &None), "{f:?}");
+        assert!(f.message.contains("fake_error"), "{}", f.message);
     });
 }
 

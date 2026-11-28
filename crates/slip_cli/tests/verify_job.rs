@@ -1348,15 +1348,20 @@ fn l1_includer_directory_only() {
 // F2 (review), §5.3 G4: a response file the driver would read is a word
 // slip cannot examine; refused, the map job unchanged. Relative from a
 // directory outside the roots, and absolute in the subject.
+// Since WP-148 fix round 1 sets `FrontEndOptions::response_files = false`,
+// a bare `@file` word is rejected at parse time as an extra input; passing it
+// as a non-path option value (`-MT @...`) still parses cleanly so G4 is
+// exercised.
 #[test]
 fn g4_response_file() {
-    let tree = Tree::new("g4", &[("a.cpp", "int f() { return V; }\n"), ("flags.rsp", "-DV=1\n")]);
+    let tree = Tree::new("g4", &[("a.cpp", "int f() { return 1; }\n"), ("flags.rsp", "-DV=1\n")]);
     write(&tree.post.join("flags.rsp"), "-DV=2\n");
     for (dir, word) in [
         (tree.base.join("build"), "@../s/flags.rsp".to_owned()),
         (tree.subject.clone(), arg("@", &tree.subject.join("flags.rsp"))),
     ] {
-        let o = tree.observer_in(&dir, std::slice::from_ref(&word));
+        let flags = ["-MT".to_owned(), word.clone()];
+        let o = tree.observer_in(&dir, &flags);
         let m = tree.map(&o);
         assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
         let v = tree.verify(&o);
