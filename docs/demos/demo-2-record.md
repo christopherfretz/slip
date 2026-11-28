@@ -247,47 +247,74 @@ clang accepts, a regression of Kiln at this pin (Findings, F-3).
 
 | Field | Value |
 |---|---|
-| Date (UTC, start and end) | to be filled by the run |
-| Slip: version (`tool_slip`) and commit | to be filled by the run |
-| Kiln: version (`tool_kiln`) and the pin's commit | to be filled by the run |
-| Front-end configuration: the written-reference table by Kiln's dump flag or by the recording option (Kiln WP-2320) | to be filled by the run |
-| Whether KR1 amendment 1 §2 and `docs/wp/WP-073.md` part A are in the build | to be filled by the run |
-| Command, exactly as run | to be filled by the run |
-| Exit status | to be filled by the run |
-| Wall time of the whole command | to be filled by the run |
+| Date (UTC, start and end) | 2026-11-25 17:49:33 to 20:49:33 |
+| Slip: version (`tool_slip`) and commit | 0.0.0; the binaries built from `b0a00efd` |
+| Kiln: version (`tool_kiln`) and the pin's commit | 1.3.0; `60fb5ab9d` |
+| Front-end configuration: the written-reference table by Kiln's dump flag or by the recording option (Kiln WP-2320) | not recorded for this run |
+| Command, exactly as run | `xtask corpus rename llvm --from llvm::PowerOf2Ceil --to powerOf2Ceil --expect not_verified -j 6 --slip <target>/release/slip`, `SLIP_CORPUS_DIR=/build/slip-helper/corpus` |
+| Exit status | 0 (`corpus rename: ok`); `slip rename` 1 |
+| Wall time of the whole command | 10,800 s (3 h 0 min); `slip rename` 10,798.2 s |
+
+Host for this run: memory budget from the container's limit (16 GB),
+8 jobserver tokens, `-j 6`; the corpus a read-only copy on the build
+volume `/build` (ext4, does not fold case). Log: the coordinator's
+`.build/demo2/run4.log`.
 
 ### Summary lines
 
 The report's lines for the observers not verified are quoted too.
 
 ```
-to be filled by the run
+map: selected 4061, ok 4055, not ok 6, failed runs 0
+state accepted
+edit 37 in 14 file(s); shared 5; most observers 3813; nested 0
+kept 0; unresolved 2
+verify: verified 63, unchanged 0, mismatch 3972, not_parsed 20, unverifiable 0, never_parsed 0, failed 0
+agreement: stale 0, unused rules 0
+spellings: passed 26, failed 10
+residue: dependent 2, not_compiled 1, not_planned 26; mentions 0
+state not_verified
+...: its state `not_verified` does not permit `--patch` with the options given; nothing was written
+finding changed (anonymous namespace)::MathExtras_PowerOf2Ceil_Test::TestBody(): 1 observer(s), first llvm/unittests/Support/MathExtrasTest.cpp: llvm/unittests/Support/MathExtrasTest.cpp:150:3
+finding removed llvm::PowerOf2Ceil(unsigned long): 28 observer(s), ... MathExtras.h:394:17
+finding added llvm::powerOf2Ceil(unsigned long): 28 observer(s), ... MathExtras.h:394:17
+slip: not_parsed: .../SLPVectorizer.cpp: .../DenseSet.h:71:22: use of undeclared identifier 'PowerOf2Ceil'
+residue dependent: llvm/include/llvm/ADT/DenseSet.h:71:22
+residue dependent: llvm/include/llvm/ADT/DenseSet.h:76:22
+residue not_compiled: llvm/unittests/Support/MathExtrasTest.cpp:149:18
 ```
+
+The 3,972 mismatches are, as in run 1 (Findings, run 1 item 1), almost
+all `indeterminate` findings from units of the base image whose digest
+is not determined, thousands per large unit. The six not `ok` are `diagnosed`, the same six
+files as in run 3. The ten failed spellings are all
+`unseen` in `SLPVectorizer.cpp` (0 observers): that unit is among the
+20 `not_parsed` after the change, because `DenseSet.h:71`'s dependent
+call was left unrenamed (the two `not_parsed` lines the log prints
+both name `DenseSet.h:71:22`; the other 18 are in the report).
 
 ### Measurements (demo-2.md §4)
 
 | Quantity | Value |
 |---|---|
-| Wall time per step (plan, map, reduce, apply, verify, scan, conclude) | to be filled by the run |
-| Coordinator's peak resident size per step | to be filled by the run |
-| Map: `peak_rss_max`, `peak_rss_sum`, workers at once, cores | to be filled by the run |
-| Verify: `peak_rss_max`, `peak_rss_sum`, workers at once, cores | to be filled by the run |
-| `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.edits.shared`, `reduce.edits.max_observers`, `reduce.files`, `reduce.runs` | to be filled by the run |
-| Tally of verdicts; stale observers; unused rules | to be filled by the run |
-| Spelling obligations: count, passed, failed | to be filled by the run |
-| Residue by category; mentions | to be filled by the run |
-| Determinism: `slip reduce` again (check 2) | to be filled by the run |
+| Wall time per step | rename (plan, map, reduce, apply, verify, conclude) 10,798.2 s; reduce again 1.3 s; per-step times are in the store's run record, not extracted |
+| Coordinator's peak resident size per step; map and verify `peak_rss_*` | not extracted for this run |
+| `reduce.claims`, `reduce.sites`, `reduce.edits`, `reduce.edits.shared`, `reduce.edits.max_observers`, `reduce.files`, `reduce.runs` | 10,048 (replace 4,252, unresolved 5,796); 39 (live 37, unresolved 2); 37; 5; 3,813; 14; shards 4,055, unparsed 6 |
+| Tally of verdicts; stale observers; unused rules | verified 63; mismatch 3,972; not_parsed 20; stale 0; unused rules 0 |
+| Spelling obligations: count, passed, failed | 36; 26; 10 (all `unseen`, `SLPVectorizer.cpp`) |
+| Residue by category; mentions | dependent 2, not_compiled 1, not_planned 26; mentions 0 |
+| Determinism: `slip reduce` again (check 2) | ok, the same edit set `cf8bebeb…` |
 
 ### Comparison with demo-2.md §2.4
 
 | Expected | Found |
 |---|---|
-| `MathExtrasTest.cpp:150`–`:152`: `mismatch changed`, at the string literal | to be filled by the run |
-| `DenseSet.h:71`, `:76`: edited and exempted, or `unresolved` | to be filled by the run |
-| State `not_verified`, no patch written | to be filled by the run |
+| `MathExtrasTest.cpp:150`–`:152`: `mismatch changed`, at the string literal | Yes in substance: one `changed` finding on `MathExtras_PowerOf2Ceil_Test::TestBody()`, located at `:150:3`, 1 observer; `:149:18` is `not_compiled` residue |
+| `DenseSet.h:71`, `:76`: edited and exempted, or `unresolved` | `unresolved` (residue `dependent`, 2 sites); units that instantiate them are `not_parsed` after the change with "use of undeclared identifier 'PowerOf2Ceil'": the verification rejects them loudly |
+| State `not_verified`, no patch written | Yes: `state not_verified`, "nothing was written" |
 
-`not_plain` refusals at a macro invocation (`not_plain_at_macro`): to be
-filled by the run.
+`not_plain` refusals at a macro invocation (`not_plain_at_macro`): 0 in
+the log.
 
 ## The claims of demo-2.md §5 the runs support
 

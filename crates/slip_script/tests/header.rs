@@ -257,6 +257,8 @@ fn on_path(name: &str) -> Option<PathBuf> {
 /// The distinct suitable compilers on `PATH`, by the file they resolve to.
 fn suitable_compilers(scratch: &Path) -> Vec<(String, String)> {
     let probe = scratch.join("probe.cpp");
+    let tmp = scratch.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(&probe, "int main() {}\n").unwrap();
     let mut seen = Vec::new();
     let mut found = Vec::new();
@@ -267,11 +269,12 @@ fn suitable_compilers(scratch: &Path) -> Vec<(String, String)> {
             continue;
         }
         seen.push(real);
-        let accepts = Command::new(name)
-            .args(["-std=c++26", "-fsyntax-only"])
-            .arg(&probe)
-            .output()
-            .is_ok_and(|o| o.status.success());
+        let mut cmd = Command::new(name);
+        cmd.args(["-std=c++26", "-fsyntax-only"]).env("TMPDIR", &tmp);
+        if name.starts_with("clang") {
+            cmd.arg("-fno-crash-diagnostics");
+        }
+        let accepts = cmd.arg(&probe).output().is_ok_and(|o| o.status.success());
         let version = Command::new(name)
             .arg("--version")
             .output()
@@ -309,15 +312,20 @@ fn s2_1_6_examples_under_another_compiler() {
     }
     let include = repository_resource().join("include");
     let examples = repository_resource().join("examples");
+    let tmp = s.0.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     for (cxx, version) in &compilers {
         for example in ["swap_arguments.cpp", "rename_function.cpp"] {
             let file = examples.join(example);
-            let out = Command::new(cxx)
-                .args(["-std=c++26", "-fsyntax-only", "-I"])
+            let mut cmd = Command::new(cxx);
+            cmd.args(["-std=c++26", "-fsyntax-only", "-I"])
                 .arg(&include)
                 .arg(&file)
-                .output()
-                .unwrap();
+                .env("TMPDIR", &tmp);
+            if cxx.starts_with("clang") {
+                cmd.arg("-fno-crash-diagnostics");
+            }
+            let out = cmd.output().unwrap();
             let stderr = String::from_utf8_lossy(&out.stderr);
             say(&format!(
                 "header.rs: {cxx} ({version}) -std=c++26 -fsyntax-only {example}: {}\n{stderr}",

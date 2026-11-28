@@ -120,6 +120,7 @@ line. Nothing is printed when there is none. With any, standard error gets
 | `doc-links` | Every relative Markdown link in `docs/`, `spec/` and `README.md` points at an existing file. |
 | `api-tests` | Every directory under `crates/slip_script/tests/api/` with a `transform.cpp` has `t.cpp` and `expect.txt`, lies in no other, and its `// spec:` line names a heading of `spec/api.md`; no other file lies there (`spec/api.md` §11). |
 | `real-path` | Outside `crates/slip_spelling/`, non-test code under `crates/*/src/` does not name `canonicalize` unless the line directly above carries `// canonicalize: ` with a non-empty reason (`spec/edits.md` §2.1). |
+| `swallowed-result` | No `.rs` file under `crates/` or `xtask/` discards the `Result` of a callback-catching parse helper (`snippet::{parse, parse_with, parse_with_tables, preprocess}`, `parse_observer_with`, `common::{with_side, digest_side, digest_side_with, skip_unparsed}`) directly or via a local binding (`let _ =`, `let _name =`, `if let Ok` without a non-empty `else`, `let Ok ... else`, unguarded discarding `match` arms, `.ok()`, `.unwrap_or_default()`, `.unwrap_or()`, `.is_ok()`, or discarding `.unwrap_or_else()`). |
 
 Lints read the files tracked by git, so build output and worktrees are
 never scanned. If the root holds `.git` (a directory, or a file as in a
@@ -223,6 +224,26 @@ in both places.
   begin, after leading whitespace, with `// canonicalize: ` followed by
   a non-empty reason. Message:
   ``names `canonicalize`; use `slip_spelling::real_path`, or justify on the line above with `// canonicalize: <reason>` (spec/edits.md §2.1)``.
+
+- **`swallowed-result`.** Scans `.rs` files under `crates/` and `xtask/`
+  with the textual Rust tokeniser (`xtask/src/lint/rust_tokens.rs`,
+  comments and string literals skipped) for calls to
+  `snippet::parse`, `snippet::preprocess`, `parse_with`,
+  `parse_with_tables`, `parse_observer_with`, `common::with_side`,
+  `common::digest_side`, `common::digest_side_with`, and
+  `common::skip_unparsed` (a callback panic in these helpers comes back
+  as `Err`, so discarding it silently swallows test assertions). Tracks
+  unpropagated `let <var> = <call>(...);` bindings within their block
+  scope and rejects: `let _ = <call>(...)` and `let _<name> = <call>(...)`
+  without `?`, `.unwrap`, `.unwrap_err`, `.expect`, `.expect_err`, or a
+  non-discarding `.unwrap_or_else` at depth 0; `if let Ok(...) = <expr> { ... }`
+  with no `else` or an empty `else {}` (a non-empty `else` is accepted);
+  `let Ok(...) = <expr> else`; `match <expr> { ... }` with an unguarded
+  `Err(_)` / `Err(_name)` / `Err(..)` / `_` arm whose body discards the
+  error when no earlier guarded `Err(...) if ...` arm handles panics;
+  and `.ok()`, `.unwrap_or_default()`, `.unwrap_or(...)`, `.is_ok()`, or
+  a discarding `.unwrap_or_else(|_| ...)` / `.unwrap_or_else(|...| ())`
+  on the call or tracked binding.
 
 ## 4. Work packages
 
