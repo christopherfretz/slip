@@ -1470,7 +1470,9 @@ The rest of profile mode:
      definition-context operator set in `TemplateTables` `oper_lookups`
      (Kiln WP-2625, including C++20 rewritten comparison candidates:
      `operator==` for `!=` and `operator<=>` for `<`, `>`, `<=`, `>=`;
-     empty when nothing is found, absent for `.*` and `=`). In the full
+     empty when nothing is found, absent for `.*` and `=`, and recorded
+     even when no operand is type-dependent, which can only add
+     differences). In the full
      walk `templ::expr_maps` writes that set (`ref*sorted?`), and in
      profile mode `oper_left_out` raises the mark while `own_spelling`
      reads it as a `Fact::Oper` entry, identically to a dependent binary
