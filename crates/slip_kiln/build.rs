@@ -13,22 +13,40 @@ const PIN_LEN: usize = 9;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    let Some(manifest) = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from) else {
+    println!("cargo:rerun-if-env-changed=SLIP_KILN_PIN");
+
+    if let Some(raw) = std::env::var_os("SLIP_KILN_PIN") {
+        let s = raw.to_string_lossy();
+        let pin = short_pin(&s).unwrap_or_else(|| {
+            panic!(
+                "SLIP_KILN_PIN={s:?} is invalid: must be at least {PIN_LEN} ASCII hex digits \
+                 (e.g. SLIP_KILN_PIN=040bc36bf)"
+            )
+        });
+        println!("cargo:rustc-env=SLIP_KILN_PIN={pin}");
         return;
-    };
-    // crates/slip_kiln -> workspace root -> kiln submodule.
-    let Some(root) = manifest.parent().and_then(Path::parent) else {
-        return;
-    };
-    let kiln = root.join("kiln");
-    let dot_git = kiln.join(".git");
-    if dot_git.is_file() {
-        println!("cargo:rerun-if-changed={}", dot_git.display());
     }
 
-    if let Some(pin) = pin_via_git(&kiln).or_else(|| pin_via_git_files(&kiln)) {
-        println!("cargo:rustc-env=SLIP_KILN_PIN={pin}");
-    }
+    let pin = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .and_then(|m| m.parent().and_then(Path::parent).map(Path::to_path_buf))
+        .and_then(|root| {
+            let kiln = root.join("kiln");
+            let dot_git = kiln.join(".git");
+            if dot_git.is_file() {
+                println!("cargo:rerun-if-changed={}", dot_git.display());
+            }
+            pin_via_git(&kiln).or_else(|| pin_via_git_files(&kiln))
+        });
+
+    let Some(pin) = pin else {
+        panic!(
+            "cannot determine the pinned `kiln` submodule commit (no git metadata found under \
+             `kiln/`): set SLIP_KILN_PIN to the {PIN_LEN}+ hex commit id of Kiln (e.g. \
+             SLIP_KILN_PIN=040bc36bf)"
+        );
+    };
+    println!("cargo:rustc-env=SLIP_KILN_PIN={pin}");
 }
 
 fn short_pin(full_or_short: &str) -> Option<String> {

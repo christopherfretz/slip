@@ -82,31 +82,23 @@ pub use lookups::Lookups;
 pub use parse::{ParseOptions, Tokens, Unit, parse_observer, parse_observer_with};
 
 /// The 9-hex-digit commit pin of the `kiln` submodule this build of Slip
-/// links (`SLIP_KILN_PIN` from `build.rs`, falling back to the first 9 hex
-/// digits of `kiln_driver::version::GIT_SHA`). `None` only when built outside
-/// a git checkout with neither set.
-pub fn kiln_pin() -> Option<&'static str> {
-    option_env!("SLIP_KILN_PIN").filter(|s| !s.is_empty()).or_else(|| {
-        kiln_driver::version::GIT_SHA.filter(|s| !s.is_empty()).map(|s| &s[..s.len().min(9)])
-    })
+/// links (`SLIP_KILN_PIN`, validated and set by `build.rs`, which fails the
+/// build closed if neither `SLIP_KILN_PIN` nor the `kiln` submodule git
+/// metadata supplies a pin).
+pub fn kiln_pin() -> &'static str {
+    env!("SLIP_KILN_PIN")
 }
 
 /// The identity of the Kiln front end this build of Slip links:
-/// `MAJOR.MINOR.PATCH[-PRE]+<9-hex-pin>` when [`kiln_pin`] is known (e.g.
-/// `1.3.0+040bc36bf`), else `MAJOR.MINOR.PATCH[-PRE]`.
+/// `MAJOR.MINOR.PATCH[-PRE]+<9-hex-pin>` (e.g. `1.3.0+040bc36bf`).
 ///
 /// Including the pinned commit ensures that moving the `kiln` submodule
 /// changes the plan's identity (`Plan.tool_kiln`) and lets Slip refuse plans
 /// and map runs created at another Kiln pin even when Kiln's semver does not
-/// change.
+/// change. An unpinned spelling cannot be produced.
 pub fn kiln_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION
-        .get_or_init(|| match kiln_pin() {
-            Some(pin) => format!("{}+{pin}", kiln_driver::version::VERSION),
-            None => kiln_driver::version::VERSION.to_owned(),
-        })
-        .as_str()
+    VERSION.get_or_init(|| format!("{}+{}", kiln_driver::version::VERSION, kiln_pin())).as_str()
 }
 
 #[cfg(test)]
@@ -115,7 +107,7 @@ mod tests {
     fn links_kiln() {
         let v = super::kiln_version();
         assert!(v.split('.').count() >= 3, "unexpected Kiln version {v:?}");
-        let pin = super::kiln_pin().expect("kiln submodule pin embedded at build time");
+        let pin = super::kiln_pin();
         assert_eq!(pin.len(), 9, "expected 9-hex Kiln pin, got {pin:?}");
         assert!(
             pin.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),

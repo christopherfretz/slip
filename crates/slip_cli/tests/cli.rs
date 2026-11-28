@@ -581,7 +581,7 @@ fn s8_version() {
     let f = Fixture::new("version");
     let out = f.slip(&["--version"]);
     assert_eq!(out.code(), Some(0), "{out:?}");
-    let pin = slip_kiln::kiln_pin().expect("kiln pin embedded at build time");
+    let pin = slip_kiln::kiln_pin();
     assert_eq!(out.stdout, format!("{}\n", slip_cli::version_line()));
     assert!(
         out.stdout.contains(&format!("+{pin})")),

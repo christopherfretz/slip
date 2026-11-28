@@ -2359,7 +2359,7 @@ fn wp173_old_kiln_pin_plan_and_map_run_are_refused() {
     let cur_plan_id = Digest::from_hex(&cur_plan_hex).unwrap();
     let cur_plan = f.plan(&cur_plan_hex);
     let cur_kiln = slip_kiln::kiln_version();
-    let cur_pin = slip_kiln::kiln_pin().expect("kiln pin embedded at build time");
+    let cur_pin = slip_kiln::kiln_pin();
     assert_eq!(cur_plan.tool_kiln, cur_kiln);
     assert!(cur_kiln.ends_with(&format!("+{cur_pin}")), "unexpected tool_kiln {cur_kiln:?}");
 
