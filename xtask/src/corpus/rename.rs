@@ -25,7 +25,7 @@
 //! ([`result_json`]); `<target>` is `--from` with `::` written `.`
 //! ([`target_name`]).
 
-use crate::corpus::rows::ExpectedUnparsed;
+use crate::corpus::rows::{ExpectedExcluded, ExpectedUnparsed};
 use crate::corpus::{self, Corpus, Ctx, Layout, build_tree, rows};
 use crate::invariants::{self, Failure, Side};
 use crate::perf::{self, Measured};
@@ -39,7 +39,7 @@ use slip_model::json::{self, Value};
 use slip_model::overlay::Overlay;
 use slip_model::result::{Category, State, TransformResult};
 use slip_model::transform_run::{StepName, TransformRun};
-use slip_model::{Digest, Language, Plan, RunRecord, Status};
+use slip_model::{Digest, Language, Plan, Reason as PlanReason, RunRecord, Status};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, Read, Write};
@@ -306,10 +306,11 @@ pub fn check_database(path: &Path) -> Result<(), String> {
             record(format!("entry {i}: missing `directory`"));
             continue;
         };
+        if dir.is_empty() {
+            record(format!("entry {i}: empty `directory`"));
+            continue;
+        }
         let dir_res = dir_cache.entry(dir).or_insert_with(|| {
-            if dir.is_empty() {
-                return Err("empty `directory`".to_owned());
-            }
             if !Path::new(dir).is_absolute() {
                 return Err("not an absolute path".to_owned());
             }
@@ -342,7 +343,8 @@ pub fn check_database(path: &Path) -> Result<(), String> {
     if broken == 0 {
         return Ok(());
     }
-    let mut msg = format!("{broken} database entries cannot run: {}", first[0]);
+    let noun = if broken == 1 { "entry" } else { "entries" };
+    let mut msg = format!("{broken} database {noun} cannot run: {}", first[0]);
     for line in &first[1..] {
         msg.push_str("\n  ");
         msg.push_str(line);
@@ -350,22 +352,73 @@ pub fn check_database(path: &Path) -> Result<(), String> {
     Err(msg)
 }
 
-/// Check 1 (`coverage`, `spec/harness.md` §6.5): every observer of the plan
-/// has map outcome `ok` in `loaded`, except `expected` (paths relative to
-/// `src`), which must have their listed non-`ok` outcomes. Returns the
-/// outcome and up to [`COVERAGE_LISTED`] detail lines to print when failing.
-pub fn check_coverage(
+struct CoverageIssues {
+    unexpected_excl: Vec<(String, PlanReason, String)>,
+    mismatched_excl: Vec<(String, PlanReason, String, String)>,
+    unexpected: Vec<(String, String, String)>,
+    mismatched: Vec<(String, Status, String, String)>,
+}
+
+fn collect_excluded(
+    plan: &Plan,
+    src: &Path,
+    expected_excluded: &[ExpectedExcluded],
+    issues: &mut CoverageIssues,
+) {
+    let expected_map: BTreeMap<&str, PlanReason> =
+        expected_excluded.iter().map(|e| (e.path.as_str(), e.reason)).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for ex in &plan.excluded {
+        let ex_path = Path::new(OsStr::from_bytes(&ex.file));
+        let rel = if ex_path.is_absolute() {
+            ex_path.strip_prefix(src).ok().and_then(Path::to_str)
+        } else {
+            ex_path.to_str().filter(|s| !s.is_empty())
+        };
+        let display_path = if ex.file.is_empty() {
+            format!("entry {}", ex.entry)
+        } else {
+            rel.map_or_else(|| perf::render::text(&ex.file), str::to_owned)
+        };
+        let first_detail = ex.detail.lines().next().unwrap_or("").to_owned();
+        if let Some(r) = rel
+            && let Some(&want) = expected_map.get(r)
+        {
+            seen.insert(r);
+            if ex.reason != want {
+                issues.mismatched_excl.push((
+                    r.to_owned(),
+                    want,
+                    perf::reason_name(ex.reason).to_owned(),
+                    first_detail,
+                ));
+            }
+        } else {
+            issues.unexpected_excl.push((display_path, ex.reason, first_detail));
+        }
+    }
+    for e in expected_excluded {
+        if !seen.contains(e.path.as_str()) {
+            issues.mismatched_excl.push((
+                e.path.clone(),
+                e.reason,
+                "not excluded".to_owned(),
+                String::new(),
+            ));
+        }
+    }
+}
+
+fn collect_observers(
     loaded: &perf::Loaded,
     src: &Path,
-    expected: &[ExpectedUnparsed],
-) -> (Outcome, Vec<String>) {
+    expected_unparsed: &[ExpectedUnparsed],
+    issues: &mut CoverageIssues,
+) -> usize {
     let expected_map: BTreeMap<&str, Status> =
-        expected.iter().map(|e| (e.path.as_str(), e.status)).collect();
-    let mut seen_expected: BTreeSet<&str> = BTreeSet::new();
-    let mut unexpected: Vec<(String, String, String)> = Vec::new();
-    let mut mismatched: Vec<(String, Status, String, String)> = Vec::new();
+        expected_unparsed.iter().map(|e| (e.path.as_str(), e.status)).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut ok_count = 0usize;
-
     for o in &loaded.plan.observers {
         let main_path = Path::new(OsStr::from_bytes(&o.main.path));
         let rel = main_path.strip_prefix(src).ok().and_then(Path::to_str);
@@ -389,19 +442,19 @@ pub fn check_coverage(
         if let Some(r) = rel
             && let Some(&want) = expected_map.get(r)
         {
-            seen_expected.insert(r);
+            seen.insert(r);
             if actual_status != Some(want) {
-                mismatched.push((r.to_owned(), want, outcome_name, first_err));
+                issues.mismatched.push((r.to_owned(), want, outcome_name, first_err));
             }
         } else if actual_status == Some(Status::Ok) {
             ok_count += 1;
         } else {
-            unexpected.push((display_path, outcome_name, first_err));
+            issues.unexpected.push((display_path, outcome_name, first_err));
         }
     }
-    for e in expected {
-        if !seen_expected.contains(e.path.as_str()) {
-            mismatched.push((
+    for e in expected_unparsed {
+        if !seen.contains(e.path.as_str()) {
+            issues.mismatched.push((
                 e.path.clone(),
                 e.status,
                 "absent from plan".to_owned(),
@@ -409,54 +462,126 @@ pub fn check_coverage(
             ));
         }
     }
-    if unexpected.is_empty() && mismatched.is_empty() {
-        let total = loaded.plan.observers.len();
-        let detail = if expected.is_empty() {
-            format!("{ok_count} of {total} observers ok")
-        } else {
-            format!("{ok_count} of {total} observers ok ({} expected unparsed)", expected.len())
-        };
-        return (Outcome::Ok(detail), Vec::new());
-    }
+    ok_count
+}
+
+fn format_coverage_failure(
+    issues: &CoverageIssues,
+    expected_unparsed: usize,
+    expected_excluded: usize,
+) -> (Outcome, Vec<String>) {
+    let total_issues = issues.unexpected_excl.len()
+        + issues.mismatched_excl.len()
+        + issues.unexpected.len()
+        + issues.mismatched.len();
     let mut lines = Vec::new();
-    for (path, outcome, err) in &unexpected {
-        if lines.len() >= COVERAGE_LISTED {
-            break;
+    let mut push_line = |line: String| {
+        if lines.len() < COVERAGE_LISTED {
+            lines.push(line);
         }
-        if err.is_empty() {
-            lines.push(format!("  {path}: {outcome}"));
+    };
+    let with_tail = |head: String, tail: &str| {
+        if tail.is_empty() {
+            head
         } else {
-            lines.push(format!("  {path}: {outcome}: {}", perf::render::text(err.as_bytes())));
+            format!("{head}: {}", perf::render::text(tail.as_bytes()))
         }
+    };
+    for (path, reason, detail) in &issues.unexpected_excl {
+        push_line(with_tail(format!("  excluded {path}: {}", perf::reason_name(*reason)), detail));
     }
-    for (path, want, outcome, err) in &mismatched {
-        if lines.len() >= COVERAGE_LISTED {
-            break;
-        }
-        let want_name = perf::status_name(*want);
-        if err.is_empty() {
-            lines.push(format!("  {path}: {outcome} (expected {want_name})"));
+    for (path, want, actual, detail) in &issues.mismatched_excl {
+        push_line(with_tail(
+            format!("  excluded {path}: {actual} (expected {})", perf::reason_name(*want)),
+            detail,
+        ));
+    }
+    for (path, outcome, err) in &issues.unexpected {
+        push_line(with_tail(format!("  {path}: {outcome}"), err));
+    }
+    for (path, want, outcome, err) in &issues.mismatched {
+        push_line(with_tail(
+            format!("  {path}: {outcome} (expected {})", perf::status_name(*want)),
+            err,
+        ));
+    }
+    if total_issues > COVERAGE_LISTED {
+        lines.push(format!("  (+{} more)", total_issues - COVERAGE_LISTED));
+    }
+    let detail = if !issues.unexpected_excl.is_empty() {
+        let n = issues.unexpected_excl.len();
+        let noun = if n == 1 { "entry" } else { "entries" };
+        format!("{n} database {noun} excluded beyond the expected {expected_excluded}")
+    } else if !issues.mismatched_excl.is_empty() {
+        let (path, _, actual, _) = &issues.mismatched_excl[0];
+        if issues.mismatched_excl.len() == 1 {
+            format!("expected excluded entry {path} is {actual}")
         } else {
-            lines.push(format!(
-                "  {path}: {outcome} (expected {want_name}): {}",
-                perf::render::text(err.as_bytes())
-            ));
+            format!(
+                "expected excluded entry {path} is {actual} (+{} more)",
+                issues.mismatched_excl.len() - 1
+            )
         }
-    }
-    let detail = if unexpected.is_empty() {
-        let (path, _, outcome, _) = &mismatched[0];
-        if mismatched.len() == 1 {
+    } else if !issues.unexpected.is_empty() {
+        let n = issues.unexpected.len();
+        let noun = if n == 1 { "observer" } else { "observers" };
+        format!("{n} {noun} not ok beyond the expected {expected_unparsed}")
+    } else {
+        let (path, _, outcome, _) = &issues.mismatched[0];
+        if issues.mismatched.len() == 1 {
             format!("expected unparsed observer {path} is {outcome}")
         } else {
             format!(
                 "expected unparsed observer {path} is {outcome} (+{} more)",
-                mismatched.len() - 1
+                issues.mismatched.len() - 1
             )
         }
-    } else {
-        format!("{} observers not ok beyond the expected {}", unexpected.len(), expected.len())
     };
     (Outcome::Fail(detail), lines)
+}
+
+/// Check 1 (`coverage`, `spec/harness.md` §6.5): every entry excluded by the
+/// plan matches `expected_excluded` (paths relative to `src`) with its exact
+/// reason, and every observer of the plan has map outcome `ok` in `loaded`,
+/// except `expected_unparsed`, which must have their listed non-`ok` outcomes.
+/// Returns the outcome and up to [`COVERAGE_LISTED`] detail lines (plus a
+/// trailing `  (+<n> more)` line when more fail) to print when failing.
+pub fn check_coverage(
+    loaded: &perf::Loaded,
+    src: &Path,
+    expected_unparsed: &[ExpectedUnparsed],
+    expected_excluded: &[ExpectedExcluded],
+) -> (Outcome, Vec<String>) {
+    let mut issues = CoverageIssues {
+        unexpected_excl: Vec::new(),
+        mismatched_excl: Vec::new(),
+        unexpected: Vec::new(),
+        mismatched: Vec::new(),
+    };
+    collect_excluded(&loaded.plan, src, expected_excluded, &mut issues);
+    let ok_count = collect_observers(loaded, src, expected_unparsed, &mut issues);
+    if issues.unexpected_excl.is_empty()
+        && issues.mismatched_excl.is_empty()
+        && issues.unexpected.is_empty()
+        && issues.mismatched.is_empty()
+    {
+        let total = loaded.plan.observers.len();
+        let obs_noun = if total == 1 { "observer" } else { "observers" };
+        let mut notes = Vec::new();
+        if !expected_unparsed.is_empty() {
+            notes.push(format!("{} expected unparsed", expected_unparsed.len()));
+        }
+        if !expected_excluded.is_empty() {
+            notes.push(format!("{} expected excluded", expected_excluded.len()));
+        }
+        let detail = if notes.is_empty() {
+            format!("{ok_count} of {total} {obs_noun} ok")
+        } else {
+            format!("{ok_count} of {total} {obs_noun} ok ({})", notes.join(", "))
+        };
+        return (Outcome::Ok(detail), Vec::new());
+    }
+    format_coverage_failure(&issues, expected_unparsed.len(), expected_excluded.len())
 }
 
 /// Check 2 (`state`): the state is `expect`, or `verified` or
@@ -1517,7 +1642,8 @@ impl Rename<'_> {
             Ok(l) => l,
             Err(e) => return Outcome::Fail(e),
         };
-        let (outcome, lines) = check_coverage(&loaded, &src, &self.c.expected_unparsed);
+        let (outcome, lines) =
+            check_coverage(&loaded, &src, &self.c.expected_unparsed, &self.c.expected_excluded);
         for l in &lines {
             say(out, l);
         }
@@ -1767,6 +1893,10 @@ impl Rename<'_> {
     /// `--write`, leaves the copy byte-identical to the source directory.
     fn back(&self, owned: &[PathBuf], out: &mut dyn Write) -> Result<Outcome, String> {
         let p = &self.paths;
+        let back_db = p.build.join("compile_commands.json");
+        if let Err(e) = check_database(&back_db) {
+            return Ok(Outcome::Fail(format!("database: {e}")));
+        }
         let run: Vec<String> = ["rename", "--from", &self.opts.from, "--to", &self.opts.to]
             .iter()
             .map(|s| (*s).to_owned())
@@ -1778,7 +1908,7 @@ impl Rename<'_> {
             .map_err(|e| format!("{}: {e}", self.layout.src.display()))?;
         let mut args: Vec<OsString> = inverse.iter().map(OsString::from).collect();
         args.extend(self.kind_args());
-        args.extend(["--db".into(), p.build.join("compile_commands.json").into()]);
+        args.extend(["--db".into(), back_db.into()]);
         for o in owned {
             let rel = o.strip_prefix(&src).unwrap_or(Path::new(""));
             args.extend(["--owned".into(), p.copy.join(rel).into()]);

@@ -10,7 +10,7 @@
 //! integers, arrays of strings), and anything else is rejected.
 
 use crate::lint::manifest::{self, Entry};
-use slip_model::Status;
+use slip_model::{Reason, Status};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -19,7 +19,8 @@ pub const CORPORA: &str = "bench/corpora.toml";
 /// Kiln's list of open-source projects, relative to the repository root.
 pub const KILN_PROJECTS: &str = "kiln/scripts/oss/projects.toml";
 
-/// The keys a corpus row may have; all except `expected_unparsed` are required.
+/// The keys a corpus row may have; all except `expected_unparsed` and
+/// `expected_excluded` are required.
 const KEYS: &[&str] = &[
     "kiln",
     "cxx_std",
@@ -29,6 +30,7 @@ const KEYS: &[&str] = &[
     "configure",
     "generate",
     "expected_unparsed",
+    "expected_excluded",
 ];
 
 /// One observer of a corpus that `corpus rename`'s `coverage` check expects
@@ -41,6 +43,18 @@ pub struct ExpectedUnparsed {
     pub status: Status,
     /// One-line reason.
     pub reason: String,
+}
+
+/// One database entry of a corpus that `corpus rename`'s `coverage` check
+/// expects the plan to exclude (`spec/harness.md` §6.5, §8.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedExcluded {
+    /// Path relative to the corpus's `src/`.
+    pub path: String,
+    /// Expected plan exclusion reason (`spec/model.md` §7).
+    pub reason: Reason,
+    /// One-line note.
+    pub note: String,
 }
 
 /// The cmake variables Slip sets itself, which `configure` must not set.
@@ -78,6 +92,9 @@ pub struct Corpus {
     /// Observers expected to end with a non-`ok` map outcome
     /// (`spec/harness.md` §6.5, §8.1).
     pub expected_unparsed: Vec<ExpectedUnparsed>,
+    /// Database entries expected to be excluded by the plan
+    /// (`spec/harness.md` §6.5, §8.1).
+    pub expected_excluded: Vec<ExpectedExcluded>,
 }
 
 /// Reads `bench/corpora.toml` and `kiln/scripts/oss/projects.toml` under
@@ -152,6 +169,10 @@ pub fn parse(corpora: &str, kiln: &str) -> Result<Vec<Corpus>, String> {
             None => Vec::new(),
             Some(entry) => parse_expected_unparsed(entry, CORPORA)?,
         };
+        let expected_excluded = match entries.get("expected_excluded") {
+            None => Vec::new(),
+            Some(entry) => parse_expected_excluded(entry, CORPORA)?,
+        };
         let Some((_, krow)) = kiln_rows.get(&kiln_name) else {
             return Err(format!(
                 "{}: [{name}] names `{kiln_name}`, which is not a table of {KILN_PROJECTS}",
@@ -172,6 +193,7 @@ pub fn parse(corpora: &str, kiln: &str) -> Result<Vec<Corpus>, String> {
             configure,
             generate,
             expected_unparsed,
+            expected_excluded,
         });
     }
     Ok(out)
@@ -347,6 +369,13 @@ fn reserved(arg: &str) -> bool {
     RESERVED.contains(&var)
 }
 
+fn valid_src_rel_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains(char::is_whitespace)
+        && path.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
 /// Parses `expected_unparsed` entries of the form `<outcome>:<path>:<reason>`.
 fn parse_expected_unparsed(e: &Entry, file: &str) -> Result<Vec<ExpectedUnparsed>, String> {
     let raw = array(e, file)?;
@@ -373,11 +402,7 @@ fn parse_expected_unparsed(e: &Entry, file: &str) -> Result<Vec<ExpectedUnparsed
                 ));
             }
         };
-        if path.is_empty()
-            || path.starts_with('/')
-            || path.contains(char::is_whitespace)
-            || path.split('/').any(|c| c.is_empty() || c == "." || c == "..")
-        {
+        if !valid_src_rel_path(path) {
             return Err(format!(
                 "{file}:{}: `expected_unparsed` path `{path}` is not a relative path under `src/`",
                 e.line
@@ -394,6 +419,52 @@ fn parse_expected_unparsed(e: &Entry, file: &str) -> Result<Vec<ExpectedUnparsed
             return Err(format!("{file}:{}: `expected_unparsed` lists `{path}` twice", e.line));
         }
         out.push(ExpectedUnparsed { path: path.to_owned(), status, reason: reason.to_owned() });
+    }
+    Ok(out)
+}
+
+/// Parses `expected_excluded` entries of the form `<reason>:<path>:<note>`.
+fn parse_expected_excluded(e: &Entry, file: &str) -> Result<Vec<ExpectedExcluded>, String> {
+    let raw = array(e, file)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let mut parts = item.splitn(3, ':');
+        let (Some(reason_str), Some(path), Some(note)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(format!(
+                "{file}:{}: `expected_excluded` entry `{item}` must be `<reason>:<path>:<note>`",
+                e.line
+            ));
+        };
+        let Some(reason) =
+            crate::perf::REASONS.into_iter().find(|r| crate::perf::reason_name(*r) == reason_str)
+        else {
+            let valid: Vec<&str> =
+                crate::perf::REASONS.into_iter().map(crate::perf::reason_name).collect();
+            return Err(format!(
+                "{file}:{}: `expected_excluded` reason `{reason_str}` must be one of {}",
+                e.line,
+                valid.join(", ")
+            ));
+        };
+        if !valid_src_rel_path(path) {
+            return Err(format!(
+                "{file}:{}: `expected_excluded` path `{path}` is not a relative path under `src/`",
+                e.line
+            ));
+        }
+        let note = note.trim();
+        if note.is_empty() || note.contains(['\n', '\r']) {
+            return Err(format!(
+                "{file}:{}: `expected_excluded` entry `{item}` needs a one-line note",
+                e.line
+            ));
+        }
+        if !seen.insert(path.to_owned()) {
+            return Err(format!("{file}:{}: `expected_excluded` lists `{path}` twice", e.line));
+        }
+        out.push(ExpectedExcluded { path: path.to_owned(), reason, note: note.to_owned() });
     }
     Ok(out)
 }

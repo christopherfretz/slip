@@ -637,10 +637,12 @@ corpus's build directory, `--allow-unparsed`, `--allow-residue`, and
 as fetched). `--owned` defaults to the corpus's source directory. It then
 checks, in order:
 
-1. **coverage**: every observer of the plan has map outcome `ok`, except the
-   corpus's **expected unparsed observers** (§8.1, §8.7), which must have
-   their listed non-`ok` outcomes (read from the store's map phase run
-   record and its shards);
+1. **coverage**: every database entry excluded by the plan matches the
+   corpus's **expected excluded entries** (§8.1, empty for `llvm`), and
+   every observer of the plan has map outcome `ok`, except the corpus's
+   **expected unparsed observers** (§8.1, §8.7), which must have their
+   listed non-`ok` outcomes (read from the store's map phase run record
+   and its shards);
 2. **state**: the state is `--expect` (default `verified_with_residue` or
    `verified`);
 3. **determinism**: `slip reduce` run again over the same shards gives the
@@ -690,13 +692,18 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   residue. A given `--owned` must be under `src/` (real paths), or the
   command stops before `slip` runs.
 - **Before `slip` runs.** For every run (not only `--build`), the
-  compilation database is read and every entry's `directory` must exist
-  and be a directory and its `file` (resolved against `directory` when
-  relative) must exist as a regular file. Otherwise the command stops
-  before `slip` runs and before writing any store, with exit status 2,
-  naming the count and the first 10 (`xtask corpus rename: <n> database
-  entries cannot run: <dir>: <reason>`, with entries 2 to 10 on indented
-  lines).
+  compilation database is read and every entry's `directory` must be a
+  non-empty **absolute** path that exists and is a directory, and its
+  `file` (non-empty; resolved against `directory` when relative) must
+  exist as a regular file. Otherwise the command stops before `slip`
+  runs and before writing any store, with exit status 2, naming the
+  count and the first 10 (`xtask corpus rename: <n> database entry|entries
+  cannot run: <first>`, with entries 2 to 10 on indented lines). Each
+  entry line has one of three forms: `entry <i>: <reason>` (non-object
+  entry, missing `directory`, or empty `directory`), `<dir>: <reason>`
+  (relative, missing, or non-directory `directory`, or missing/empty
+  `file`), or `<file>: <reason>` (resolved `file` missing or not a
+  regular file).
 - **The run.** `slip rename` is given `--kind` and `-j` when the command
   is; its lines are printed as they come. Status 2 or 3, or a run that
   prints no `result` line or a state other than its result's, is an
@@ -711,15 +718,33 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   A result with no overlay (`refused`) has no post-image: checks 4 to 6
   are `skipped` even when asked for.
 - **1 (`coverage`).** Reads the map phase run record named by the
-  transform run record (`perf::load`) and verifies each plan observer's
-  map shard against the run record (`invariants::side`). `ok` when the
-  set of plan observers whose map outcome is not `ok` is exactly the
-  corpus's `expected_unparsed` list (§8.1, paths relative to `src/`) with
-  those exact outcomes; `FAIL` otherwise, with detail `<k> observers not
-  ok beyond the expected <e>` (or `expected unparsed observer <path> is
-  <outcome>` when a listed observer parsed, changed outcome, or is absent
-  from the plan), printing up to 10 such observers with their outcome and
-  first error line.
+  transform run record (`perf::load`, failing if none is named), checks
+  `plan.excluded` against the corpus's `expected_excluded` list (§8.1,
+  paths relative to `src/`), and verifies each plan observer's map shard
+  against the run record (`invariants::side`) and `expected_unparsed`
+  (§8.1, paths relative to `src/`). `ok` when the excluded entries match
+  `expected_excluded` with their exact reasons and the non-`ok` plan
+  observers match `expected_unparsed` with their exact outcomes
+  (`<ok> of <total> observer|observers ok`, with `(<u> expected unparsed)`
+  and/or `(<x> expected excluded)` when those lists are non-empty).
+  `FAIL` otherwise, printing up to 10 failing entries (with a trailing
+  `(+<n> more)` line when more than 10 fail) in precedence order:
+  unexpected excluded entries (`excluded <path>: <reason>[: <detail>]`),
+  mismatched or missing expected excluded entries
+  (`excluded <path>: <actual> (expected <reason>)[: <detail>]`),
+  unexpected non-`ok` observers (`<path>: <outcome>[: <first error>]`),
+  and mismatched or absent expected unparsed observers
+  (`<path>: <outcome> (expected <status>)[: <first error>]`). When more
+  than one kind fails, the check `<detail>` follows the same precedence
+  (first non-empty wins):
+  1. `<k> database entry|entries excluded beyond the expected <e>`;
+  2. `expected excluded entry <path> is <actual>` (suffixed `(+<m> more)`
+     when more than one expected excluded entry mismatches or was not
+     excluded);
+  3. `<k> observer|observers not ok beyond the expected <e>`;
+  4. `expected unparsed observer <path> is <outcome>` (suffixed
+     `(+<m> more)` when more than one expected unparsed observer parsed,
+     changed outcome, or is absent from the plan).
 - **2 (`state`)** also fails a `verified` or `verified_with_residue` run
   that wrote no patch (its `--patch` refused at apply, `spec/edits.md`
   §7.2).
@@ -749,12 +774,17 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   cmake runs with §8.3's arguments over the copy, then `make` of the
   `generate` entries (§8.3, without its promised-file check) and
   `make all`, with no `-j` (the jobserver in `MAKEFLAGS` bounds them).
-- **6 (`back`).** The inverse is §6.4's (`--from <prefix>::<to> --to <last>`),
-  over `rename-build/compile_commands.json`, `--owned` mapped into the
-  copy, `--allow-unparsed --allow-residue --write`; status 0 or 1 goes
-  on to the comparison. Every entry of `src/` (without `.git`) and of the
-  copy is compared: presence, kind, a regular file's bytes, a link's
-  target; modes and times are not.
+- **6 (`back`).** Runs the same compilation-database pre-flight check as
+  above on `rename-build/compile_commands.json` (failing `back` with
+  `database: …` before `slip` runs if any entry cannot run), then runs
+  the inverse of §6.4 (`--from <prefix>::<to> --to <last>`) over
+  `rename-build/compile_commands.json`, `--owned` mapped into the copy,
+  `--allow-unparsed --allow-residue --write`; status 0 or 1 goes on to
+  the comparison. `back` does not run a separate `coverage` check on the
+  inverse store: the inverse run is guarded by the byte-for-byte
+  comparison of every entry of `src/` (without `.git`) and of the copy
+  (presence, kind, a regular file's bytes, a link's target; modes and
+  times are not).
 - **Removal.** `rename-copy/` and `rename-build/` are removed only by
   their full paths and only when strictly under the corpus directory
   (§9.1's rule); `removed <path>` or `kept <path>` is printed for each.
@@ -1063,8 +1093,8 @@ cargo xtask corpus path <name> [--db]
 ### 8.1 `bench/corpora.toml`
 
 One table per corpus; the table name is the corpus name (lower-case ASCII
-letters, digits, `-`, `_`). All keys except `expected_unparsed` are
-required; any other key is an error.
+letters, digits, `-`, `_`). All keys except `expected_unparsed` and
+`expected_excluded` are required; any other key is an error.
 
 | Key | Value |
 |---|---|
@@ -1075,6 +1105,7 @@ required; any other key is an error.
 | `configure` | array of strings, further CMake arguments, in order |
 | `generate` | non-empty array of distinct entries: a build-target name (`[A-Za-z0-9_.+-]`, not starting with `-`), or `<target>:<file>`, one generated file made by a rule of that target's `build.make` (a relative path without `.`, `..` or empty components, without whitespace or `:`, with an extension of §8.6) |
 | `expected_unparsed` | optional array of strings (default empty), each `<outcome>:<path>:<reason>`: `<outcome>` is `diagnosed`, `rejected` or `failed`; `<path>` is a unique relative path under `src/` (no `.`, `..`, empty components, whitespace or `:`); `<reason>` is a non-empty one-line reason. Used by `corpus rename`'s `coverage` check (§6.5) |
+| `expected_excluded` | optional array of strings (default empty), each `<reason>:<path>:<note>`: `<reason>` is a plan exclusion reason (`not_a_compile`, `unsupported_language`, `unsupported_flag`, `missing_file`, `malformed_entry`, or `unsupported_compiler`); `<path>` is a unique relative path under `src/` (no `.`, `..`, empty components, whitespace or `:`); `<note>` is a non-empty one-line note. Used by `corpus rename`'s `coverage` check (§6.5) |
 
 The pin comes from the Kiln row, so Slip and Kiln measure the same code:
 its `url` (a required string: non-empty, not starting with `-`, no
@@ -1265,7 +1296,8 @@ What a parse of it finds, and why (`bench/baselines/llvm.json` holds the
 counts):
 
 - The database has 4069 entries and the plan 4061 observers, none
-  excluded: eight files (seven of `llvm/utils/TableGen`, and
+  excluded (`expected_excluded` is empty for `llvm`): eight files (seven
+  of `llvm/utils/TableGen`, and
   `clang/tools/clang-fuzzer/DummyClangFuzzer.cpp`) are each compiled twice
   with one command, and each pair is one observer (`spec/cdb.md` §7).
 - Two units are `diagnosed`, and clang 19 rejects them with the same

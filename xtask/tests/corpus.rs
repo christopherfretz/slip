@@ -140,6 +140,29 @@ fn rejects_malformed_rows() {
             format!("{good}expected_unparsed = [\"diagnosed:a.cpp:r1\", \"failed:a.cpp:r2\"]\n"),
             "lists `a.cpp` twice",
         ),
+        (format!("{good}expected_excluded = [\"bad\"]\n"), "must be `<reason>:<path>:<note>`"),
+        (
+            format!("{good}expected_excluded = [\"bogus:a.cpp:why\"]\n"),
+            "must be one of not_a_compile",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:/abs.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:../a.cpp:why\"]\n"),
+            "is not a relative path under `src/`",
+        ),
+        (
+            format!("{good}expected_excluded = [\"unsupported_flag:a.cpp:   \"]\n"),
+            "needs a one-line note",
+        ),
+        (
+            format!(
+                "{good}expected_excluded = [\"unsupported_flag:a.cpp:n1\", \"not_a_compile:a.cpp:n2\"]\n"
+            ),
+            "lists `a.cpp` twice",
+        ),
     ];
     for (text, want) in cases {
         let e = parse_err(&text);
@@ -179,6 +202,7 @@ fn the_committed_llvm_row() {
         ]
     );
     assert!(c.expected_unparsed.iter().all(|e| !e.reason.is_empty()));
+    assert!(c.expected_excluded.is_empty());
     assert!(rows::find(&all, "nope").unwrap_err().contains("corpora: llvm"));
 }
 

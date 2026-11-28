@@ -21,9 +21,18 @@
 #                 for observers that `corpus rename`'s `coverage` check
 #                 expects to end with a non-`ok` map outcome (`diagnosed`,
 #                 `rejected` or `failed`); `<path>` is relative to `src/`
+#   expected_excluded  optional array of `<reason>:<path>:<note>` entries for
+#                 database entries that `corpus rename`'s `coverage` check
+#                 expects the plan to exclude (`not_a_compile`,
+#                 `unsupported_language`, `unsupported_flag`, `missing_file`,
+#                 `malformed_entry`, `unsupported_compiler`); `<path>` is
+#                 relative to `src/`
 #
-# All keys except `expected_unparsed` are required. Changing a row makes the
-# next `configure` run CMake (and the generate step) again.
+# All keys except `expected_unparsed` and `expected_excluded` are required.
+# Changing the pin or configure settings makes the next `configure` run CMake
+# (and the generate step) again; changing `generate` runs only the generate
+# step; changing `expected_unparsed` or `expected_excluded` does not
+# reconfigure or regenerate.
 
 [llvm]
 kiln = "llvm_project"

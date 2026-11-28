@@ -34,13 +34,15 @@ use slip_model::overlay::{Content, Overlay, OverlayFile};
 use slip_model::result::{self, Category, Residue, RunVerdict, State, Tally, TransformResult};
 use slip_model::transform_run::{Step, StepName, TransformRun};
 use slip_model::{
-    Command as Cmd, Configuration, Counter, Digest, End, FileRef, Job, Language, Observer, Origin,
-    Outcome as ShardOutcome, Phase, Plan, Run, RunRecord, Shard, Status, formats,
+    Command as Cmd, Configuration, Counter, Digest, End, Excluded, FileRef, Job, Language,
+    Observer, Origin, Outcome as ShardOutcome, Phase, Plan, Reason as PlanReason, Run, RunRecord,
+    Shard, Status, formats,
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use xtask::corpus::rename::{self, Env};
-use xtask::corpus::{self, Layout, rows};
+use xtask::corpus::rows::{self, ExpectedExcluded, ExpectedUnparsed};
+use xtask::corpus::{self, Layout};
 use xtask::invariants::Failure;
 
 const KILN_ROWS: &str = "[tiny_project]\nurl = \"https://example.org/tiny.git\"\ntag = \"v1.0\"\n";
@@ -135,7 +137,7 @@ while [ $# -gt 0 ]; do case "$1" in -B) shift; B="$1";; esac; shift; done
 mkdir -p "$B/CMakeFiles/gen.dir"
 printf 'gen: CMakeFiles/gen.dir/rule\n' > "$B/CMakeFiles/Makefile2"
 printf 'gen: CMakeFiles/gen\n' > "$B/CMakeFiles/gen.dir/build.make"
-echo "[]" > "$B/compile_commands.json"
+if [ -e "$D/back.bad_db" ]; then cp "$D/back.bad_db" "$B/compile_commands.json"; else echo "[]" > "$B/compile_commands.json"; fi
 "#;
 
 const MAKE: &str = r#"#!/bin/sh
@@ -196,8 +198,9 @@ fn edit_set(plan: Digest, counters: Vec<Counter>) -> EditSet {
 }
 
 /// What a run's store holds and prints: the state, the counters of the
-/// edit set, the transform run record's wall time, and any non-`ok` map
-/// shard outcomes by source filename (`a.cpp`, `b.cpp`, `bad.cpp`).
+/// edit set, the transform run record's wall time, any non-`ok` map shard
+/// outcomes by source filename (`a.cpp`, `b.cpp`, `bad.cpp`), any plan
+/// exclusions, and whether to omit the map run record from `TransformRun`.
 #[derive(Clone)]
 struct Run1 {
     state: State,
@@ -205,6 +208,8 @@ struct Run1 {
     wall_ns: u64,
     started: u64,
     map_outcomes: Vec<(&'static str, Status, &'static str)>,
+    excluded: Vec<Excluded>,
+    no_map_run: bool,
 }
 
 impl Run1 {
@@ -215,6 +220,8 @@ impl Run1 {
             wall_ns: 5_000_000,
             started: STARTED,
             map_outcomes: Vec::new(),
+            excluded: Vec::new(),
+            no_map_run: false,
         }
     }
 }
@@ -349,7 +356,8 @@ impl World {
     /// set id.
     fn records(&self, r: &Run1) -> Digest {
         let st = Store::open(&self.store(), Access::Exclusive).unwrap();
-        let plan_obj = self.plan();
+        let mut plan_obj = self.plan();
+        plan_obj.excluded.clone_from(&r.excluded);
         let plan = st.publish_plan(&plan_obj.to_bytes()).unwrap();
         let refused = r.state == State::Refused;
         let mut counters: Vec<Counter> =
@@ -504,12 +512,12 @@ impl World {
             st.publish_run(&plan, phase, 1, started, &bytes).unwrap();
             id(&bytes)
         };
-        let map = phase(Phase::Map, r.started + 1, 1 << 20);
+        let map = (!r.no_map_run).then(|| phase(Phase::Map, r.started + 1, 1 << 20));
         let verify = (!refused).then(|| phase(Phase::Verify, r.started + 2, 2 << 20));
         let step = |name, run| Step { name, wall_ns: r.wall_ns / 4, cpu_ns: 1, peak_rss: 9, run };
         let mut steps = vec![
             step(StepName::Plan, None),
-            step(StepName::Map, Some(map)),
+            step(StepName::Map, map),
             step(StepName::Reduce, None),
         ];
         if let Some(v) = verify {
@@ -1209,7 +1217,7 @@ fn s6_5_coverage_unexpected_not_ok() {
     assert!(!out.contains("second diagnostic line"), "{out}");
     let c = checks(&out);
     assert_eq!(c.len(), 6);
-    assert_eq!(c[0], "check coverage: FAIL (1 observers not ok beyond the expected 0)");
+    assert_eq!(c[0], "check coverage: FAIL (1 observer not ok beyond the expected 0)");
     for (line, name) in c[1..].iter().zip(["state", "determinism", "accept", "build", "back"]) {
         assert_eq!(*line, format!("check {name}: not run (an earlier check failed)"));
     }
@@ -1229,7 +1237,7 @@ fn s6_5_coverage_unexpected_not_ok() {
     let (r, out) = w.run(&[]);
     assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
     let c = checks(&out);
-    assert_eq!(c[0], "check coverage: FAIL (1 observers not ok beyond the expected 1)");
+    assert_eq!(c[0], "check coverage: FAIL (1 observer not ok beyond the expected 1)");
     assert!(out.contains("  a.cpp: diagnosed: a.cpp:1:1: error: boom\n"), "{out}");
     assert!(out.contains("  bad.cpp: ok (expected diagnosed)\n"), "{out}");
     assert_eq!(c[1], "check state: not run (an earlier check failed)");
@@ -1365,10 +1373,11 @@ fn s6_5_coverage_lists_at_most_ten() {
     let run_path = st.publish_run(&plan, Phase::Map, 1, STARTED, &rec.to_bytes()).unwrap();
     drop(st);
     let loaded = xtask::perf::load(&run_path).unwrap();
-    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[]);
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
     assert_eq!(outcome, rename::Outcome::Fail("12 observers not ok beyond the expected 0".into()));
-    assert_eq!(lines.len(), 10);
+    assert_eq!(lines.len(), 11);
     assert!(lines[0].contains("u00.cpp: failed: cannot enter /missing/00"), "{}", lines[0]);
+    assert_eq!(lines[10], "  (+2 more)");
 }
 
 // §6.5 (WP-169 case d): before `slip` runs, every compilation database entry's
@@ -1389,7 +1398,7 @@ fn s6_5_preflight_database_entries() {
     let (r, _) = w.run(&[]);
     let Err(Failure::Error(msg)) = r else { panic!("expected Failure::Error, got {r:?}") };
     assert!(
-        msg.starts_with(&format!("1 database entries cannot run: {}:", missing_dir.display())),
+        msg.starts_with(&format!("1 database entry cannot run: {}:", missing_dir.display())),
         "{msg}"
     );
     assert!(w.log().is_empty(), "slip must not run: {}", w.log());
@@ -1418,7 +1427,7 @@ fn s6_5_preflight_database_entries() {
     let stderr = String::from_utf8_lossy(&cli.stderr);
     assert!(
         stderr.contains(&format!(
-            "corpus rename: 1 database entries cannot run: {}:",
+            "corpus rename: 1 database entry cannot run: {}:",
             missing_dir.display()
         )),
         "{stderr}"
@@ -1472,4 +1481,453 @@ fn s6_5_preflight_database_entries() {
     assert!(!msg.contains("missing_07"), "{msg}");
     assert!(w.log().is_empty());
     assert!(!w.store().exists());
+}
+
+// Helper for hand-built store unit tests of `check_coverage`.
+fn one_observer(src: &Path, name: &str, salt: u8) -> Observer {
+    let main = src.join(name).display().to_string().into_bytes();
+    let command = Cmd {
+        directory: src.display().to_string().into_bytes(),
+        argv: vec![b"clang++".to_vec(), main.clone()],
+        env: vec![],
+    };
+    Observer {
+        id: command.observer_id(),
+        command,
+        language: Language::Cxx,
+        main: FileRef { path: main, size: 1, content: d(salt) },
+        cost_hint: 10,
+        origins: vec![Origin { configuration: 0, entry: u64::from(salt) }],
+    }
+}
+
+fn ok_shard(observer: Digest, warnings: u64) -> Shard {
+    Shard {
+        observer,
+        phase: Phase::Map,
+        round: 1,
+        outcome: ShardOutcome { status: Status::Ok, errors: 0, warnings, message: String::new() },
+        inputs: Some(Vec::new()),
+        counters: Vec::new(),
+        digests: None,
+        verdict: None,
+        edits: None,
+        binding: None,
+        rule_use: None,
+        spellings: None,
+        names: None,
+        negatives: None,
+        found: None,
+        rebuilt_use: None,
+    }
+}
+
+fn hand_plan(observers: Vec<Observer>, excluded: Vec<Excluded>) -> Plan {
+    Plan {
+        tool_slip: "0.0.0".into(),
+        tool_kiln: "1.3.0".into(),
+        configurations: vec![Configuration {
+            name: "default".into(),
+            database: FileRef { path: b"/db".to_vec(), size: 2, content: d(9) },
+        }],
+        observers,
+        excluded,
+    }
+}
+
+fn hand_run(plan: Digest, jobs: Vec<Job>) -> RunRecord {
+    RunRecord {
+        run: Run {
+            tool_slip: "0.0.0".into(),
+            tool_kiln: "1.3.0".into(),
+            plan,
+            phase: Phase::Map,
+            round: 1,
+            started_unix_ns: STARTED,
+            wall_ns: 1,
+            cores: 1,
+            workers_max: 1,
+            memory_budget: 0,
+            peak_rss_sum: 1,
+        },
+        jobs,
+    }
+}
+
+// §6.5 (WP-169 fix round 1, item 1): `coverage` enforces `plan.excluded`
+// against `expected_excluded` (exact set and reason match), caps printed lines
+// at 10 with `  (+n more)`, and gives excluded failures precedence over
+// observer failures.
+#[test]
+fn s6_5_coverage_excluded() {
+    // 1. Non-empty `plan.excluded` with empty `expected_excluded` fails `coverage`.
+    let w = World::new("rename-cov-excl-fail");
+    let mut run = Run1::of(State::Verified);
+    run.excluded = vec![Excluded {
+        configuration: 0,
+        entry: 3,
+        file: w.src.join("extra.cpp").display().to_string().into_bytes(),
+        reason: PlanReason::UnsupportedFlag,
+        detail: "-fweird".into(),
+    }];
+    w.records(&run);
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    let c = checks(&out);
+    assert_eq!(c[0], "check coverage: FAIL (1 database entry excluded beyond the expected 0)");
+    assert!(out.contains("  excluded extra.cpp: unsupported_flag: -fweird\n"), "{out}");
+    assert_eq!(c[1], "check state: not run (an earlier check failed)");
+
+    // 2. Matching `expected_excluded` passes `coverage` (both alone and with `expected_unparsed`).
+    let corpora = format!(
+        "{CORPORA}expected_excluded = [\"unsupported_flag:extra.cpp:uses -fweird\"]\n\
+         expected_unparsed = [\"diagnosed:bad.cpp:intentional syntax error\"]\n"
+    );
+    let w = World::with_corpora("rename-cov-excl-ok", &corpora);
+    let mut run = Run1::of(State::Verified);
+    run.map_outcomes = vec![("bad.cpp", Status::Diagnosed, "bad.cpp:1:9: error: expected ')'")];
+    run.excluded = vec![Excluded {
+        configuration: 0,
+        entry: 3,
+        file: w.src.join("extra.cpp").display().to_string().into_bytes(),
+        reason: PlanReason::UnsupportedFlag,
+        detail: "-fweird".into(),
+    }];
+    w.records(&run);
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(true)), "{r:?}\n{out}");
+    assert_eq!(
+        checks(&out)[0],
+        "check coverage: ok (2 of 3 observers ok (1 expected unparsed, 1 expected excluded))"
+    );
+
+    // 3. Listed `expected_excluded` entry that was NOT excluded fails `coverage`.
+    let corpora =
+        format!("{CORPORA}expected_excluded = [\"unsupported_flag:extra.cpp:uses -fweird\"]\n");
+    let w = World::with_corpora("rename-cov-excl-missing", &corpora);
+    w.records(&Run1::of(State::Verified));
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert_eq!(
+        checks(&out)[0],
+        "check coverage: FAIL (expected excluded entry extra.cpp is not excluded)"
+    );
+    assert!(
+        out.contains("  excluded extra.cpp: not excluded (expected unsupported_flag)\n"),
+        "{out}"
+    );
+
+    // 4. Listed `expected_excluded` entry excluded with a different reason fails `coverage`.
+    let w = World::with_corpora("rename-cov-excl-wrong-reason", &corpora);
+    let mut run = Run1::of(State::Verified);
+    run.excluded = vec![Excluded {
+        configuration: 0,
+        entry: 3,
+        file: b"extra.cpp".to_vec(),
+        reason: PlanReason::MalformedEntry,
+        detail: "missing arguments".into(),
+    }];
+    w.records(&run);
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert_eq!(
+        checks(&out)[0],
+        "check coverage: FAIL (expected excluded entry extra.cpp is malformed_entry)"
+    );
+    assert!(
+        out.contains(
+            "  excluded extra.cpp: malformed_entry (expected unsupported_flag): missing arguments\n"
+        ),
+        "{out}"
+    );
+
+    // 5. >10 unexpected excluded entries capped at 10 with `  (+2 more)`, and
+    // precedence when both excluded and unparsed fail.
+    let f = Fixture::empty("rename-cov-excl-cap10");
+    let src = f.path("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let st = Store::open(&f.path("store"), Access::Exclusive).unwrap();
+    let o = one_observer(&src, "a.cpp", 1);
+    let excluded: Vec<Excluded> = (0..12u64)
+        .map(|i| Excluded {
+            configuration: 0,
+            entry: i + 10,
+            file: src.join(format!("e{i:02}.cpp")).display().to_string().into_bytes(),
+            reason: PlanReason::UnsupportedFlag,
+            detail: format!("-fbad-{i:02}"),
+        })
+        .collect();
+    let plan = st.publish_plan(&hand_plan(vec![o.clone()], excluded).to_bytes()).unwrap();
+    // Leave `a.cpp` with no job as well to test precedence (excluded wins detail).
+    let run_path =
+        st.publish_run(&plan, Phase::Map, 1, STARTED, &hand_run(plan, vec![]).to_bytes()).unwrap();
+    drop(st);
+    let loaded = xtask::perf::load(&run_path).unwrap();
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(
+        outcome,
+        rename::Outcome::Fail("12 database entries excluded beyond the expected 0".into())
+    );
+    // 10 entries listed + trailing `(+3 more)` (12 excluded + 1 observer no-job = 13 total).
+    assert_eq!(lines.len(), 11, "{lines:?}");
+    assert_eq!(lines[0], "  excluded e00.cpp: unsupported_flag: -fbad-00");
+    assert_eq!(lines[9], "  excluded e09.cpp: unsupported_flag: -fbad-09");
+    assert_eq!(lines[10], "  (+3 more)");
+
+    // Also test >10 missing `expected_excluded` entries (both `detail` and `lines` `(+n more)`).
+    let f = Fixture::empty("rename-cov-excl-missing-cap10");
+    let src = f.path("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let st = Store::open(&f.path("store"), Access::Exclusive).unwrap();
+    let o = one_observer(&src, "a.cpp", 1);
+    let plan = st.publish_plan(&hand_plan(vec![o.clone()], vec![]).to_bytes()).unwrap();
+    let sh_bytes = ok_shard(o.id, 0).to_bytes();
+    let sid = id(&sh_bytes);
+    st.publish_shard(&plan, Phase::Map, 1, &o.id, &sh_bytes).unwrap();
+    let job = Job {
+        observer: o.id,
+        attempt: 1,
+        end: End::Completed,
+        shard: Some(sid),
+        queued_ns: 0,
+        wall_ns: 1,
+        cpu_ns: 1,
+        peak_rss: 1,
+        estimate: 1,
+    };
+    let run_path = st
+        .publish_run(&plan, Phase::Map, 1, STARTED, &hand_run(plan, vec![job]).to_bytes())
+        .unwrap();
+    drop(st);
+    let loaded = xtask::perf::load(&run_path).unwrap();
+    let expected: Vec<ExpectedExcluded> = (0..12)
+        .map(|i| ExpectedExcluded {
+            path: format!("m{i:02}.cpp"),
+            reason: PlanReason::NotACompile,
+            note: "link step".into(),
+        })
+        .collect();
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &expected);
+    assert_eq!(
+        outcome,
+        rename::Outcome::Fail("expected excluded entry m00.cpp is not excluded (+11 more)".into())
+    );
+    assert_eq!(lines.len(), 11, "{lines:?}");
+    assert_eq!(lines[0], "  excluded m00.cpp: not excluded (expected not_a_compile)");
+    assert_eq!(lines[10], "  (+2 more)");
+}
+
+// §6.5 (WP-169 fix round 1, item 2): hand-built store cases covering every
+// `check_coverage` failure path: (a) observer with no job, (b) missing shard,
+// (c) shard from another run, (d) job with no shard, (e) no map run record,
+// and (f) listed expected path absent from plan / not excluded; plus singular
+// `1 of 1 observer ok`.
+#[test]
+fn s6_5_coverage_store_failure_paths() {
+    // Baseline: 1 observer ok uses singular `1 of 1 observer ok`.
+    let f = Fixture::empty("rename-cov-paths");
+    let src = f.path("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let o = one_observer(&src, "a.cpp", 1);
+    let make_store = |sub: &str, jobs: Vec<Job>, shard: Option<&[u8]>| {
+        let st = Store::open(&f.path(sub), Access::Exclusive).unwrap();
+        let plan = st.publish_plan(&hand_plan(vec![o.clone()], vec![]).to_bytes()).unwrap();
+        if let Some(bytes) = shard {
+            st.publish_shard(&plan, Phase::Map, 1, &o.id, bytes).unwrap();
+        }
+        let run_path = st
+            .publish_run(&plan, Phase::Map, 1, STARTED, &hand_run(plan, jobs).to_bytes())
+            .unwrap();
+        drop(st);
+        xtask::perf::load(&run_path).unwrap()
+    };
+
+    let sh_ok = ok_shard(o.id, 0).to_bytes();
+    let sh_ok_id = id(&sh_ok);
+    let job_with = |end, shard| Job {
+        observer: o.id,
+        attempt: 1,
+        end,
+        shard,
+        queued_ns: 0,
+        wall_ns: 1,
+        cpu_ns: 1,
+        peak_rss: 1,
+        estimate: 1,
+    };
+
+    // Singular ok message on a 1-observer plan.
+    let loaded = make_store("s-ok", vec![job_with(End::Completed, Some(sh_ok_id))], Some(&sh_ok));
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(outcome, rename::Outcome::Ok("1 of 1 observer ok".into()));
+    assert!(lines.is_empty());
+
+    // (a) Observer with no job (`Side::NoJob`).
+    let loaded = make_store("s-no-job", vec![], None);
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(outcome, rename::Outcome::Fail("1 observer not ok beyond the expected 0".into()));
+    assert_eq!(lines, ["  a.cpp: no job"]);
+
+    // (b) Missing shard (`Side::Absent`): job names a shard id, store has no shard file.
+    let loaded = make_store("s-absent", vec![job_with(End::Completed, Some(sh_ok_id))], None);
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(outcome, rename::Outcome::Fail("1 observer not ok beyond the expected 0".into()));
+    assert_eq!(lines, ["  a.cpp: missing shard"]);
+
+    // (c) Shard from another run (`Side::Other`): store holds an `ok` shard,
+    // but the job names a different shard content id.
+    let other_sh = ok_shard(o.id, 1).to_bytes();
+    assert_ne!(id(&other_sh), sh_ok_id);
+    let loaded =
+        make_store("s-other", vec![job_with(End::Completed, Some(sh_ok_id))], Some(&other_sh));
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(outcome, rename::Outcome::Fail("1 observer not ok beyond the expected 0".into()));
+    assert_eq!(lines, ["  a.cpp: other shard"]);
+
+    // (d) Job with no shard (`Side::NoShard`): even if an `ok` shard exists in the store,
+    // the job's last attempt ended crashed with `shard: None`.
+    let loaded = make_store("s-no-shard", vec![job_with(End::Crashed, None)], Some(&sh_ok));
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &[]);
+    assert_eq!(outcome, rename::Outcome::Fail("1 observer not ok beyond the expected 0".into()));
+    assert_eq!(lines, ["  a.cpp: no shard (crashed)"]);
+
+    // (e) No map run record in `TransformRun`.
+    let w = World::new("rename-cov-no-map-run");
+    let mut run = Run1::of(State::Verified);
+    run.no_map_run = true;
+    w.records(&run);
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    let c = checks(&out);
+    assert_eq!(c[0], "check coverage: FAIL (the transform run record names no map run record)");
+    assert_eq!(c[1], "check state: not run (an earlier check failed)");
+
+    // (f) Listed `expected_unparsed` path not in plan (and `expected_excluded` not excluded).
+    let loaded =
+        make_store("s-absent-listed", vec![job_with(End::Completed, Some(sh_ok_id))], Some(&sh_ok));
+    let listed_unparsed = vec![ExpectedUnparsed {
+        path: "ghost.cpp".into(),
+        status: Status::Diagnosed,
+        reason: "not in plan".into(),
+    }];
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &listed_unparsed, &[]);
+    assert_eq!(
+        outcome,
+        rename::Outcome::Fail("expected unparsed observer ghost.cpp is absent from plan".into())
+    );
+    assert_eq!(lines, ["  ghost.cpp: absent from plan (expected diagnosed)"]);
+
+    let listed_excluded = vec![ExpectedExcluded {
+        path: "ghost.cpp".into(),
+        reason: PlanReason::UnsupportedFlag,
+        note: "not in plan".into(),
+    }];
+    let (outcome, lines) = rename::check_coverage(&loaded, &src, &[], &listed_excluded);
+    assert_eq!(
+        outcome,
+        rename::Outcome::Fail("expected excluded entry ghost.cpp is not excluded".into())
+    );
+    assert_eq!(lines, ["  excluded ghost.cpp: not excluded (expected unsupported_flag)"]);
+}
+
+// §6.5 (WP-169 fix round 1, item 3): pre-flight `check_database` edge cases:
+// (a) relative `file` that exists passes (resolved against `directory`),
+// (b) `file` that is a directory fails,
+// (c) relative `directory` fails.
+#[test]
+fn s6_5_preflight_database_edge_cases() {
+    let w = World::new("rename-db-edges");
+    let db_path = w.dir().join("build/compile_commands.json");
+
+    // (a) Relative `file` that exists under `directory` MUST PASS.
+    let db = Value::Array(vec![
+        Value::Object(vec![
+            ("directory".to_owned(), Value::Str(w.src.display().to_string())),
+            ("file".to_owned(), Value::Str("a.cpp".to_owned())),
+            ("arguments".to_owned(), Value::Array(vec![Value::Str("clang++".to_owned())])),
+        ]),
+        Value::Object(vec![
+            ("directory".to_owned(), Value::Str(w.src.display().to_string())),
+            ("file".to_owned(), Value::Str("sub/c.h".to_owned())),
+            ("arguments".to_owned(), Value::Array(vec![Value::Str("clang++".to_owned())])),
+        ]),
+    ]);
+    std::fs::write(&db_path, json::write_pretty(&db).unwrap()).unwrap();
+    rename::check_database(&db_path).unwrap();
+    w.records(&Run1::of(State::Verified));
+    let (r, out) = w.run(&[]);
+    assert!(matches!(r, Ok(true)), "{r:?}\n{out}");
+
+    // (b) `file` that is a directory (both absolute and relative) MUST FAIL.
+    let sub_dir = w.src.join("sub");
+    let db = Value::Array(vec![Value::Object(vec![
+        ("directory".to_owned(), Value::Str(w.src.display().to_string())),
+        ("file".to_owned(), Value::Str(sub_dir.display().to_string())),
+        ("arguments".to_owned(), Value::Array(vec![Value::Str("clang++".to_owned())])),
+    ])]);
+    std::fs::write(&db_path, json::write_pretty(&db).unwrap()).unwrap();
+    let err = rename::check_database(&db_path).unwrap_err();
+    assert_eq!(
+        err,
+        format!("1 database entry cannot run: {}: not a regular file", sub_dir.display())
+    );
+
+    let db = Value::Array(vec![Value::Object(vec![
+        ("directory".to_owned(), Value::Str(w.src.display().to_string())),
+        ("file".to_owned(), Value::Str("sub".to_owned())),
+        ("arguments".to_owned(), Value::Array(vec![Value::Str("clang++".to_owned())])),
+    ])]);
+    std::fs::write(&db_path, json::write_pretty(&db).unwrap()).unwrap();
+    let err = rename::check_database(&db_path).unwrap_err();
+    assert_eq!(
+        err,
+        format!("1 database entry cannot run: {}: not a regular file", sub_dir.display())
+    );
+
+    // (c) Relative `directory` MUST FAIL even when `.` exists.
+    let db = Value::Array(vec![Value::Object(vec![
+        ("directory".to_owned(), Value::Str(".".to_owned())),
+        ("file".to_owned(), Value::Str("a.cpp".to_owned())),
+        ("arguments".to_owned(), Value::Array(vec![Value::Str("clang++".to_owned())])),
+    ])]);
+    std::fs::write(&db_path, json::write_pretty(&db).unwrap()).unwrap();
+    let err = rename::check_database(&db_path).unwrap_err();
+    assert_eq!(err, "1 database entry cannot run: .: not an absolute path");
+
+    // Empty `directory` reports `entry 0: empty \`directory\``.
+    let db = Value::Array(vec![Value::Object(vec![
+        ("directory".to_owned(), Value::Str(String::new())),
+        ("file".to_owned(), Value::Str("a.cpp".to_owned())),
+    ])]);
+    std::fs::write(&db_path, json::write_pretty(&db).unwrap()).unwrap();
+    let err = rename::check_database(&db_path).unwrap_err();
+    assert_eq!(err, "1 database entry cannot run: entry 0: empty `directory`");
+}
+
+// §6.5 (WP-169 fix round 1, item 6): `back` runs `check_database` on
+// `rename-build/compile_commands.json` before invoking the inverse `slip rename`.
+#[test]
+fn s6_5_back_checks_database() {
+    if !tools_present() {
+        return;
+    }
+    let w = World::new("rename-back-bad-db");
+    w.records(&Run1::of(State::Verified));
+    let missing_dir = w.dir().join("missing-back-dir");
+    let bad_db = Value::Array(vec![Value::Object(vec![
+        ("directory".to_owned(), Value::Str(missing_dir.display().to_string())),
+        ("file".to_owned(), Value::Str("a.cpp".to_owned())),
+    ])]);
+    std::fs::write(w.f.path("fake/back.bad_db"), json::write_pretty(&bad_db).unwrap()).unwrap();
+    let (r, out) = w.run(&["--build"]);
+    assert!(matches!(r, Ok(false)), "{r:?}\n{out}");
+    assert!(out.contains("check build: ok"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "check back: FAIL (database: 1 database entry cannot run: {}:",
+            missing_dir.display()
+        )),
+        "{out}"
+    );
+    assert!(!w.log().contains("--write"), "slip rename --write must not run: {}", w.log());
 }
