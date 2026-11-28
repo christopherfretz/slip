@@ -1,0 +1,5 @@
+added Trait<int>::value
+changed <order>
+changed Trait<int>
+changed s
+derived-added S::S<int>(int)

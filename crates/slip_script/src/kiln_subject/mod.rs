@@ -79,6 +79,9 @@ pub struct KilnSubject<'u> {
     names: references::Names,
     /// The unit's tokens, for the end of a token (`calls.rs`).
     tokens: slip_kiln::Tokens<'u>,
+    /// Kiln's exact written expression extents (`kiln_parse::ExprExtents`,
+    /// Kiln WP-2327), built on first use (`calls.rs`).
+    expr_extents: OnceLock<slip_kiln::kiln::parse::ExprExtents<'u>>,
     /// The unit's written references, read when the subject is made (the
     /// unit is not kept); a reference is numbered by its index here, plus
     /// one (`calls.rs`).
@@ -162,6 +165,7 @@ impl<'u> KilnSubject<'u> {
             parm_owner: OnceLock::new(),
             scopes: Mutex::new(HashMap::new()),
             tokens: unit.tokens(),
+            expr_extents: OnceLock::new(),
             refs: slip_kiln::written::written_refs(unit),
             ref_names: OnceLock::new(),
             calls: OnceLock::new(),

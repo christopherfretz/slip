@@ -348,3 +348,67 @@ fn size_of_pack_partial_arguments_are_written() {
     assert_eq!((one.len(), two.len()), (1, 1), "one partly substituted sizeof... each");
     assert_ne!(one[0], two[0]);
 }
+
+/// WP-138 item 1: what Kiln records in `oper_lookups` for every fold form
+/// (unary left, unary right, binary left, binary right, empty set, `,`, `&&`,
+/// `||`, comparisons with C++20 rewritten `==` and `<=>`, compound assignment
+/// `+=`, pointer-to-member `->*`, member-only `=`, non-overloadable `.*`),
+/// and that every form walks determinately.
+#[test]
+fn fold_oper_lookups_by_form() {
+    let src = "namespace N { struct X {}; }\n\
+               N::X operator+(N::X, N::X);\n\
+               N::X operator,(N::X, N::X);\n\
+               bool operator&&(N::X, N::X);\n\
+               bool operator||(N::X, N::X);\n\
+               bool operator==(N::X, N::X);\n\
+               int operator<=>(N::X, N::X);\n\
+               N::X &operator+=(N::X &, N::X);\n\
+               N::X operator->*(N::X, N::X);\n\
+               template<class... T> auto uleft(T... t) { return (... + t); }\n\
+               template<class... T> auto uright(T... t) { return (t + ...); }\n\
+               template<class... T> auto bleft(T... t) { return (0 + ... + t); }\n\
+               template<class... T> auto bright(T... t) { return (t + ... + 0); }\n\
+               template<class... T> auto empty(T... t) { return (t - ...); }\n\
+               template<class... T> void comma(T... t) { (t, ...); }\n\
+               template<class... T> bool land(T... t) { return (t && ...); }\n\
+               template<class... T> bool lor(T... t) { return (... || t); }\n\
+               template<class... T> bool neq(T... t) { return (t != ...); }\n\
+               template<class... T> bool lt(T... t) { return (t < ...); }\n\
+               template<class... T> auto add_assign(T... t) { return (t += ...); }\n\
+               template<class M, class... P> auto ptrmem_i(M m, P... p) { return (m ->* ... ->* p); }\n\
+               template<class... T> auto assign(T... t) { return (t = ...); }\n\
+               template<class M, class... P> auto ptrmem(M m, P... p) { return (m .* ... .* p); }\n";
+    with_walk(src, |w| {
+        let folds = of_expr_kind(w, ExprKind::CXXFoldExpr);
+        assert_eq!(folds.len(), 14);
+        let summary: Vec<Option<usize>> = folds
+            .iter()
+            .map(|&e| {
+                let mut s = Stream::new();
+                crate::expr::child(w, &mut s, e);
+                assert_eq!(s.cause(), None, "fold {e:?} must be determinate");
+                w.ast.templates.oper_lookups.of(e).map(<[_]>::len)
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                Some(1), // (... + t)
+                Some(1), // (t + ...)
+                Some(1), // (0 + ... + t)
+                Some(1), // (t + ... + 0)
+                Some(0), // (t - ...): no non-member operator- declared
+                Some(1), // (t, ...)
+                Some(1), // (t && ...)
+                Some(1), // (... || t)
+                Some(1), // (t != ...): finds rewritten operator==
+                Some(1), // (t < ...): finds rewritten operator<=>
+                Some(1), // (t += ...): compound assignment admits non-member candidates
+                Some(1), // (m ->* ... ->* p): pointer-to-member ->* admits non-member candidates
+                None,    // (t = ...): member-only, no non-member candidates
+                None,    // (m .* ... .* p): not overloadable
+            ]
+        );
+    });
+}

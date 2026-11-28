@@ -92,11 +92,12 @@ pub(crate) fn each_input(dir: &Path, mut f: impl FnMut(&Input<'_>)) {
             std: &std,
         };
         let extra = slip_kiln::snippet::Extra { args: &args, target };
-        let _ = slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
+        slip_kiln::snippet::parse_with_tables(&snippet, &extra, |p| {
             let path = |_| Vec::new();
             let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
             f(&input);
-        });
+        })
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     }
 }
 
@@ -422,14 +423,18 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     ("Unsupported(\"local/closure-owner\")", 5),
     ("Unsupported(\"local/lambda-in-type\")", 1),
     // WP-041's fix round: `indeterminate/_/spelling-conversion-name-*`
-    // and `spelling-fold-operator-*` (a conversion name of a marked type;
-    // a fold over an operator some declaration names).
+    // (a conversion name of a marked type). `spelling/fold-operator` is
+    // gone since WP-138.
     ("Unaccounted(\"spelling/conversion-name\")", 1),
-    ("Unaccounted(\"spelling/fold-operator\")", 1),
     // WP-041's fix round 3: `indeterminate/_/spelling-prefix-splice` (a
     // splice qualifier, 2 of 33 314).
     ("Unsupported(\"Nns/Splice\")", 1),
     ("Unsupported(\"typedef/alignment-by-declaration\")", 1),
+    // WP-136 fix round 1: `differ/_/subst-failed-closure-*` (raw AST
+    // expressions inside a failed signature referencing a closure or its
+    // call operator owned by that failed specialisation, never walked by
+    // any unit; 6 of 79 983).
+    ("Unaccounted(\"ref/failed-substitution\")", 1),
 ];
 
 /// The same for `OWN`.
@@ -730,7 +735,7 @@ fn the_f1_pairs_are_determinate() {
         let mut sides = 0;
         each_input(&tests.join(dir), |input| {
             sides += 1;
-            let h = causes_of(input, "h(type-parameter-0-0)");
+            let h = causes_of(input, "template <class> decltype(g(t)) h(type-parameter-0-0)");
             assert_eq!(h.len(), 1, "{dir}");
             assert!(h[0].is_empty(), "{dir} side {sides}: {:?}", h[0]);
         });
@@ -1132,4 +1137,28 @@ fn the_bytes_are_pinned() {
             diff.join("\n")
         );
     }
+}
+
+#[test]
+#[should_panic(
+    expected = "the callback panicked: assertion `left == right` failed: wp168 sentinel"
+)]
+fn each_input_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    each_input(&dir, |_| {
+        assert_eq!(1, 2, "wp168 sentinel");
+    });
+}
+
+#[test]
+#[should_panic(
+    expected = "the callback panicked: assertion `left == right` failed: wp168 side sentinel"
+)]
+fn each_side_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    each_side(&dir, |_| {
+        assert_eq!(1, 2, "wp168 side sentinel");
+    });
 }

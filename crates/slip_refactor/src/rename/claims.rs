@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use slip_kiln::kiln::source::{FileId, Span};
 use slip_kiln::sites::{Located, Sites};
 use slip_model::FileRef;
-use slip_model::edits::{Claim, Instance, KeyId, MacroSite, Piece, Place, Reason, Stance};
+use slip_model::edits::{Claim, Instance, KeyId, MacroSite, Piece, Place, Reason, Report, Stance};
 
 /// How a replacement is written (§9.3 "The pieces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,11 +63,14 @@ pub(crate) struct Claims {
     /// Instances (§4.5) of the claim of a span: placed at its range by
     /// [`Claims::finish`], dropped if the span has no claim with a range.
     instances: Vec<((u32, u32), Instance)>,
+    /// Reports (§4.5) attached to the claim of a span (WP-152: naming the
+    /// specialisation and declaration found for `captured_at_instance`).
+    reports: Vec<((u32, u32), Report)>,
 }
 
-/// What [`Claims::finish`] gives: the files, the claims and the instances,
-/// each with its file an index of the files.
-pub(crate) type Finished = (Vec<FileRef>, Vec<Claim>, Vec<Instance>);
+/// What [`Claims::finish`] gives: the files, the claims, the instances and
+/// the reports, each with its file an index of the files.
+pub(crate) type Finished = (Vec<FileRef>, Vec<Claim>, Vec<Instance>, Vec<Report>);
 
 impl Claims {
     /// No derivation yet; `old` is the spelling `sites` checks a name
@@ -78,6 +81,7 @@ impl Claims {
             new: new.to_vec(),
             derivations: BTreeMap::new(),
             instances: Vec::new(),
+            reports: Vec::new(),
         }
     }
 
@@ -85,6 +89,12 @@ impl Claims {
     /// place is set to the claim's range.
     pub fn instance(&mut self, name: Span, instance: Instance) {
         self.instances.push(((name.lo.to_raw(), name.hi.to_raw()), instance));
+    }
+
+    /// `report` explains the claim of the name token `name`; its place is
+    /// set to the claim's range when the span has one.
+    pub fn report(&mut self, name: Span, report: Report) {
+        self.reports.push(((name.lo.to_raw(), name.hi.to_raw()), report));
     }
 
     /// The name token `name` denotes `subjects` and becomes the new name,
@@ -280,7 +290,12 @@ impl Claims {
             .into_iter()
             .filter_map(|(span, i)| Some(Instance { place: place(*claimed.get(&span)?)?, ..i }))
             .collect();
-        Ok((refs, claims, instances))
+        let reports = self
+            .reports
+            .into_iter()
+            .map(|(span, r)| Report { place: claimed.get(&span).and_then(|&at| place(at)), ..r })
+            .collect();
+        Ok((refs, claims, instances, reports))
     }
 }
 

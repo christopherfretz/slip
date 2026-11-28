@@ -2336,6 +2336,7 @@ only when it applies.
                       "findings": <n>, "indeterminate": <n>, "listed": <n> }, … ],
   "exemptions": [ { "list": "changed" | "created" | "removed", "key": <id>, "observers": <n> }, … ],
   "names_changed": { "total": <n>, "listed": [ <NameNote>, … ] },     only with a note
+  "unmarked_invalid": { "observers": <n>, "declarations": <n> },      only when > 0 (WP-136)
   "run": <path of the run record>
 }
 
@@ -2414,6 +2415,7 @@ findings <total> total, <listed> listed, <groups> group(s)
 exemption <list> <key, first 16 digits> observers <n>
 note: name-derived string changed: <name> @ <file>   per noted key, at most 100, in report order
 note: <n> more (see the report)                  when more than 100
+defect: unmarked invalid declarations: <decls> in <observers> observer(s)   only when > 0 (WP-136)
 wall <seconds, three decimals>
 peak_rss <bytes> <main file>                     as `parse` prints it (spec/exec.md §8.2)
 run <path of the run record>
@@ -2451,6 +2453,7 @@ Counters of a verify shard, added to those of the parse and of
 | `verify.reparsed` | parses after the first: 0, 1 (the pre-image) or 2 (and the post-image again) |
 | `verify.traces.unstable` | units wanted for localisation whose stream, written again, did not hash to their digest (§6.1); present only when not 0 |
 | `verify.traces.panicked` | images (0, 1 or 2) whose second writing for localisation panicked: places withdrawn there, verdict and findings kept (§6.1); a defect of the walk to report; present only when not 0 |
+| `verify.invalid.unmarked.pre` | the pre-image `ok` map shard's `digest.invalid.unmarked` count (`digest.md` §12, WP-136): carried into the verify shard so `Report` flags unmarked invalid declarations on either side; present only when not 0 |
 
 A shard without a verdict has none of them; a shard with a verdict has
 `verify.findings` and the eight by kind always (the job writes them with

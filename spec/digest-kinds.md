@@ -1338,7 +1338,7 @@ The rest of profile mode:
   counts it (`Walk::left_out`), whatever the first spelling's value: every
   `UnresolvedLookupExpr` (an empty found set too), every expression with an
   `oper_lookups` entry (an empty set too), every `CXXNewExpr` and
-  `CXXDeleteExpr`, a fold that rule 9 makes indeterminate, a resolved
+  `CXXDeleteExpr`, a resolved
   `DeclRefExpr` or `MemberExpr` whose referent is a member of a class or
   enumeration or a specialisation (rule 10: it may have been named through
   a qualifier or arguments that hold more), a qualifier with a level that
@@ -1470,21 +1470,20 @@ The rest of profile mode:
      entry, by pre-order position. Every node of an expression in a unit is
      either in its bytes (walked in full) or read by rule 1, so every
      rounding mode a unit's spellings were written under is in its digest.
-  9. *Folds.* A `CXXFoldExpr` over an operator other than `.*` finds its
-     operator's candidates at instantiation, from the operands' types and
-     the definition context. Since Kiln WP-2625 Kiln keeps the fold's
-     definition-context set in `oper_lookups`, which is written and left
-     out like a dependent operator's (rule 6; `OperLookups`); what the
-     operator finds beyond it is still not read (`For WP-138` in
-     `spec/landed/digest-kinds/WP-066.md`). In profile mode
-     and in the full walk it is `Unaccounted("spelling/fold-operator")`,
-     and it raises the mark, when some declaration in the translation unit
-     that is not a member function (a function template's pattern
-     included) is named for its operator, or for a comparison for any
-     comparison operator (C++20 rewrites them)
-     (`expr_profile::fold_left_out`). With no such declaration the
-     definition context finds nothing in any spelling, and only members
-     of the operands' classes, which the profile holds, can be found.
+  9. *Folds* (WP-138). A `CXXFoldExpr` over any operator that admits
+     non-member candidates (every fold-operator except `.*`, which is not
+     overloadable, and `=`, which is member-only) records its
+     definition-context operator set in `TemplateTables` `oper_lookups`
+     (Kiln WP-2625, including C++20 rewritten comparison candidates:
+     `operator==` for `!=` and `operator<=>` for `<`, `>`, `<=`, `>=`;
+     empty when nothing is found, absent for `.*` and `=`, and recorded
+     even when no operand is type-dependent, which can only add
+     differences). In the full
+     walk `templ::expr_maps` writes that set (`ref*sorted?`), and in
+     profile mode `oper_left_out` raises the mark while `own_spelling`
+     reads it as a `Fact::Oper` entry, identically to a dependent binary
+     operator. `spelling/fold-operator` is gone;
+     `spec/landed/digest-kinds/WP-138.md` gives the per-form table.
   10. *Prefixes and arguments of a resolved name.* A resolved name's
      qualifier as written (`DeclRefExtra` `qualifier`) and its own
      arguments when the referent is a specialisation (`template_args`)
@@ -1603,7 +1602,7 @@ The rest of profile mode:
   sets is a difference of the units. No hazard of first spellings is
   accepted: where a unit's meaning depends on a fact its digest does not
   hold, the unit is indeterminate with a named cause (rule 5, rule 7's
-  `spelling/array-size` and `spelling/bit-int-width`, rule 9,
+  `spelling/array-size` and `spelling/bit-int-width`,
   `spelling/profile`, `spelling/conversion-name`), and the mark that
   decides rule 5 is a function of the profile.
 - **Kinds Kiln profiles as unique.** Kiln gives such a node a word of its
@@ -2372,7 +2371,7 @@ Further rules:
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `0-invalid` | flag | unsupported | - | an invalid declaration: digest §10 |
+| `0-invalid` | flag | unsupported | - | an invalid declaration: digest §10 (`Cause::Error` unless `ColdDeclData` `subst_failed` marks a silent substitution failure, WP-136) |
 | `0-implicit` | flag | in | bit |  |
 | `0-used` | bookkeeping | demand | - | §11 |
 | `0-referenced` | bookkeeping | demand | - | §11 |
@@ -3071,7 +3070,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `written_ns` | entity | out | - | the namespace opening a namespace-scope declaration belongs to when it is not `ctx` (Kiln WP-2725, `kiln_ast/src/decl.rs:1786`): the latest opening when a qualified declarator's qualifier named the namespace, the one an explicit specialisation of a function template is written in. Its one reader is code generation's walk for visibility (`kiln_codegen/src/visibility.rs:455-464`), and what that walk gives is the row `enclosing` (§1.7 item 3), which starts at the same opening |
 | `shadow_named` | entity | out | - | the using-shadow a using-declaration's lookup found when it found one (Kiln WP-3401, `kiln_ast/src/decl.rs:1889`): the declaration the using-declaration introduces is its target, which each shadow's key holds (§5.2); the shadow it was found through is how the name was reached (digest §1 rule 2), as `oper_lookups`' `found` |
 | `friend_form` | bookkeeping | out | - | index of the friend's written form in `DeclArena` `friend_forms` (Kiln WP-3164, `decl.rs:1921`); the form's rows are `FriendForm`'s |
-| `subst_failed` | flag | unsupported | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`): read by `docs/wp/WP-136.md`. Kiln sets it only on a declaration with `DeclFlags` `0-invalid` (`decl.rs:393-400`), which makes the walk indeterminate (`Cause::Error`) wherever it is read, so it needs no reading of its own |
+| `subst_failed` | flag | out | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`; WP-136, digest §2.1, §8, §10): read by the walk to classify `DeclFlags` `0-invalid` — kinds 1, 2, 3 and 5 are no entity and no unit (a `Ref` to one is `Unaccounted("ref/failed-substitution")`), kind 4 is written as a never-instantiated class specialisation, kind 6 is `Unaccounted("decl/trapped")`; never written into a stream |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -3093,17 +3092,17 @@ differs from one only declared there by this row, which is why
 `kind=enum; pin=schema`
 
 What failed to form in a declaration Kiln made invalid while its errors
-were trapped (Kiln WP-3281, `kiln_ast/src/decl.rs:401`). Read only with
-`ColdDeclData` `subst_failed` (`unsupported`, `docs/wp/WP-136.md`).
+were trapped (Kiln WP-3281, `kiln_ast/src/decl.rs:401`). Read with
+`ColdDeclData` `subst_failed` (WP-136, digest §2.1, §8, §10).
 
 | Row | Class | Decision | Encoding | Note |
 |---|---|---|---|---|
-| `FunctionSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `ExplicitSpecifier` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `VariablePartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `ClassPartialAmbiguity` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `LocalOfFailedSignature` | flag | out | - | read with `ColdDeclData` `subst_failed` |
-| `OtherTrapped` | flag | out | - | read with `ColdDeclData` `subst_failed` |
+| `FunctionSignature` | flag | out | - | kind 1: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `ExplicitSpecifier` | flag | out | - | kind 2: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `VariablePartialAmbiguity` | flag | out | - | kind 3: no entity, no unit; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `ClassPartialAmbiguity` | flag | out | - | kind 4: nameable incomplete type, written as a never-instantiated specialisation |
+| `LocalOfFailedSignature` | flag | out | - | kind 5: part of a failed signature, never reached; a `Ref` is `Unaccounted("ref/failed-substitution")` |
+| `OtherTrapped` | flag | out | - | kind 6: indeterminate, `Unaccounted("decl/trapped")` |
 
 ### `kiln_ast::decl::DeclArena`
 
@@ -3959,7 +3958,7 @@ Rules the rows refer to:
 | `ConceptSpecializationExpr.b` | value | in | enum ArgView* | a raw `ArgListId` |
 | `LambdaExpr.a` | child | in | decl | the closure type of the `LambdaData` that `a` indexes, written whole (§2.4); its `RecordData` `lambda` row writes the rest of the record (§10.4) |
 | `PackExpansionExpr.a` | child | in | child |  |
-| `CXXFoldExpr.aux` | flag | in | enum BinaryOp |  |
+| `CXXFoldExpr.aux` | flag | in | enum BinaryOp | definition-context operator set in `TemplateTables` `oper_lookups` (§9.5, WP-138) |
 | `CXXFoldExpr.a` | child | in | child? |  |
 | `CXXFoldExpr.b` | child | in | child? |  |
 | `PackIndexingExpr.a` | child | in | child |  |
@@ -5415,8 +5414,9 @@ item 5), so no row below reaches a stream.
 | `param_object_values` | value | in | value? | by `TemplateParamObject`: the object's value, which is its unit's whole stream |
 
 `oper_lookups` holds, for a unary, binary or compound-assignment
-operator expression with a type-dependent operand in a template, the
-non-member operator functions unqualified lookup found at the definition
+operator expression with a type-dependent operand in a template, and for
+a fold-expression (Kiln WP-2625, WP-138), the non-member operator
+functions unqualified lookup found at the definition
 ([temp.dep.candidate]/1, [over.match.oper]/3.2). Instantiation uses that
 set and argument-dependent lookup at the point of instantiation, never a
 new unqualified lookup. The expression writes `by_expr` as the

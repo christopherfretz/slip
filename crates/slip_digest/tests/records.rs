@@ -251,7 +251,12 @@ struct Tally {
     failures: Vec<String>,
 }
 
-fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
+fn sweep_side_with<R: Send>(
+    dir: &Path,
+    side: Side,
+    t: &mut Tally,
+    f: impl FnOnce(&Input<'_>) -> R + Send,
+) -> Option<R> {
     let name = format!("{} {side:?}", common::rel(dir));
     let all = match std::fs::read_dir(dir) {
         Ok(rd) => rd
@@ -264,14 +269,14 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
             .collect(),
         Err(e) => {
             t.failures.push(format!("{name}: {e}"));
-            return;
+            return None;
         }
     };
     let (list, head) = match common::side_files(&all, side) {
         Ok(x) => x,
         Err(e) => {
             t.failures.push(format!("{name}: {e}"));
-            return;
+            return None;
         }
     };
     // The main file first.
@@ -297,28 +302,41 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
                 paths.get(f.index()).cloned().unwrap_or_default()
             };
             let input = Input { ast, sm, subject_path: &path };
-            let empty = RuleTable::empty();
-            let recs = records(&input, &empty, slip_digest::ReadOnly::EVERY_FILE);
-            let out = slip_digest::digest(
-                &input,
-                &Options {
-                    rules: &empty,
-                    read_only: slip_digest::ReadOnly::NO_FILE,
-                    detail: Detail::All,
-                    names: true,
-                    rule_use: false,
-                },
-            );
-            (recs, out)
+            f(&input)
         })
     });
     t.sides += 1;
-    let (recs, out) = match got {
-        Ok(x) => x,
+    match got {
+        Ok(x) => Some(x),
+        Err(e) if e.contains("panicked:") => {
+            t.failures.push(format!("{name}: {e}"));
+            None
+        }
         Err(e) => {
             t.unparsed.push(format!("{name}: {}", e.lines().next().unwrap_or("")));
-            return;
+            None
         }
+    }
+}
+
+fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
+    let name = format!("{} {side:?}", common::rel(dir));
+    let Some((recs, out)) = sweep_side_with(dir, side, t, |input| {
+        let empty = RuleTable::empty();
+        let recs = records(input, &empty, slip_digest::ReadOnly::EVERY_FILE);
+        let out = slip_digest::digest(
+            input,
+            &Options {
+                rules: &empty,
+                read_only: slip_digest::ReadOnly::NO_FILE,
+                detail: Detail::All,
+                names: true,
+                rule_use: false,
+            },
+        );
+        (recs, out)
+    }) else {
+        return;
     };
     let recs = match recs {
         Ok(r) => r,
@@ -334,6 +352,25 @@ fn sweep_side(dir: &Path, side: Side, t: &mut Tally) {
     t.with_key += recs.iter().filter(|r| r.key.is_some()).count() as u64;
     t.fallback += recs.iter().filter(|r| r.key.is_none()).count() as u64;
     t.indeterminate += recs.iter().filter(|r| r.indeterminate).count() as u64;
+}
+
+#[test]
+fn wp168_sweep_side_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    let mut t = Tally::default();
+    let got = sweep_side_with(&dir, Side::A, &mut t, |_| {
+        assert_eq!(1, 2, "wp168 records sentinel");
+    });
+    assert!(got.is_none());
+    assert!(t.unparsed.is_empty(), "a callback panic must not land in unparsed: {:?}", t.unparsed);
+    assert_eq!(t.failures.len(), 1, "{:?}", t.failures);
+    assert!(
+        t.failures[0].contains("the callback panicked:")
+            && t.failures[0].contains("wp168 records sentinel"),
+        "{:?}",
+        t.failures
+    );
 }
 
 // §2.3 "Records" over every directory of the pair tests, both sides,

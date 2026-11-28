@@ -1,0 +1,4 @@
+# The generic lambda with a default argument inside failed `f<a::S>` produces no `default_argument` unit.
+exact derived
+changed u()
+indeterminate template <class> decltype(...(1) , t.size()) a::f(type-parameter-0-0) (undeclared_local)

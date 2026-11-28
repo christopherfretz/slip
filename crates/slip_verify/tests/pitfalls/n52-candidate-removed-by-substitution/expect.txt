@@ -1,0 +1,8 @@
+# N52 (WP-136; N47 before WP-156 merged): a candidate that substitution removes (`spec/digest.md` §2.1,
+# §8). A relocation beside `enable_if` overloads and a `decltype` trailing
+# return whose substitution fails verifies (`good`): failed specialisations
+# are no units. An edit that makes the other overload win (`bad`: adding
+# `size()` to `Mine`, so `measure<Mine>` succeeds and beats `measure(...)`)
+# changes `legacy::use()`.
+good: verified
+bad:  mismatch changed legacy::use() @ main.cpp:3

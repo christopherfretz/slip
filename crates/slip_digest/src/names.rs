@@ -125,6 +125,12 @@ pub(crate) fn names(w: &Walk<'_>, written: &[Written]) -> Vec<(Digest, String)> 
     out
 }
 
+/// The display name of one unit entity `e` of `kind` (for tests).
+#[cfg(test)]
+pub(crate) fn unit_name(w: &Walk<'_>, e: DeclId, kind: KeyKind) -> String {
+    Names::new(w).unit(e, e, kind)
+}
+
 /// The name of the entity `e` (a declaration that is its entity, as
 /// `Walk::entity` gives it) for a person: the host's `display_string_of`
 /// (`spec/api.md` §6.3 rule 2, `docs/wp/WP-083.md`). Never hashed. It is

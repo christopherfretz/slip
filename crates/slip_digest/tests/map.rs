@@ -3,9 +3,6 @@
 //! its own. Each test names the paragraph it covers ("The stack",
 //! "Subject paths", "Counters", "The shard").
 //!
-//! The parse changes the process's current directory, so every test that
-//! parses holds [`LOCK`] and uses absolute paths only.
-//!
 //! "The walk skipped on a unit with errors" is `map_unit`'s (`None` when
 //! `unit.errors()` is not 0): `crates/slip_cli/src/worker.rs` tests it
 //! through the worker, and `crates/slip_cli/tests/cli.rs` through the
@@ -16,7 +13,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_digest::map::{cause_word, counters, map_unit, with_input};
 use slip_digest::{Area, Cause, Detail, Options, Output, STACK_SIZE};
@@ -27,24 +23,19 @@ use slip_model::{
     Command, Counter, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status,
 };
 
-static LOCK: Mutex<()> = Mutex::new(());
-
-/// A directory of the test's own (its real path), removed on drop, and
-/// the lock held while it lives.
+/// A directory of the test's own (its real path), removed on drop.
 struct Fixture {
     root: PathBuf,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let base =
             std::env::temp_dir().join(format!("slip-digest-map-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let root = std::fs::canonicalize(&base).unwrap();
-        Fixture { root, _lock: lock }
+        Fixture { root }
     }
 
     fn write(&self, rel: &str, text: &str) -> PathBuf {
@@ -427,7 +418,11 @@ fn s8_5_cause_word_on_every_cause_text() {
                 continue;
             }
             for side in [common::Side::A, common::Side::B] {
-                let Ok(d) = common::digest_side(&dir, side) else { continue };
+                let Some(d) = common::skip_unparsed(common::digest_side(&dir, side))
+                    .unwrap_or_else(|e| panic!("{} {side:?}: {e}", common::rel(&dir)))
+                else {
+                    continue;
+                };
                 let mut want: BTreeMap<String, u64> = BTreeMap::new();
                 for (_, cause) in &d.output.causes {
                     if let Cause::Unsupported(t) | Cause::Unaccounted(t) = cause {

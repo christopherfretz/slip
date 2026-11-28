@@ -1,0 +1,4 @@
+exact derived
+added Trait<int *>::type
+changed Trait<int *>
+derived-added g<int *>(int *)

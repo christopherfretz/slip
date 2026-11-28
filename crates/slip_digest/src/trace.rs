@@ -154,6 +154,9 @@ pub struct Traced {
 pub fn trace(input: &Input<'_>, options: &Options<'_>, keys: &[Digest]) -> Traced {
     crate::walk::run_with(input, options, |w, written, output| {
         let mut traces = Vec::new();
+        // Deliberate catch (`spec/verify.md` §6.1 `verify.traces.panicked`):
+        // record a trace-pass panic in `Traced::panicked` without discarding
+        // the digest output.
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             traces_into(w, written, keys, &mut traces);
         }))

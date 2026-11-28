@@ -115,8 +115,13 @@ impl Walk<'_> {
             s.indeterminate(Cause::Unaccounted("redecls/limit"));
         }
         // flags: record DeclFlags.
-        if redecls.iter().any(|&x| ast.decls.get(x).has(DeclFlags::INVALID)) {
-            s.indeterminate(Cause::Error);
+        for &x in &redecls {
+            if let Some(c) = crate::units::invalid_cause(ast, x) {
+                s.indeterminate(c);
+            }
+            if crate::units::failed_substitution(ast, x) == crate::units::FailedSubst::DepthLimit {
+                s.indeterminate(Cause::Unaccounted("decl/subst-failed-depth"));
+            }
         }
         let implicit = redecls.iter().all(|&x| ast.decls.get(x).has(DeclFlags::IMPLICIT));
         s.flags(FlagWord::new().bit(implicit).bit(n.has(DeclFlags::INJECTED)));

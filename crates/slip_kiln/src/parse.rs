@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kiln_driver::args::Args;
-use kiln_driver::front_end::{FrontEnd, FrontEndError, FrontEndOptions, run_front_end};
+use kiln_driver::front_end::{Content, FrontEnd, FrontEndError, FrontEndOptions, run_front_end};
 use slip_model::formats::clip_message;
 use slip_model::hash::content_digest;
 use slip_model::{Counter, Digest, FileRef, Observer, Outcome, Phase, Shard, Status};
@@ -19,7 +19,10 @@ use crate::kiln::ast::Ast;
 use crate::kiln::lex::{Interner, LexOptions};
 use crate::kiln::oven::Oven;
 use crate::kiln::pp::PpRecord;
-use crate::kiln::source::{DirCache, FileId, FileOrigin, Loc, Overlay, Resolved, SourceManager};
+use crate::kiln::source::fx::FxHashSet;
+use crate::kiln::source::{
+    DirCache, FileId, FileOrigin, Loc, Overlay, Resolved, SourceManager, WorkDir,
+};
 use crate::lookups::{Driver, Lookups};
 
 /// What the front end of [`parse_observer_with`] keeps beyond what the
@@ -64,24 +67,13 @@ pub struct ParseOptions<'a> {
 /// words of the line the front end is given, never of the plan: the
 /// observer and its id do not change, and neither does the shard.
 ///
-/// At Kiln `4a83f6e3c` [`ParseOptions::written`] is two driver flags:
-///
-/// - `-fkiln-decl-extents`, which records the declaration extents and
-///   prints nothing (Kiln `kiln_driver/src/args.rs:2107`);
-/// - `-fkiln-dump-written-refs`, a switch of the written-reference
-///   table (`args.rs:2102`). Through the front-end library entry it
-///   records the table and formats no dump: the entry returns before any
-///   dump is made (`kiln_driver/src/syntax_cmd.rs:710-714`; Kiln
-///   `spec/driver.md` "Front-end library entry": "no dumps"). So it is in
-///   effect a recording-only switch, spelled as the dump flag. Kiln
-///   WP-2320 gave `FrontEndOptions` its own switch, `written_refs`
-///   (`kiln_driver/src/front_end.rs:78`, `docs/requests/KR1-amendment-1.md`
-///   §1); moving to it is WP-138's (`spec/landed/digest-kinds/WP-066.md`).
-///
-/// When Kiln gives the entry a recording switch, this function is the one
-/// place that changes.
+/// [`ParseOptions::written`] enables Kiln's written-reference table via
+/// `FrontEndOptions::written_refs` (Kiln WP-2320, `front_end.rs:81`) and
+/// its declaration-extent table via `-fkiln-decl-extents` (`args.rs:2182`,
+/// which records the table and prints nothing; `FrontEndOptions` has no
+/// `decl_extents` switch at Kiln `60fb5ab9d`).
 fn written_words(options: ParseOptions<'_>) -> &'static [&'static str] {
-    if options.written { &["-fkiln-dump-written-refs", "-fkiln-decl-extents"] } else { &[] }
+    if options.written { &["-fkiln-decl-extents"] } else { &[] }
 }
 
 /// The token starts of the buffers a unit lexed ([`Unit::is_token_start`]).
@@ -104,6 +96,7 @@ pub struct Tokens<'u> {
     sm: &'u SourceManager,
     interner: &'u Interner,
     lex: LexOptions,
+    split_greaters: &'u FxHashSet<Loc>,
     starts: &'u TokenStarts,
 }
 
@@ -119,13 +112,39 @@ impl<'u> Tokens<'u> {
         self.sm
     }
 
-    /// [`Unit::token_end`].
+    /// The unit's identifier interner.
+    pub fn interner(&self) -> &'u Interner {
+        self.interner
+    }
+
+    /// The unit's lexer options.
+    pub fn lex_options(&self) -> LexOptions {
+        self.lex
+    }
+
+    /// [`Unit::token_end`]: Kiln's `kiln_lex::token_end_split` with the
+    /// unit's `Ast::split_greaters` (Kiln WP-2542).
     pub fn token_end(&self, at: Loc) -> Option<Loc> {
-        crate::kiln::lex::token_end(self.sm, self.interner, at, self.lex)
+        crate::kiln::lex::token_end_split(self.sm, self.interner, at, self.lex, self.split_greaters)
     }
 
     /// [`Unit::is_token_start`].
     pub fn is_token_start(&self, at: Loc) -> bool {
+        if !at.is_valid() {
+            return false;
+        }
+        // A `>` split off a `>>`, `>=` or `>>=` by the parser (Kiln
+        // WP-2542), or the remainder token immediately following one in
+        // the same entry (`>` of `>>`, `=` of `>=`, `>=` or `=` of `>>=`).
+        if self.split_greaters.contains(&at) {
+            return true;
+        }
+        if let Some(prev) = at.to_raw().checked_sub(1).map(Loc::from_raw)
+            && self.split_greaters.contains(&prev)
+            && self.sm.same_entry_distance(prev, at) == Some(1)
+        {
+            return true;
+        }
         let at = if at.is_macro() { self.sm.spelling_loc(at) } else { at };
         if !at.is_valid() || at.is_macro() {
             return false;
@@ -393,7 +412,13 @@ impl<'r> Unit<'r> {
     /// package WP-086). The same two functions; the token starts it lexes
     /// are the unit's.
     pub fn tokens(&self) -> Tokens<'_> {
-        Tokens { sm: self.sm, interner: self.interner, lex: self.lex, starts: &self.token_starts }
+        Tokens {
+            sm: self.sm,
+            interner: self.interner,
+            lex: self.lex,
+            split_greaters: &self.ast.split_greaters,
+            starts: &self.token_starts,
+        }
     }
 
     /// Whether a token of the buffer starts at `at` as Kiln's lexer lexes
@@ -554,20 +579,18 @@ fn new_shard(
 /// manager's buffers read from disk and the paths the unit consulted
 /// without entering them (`spec/model.md` §8.4 "Inputs").
 ///
-/// **This changes the process's current directory** to the command's
-/// `directory` and does not restore it: Kiln has no working-directory
-/// parameter. That is correct in a worker, which runs one job at a time;
-/// anything else in the process that uses relative paths, on any thread,
-/// is affected. Callers that run several in one process (tests) must
-/// serialise them.
+/// The command's `directory` is passed per run to Kiln
+/// (`FrontEndOptions::working_directory`, Kiln WP-2121): the process's
+/// current directory is never changed, so several parses in different
+/// directories may run concurrently in one process.
 ///
 /// # Errors
 ///
 /// Only a failure of the worker itself: an entry of the overlay names no
 /// regular file, or names the file of another entry (before the parse);
-/// the directory cannot be entered, an input cannot be resolved to its
-/// real path, a consulted file cannot be read, a file changed during the
-/// parse, the overlay failed the run (Kiln's
+/// the directory does not exist or is not a directory, an input cannot be
+/// resolved to its real path, a consulted file cannot be read, a file
+/// changed during the parse, the overlay failed the run (Kiln's
 /// `FrontEndReport::overlay_failures`), the front end or `f` panicked, or
 /// the front end's thread could not be started. Diagnostics about the
 /// subject are a shard with status `diagnosed` or `rejected`.
@@ -578,6 +601,20 @@ pub fn parse_observer_with<R: Send>(
     options: ParseOptions<'_>,
     f: impl FnOnce(&Unit<'_>) -> R + Send,
 ) -> Result<(Shard, Option<R>), String> {
+    parse_observer_hooked(observer, phase, round, options, f, |_| {})
+}
+
+/// [`parse_observer_with`] with a hook run on the finished front end
+/// immediately before [`collect_inputs`] (used by tests to mutate a file
+/// between parsing and input collection).
+fn parse_observer_hooked<R: Send>(
+    observer: &Observer,
+    phase: Phase,
+    round: u64,
+    options: ParseOptions<'_>,
+    f: impl FnOnce(&Unit<'_>) -> R + Send,
+    before_collect: impl FnOnce(&FrontEnd<'_, '_>) + Send,
+) -> Result<(Shard, Option<R>), String> {
     let shard = |outcome, parsed| new_shard(observer, phase, round, outcome, parsed);
 
     let (argv0, rest) = match utf8_command(&observer.command) {
@@ -587,27 +624,34 @@ pub fn parse_observer_with<R: Send>(
         }
     };
 
-    let overlay = overlay(options.overlay)?;
-    let directory = bytes_path(&observer.command.directory)?;
-    std::env::set_current_dir(&directory)
-        .map_err(|e| format!("cannot enter {}: {e}", directory.display()))?;
+    let (overlay, overlaid_real) = match overlay(options.overlay)? {
+        Some((ovl, real)) => (Some(ovl), real),
+        None => (None, Vec::new()),
+    };
+    let work_dir_path = resolve_work_dir(&observer.command.directory)?;
 
     let mut line = front_end_line(&rest);
     let words = written_words(options);
     line.splice(1..1, words.iter().map(|&w| w.to_owned()));
     let program = program(&argv0);
-    let args = Args::parse_as(&program, &kiln_driver::rsp::expand(&line));
+    // `fe_options` disables response-file expansion (`response_files = false`),
+    // so the driver sees `line` verbatim without reading any `@file`.
+    let args = Args::parse_as(&program, &line);
     if let Some(flag) = not_modelled(&args) {
         return Ok((shard(rejected(&not_modelled_message(flag)), None), None));
     }
     if let Some(var) = kiln_switch_in_environment() {
         return Ok((shard(rejected(&switch_message(var)), None), None));
     }
-    let dir: &Path = &directory;
+    let dir: &Path = &work_dir_path;
     let (program_ref, line_ref) = (&program, &line);
     let overlay_ref = overlay.as_deref();
+    let overlaid_real_ref: &[(Vec<u8>, Arc<[u8]>)] = &overlaid_real;
     let see = move |fe: &FrontEnd<'_, '_>| -> Result<(Vec<FileRef>, Tally, R), String> {
-        let (inputs, buffers, respelled) = collect_inputs(fe, dir, overlay_ref)?;
+        before_collect(fe);
+        let effective_dir = fe.sm.work_dir().dir().unwrap_or(dir);
+        let (inputs, buffers, respelled) =
+            collect_inputs(fe, effective_dir, overlay_ref, overlaid_real_ref)?;
         let lookups = Lookups::of(fe, || driver(program_ref, line_ref));
         let unit = Unit {
             ast: fe.ast,
@@ -626,7 +670,12 @@ pub fn parse_observer_with<R: Send>(
         let value = f(&unit);
         Ok((inputs, Tally { tokens: fe.tokens, respelled }, value))
     };
-    let report = match run_front_end(&program, &line, fe_options(options, overlay.clone()), see) {
+    let report = match run_front_end(
+        &program,
+        &line,
+        fe_options(options, overlay.clone(), work_dir_path.clone()),
+        see,
+    ) {
         Ok(report) => report,
         Err(e @ (FrontEndError::NotSyntaxOnly | FrontEndError::NotOneInput)) => {
             return Ok((shard(rejected(&e.to_string()), None), None));
@@ -674,12 +723,37 @@ pub fn parse_observer_with<R: Send>(
     }
 }
 
+/// Verifies that `directory` exists and is a directory and resolves it to an
+/// absolute path for [`FrontEndOptions::working_directory`].
+fn resolve_work_dir(directory: &[u8]) -> Result<PathBuf, String> {
+    let dir = bytes_path(directory)?;
+    let meta =
+        std::fs::metadata(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("cannot enter {}: not a directory", dir.display()));
+    }
+    let work_dir = WorkDir::at(&dir).map_err(|e| format!("cannot enter {}: {e}", dir.display()))?;
+    Ok(work_dir.dir().unwrap_or(&dir).to_path_buf())
+}
+
 /// Kiln's options for `options`, with `overlay` (that of
-/// `options.overlay`).
-fn fe_options(options: ParseOptions<'_>, overlay: Option<Arc<Overlay>>) -> FrontEndOptions {
+/// `options.overlay`) and the run's `working_directory`.
+///
+/// `response_files` is turned off (`false`, Kiln WP-2411) so that a parse
+/// never reads an `@file` response file that would be absent from the
+/// shard's `inputs` (`slip_cdb::normalise` already expands response files
+/// when building a plan).
+fn fe_options(
+    options: ParseOptions<'_>,
+    overlay: Option<Arc<Overlay>>,
+    working_directory: PathBuf,
+) -> FrontEndOptions {
     let mut fe = FrontEndOptions::default();
+    fe.response_files = false;
     fe.pp_record = options.pp_record;
+    fe.written_refs = options.written;
     fe.record_lookups = options.lookups;
+    fe.working_directory = Some(working_directory);
     fe.overlay = overlay;
     fe
 }
@@ -691,11 +765,14 @@ fn fe_options(options: ParseOptions<'_>, overlay: Option<Arc<Overlay>>) -> Front
 /// since Kiln lets the second replace the first. Entries out of order or
 /// repeated are refused too (the interface asks for them sorted, no two
 /// equal).
-fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<Arc<Overlay>>, String> {
+type OverlaidReal = Vec<(Vec<u8>, Arc<[u8]>)>;
+
+fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<(Arc<Overlay>, OverlaidReal)>, String> {
     if entries.is_empty() {
         return Ok(None);
     }
     let mut overlay = Overlay::new();
+    let mut overlaid_real = Vec::with_capacity(entries.len());
     for (i, (path, bytes)) in entries.iter().enumerate() {
         let shown = String::from_utf8_lossy(path);
         if i > 0 && entries[i - 1].0 >= *path {
@@ -716,15 +793,19 @@ fn overlay(entries: &[(&[u8], Arc<[u8]>)]) -> Result<Option<Arc<Overlay>>, Strin
         if overlay.len() != i + 1 {
             return Err(format!("overlay: {shown} and an entry before it are one file"));
         }
+        let on_disk = slip_spelling::real_path(&at)
+            .map_err(|e| format!("overlay: cannot resolve {shown}: {}", e.detail()))?;
+        overlaid_real.push((path_bytes(&on_disk), Arc::clone(bytes)));
     }
-    Ok(Some(Arc::new(overlay)))
+    overlaid_real.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Some((Arc::new(overlay), overlaid_real)))
 }
 
 /// What the lookup log does not name (the `--embed-dir` directories, the
 /// command's own search directories), from the front end's line as Kiln's
-/// driver parses it, as `run_front_end` reads it.
+/// driver parses it, as `run_front_end` reads it (with `response_files` off).
 fn driver(program: &str, line: &[String]) -> Driver {
-    Driver::of(&Args::parse_as(program, &kiln_driver::rsp::expand(line)))
+    Driver::of(&Args::parse_as(program, line))
 }
 
 /// The message of a unit refused by [`kiln_switch_in_environment`].
@@ -755,13 +836,19 @@ type Buffers = Vec<(FileId, usize)>;
 
 /// The unit's inputs (`spec/model.md` §8.4 "Inputs"), sorted by path and
 /// unique, and each buffer among them with the index of its entry, sorted
-/// by buffer. A buffer of the overlay is its bytes (`original_bytes`); a
-/// consulted path the overlay replaces is the overlay's bytes, never
-/// read from the disk.
+/// by buffer. Every buffer's size and digest come directly from the bytes
+/// Kiln read (`SourceManager::original_bytes`). For a consulted path that
+/// is not a buffer (`#embed`, `__has_embed`), Kiln retains only its
+/// 128-bit FNV-1a [`Content`] (`Consulted::content`), not the raw bytes:
+/// an overlaid path uses the overlay's bytes and a disk path is read once
+/// here for BLAKE3, and both are verified against `c.content` so that a
+/// file changed between the parse and collection is rejected (`Err`)
+/// rather than recorded with bytes the parse never saw (WP-148 item 2).
 fn collect_inputs(
     fe: &FrontEnd<'_, '_>,
     directory: &Path,
     overlay: Option<&Overlay>,
+    overlaid_real: &[(Vec<u8>, Arc<[u8]>)],
 ) -> Result<(Vec<FileRef>, Buffers, u64), String> {
     let sm = fe.sm;
     let mut found: Vec<Candidate> = Vec::new();
@@ -793,12 +880,23 @@ fn collect_inputs(
             respelled_paths.insert(real.clone());
         }
         // A `__has_include` hit is a buffer; an `#embed` resource is not.
-        if found[..buffers_end].iter().any(|(p, ..)| *p == real) {
+        // Note: this cross-check against `found[..buffers_end]` is dead code
+        // at Kiln `60fb5ab9d` and becomes live only once Kiln reports every
+        // read (`kiln_driver/src/front_end.rs:506-510, :519, :525` drops
+        // `#embed` of a file the preprocessor entered and keeps only the first
+        // content of a path read twice). Kept as a defensive check for then.
+        if let Some((_, _, _, Some(buf))) = found[..buffers_end].iter().find(|(p, ..)| *p == real) {
+            if let Some(bytes) = sm.original_bytes(*buf) {
+                verify_consulted_content(&real, &bytes, c.content)?;
+            }
             continue;
         }
-        let (size, content) = match overlaid_bytes(overlay, &real)? {
-            Some(bytes) => (bytes.len() as u64, content_digest(&bytes)),
-            None => read_consulted(&real)?,
+        let (size, content) = match overlaid_bytes(overlay, overlaid_real, &real)? {
+            Some(bytes) => {
+                verify_consulted_content(&real, &bytes, c.content)?;
+                (bytes.len() as u64, content_digest(&bytes))
+            }
+            None => read_consulted(&real, c.content)?,
         };
         found.push((real, size, content, None));
     }
@@ -806,9 +904,47 @@ fn collect_inputs(
     Ok((inputs, buffers, respelled_paths.len() as u64))
 }
 
+/// Checks that `bytes` collected for consulted path `real` match the
+/// [`Content`] (size and 128-bit FNV-1a digest) that Kiln recorded when
+/// it read the file during parsing.
+fn verify_consulted_content(
+    real: &[u8],
+    bytes: &[u8],
+    seen: Option<Content>,
+) -> Result<(), String> {
+    if let Some(seen) = seen {
+        let got = Content::of(bytes);
+        if got != seen {
+            return Err(format!(
+                "{} changed during the parse: the front end read {} bytes (digest {:032x}), \
+                 collection read {} bytes (digest {:032x})",
+                String::from_utf8_lossy(real),
+                seen.size,
+                seen.digest,
+                got.size,
+                got.digest,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The overlay's bytes for the file at `real`, if the overlay replaces it.
-fn overlaid_bytes(overlay: Option<&Overlay>, real: &[u8]) -> Result<Option<Arc<[u8]>>, String> {
+/// Looks up `real` in `overlaid_real` (the canonical on-disk real paths
+/// resolved when the overlay was constructed before the parse) first so
+/// that an atomic replacement on disk — even one that reuses another
+/// overlaid file's freed inode — still maps `real` to its own overlaid
+/// bytes; falls back to Kiln's identity-based `Overlay::resolve` for
+/// distinct real paths that share an inode (hard links).
+fn overlaid_bytes(
+    overlay: Option<&Overlay>,
+    overlaid_real: &[(Vec<u8>, Arc<[u8]>)],
+    real: &[u8],
+) -> Result<Option<Arc<[u8]>>, String> {
     let Some(overlay) = overlay else { return Ok(None) };
+    if let Ok(i) = overlaid_real.binary_search_by_key(&real, |(p, _)| p.as_slice()) {
+        return Ok(Some(Arc::clone(&overlaid_real[i].1)));
+    }
     match overlay.resolve(&bytes_path(real)?, &mut DirCache::default()) {
         Resolved::Disk { replaced: Some(c), .. } | Resolved::Created { content: c, .. } => {
             c.bytes().map(Some).map_err(|e| {
@@ -847,11 +983,14 @@ fn merge_inputs(mut found: Vec<Candidate>) -> Result<(Vec<FileRef>, Buffers), St
 }
 
 /// The size and digest of a consulted file (`real`: its real path), read
-/// here, once: Kiln keeps no bytes of an `#embed` resource or a
-/// `__has_embed` hit. Failing to read it is `Err`.
-fn read_consulted(real: &[u8]) -> Result<(u64, Digest), String> {
+/// here once and verified against Kiln's recorded `seen` [`Content`]: Kiln
+/// keeps only the 128-bit FNV-1a [`Content`] of an `#embed` resource or a
+/// `__has_embed` hit, not its raw bytes. Failing to read it or a content
+/// mismatch is `Err`.
+fn read_consulted(real: &[u8], seen: Option<Content>) -> Result<(u64, Digest), String> {
     let bytes = std::fs::read(bytes_path(real)?)
         .map_err(|e| format!("cannot read {}: {e}", String::from_utf8_lossy(real)))?;
+    verify_consulted_content(real, &bytes, seen)?;
     Ok((bytes.len() as u64, content_digest(&bytes)))
 }
 
@@ -900,8 +1039,43 @@ fn bytes_path(b: &[u8]) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_inputs, path_bytes, read_consulted};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use slip_model::hash::content_digest;
+    use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
+
+    use super::{ParseOptions, merge_inputs, parse_observer_hooked, path_bytes, read_consulted};
+
+    fn test_dir(name: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let root =
+            std::env::var_os("SLIP_TEST_ROOT").map_or_else(std::env::temp_dir, PathBuf::from);
+        let dir = root.join(format!(
+            "slip-kiln-parse-unit-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn test_observer(dir: &std::path::Path, argv: &[&str]) -> Observer {
+        Observer {
+            id: Digest([7; 32]),
+            command: Command {
+                directory: path_bytes(dir),
+                argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
+                env: Vec::new(),
+            },
+            language: Language::Cxx,
+            main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+            cost_hint: 1,
+            origins: vec![Origin { configuration: 0, entry: 0 }],
+        }
+    }
 
     // spec/model.md §8.4 "Inputs" (WP-066): two buffers of one real path
     // that differ are `Err`; the same bytes twice are one entry. A file
@@ -925,10 +1099,199 @@ mod tests {
     #[test]
     fn s8_4_inputs_unreadable_consulted_path_is_err() {
         let dir = std::env::temp_dir();
-        let e = read_consulted(&path_bytes(&dir)).unwrap_err();
+        let e = read_consulted(&path_bytes(&dir), None).unwrap_err();
         assert!(e.starts_with("cannot read "), "{e}");
         let gone = dir.join(format!("slip-kiln-gone-{}", std::process::id()));
-        let e = read_consulted(&path_bytes(&gone)).unwrap_err();
+        let e = read_consulted(&path_bytes(&gone), None).unwrap_err();
         assert!(e.starts_with("cannot read "), "{e}");
+    }
+
+    // WP-148 item 2 (F9): modifying an included header on disk between the
+    // parse and `collect_inputs` leaves the shard recording the parsed bytes
+    // (from `SourceManager::original_bytes`), never the mutated disk bytes.
+    #[test]
+    fn s8_4_inputs_buffer_mutated_before_collect_records_parsed_bytes() {
+        let dir = test_dir("buf-mut");
+        let header = dir.join("h.h");
+        let parsed_bytes = b"int x = 1;\n";
+        let mutated_bytes = b"int x = 99999;\n";
+        std::fs::write(&header, parsed_bytes).unwrap();
+        std::fs::write(dir.join("main.cpp"), "#include \"h.h\"\nint y = x;\n").unwrap();
+        let obs = test_observer(&dir, &["c++", "-std=c++23", "main.cpp"]);
+        let header_hook = header.clone();
+        let (shard, _) = parse_observer_hooked(
+            &obs,
+            Phase::Map,
+            0,
+            ParseOptions::default(),
+            |_| (),
+            move |_| {
+                std::fs::write(&header_hook, mutated_bytes).unwrap();
+            },
+        )
+        .expect("buffer bytes come from SourceManager");
+        assert_eq!(shard.outcome.status, Status::Ok);
+        let inputs = shard.inputs.expect("inputs");
+        let h_path = path_bytes(&header);
+        let h_ref = inputs.iter().find(|f| f.path == h_path).expect("header input");
+        assert_eq!(h_ref.size, parsed_bytes.len() as u64);
+        assert_eq!(h_ref.content, content_digest(parsed_bytes));
+        assert_ne!(h_ref.content, content_digest(mutated_bytes));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WP-148 item 2 (F9): modifying an `#embed` consulted file on disk
+    // between the parse and `collect_inputs` is detected via Kiln's
+    // `Consulted::content` and fails closed (`Err`), never recording the
+    // mutated bytes in the shard.
+    #[test]
+    fn s8_4_inputs_consulted_embed_mutated_before_collect_fails_closed() {
+        let dir = test_dir("embed-mut");
+        let data = dir.join("data.bin");
+        let parsed_bytes = b"ABCD";
+        let mutated_bytes = b"WXYZ_CHANGED";
+        std::fs::write(&data, parsed_bytes).unwrap();
+        std::fs::write(
+            dir.join("main.cpp"),
+            "const unsigned char d[] = {\n#embed \"data.bin\"\n};\n",
+        )
+        .unwrap();
+        let obs = test_observer(&dir, &["c++", "-std=c++26", "main.cpp"]);
+        let data_hook = data.clone();
+        let err = parse_observer_hooked(
+            &obs,
+            Phase::Map,
+            0,
+            ParseOptions::default(),
+            |_| (),
+            move |_| {
+                std::fs::write(&data_hook, mutated_bytes).unwrap();
+            },
+        )
+        .expect_err("mutated consulted file must be rejected");
+        assert!(err.contains("changed during the parse"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WP-148 item 2 (F9): through an overlay, modifying the underlying disk
+    // files (both an `#include` buffer and an `#embed` consulted file, both
+    // in-place and by atomic rename replacing the inode) between parse and
+    // `collect_inputs` still records the overlaid bytes in the shard.
+    #[test]
+    fn s8_4_inputs_overlaid_files_mutated_before_collect_record_overlaid_bytes() {
+        for atomic_replace in [false, true] {
+            let dir = test_dir(if atomic_replace { "ovl-rename" } else { "ovl-inplace" });
+            let header = dir.join("h.h");
+            let data = dir.join("data.bin");
+            std::fs::write(&header, b"int x = 0;\n").unwrap();
+            std::fs::write(&data, b"DISK").unwrap();
+            std::fs::write(
+                dir.join("main.cpp"),
+                "#include \"h.h\"\nconst unsigned char d[] = {\n#embed \"data.bin\"\n};\nint y = x;\n",
+            )
+            .unwrap();
+            let ovl_header: Arc<[u8]> = Arc::from(&b"int x = 42;\n"[..]);
+            let ovl_data: Arc<[u8]> = Arc::from(&b"OVL!"[..]);
+            let mut entries = [
+                (path_bytes(&header), Arc::clone(&ovl_header)),
+                (path_bytes(&data), Arc::clone(&ovl_data)),
+            ];
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let slice: Vec<(&[u8], Arc<[u8]>)> =
+                entries.iter().map(|(p, b)| (p.as_slice(), Arc::clone(b))).collect();
+            let opts = ParseOptions { overlay: &slice, ..ParseOptions::default() };
+
+            let obs = test_observer(&dir, &["c++", "-std=c++26", "main.cpp"]);
+            let h_hook = header.clone();
+            let d_hook = data.clone();
+            let tmp_h = dir.join("h.h.tmp");
+            let tmp_d = dir.join("data.bin.tmp");
+            let (shard, _) = parse_observer_hooked(
+                &obs,
+                Phase::Map,
+                0,
+                opts,
+                |_| (),
+                move |_| {
+                    if atomic_replace {
+                        std::fs::write(&tmp_h, b"int x = 777;\n").unwrap();
+                        std::fs::rename(&tmp_h, &h_hook).unwrap();
+                        std::fs::write(&tmp_d, b"REPLACED_ON_DISK").unwrap();
+                        std::fs::rename(&tmp_d, &d_hook).unwrap();
+                    } else {
+                        std::fs::write(&h_hook, b"int x = 777;\n").unwrap();
+                        std::fs::write(&d_hook, b"MUTATED_ON_DISK").unwrap();
+                    }
+                },
+            )
+            .expect("overlaid inputs must record overlaid bytes");
+            assert_eq!(shard.outcome.status, Status::Ok);
+            let inputs = shard.inputs.expect("inputs");
+            let h_ref = inputs.iter().find(|f| f.path == path_bytes(&header)).expect("header");
+            assert_eq!(h_ref.size, ovl_header.len() as u64);
+            assert_eq!(h_ref.content, content_digest(&ovl_header));
+            let d_ref = inputs.iter().find(|f| f.path == path_bytes(&data)).expect("data");
+            assert_eq!(d_ref.size, ovl_data.len() as u64);
+            assert_eq!(d_ref.content, content_digest(&ovl_data));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // WP-148 fix round 1 (item 4): `fe_options` sets `response_files = false`,
+    // so an `@file.rsp` word in `argv` is never expanded as a response file
+    // (and thus never reads an unlisted input from disk).
+    #[test]
+    fn s8_4_response_file_in_argv_is_not_expanded() {
+        let dir = test_dir("no-rsp");
+        std::fs::write(dir.join("flags.rsp"), "-DFROM_RSP=1\n").unwrap();
+        std::fs::write(dir.join("imacros.rsp"), "-imacros m.h\n").unwrap();
+        std::fs::write(dir.join("m.h"), "#define FROM_IMACROS 1\n").unwrap();
+        std::fs::write(dir.join("main.cpp"), "int x = FROM_RSP;\n").unwrap();
+        // Bare `@flags.rsp` beside `main.cpp`: treated as a second literal
+        // input (not expanded), so Kiln refuses it with `NotOneInput`.
+        for rsp_arg in ["@flags.rsp", "@imacros.rsp"] {
+            let obs = test_observer(&dir, &["c++", "-std=c++20", rsp_arg, "main.cpp"]);
+            let shard = super::parse_observer(&obs, Phase::Map, 0).expect("parse_observer");
+            assert_eq!(
+                shard.outcome.status,
+                Status::Rejected,
+                "{rsp_arg} must not be expanded: {:?}",
+                shard.outcome
+            );
+            assert!(
+                shard.outcome.message.contains("has not one source input"),
+                "{rsp_arg}: {:?}",
+                shard.outcome
+            );
+        }
+        // `@flags.rsp` passed as a separate value to `-I`: kept as a literal
+        // directory name, never expanded to `-DFROM_RSP=1`, so `FROM_RSP` stays
+        // undeclared (`Diagnosed`, not `Ok`).
+        let obs = test_observer(&dir, &["c++", "-std=c++20", "-I", "@flags.rsp", "main.cpp"]);
+        let shard = super::parse_observer(&obs, Phase::Map, 0).expect("parse_observer");
+        assert_eq!(
+            shard.outcome.status,
+            Status::Diagnosed,
+            "-I @flags.rsp must not expand flags.rsp: {:?}",
+            shard.outcome
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WP-148 fix round 1 (M11): a `Command.directory` that names an existing
+    // regular file (not a directory) is refused with `Err("cannot enter ...")`
+    // even when the source path is absolute.
+    #[test]
+    fn s8_4_directory_that_is_a_regular_file_is_refused() {
+        let dir = test_dir("dir-is-file");
+        let not_a_dir = dir.join("not_a_dir");
+        let main = dir.join("main.cpp");
+        std::fs::write(&not_a_dir, "plain file\n").unwrap();
+        std::fs::write(&main, "int x = 1;\n").unwrap();
+        let obs = test_observer(&not_a_dir, &["c++", "-std=c++20", main.to_str().unwrap()]);
+        let err = super::parse_observer(&obs, Phase::Map, 0)
+            .expect_err("regular file as Command.directory must be rejected");
+        assert!(err.contains("not a directory"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -568,6 +568,9 @@ impl Walk<'_> {
             }
         }
         for &d in &ids {
+            if crate::units::in_failed_substitution(ast, d) {
+                continue;
+            }
             let kind = ast.decls.get(d).kind();
             if kind == DeclKind::UsingDirective
                 && let Some(scope) = self.directive_scope(d).map(NsScope::ns)

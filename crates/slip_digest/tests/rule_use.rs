@@ -297,6 +297,21 @@ fn unmatched_table() -> RuleTable {
     .expect("a valid rule")
 }
 
+/// Runs `f` on one side of a pair test, skipping sides the snippet front end
+/// cannot parse while propagating callback and front-end panics.
+fn run_pair_side(
+    dir: &Path,
+    side: Side,
+    f: impl FnOnce(&Input<'_>) -> Result<(), String> + Send,
+) -> Result<(), String> {
+    // A side that does not parse is the pair runner's to report; a panic
+    // inside the callback or front end fails this test.
+    if let Some(r) = common::skip_unparsed(common::with_side(dir, side, f))? {
+        r.map_err(|e| format!("side {side:?}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// §9.5 (`spec/verify.md` "Tests"): every source of every pair test,
 /// walked with `rule_use` on and off under [`unmatched_table`], gives one
 /// output but for `rule_use`, which is empty; and its digests, causes
@@ -311,7 +326,7 @@ fn pair_tests_on_and_off() {
     let table = unmatched_table();
     let outcome = common::run_dirs("pairs", &dirs, threads, |dir| {
         for side in [Side::A, Side::B] {
-            let r = common::with_side(dir, side, |input| -> Result<(), String> {
+            run_pair_side(dir, side, |input| {
                 let on = walk(input, &table, true);
                 same_but_rule_use(&on, &walk(input, &table, false))?;
                 if !on.rule_use.is_empty() {
@@ -326,13 +341,27 @@ fn pair_tests_on_and_off() {
                     return Err("the unmatched rule changed a digest, cause or name".into());
                 }
                 Ok(())
-            });
-            // A side that does not parse is the pair runner's to report.
-            if let Ok(r) = r {
-                r.map_err(|e| format!("side {side:?}: {e}"))?;
-            }
+            })?;
         }
         Ok(Vec::new())
     });
     outcome.finish();
+}
+
+#[test]
+fn wp168_pair_side_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    let err = run_pair_side(&dir, Side::A, |_| {
+        assert_eq!(1, 2, "wp168 rule_use sentinel");
+        Ok(())
+    })
+    .expect_err("a callback panic must propagate through run_pair_side");
+    assert!(
+        err.contains("the callback panicked:") && err.contains("wp168 rule_use sentinel"),
+        "{err}"
+    );
+    // An unparseable module side is still skipped without error.
+    let pending = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differ/Owner/unit");
+    assert_eq!(run_pair_side(&pending, Side::A, |_| Ok(())), Ok(()));
 }

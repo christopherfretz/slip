@@ -288,10 +288,6 @@ pub(crate) struct Walk<'a> {
     /// The temporaries each variable extends, by its first declaration,
     /// built when a `value` unit first needs it (`demand.rs`).
     pub lets: Option<HashMap<DeclId, Vec<(u32, DeclId)>>>,
-    /// The spellings of the operators some declaration that is not a
-    /// member function names (`operator+`), built when a fold first needs
-    /// it (`expr_profile::fold_left_out`).
-    pub declared_operators: Option<HashSet<&'static str>>,
     /// The declarations around a local function with the attribute
     /// `constructor`, `destructor` or `used`, built when the mark first
     /// needs it (`emitted::hosts`, WP-155).
@@ -446,7 +442,6 @@ impl<'a> Walk<'a> {
             spelling_off: 0,
             local: crate::local::LocalState::default(),
             lets: None,
-            declared_operators: None,
             emitted_hosts: None,
             content_emits: HashMap::new(),
             emits_placed: HashSet::new(),
@@ -907,6 +902,13 @@ pub(crate) fn run_kept<R>(
     counters.push(slip_model::Counter {
         name: "digest.instantiated.unheld".to_owned(),
         value: crate::demand::unheld(&w),
+    });
+    // Invariant of Kiln WP-3281 (`spec/digest.md` §10, §12; WP-136):
+    // invalid declarations without Kiln's `subst_failed` mark. Must be 0
+    // in an observer with no error diagnostic.
+    counters.push(slip_model::Counter {
+        name: "digest.invalid.unmarked".to_owned(),
+        value: crate::units::unmarked_invalid(w.ast),
     });
     crate::ns_refs::counters(&w, &mut counters);
     crate::operands::counters(&w, &mut counters);

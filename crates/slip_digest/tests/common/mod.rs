@@ -482,23 +482,13 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
     .map_err(|e| format!("side {side:?} (`kiln {}`): {e}", head.line()))?;
     let (output, errors, diagnostics) = out;
     let output = output?;
-    // WP-155 (second fix round, rule 3): every local function with
-    // `constructor`, `destructor` or `used` the mark could place, it
-    // placed, in every fixture of every runner.
-    zero(&output, side, "digest.emitted.unplaced")?;
-    // WP-158 (`spec/digest.md` §13): every function body and default
-    // argument Kiln instantiated is held by a unit, in every fixture of
-    // every runner.
-    zero(&output, side, "digest.instantiated.unheld")?;
-    // WP-156 fix round 3 (L6): every written name of the ledger is
-    // decided by the unit that holds it, in every fixture of every runner.
-    zero(&output, side, "digest.operands.names.unclaimed")?;
     if errors > 0 && !head.errors {
         return Err(format!(
             "side {side:?} (`kiln {}`) has {errors} error(s):\n{diagnostics}",
             head.line()
         ));
     }
+    check_invariant_counters(side, errors, &output)?;
     let units = index(&output);
     if std::env::var_os("SLIP_DIGEST_DUMP").is_some() {
         eprintln!("--- {} side {side:?}: kiln {}", rel(dir), head.line());
@@ -523,6 +513,38 @@ fn digest_side_table(dir: &Path, side: Side, tables: &Tables<'_>) -> Result<Dige
         }
     }
     Ok(Digested { output, units, errors, diagnostics })
+}
+
+fn check_invariant_counters(side: Side, errors: u32, output: &Output) -> Result<(), String> {
+    // WP-155 (second fix round, rule 3): every local function with
+    // `constructor`, `destructor` or `used` the mark could place, it
+    // placed, in every fixture of every runner.
+    let unplaced = output.counters.iter().find(|c| c.name == "digest.emitted.unplaced");
+    if unplaced.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.emitted.unplaced is {unplaced:?}, not 0"));
+    }
+    // WP-158 (`spec/digest.md` §13): every function body and default
+    // argument Kiln instantiated is held by a unit, in every fixture of
+    // every runner.
+    let unheld = output.counters.iter().find(|c| c.name == "digest.instantiated.unheld");
+    if unheld.is_none_or(|c| c.value != 0) {
+        return Err(format!("side {side:?}: digest.instantiated.unheld is {unheld:?}, not 0"));
+    }
+    // WP-156 fix round 3 (L6): every written name of the ledger is
+    // decided by the unit that holds it, in every fixture of every runner.
+    zero(output, side, "digest.operands.names.unclaimed")?;
+    // WP-136 (`spec/digest.md` §10, §12): an observer with no error
+    // diagnostic must have no invalid declaration without Kiln's
+    // `subst_failed` mark.
+    if errors == 0 {
+        let unmarked = output.counters.iter().find(|c| c.name == "digest.invalid.unmarked");
+        if unmarked.is_none_or(|c| c.value != 0) {
+            return Err(format!(
+                "side {side:?}: digest.invalid.unmarked is {unmarked:?}, not 0 (with 0 errors)"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Parses one side of the test in `dir` as [`digest_side_with`] does and
@@ -568,6 +590,18 @@ pub fn with_side<R: Send>(
         ));
     }
     Ok(r)
+}
+
+/// Unwraps a side-helper `Result` for tests that intentionally skip sides the
+/// snippet front end cannot parse: returns `Ok(Some(v))` on `Ok(v)`, `Ok(None)`
+/// on a parse refusal, and `Err(e)` when the callback or front end panicked.
+#[allow(dead_code, reason = "used by tests that tolerate unparsed sides")]
+pub fn skip_unparsed<T>(r: Result<T, String>) -> Result<Option<T>, String> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.contains("panicked:") => Err(e),
+        Err(_) => Ok(None),
+    }
 }
 
 /// A side as [`digest_side_with`] gives it, from an `Output` a caller of
@@ -966,6 +1000,8 @@ pub fn pool_map_timed<T: Sync, R: Send>(
                         let n = next.fetch_add(1, Ordering::Relaxed);
                         let Some(item) = items.get(n) else { break };
                         let start = std::time::Instant::now();
+                        // Deliberate catch: callers propagate `Err` into test
+                        // failures so other pool items still run and report.
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item)))
                             .map_err(|p| panic_text(&*p));
                         if tx.send((n, (r, start.elapsed()))).is_err() {
