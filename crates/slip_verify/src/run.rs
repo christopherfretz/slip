@@ -554,10 +554,12 @@ pub struct Report {
     names: BTreeMap<Digest, NameGroup>,
     /// Section 33's fold (WP-118).
     rebuilt: RebuiltFold,
-    /// `ok` verify shards whose `digest.invalid.unmarked` counter is
-    /// non-zero (WP-136, `spec/digest.md` §10): an observer with no error
-    /// diagnostic had an invalid declaration without Kiln's `subst_failed`
-    /// mark (a defect of Kiln or Slip, reported without panicking).
+    /// Accepted `ok` observers whose `digest.invalid.unmarked` counter (on the
+    /// post-image, the pre-image via `verify.invalid.unmarked.pre`, or an
+    /// `unchanged` map shard) is non-zero (WP-136, `spec/digest.md` §10): an
+    /// observer with no error diagnostic had an invalid declaration without
+    /// Kiln's `subst_failed` mark (a defect of Kiln or Slip, reported without
+    /// panicking).
     unmarked_invalid_observers: u64,
     unmarked_invalid_decls: u64,
 }
@@ -929,11 +931,12 @@ impl Report {
             (Some(s), State::Verified | State::Mismatch) => {
                 // WP-136 (`spec/digest.md` §10): an `ok` observer (no error
                 // diagnostic) with an invalid declaration lacking Kiln's
-                // `subst_failed` mark is a defect of Kiln or Slip.
-                if let Some(n) = counter(s, "digest.invalid.unmarked").filter(|&n| n > 0) {
-                    self.unmarked_invalid_observers += 1;
-                    self.unmarked_invalid_decls = self.unmarked_invalid_decls.saturating_add(n);
-                }
+                // `subst_failed` mark on either side is a defect of Kiln or Slip.
+                self.record_unmarked_invalid(
+                    counter(s, "digest.invalid.unmarked")
+                        .unwrap_or(0)
+                        .saturating_add(counter(s, "verify.invalid.unmarked.pre").unwrap_or(0)),
+                );
                 s.names.as_ref().map_or(&[][..], |n| n.notes.as_slice())
             }
             _ => &[],
@@ -1040,6 +1043,9 @@ impl Report {
         let state = if why.is_none() { State::Unchanged } else { State::Failed };
         self.states[state.index()] += 1;
         self.all_good &= state == State::Unchanged;
+        if state == State::Unchanged {
+            self.record_unmarked_invalid(counter(map, "digest.invalid.unmarked").unwrap_or(0));
+        }
         if let Some(message) = why {
             self.not_verified.insert(
                 position,
@@ -1464,6 +1470,13 @@ impl Report {
             ("observers", uv(self.unmarked_invalid_observers)),
             ("declarations", uv(self.unmarked_invalid_decls)),
         ])
+    }
+
+    fn record_unmarked_invalid(&mut self, count: u64) {
+        if count > 0 {
+            self.unmarked_invalid_observers += 1;
+            self.unmarked_invalid_decls = self.unmarked_invalid_decls.saturating_add(count);
+        }
     }
 
     fn not_verified_json(&self) -> Vec<Value> {

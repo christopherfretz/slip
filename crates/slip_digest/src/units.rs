@@ -83,8 +83,21 @@ pub(crate) fn collect(w: &mut Walk<'_>) {
     // declaration.
     let mut seen: std::collections::HashSet<DeclId> = std::collections::HashSet::new();
     for d in ast.decls.ids() {
-        if in_failed_substitution(ast, d) {
-            continue;
+        match failed_substitution(ast, d) {
+            FailedSubst::Yes => continue,
+            FailedSubst::DepthLimit => {
+                let scope = match info(ast.decls.get(d).kind()).role {
+                    Role::Entity(_) | Role::Content(_) => Some(w.entity(d)),
+                    Role::Nothing
+                    | Role::Transparent
+                    | Role::Root
+                    | Role::Local
+                    | Role::InParent
+                    | Role::Unsupported(_) => enclosing_entity(w, d),
+                };
+                w.taints.push((scope, Cause::Unaccounted("decl/subst-failed-depth")));
+            }
+            FailedSubst::No => {}
         }
         if let Role::Unsupported(what) = info(ast.decls.get(d).kind()).role {
             // No key kind at all: the nearest enclosing unit is made
@@ -177,20 +190,65 @@ pub(crate) fn is_no_entity_failed_substitution(ast: &Ast, d: DeclId) -> bool {
     }
 }
 
-/// Whether declaration `d` is a failed substitution that is no entity, or
-/// is owned by one through its `closure_owner` / `ctx` chain (a parameter,
-/// local, or closure created while a failed signature was being formed;
-/// `spec/digest.md` §2.1, §8; Kiln `spec/ast.md` §4.1).
-pub(crate) fn in_failed_substitution(ast: &Ast, d: DeclId) -> bool {
+/// Maximum parent chain steps walked by [`failed_substitution`], matching
+/// Kiln's `Sema::decl_owner` bound.
+pub(crate) const SUBST_FAILED_LIMIT: usize = 256;
+
+/// Result of checking whether a declaration is, or is owned by, a no-entity
+/// failed substitution (`spec/digest.md` §2.1, §8; Kiln `spec/ast.md` §4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailedSubst {
+    /// Not a failed substitution (or the AST has none).
+    No,
+    /// The declaration itself, or an enclosing `closure_owner` / `ctx` within
+    /// the step bound, is a no-entity failed substitution.
+    Yes,
+    /// The parent chain exceeded the step bound before reaching root or a
+    /// failed substitution: fail closed (`Unaccounted("decl/subst-failed-depth")`).
+    DepthLimit,
+}
+
+/// [`failed_substitution`] with an explicit step bound.
+pub(crate) fn failed_substitution_with_limit(ast: &Ast, d: DeclId, limit: usize) -> FailedSubst {
+    if ast.decls.cold.subst_failed.is_empty() {
+        return FailedSubst::No;
+    }
     let mut cur = Some(d);
-    for _ in 0..256 {
-        let Some(x) = cur else { return false };
+    for _ in 0..limit {
+        let Some(x) = cur else { return FailedSubst::No };
         if is_no_entity_failed_substitution(ast, x) {
-            return true;
+            return FailedSubst::Yes;
         }
         cur = ast.closure_owner(x).or_else(|| ast.decls.get(x).ctx());
     }
-    false
+    if cur.is_none() { FailedSubst::No } else { FailedSubst::DepthLimit }
+}
+
+/// Whether declaration `d` is a failed substitution that is no entity, or
+/// is owned by one through its `closure_owner` / `ctx` chain (a parameter,
+/// local, or closure created while a failed signature was being formed;
+/// `spec/digest.md` §2.1, §8; Kiln `spec/ast.md` §4.1). Fails closed with
+/// [`FailedSubst::DepthLimit`] past [`SUBST_FAILED_LIMIT`] steps.
+pub(crate) fn failed_substitution(ast: &Ast, d: DeclId) -> FailedSubst {
+    failed_substitution_with_limit(ast, d, subst_failed_limit())
+}
+
+#[cfg(not(test))]
+const fn subst_failed_limit() -> usize {
+    SUBST_FAILED_LIMIT
+}
+
+#[cfg(test)]
+fn subst_failed_limit() -> usize {
+    tests::subst_failed_limit()
+}
+
+/// Whether declaration `d` is known to be inside a no-entity failed
+/// substitution (returning `false` on [`FailedSubst::DepthLimit`] so callers
+/// never silently drop an entity past the step bound; `collect`, `decl_node`
+/// and `write_ref` flag `DepthLimit` indeterminate instead).
+pub(crate) fn in_failed_substitution(ast: &Ast, d: DeclId) -> bool {
+    matches!(failed_substitution(ast, d), FailedSubst::Yes)
 }
 
 /// The indeterminate cause of an invalid declaration `d`, or `None` when
@@ -1350,6 +1408,27 @@ mod tests {
     use crate::decl_func::tests::{named, with_walk};
     use crate::walk::Walk;
 
+    thread_local! {
+        static SUBST_FAILED_LIMIT_OVERRIDE: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(super::SUBST_FAILED_LIMIT) };
+    }
+
+    pub(super) fn subst_failed_limit() -> usize {
+        SUBST_FAILED_LIMIT_OVERRIDE.with(std::cell::Cell::get)
+    }
+
+    fn with_subst_failed_limit<R>(limit: usize, f: impl FnOnce() -> R) -> R {
+        struct Reset(usize);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SUBST_FAILED_LIMIT_OVERRIDE.with(|c| c.set(self.0));
+            }
+        }
+        let prev = SUBST_FAILED_LIMIT_OVERRIDE.with(|c| c.replace(limit));
+        let _reset = Reset(prev);
+        f()
+    }
+
     /// `hidden_shadow`: only a hider written in source counts. Since Kiln
     /// WP-3145/WP-3146 (`690711450`, in the pin since WP-163) an implicit
     /// member marks the shadow it hides at the class's closing brace, used
@@ -1990,6 +2069,30 @@ mod tests {
         assert_eq!(a.digests, b.digests, "kind4: failed attempt and no attempt must be equal");
         assert_eq!(counter(&a, "digest.invalid.unmarked"), 0);
 
+        // Kind 4 fail-closed path (M10): a SFINAE ambiguity on `X<int, int>`
+        // followed by an explicit specialisation `template<> struct X<int, int>`
+        // leaves `ClassPartialAmbiguity` on a record with a definition/members,
+        // so `invalid_cause` fails closed with `decl/class-partial-ambiguity`.
+        let kind4_then_spec = "template <class T, class U> struct X {};\n\
+                               template <class T> struct X<T, int> { using t = int; };\n\
+                               template <class U> struct X<int, U> { using t = int; };\n\
+                               template <class T> auto probe(T) -> typename X<T, int>::t;\n\
+                               int probe(...);\n\
+                               int first = probe(1);\n\
+                               template <> struct X<int, int> { using t = int; };\n\
+                               X<int, int>::t after = 0;\n";
+        let (k4_out, k4_err) = digest_src(kind4_then_spec);
+        assert_eq!(k4_err, 0);
+        assert_eq!(counter(&k4_out, "digest.invalid.unmarked"), 0);
+        assert!(
+            k4_out.causes.iter().any(|&(k, c)| {
+                c == crate::Cause::Unaccounted("decl/class-partial-ambiguity")
+                    && k4_out.names.iter().any(|(nk, n)| *nk == k && n == "X<int, int>")
+            }),
+            "expected decl/class-partial-ambiguity on X<int, int>, got: {:?}",
+            k4_out.causes
+        );
+
         // Real error (unmarked INVALID): stays Cause::Error and counts in
         // `digest.invalid.unmarked`.
         let real_err = "template <class T, class U> struct X {};\n\
@@ -2325,5 +2428,142 @@ mod tests {
             assert_eq!(counter(&out, "digest.instantiated.unheld"), 0, "{label}");
             assert_eq!(counter(&out, "digest.emitted.unplaced"), 0, "{label}");
         }
+    }
+
+    // WP-136 fix round 1 (M8): `unit_class` and `query::Keys::unit_of` skip
+    // failed substitutions independently of `units::collect`.
+    #[test]
+    fn wp136_unit_class_and_query_skip_failed_substitution() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        let src = "template <class T> auto g(T t) -> decltype(t.size());\n\
+                   int g(...);\n\
+                   int u() { return g(1); }\n";
+        with_walk(src, |w| {
+            let failed = w
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                .map(|(d, _)| d)
+                .expect("failed g<int>");
+            assert_eq!(unit_class(w, w.entity(failed)), None);
+        });
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut keys = crate::query::Keys::new(&input);
+            let failed = p
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                .map(|(d, _)| d)
+                .expect("failed g<int>");
+            assert_eq!(keys.unit_of(failed), None);
+        })
+        .expect("parse");
+    }
+
+    // WP-136 fix round 1 (item 5): `failed_substitution` has an O(1) empty
+    // fast-path when `ast.decls.cold.subst_failed` is empty, and fails closed
+    // (`FailedSubst::DepthLimit` -> `Unaccounted("decl/subst-failed-depth")`)
+    // past its step bound rather than silently returning `false`.
+    #[test]
+    fn wp136_subst_failed_depth_limit_fails_closed_and_empty_fast_path() {
+        let digest_with_limit = |src: &str, limit: usize| -> crate::Output {
+            let files = [("main.cpp", src)];
+            let snippet = slip_kiln::snippet::Snippet {
+                files: &files,
+                main: "main.cpp",
+                include: &[""],
+                std: "c++20",
+            };
+            let rules = RuleTable::empty();
+            slip_kiln::snippet::parse(&snippet, |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let paths: Vec<Vec<u8>> =
+                    p.sm.file_ids()
+                        .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                        .collect();
+                let (ast, sm) = (p.ast, p.sm);
+                std::thread::scope(|s| {
+                    std::thread::Builder::new()
+                        .stack_size(crate::STACK_SIZE)
+                        .spawn_scoped(s, || {
+                            with_subst_failed_limit(limit, || {
+                                let path = |f: slip_kiln::kiln::source::FileId| {
+                                    paths.get(f.index()).cloned().unwrap_or_default()
+                                };
+                                let input = crate::Input { ast, sm, subject_path: &path };
+                                let options = crate::Options {
+                                    rules: &rules,
+                                    read_only: crate::ReadOnly::NO_FILE,
+                                    detail: crate::Detail::All,
+                                    names: true,
+                                    rule_use: false,
+                                };
+                                crate::digest(&input, &options)
+                            })
+                        })
+                        .expect("spawn")
+                        .join()
+                        .expect("join")
+                })
+            })
+            .expect("parse")
+        };
+
+        // 1. Empty fast-path: no failed substitutions in the TU -> even with
+        // limit=2, a 4-deep declaration (`a::b::c::x`) is determinate.
+        let clean = "namespace a { namespace b { namespace c { int x = 1; } } }\n";
+        let clean_out = digest_with_limit(clean, 2);
+        assert!(clean_out.causes.is_empty(), "{:?}", clean_out.causes);
+
+        // 2. Non-empty `subst_failed` with lowered limit=2: `a::b::c::x`
+        // exceeds the bound and fails closed with `decl/subst-failed-depth`,
+        // staying a unit rather than being silently dropped or treated as clean.
+        let with_sf = "namespace a { namespace b { namespace c { int x = 1; } } }\n\
+                       template <class T> auto g(T t) -> decltype(t.size());\n\
+                       int g(...);\n\
+                       int u() { return g(1); }\n";
+        let normal_out = digest_with_limit(with_sf, super::SUBST_FAILED_LIMIT);
+        assert!(normal_out.causes.is_empty(), "{:?}", normal_out.causes);
+
+        let limited_out = digest_with_limit(with_sf, 2);
+        let x_key = limited_out
+            .names
+            .iter()
+            .find(|(_, n)| n == "a::b::c::x")
+            .map(|&(k, _)| k)
+            .expect("a::b::c::x must remain a unit, not be silently dropped");
+        assert!(
+            limited_out
+                .causes
+                .contains(&(x_key, crate::Cause::Unaccounted("decl/subst-failed-depth"))),
+            "expected decl/subst-failed-depth on a::b::c::x, got: {:?}",
+            limited_out.causes
+        );
+
+        // 3. `write_ref` to a declaration past the bound also fails closed.
+        with_walk(with_sf, |w| {
+            let x = named(w, "x", DeclKind::Var)[0];
+            with_subst_failed_limit(2, || {
+                assert_eq!(super::failed_substitution(w.ast, x), super::FailedSubst::DepthLimit);
+                let mut s = crate::stream::Stream::new();
+                w.write_ref(&mut s, x);
+                assert_eq!(s.cause(), Some(crate::Cause::Unaccounted("decl/subst-failed-depth")));
+            });
+        });
     }
 }

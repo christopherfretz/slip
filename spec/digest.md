@@ -1257,7 +1257,7 @@ object is unspecified by the language and is not digested.
   | 1 | `FunctionSignature` (deduction, explicit arguments, a guide) | no entity: no unit (§2.1), nothing lists it, nothing of it is read |
   | 2 | `ExplicitSpecifier` (`explicit(expr)` failed) | no entity: no unit |
   | 3 | `VariablePartialAmbiguity` | no entity: no unit |
-  | 4 | `ClassPartialAmbiguity` | a nameable incomplete type (`X<int>*`), never complete: written exactly as a specialisation that was never instantiated (not a unit when `Undeclared`, and determinate when named or declared) |
+  | 4 | `ClassPartialAmbiguity` | a nameable incomplete type (`X<int>*`), never complete: written exactly as a specialisation that was never instantiated (not a unit when `Undeclared`, and determinate when named); if a later explicit specialisation gives that same declaration a definition, members or bases while `ClassPartialAmbiguity` remains set, it fails closed with `Unaccounted("decl/class-partial-ambiguity")` |
   | 5 | `LocalOfFailedSignature` (and any valid closure or local owned by a kind 1 or 2 specialisation) | part of a declaration that is no entity: never reached |
   | 6 | `OtherTrapped` | indeterminate, `Unaccounted("decl/trapped")` |
   | unmarked | `None` on an `INVALID` declaration | a real error: indeterminate, `Cause::Error` (§10) |
@@ -1265,7 +1265,10 @@ object is unspecified by the language and is not digested.
   Any `Ref` that reaches a declaration of kind 1, 2, 3 or 5 (or owned by
   one through `closure_owner` / `ctx`) makes the referring unit
   indeterminate with `Unaccounted("ref/failed-substitution")` and does not
-  queue the target.
+  queue the target. If the `closure_owner` / `ctx` walk exceeds its
+  256-step bound (on a unit whose `subst_failed` table is non-empty), the
+  walk fails closed with `Unaccounted("decl/subst-failed-depth")` rather
+  than silently dropping or accepting the declaration.
 - A specialisation records the template or partial specialisation it was
   instantiated from, as a `Ref`.
 - The guarantee for templates rests on the instantiations. A pattern's
@@ -1858,7 +1861,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
 | `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
 | `digest.instantiated.unheld` | function bodies, default arguments and default member initialisers Kiln instantiated that no unit's stream holds (§2.2 "Every instantiation has a unit", WP-158); always present, 0 over every fixture |
-| `digest.invalid.unmarked` | declarations carrying `DeclFlags::INVALID` without Kiln's `subst_failed` mark (§8, §10, WP-136); always present, 0 in every observer with no error diagnostic (a non-zero count on an `ok` verify shard is reported as a defect line in the run's report, `verify.md` §7.1, without panicking) |
+| `digest.invalid.unmarked` | declarations carrying `DeclFlags::INVALID` without Kiln's `subst_failed` mark (§8, §10, WP-136); always present, 0 in every observer with no error diagnostic (a non-zero count on either the post-image or the pre-image of an accepted `ok` observer — via `digest.invalid.unmarked`, `verify.invalid.unmarked.pre`, or an `unchanged` map shard — is reported as a defect line in the run's report, `verify.md` §7.1, without panicking) |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |

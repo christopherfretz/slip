@@ -1,0 +1,4 @@
+# `f`'s pattern has `undeclared_local` (a lambda in a template signature); the failed specialisation `f<a::S>` and its closure on side A produce no unit and leave `digest.instantiated.unheld` at 0.
+exact derived
+changed u()
+indeterminate template <class> decltype(...(1) , t.size()) a::f(type-parameter-0-0) (undeclared_local)

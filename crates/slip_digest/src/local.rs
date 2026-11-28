@@ -536,7 +536,6 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
                 ast.decls.lifetime_extended(d)
             && w.is_local(extending)
             && let Ok(o) = owner_of(w, ast.first(extending))
-            && !crate::units::in_failed_substitution(ast, o)
             && in_template(w, o)
         {
             let _ = numbering(w, o);
@@ -544,9 +543,7 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
         if ast.first(d) != d || !is_local_type(w, d) {
             continue;
         }
-        if let Ok(o) = owner_of(w, d)
-            && !crate::units::in_failed_substitution(ast, o)
-        {
+        if let Ok(o) = owner_of(w, d) {
             let _ = numbering(w, o);
         }
         let op = ast
@@ -556,9 +553,7 @@ pub(crate) fn number_all(w: &mut Walk<'_>) {
             .and_then(|l| ast.exprs.lambdas.get(l).call_op);
         if let Some(op) = op {
             let e = w.entity(op);
-            if !crate::units::in_failed_substitution(ast, e) {
-                let _ = numbering(w, e);
-            }
+            let _ = numbering(w, e);
         }
     }
     // The owner of the variable of each expanded expansion statement:
@@ -2614,5 +2609,47 @@ mod tests {
                 "one digest for two bodies: {shape}"
             );
         }
+    }
+
+    // WP-136 fix round 1 (M15): `number_all` skips failed substitution
+    // specialisations and closures owned by them, so nothing of their partly
+    // built declarations is numbered or read.
+    #[test]
+    fn wp136_number_all_skips_failed_substitution() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        let src = "template <class T> auto f(T t) -> decltype([] { return 1; }(), t.size());\n\
+                   int f(...);\n\
+                   int u() { return f(1); }\n";
+        let (has_failed, has_closure_op) = run(src, |w, _, _| {
+            let failed = w
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                .map(|(d, _)| w.entity(d))
+                .expect("failed f<int>");
+            let closure = w
+                .ast
+                .decls
+                .ids()
+                .find(|&d| {
+                    w.ast.decls.record(d).is_some_and(|r| r.lambda.is_some())
+                        && w.ast.closure_owner(d) == Some(failed)
+                })
+                .expect("closure of failed f<int>");
+            let op = w
+                .ast
+                .decls
+                .record(closure)
+                .and_then(|r| r.lambda)
+                .and_then(|l| w.ast.exprs.lambdas.get(l).call_op)
+                .map(|op| w.entity(op))
+                .expect("call_op of closure");
+            (w.local.numberings.contains_key(&failed), w.local.numberings.contains_key(&op))
+        });
+        assert!(!has_failed, "number_all must not number failed specialisation");
+        assert!(!has_closure_op, "number_all must not number closure call_op of failed signature");
     }
 }
