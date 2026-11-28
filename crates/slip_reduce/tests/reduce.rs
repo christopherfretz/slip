@@ -327,6 +327,34 @@ fn site_refused_rebuilt() {
     assert!(set.edits.is_empty());
 }
 
+/// `spec/edits.md` §4.2, §9.4 (WP-152): `Reason::CapturedAtInstance` round-trips
+/// through reduce's record encoding and keeps the refused site's instances and
+/// `note` report.
+#[test]
+fn site_refused_captured_at_instance() {
+    let set = ok(
+        &rename(),
+        vec![
+            ShardB::new(0).seed(d(1)).claim(the_edit(A, 0, 1, "g").subjects(&[d(1)])),
+            ShardB::new(1)
+                .seed(d(1))
+                .claim(refuse(A, 10, 11).reason(Reason::CapturedAtInstance).subjects(&[d(1)]))
+                .instance((A, 10, 11), Some(d(5)), "D<S>::g()", &[d(1)])
+                .report(
+                    Some((A, 10, 11)),
+                    Severity::Note,
+                    "in D<S>::g(): new name 'g' finds D<S>::g()",
+                ),
+        ],
+        "site-refused-captured-at-instance",
+    );
+    let r = refusal_at(&set, Cause::SiteRefused, A, 10, 11);
+    assert_eq!(r.reason, Reason::CapturedAtInstance);
+    assert_eq!(set.state, SetState::Refused);
+    assert_eq!(set.instances.len(), 1);
+    assert_eq!(set.reports.len(), 1);
+}
+
 /// §5.4 rows 6 and 7: `keep` only, `keep` and `unresolved`, `unresolved`
 /// only.
 #[test]

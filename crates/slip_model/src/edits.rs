@@ -131,6 +131,10 @@ pub enum Reason {
     /// The bytes are in a rebuilt file (§2.1): Slip does not write them;
     /// the build does. Added by WP-118, without a change of version.
     Rebuilt = 13,
+    /// A dependent name edited on instances would be captured in an
+    /// instantiation by a non-subject declaration named like the new name
+    /// (§9.4). Added by WP-152, without a change of version.
+    CapturedAtInstance = 14,
 }
 
 /// The bits of `Claim::tiers` (§2.2, §4.2): bit t for tier t, bit 4 for X.
