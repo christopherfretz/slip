@@ -2494,38 +2494,64 @@ This is where rename guesses, and where it leans on verification most:
      specialisation's AST keeps the rebuilt `MemberExpr`, post-image
      `[class.member.lookup]` for `new_name` runs in the qualifier class
      (when qualified) or the object class (with implicit derived-to-base
-     and qualification adjustments peeled). A non-subject `new_name` in
-     the starting class, a derived class above the subject's class, the
-     subject's own class, or a non-dominated sibling base is a capture:
+     and qualification adjustments peeled; never explicit casts). A class
+     on the lookup path whose own name is `new_name` (injected-class-name,
+     `[class.pre]/2`), or any non-subject `new_name` in the starting
+     class, a derived class above the subject's class, the subject's own
+     class, or any other base (virtual or non-virtual — no virtual-base
+     dominance rule is applied), is a capture:
      `refuse(captured_at_instance)` with a `note` report naming the
-     specialisation and the declaration found. A non-subject `new_name`
-     declared only in a proper base of a subject's class — or reached
-     only through a virtual base dominated by a subject's class
-     (`[class.member.lookup]/6`) — is hidden by the renamed entity in
-     the post-image and is **not** a capture.
+     specialisation and the declaration or class found. A non-subject
+     `new_name` declared only in a proper base directly hidden by a
+     subject's class is hidden by the renamed entity in the post-image
+     and is **not** a capture. Whenever no lookup class can be recovered
+     from `spec`'s AST (default arguments, `decltype` in a local type
+     alias, alias templates, requires-clauses, substituted signatures, …)
+     or a walk/depth limit (`WALK_LIMIT`, `BASE_DEPTH_LIMIT`) is hit, the
+     check **fails closed** (`refuse(captured_at_instance)` with a `note`
+     report saying the context was not recovered or the limit was hit),
+     with the one exception that if no class in the translation unit
+     declares a member named `new_name` and no class is itself named
+     `new_name`, no member or qualified class lookup can capture it and
+     the check accepts.
   4. *Added (WP-152) — qualified name (`T::f`, `&T::f`, `D::f`;
      `RefLookup::Qualified`)*: the same post-image
      `[class.member.lookup]` in the instance's nominated class, read
      from the rebuilt `DeclRefExpr` (or qualified `MemberExpr`) in the
-     specialisation.
+     specialisation, with the same fail-closed rule when no context is
+     recovered or a limit is hit.
   5. *Added (WP-152) — argument-dependent lookup (`f(t)`;
      `RefLookup::Adl`, `RefLookup::Both`)*: `[basic.lookup.argdep]/4`
      lookup for `new_name` in `SpecRef::adl`'s associated namespaces and
      classes (functions and function templates, admitting an `ADL_ONLY`
      hidden friend only when lexically in an associated class; ignoring
      non-functions and friends of non-associated classes). Any
-     non-subject found is `refuse(captured_at_instance)`.
-  6. *Waiting on Kiln (accepted and not verified, caught by check 2)*:
-     (a) `Member` and `Qualified` dependent names whose substituted
-     expression is not kept in the specialisation (alias templates,
-     requires-clauses, substituted signatures), because Kiln's `SpecRef`
-     does not carry the lookup's context class; (b) ordinary unqualified
-     lookup at the pattern's definition (`RefLookup::Unqualified`, and
-     the ordinary-lookup half of `RefLookup::Adl` / `Both` when
-     `new_name` is declared outside the associated set in an enclosing
-     or local scope), because Kiln exposes no post-parse lexical
-     unqualified lookup at a written-reference entry
-     (`spec/landed/edits/WP-152.md`, "For Kiln").
+     non-subject found is `refuse(captured_at_instance)` with a `note`
+     naming the candidate found — **deliberately including non-viable
+     overloads**, because Slip does not perform overload resolution
+     (pending Kiln's overload facts). Missing `SpecRef::adl` fails
+     closed.
+  6. *Added (WP-152, fail-closed) — ordinary unqualified lookup at the
+     pattern's definition (`RefLookup::Unqualified`, and the ordinary
+     half of `RefLookup::Adl` / `Both`)*: walks enclosing scopes from
+     `DependentName::enclosing` outwards (classes via post-image member
+     lookup, functions via `lookup_local` and declared locals, parameters
+     and template parameters, namespaces and the translation unit via
+     `lookup_local` and `using_directives`), stopping at a scope that
+     declares a subject named `old_name` and no non-subject `new_name`.
+     Any non-subject `new_name` found is `refuse(captured_at_instance)`.
+  7. *Waiting on Kiln (now fail-closed, not accepted unchecked)*:
+     (a) `Member` and `Qualified` dependent names whose lookup context
+     class is not recovered from `spec` (alias templates,
+     requires-clauses, substituted signatures, default arguments,
+     `decltype` in a local type alias) refuse `captured_at_instance`
+     whenever any class in the translation unit declares or is named
+     `new_name` (waiting on `SpecRef` to carry the lookup-context class);
+     (b) ordinary unqualified lookup at the pattern's definition refuses
+     conservatively over enclosing scopes without point-of-declaration or
+     nested-block precision (waiting on Kiln's post-parse lexical
+     unqualified lookup at a `WrittenRef` entry;
+     `spec/landed/edits/WP-152.md`, "For Kiln").
 - A dependent name inside its holder's key (a trailing return type, a
   parameter type, a trailing requires-clause; `digest-kinds.md` §3.3,
   §3.4): the edit changes the holder's own key, so the post-image lacks a

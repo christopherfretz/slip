@@ -45,7 +45,19 @@
 //!   associated namespace for functions and function templates; an
 //!   `ADL_ONLY` hidden friend is included only when a declaration of it
 //!   is lexically in an associated class (`[basic.lookup.argdep]/4`).
-//!   Any non-subject found is a capture.
+//!   Any non-subject found is a capture (including non-viable overloads,
+//!   pending Kiln's overload facts). Enclosing-scope ordinary unqualified
+//!   lookup at the pattern's definition is also checked (below); missing
+//!   `SpecRef::adl` fails closed.
+//! - **Ordinary unqualified lookup at the pattern's definition**
+//!   (`Lookup::Unqualified`, and the ordinary-lookup half of
+//!   `Lookup::Adl` / `Lookup::Both`): walks enclosing scopes from
+//!   `DependentName::enclosing` outwards (classes via
+//!   [`member_lookup_post`], functions via `lookup_local` and `ctx.named.new`
+//!   for locals/parameters/template parameters, namespaces and the
+//!   translation unit via `lookup_local` and `using_directives`), stopping
+//!   when a scope declares a subject named `old_name` and no non-subject
+//!   named `new_name`. Any non-subject found refuses `captured_at_instance`.
 //! - **Member access** (`Lookup::Member`: `t.f`, `p->f`, `this->f`,
 //!   `t.B::f`) and **qualified name** (`Lookup::Qualified`: `T::f`,
 //!   `&T::f`, `D::f`): Kiln's per-specialisation table records the entity
@@ -54,21 +66,28 @@
 //!   name's location (`body`, constructor mem-initializers, field/var
 //!   initializers, class `static_assert`s), its qualifier or object class
 //!   is read from that expression and searched by post-image
-//!   `[class.member.lookup]` ([`member_lookup_post`]). Shapes whose
-//!   substituted expression is not kept in `spec` (alias templates,
-//!   requires-clauses, substituted signatures) stay accepted and not
-//!   verified (listed under "For Kiln" in `spec/landed/edits/WP-152.md`).
+//!   `[class.member.lookup]` ([`member_lookup_post`]). Whenever no lookup
+//!   class is recovered (alias templates, requires-clauses, substituted
+//!   signatures, default arguments, `decltype` in a local type alias, …)
+//!   or a walk/depth limit (`WALK_LIMIT`, `BASE_DEPTH_LIMIT`) is hit, the
+//!   check **fails closed** (`refuse(captured_at_instance)` with a note
+//!   saying the context was not recovered or the limit was hit). The one
+//!   exception: if no class in the translation unit declares/introduces a
+//!   member named `new_name` and no class in the translation unit is
+//!   itself named `new_name` (injected-class-name), no member or qualified
+//!   class lookup can capture `new_name`, so the rename accepts.
 //! - **Hiding vs capture (Item 2)**: [`member_lookup_post`] simulates
 //!   `[class.member.lookup]` in the **post-image** (where every subject
 //!   declared or introduced in a class `c` now has `new_name`). A class
-//!   `c` that already declares a non-subject `new_name` stops and reports
-//!   a capture; a class `c` that declares no non-subject `new_name` and
+//!   `c` whose own name is `new_name` (injected-class-name, `[class.pre]/2`)
+//!   or that already declares a non-subject `new_name` stops in `c`'s
+//!   subobject and reports a capture; a class `c` that declares no
+//!   non-subject `new_name` (and is not named `new_name`) and
 //!   declares/introduces a subject stops without recursing into `c`'s
 //!   bases, so a base's `new_name` hidden by the renamed entity is not a
-//!   capture. Virtual-base dominance (`[class.member.lookup]/6`) drops a
-//!   non-subject found solely through a virtual base dominated by a
-//!   subject's class; a non-dominated sibling or derived class is a
-//!   capture.
+//!   capture. No virtual-base dominance rule is applied: any non-subject
+//!   provider reached through any base (virtual or non-virtual) counts as
+//!   a capture and refuses.
 //!
 //! Row 2 is read only under `dependent: offer` or `refuse`. Under
 //! `leave`, the request's default until dependent names are compared
@@ -110,7 +129,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use slip_kiln::kiln::ast::decl::DeclKind;
+use slip_kiln::kiln::ast::decl::{DeclKind, EnumData};
 use slip_kiln::kiln::ast::expr::{CastKind, ExprFlags, ExprKind};
 use slip_kiln::kiln::ast::lookup::LookupFlags;
 use slip_kiln::kiln::ast::names::DeclName;
@@ -152,12 +171,38 @@ struct Bound {
     named: bool,
 }
 
-/// One capture found in an instantiation: the specialisation and the
-/// non-subject declaration `new_name` finds there.
+/// Limits bounding AST recovery and base-class traversal for the capture check.
+#[derive(Clone, Copy)]
+struct Limits {
+    walk: usize,
+    base_depth: u32,
+}
+
+const DEFAULT_LIMITS: Limits = Limits { walk: WALK_LIMIT, base_depth: BASE_DEPTH_LIMIT };
+
+/// Why an instantiation refuses a row-2 `replace`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CaptureKind {
+    /// A non-subject declaration found by lookup (member, qualified, ADL,
+    /// or enclosing-scope ordinary unqualified lookup).
+    Decl(DeclId),
+    /// A class on the lookup path whose own name is `new_name`
+    /// (injected-class-name, `[class.pre]/2`).
+    InjectedClassName(DeclId),
+    /// The instantiation's lookup context could not be recovered.
+    ContextNotRecovered,
+    /// Walking the specialisation's AST hit `WALK_LIMIT`.
+    WalkLimit,
+    /// Searching base classes hit `BASE_DEPTH_LIMIT` (or enclosing scope
+    /// traversal hit `CTX_LIMIT`).
+    BaseDepthLimit,
+}
+
+/// One capture (or fail-closed refusal) found in an instantiation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Capture {
     spec: DeclId,
-    found: DeclId,
+    kind: CaptureKind,
 }
 
 /// Claims `name` from its rows.
@@ -245,20 +290,45 @@ fn record(ctx: &mut Ctx<'_, '_, '_>, name: Span, bound: &[Bound]) {
 }
 
 /// Records one `Severity::Note` report per unique capture at `name`,
-/// naming the specialisation and the non-subject declaration found
-/// (`docs/wp/WP-152.md` item 1).
+/// naming the specialisation and the non-subject declaration found (or the
+/// reason the check failed closed, `docs/wp/WP-152.md`).
 fn record_captures(ctx: &mut Ctx<'_, '_, '_>, name: Span, found: &[Capture]) {
     let ast = ctx.unit.ast();
     let new_text = String::from_utf8_lossy(ctx.new);
     let mut seen = HashSet::new();
     for c in found {
-        let key = (ast.first(c.spec), ast.first(c.found));
+        let key = match c.kind {
+            CaptureKind::Decl(d) => (ast.first(c.spec), 0u8, Some(ast.first(d))),
+            CaptureKind::InjectedClassName(cls) => (ast.first(c.spec), 1u8, Some(ast.first(cls))),
+            CaptureKind::ContextNotRecovered => (ast.first(c.spec), 2u8, None),
+            CaptureKind::WalkLimit => (ast.first(c.spec), 3u8, None),
+            CaptureKind::BaseDepthLimit => (ast.first(c.spec), 4u8, None),
+        };
         if !seen.insert(key) {
             continue;
         }
         let spec_display = slip_digest::display_name(ast, c.spec);
-        let found_display = slip_digest::display_name(ast, c.found);
-        let message = format!("in {spec_display}: new name '{new_text}' finds {found_display}");
+        let message = match c.kind {
+            CaptureKind::Decl(d) => {
+                let found_display = slip_digest::display_name(ast, d);
+                format!("in {spec_display}: new name '{new_text}' finds {found_display}")
+            }
+            CaptureKind::InjectedClassName(cls) => {
+                let cls_display = slip_digest::display_name(ast, cls);
+                format!(
+                    "in {spec_display}: new name '{new_text}' finds injected-class-name {cls_display}"
+                )
+            }
+            CaptureKind::ContextNotRecovered => format!(
+                "in {spec_display}: lookup context was not recovered to check new name '{new_text}'"
+            ),
+            CaptureKind::WalkLimit => format!(
+                "in {spec_display}: AST walk limit reached while checking new name '{new_text}'"
+            ),
+            CaptureKind::BaseDepthLimit => format!(
+                "in {spec_display}: base-class depth limit reached while checking new name '{new_text}'"
+            ),
+        };
         ctx.claims.report(
             name,
             Report {
@@ -273,8 +343,17 @@ fn record_captures(ctx: &mut Ctx<'_, '_, '_>, name: Span, found: &[Capture]) {
 
 /// Checks every instance of a row-2 `replace` for a non-subject
 /// declaration named `new_name` that the instance's lookup would find
-/// (`docs/wp/WP-152.md` items 1 and 2).
+/// (`docs/wp/WP-152.md` items 1 and 2, and fix round 1).
 fn captures(ctx: &mut Ctx<'_, '_, '_>, name: &DependentName, bound: &[Bound]) -> Vec<Capture> {
+    captures_with_limits(ctx, name, bound, DEFAULT_LIMITS)
+}
+
+fn captures_with_limits(
+    ctx: &mut Ctx<'_, '_, '_>,
+    name: &DependentName,
+    bound: &[Bound],
+    limits: Limits,
+) -> Vec<Capture> {
     let ast = ctx.unit.ast();
     let Ok(new_str) = std::str::from_utf8(ctx.new) else { return Vec::new() };
     let Some(new_sym) = ast.symbols().get(new_str) else {
@@ -286,32 +365,132 @@ fn captures(ctx: &mut Ctx<'_, '_, '_>, name: &DependentName, bound: &[Bound]) ->
     let old_dn =
         std::str::from_utf8(ctx.old).ok().and_then(|s| ast.symbols().get(s)).map(DeclName::ident);
 
+    let mut has_class_new_name: Option<bool> = None;
     let mut out = Vec::new();
     for b in bound {
-        check_row(ctx, name.name.lo, b.row, old_dn, new_dn, &mut out);
+        check_row(ctx, name, b.row, old_dn, new_dn, limits, &mut has_class_new_name, &mut out);
     }
     out
 }
 
+/// Lazily caches [`tu_has_class_new_name`].
+fn class_new_name(ast: &Ast, new_dn: DeclName, cache: &mut Option<bool>) -> bool {
+    *cache.get_or_insert_with(|| tu_has_class_new_name(ast, new_dn))
+}
+
+/// True if any class/struct/union in the translation unit is itself named
+/// `new_dn` (injected-class-name) or declares/introduces a member named
+/// `new_dn`. When false, no `[class.member.lookup]` for `new_dn` in this
+/// unit can find a non-subject provider (the one exception to failing
+/// closed when a member/qualified lookup's context is not recovered or a
+/// limit is hit).
+fn tu_has_class_new_name(ast: &Ast, new_dn: DeclName) -> bool {
+    for d in ast.decls.ids() {
+        if ast.decls.record(d).is_some() {
+            if ast.decls.get(d).name() == new_dn {
+                return true;
+            }
+            if !ast.lookup_local(d, new_dn).is_empty() {
+                return true;
+            }
+        } else if ast.decls.get(d).name() == new_dn && declared_in_record(ast, d) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True if declaration `d`'s semantic context (walking through transparent
+/// scopes such as unscoped enumerations) is a class/struct/union.
+fn declared_in_record(ast: &Ast, d: DeclId) -> bool {
+    let mut cur = ast.decls.get(d).ctx();
+    for _ in 0..CTX_LIMIT {
+        let Some(c) = cur else { return false };
+        if ast.decls.record(c).is_some() {
+            return true;
+        }
+        match ast.decls.get(c).kind() {
+            DeclKind::Enum => {
+                if ast.decls.enumeration(c).is_some_and(EnumData::is_scoped) {
+                    return false;
+                }
+            }
+            DeclKind::LinkageSpec | DeclKind::Export => {}
+            _ => return false,
+        }
+        cur = ast.decls.get(c).ctx();
+    }
+    false
+}
+
 /// Checks one `SpecRef` row for a capture of `new_dn`.
+#[allow(clippy::too_many_arguments)]
 fn check_row(
     ctx: &mut Ctx<'_, '_, '_>,
-    name_loc: Loc,
+    name: &DependentName,
     row: Row,
     old_dn: Option<DeclName>,
     new_dn: DeclName,
+    limits: Limits,
+    has_class_new_name: &mut Option<bool>,
     out: &mut Vec<Capture>,
 ) {
     let Some(entity) = row.entity else { return };
     match row.how {
-        Lookup::Member => check_member(ctx, name_loc, row, entity, old_dn, new_dn, out),
-        Lookup::Qualified => check_qualified(ctx, name_loc, row, entity, old_dn, new_dn, out),
+        Lookup::Member => check_member_or_qualified(
+            ctx,
+            name.name.lo,
+            row,
+            entity,
+            Lookup::Member,
+            old_dn,
+            new_dn,
+            limits,
+            has_class_new_name,
+            out,
+        ),
+        Lookup::Qualified => check_member_or_qualified(
+            ctx,
+            name.name.lo,
+            row,
+            entity,
+            Lookup::Qualified,
+            old_dn,
+            new_dn,
+            limits,
+            has_class_new_name,
+            out,
+        ),
         Lookup::Adl | Lookup::Both => {
             if let Some(adl_id) = row.adl {
                 check_adl(ctx, row.spec, adl_id, new_dn, out);
+            } else {
+                out.push(Capture { spec: row.spec, kind: CaptureKind::ContextNotRecovered });
             }
+            check_unqualified_enclosing(
+                ctx,
+                name.enclosing,
+                row.spec,
+                old_dn,
+                new_dn,
+                limits.base_depth,
+                has_class_new_name,
+                out,
+            );
         }
-        Lookup::Unqualified | Lookup::Builtin | Lookup::None | Lookup::Injected => {}
+        Lookup::Unqualified => {
+            check_unqualified_enclosing(
+                ctx,
+                name.enclosing,
+                row.spec,
+                old_dn,
+                new_dn,
+                limits.base_depth,
+                has_class_new_name,
+                out,
+            );
+        }
+        Lookup::Builtin | Lookup::None | Lookup::Injected => {}
     }
 }
 
@@ -321,42 +500,47 @@ fn is_subject(ctx: &mut Ctx<'_, '_, '_>, d: DeclId) -> bool {
     ctx.subjects.of_decl(ctx.keys, o).is_some()
 }
 
-/// Member access (`t.f`, `p->f`, `this->f`, `t.B::f`): reads the lookup
-/// class (qualifier class if qualified, else object class) from the
-/// rebuilt `MemberExpr` in `row.spec` and runs post-image class member
-/// lookup for `new_dn`.
-fn check_member(
+/// Member access (`t.f`, `p->f`, `this->f`, `t.B::f`) or qualified name
+/// (`T::f`, `&T::f`, `D::f`): reads the lookup class(es) from the rebuilt
+/// expression in `row.spec` and runs post-image class member lookup for
+/// `new_dn`. Fails closed when no class is recovered or `WALK_LIMIT` is
+/// hit, except when no class in the TU has a member or name `new_dn`.
+#[allow(clippy::too_many_arguments)]
+fn check_member_or_qualified(
     ctx: &mut Ctx<'_, '_, '_>,
     name_loc: Loc,
     row: Row,
     entity: DeclId,
+    how: Lookup,
     old_dn: Option<DeclName>,
     new_dn: DeclName,
+    limits: Limits,
+    has_class_new_name: &mut Option<bool>,
     out: &mut Vec<Capture>,
 ) {
-    let classes =
-        lookup_classes_in_spec(ctx.unit.ast(), row.spec, name_loc, entity, Lookup::Member);
-    for class in classes {
-        check_class(ctx, row.spec, class, old_dn, new_dn, out);
+    let (classes, walk_limit_hit) =
+        lookup_classes_in_spec(ctx.unit.ast(), row.spec, name_loc, entity, how, limits.walk);
+    if walk_limit_hit {
+        if class_new_name(ctx.unit.ast(), new_dn, has_class_new_name) {
+            out.push(Capture { spec: row.spec, kind: CaptureKind::WalkLimit });
+        }
+    } else if classes.is_empty() {
+        if class_new_name(ctx.unit.ast(), new_dn, has_class_new_name) {
+            out.push(Capture { spec: row.spec, kind: CaptureKind::ContextNotRecovered });
+        }
+        return;
     }
-}
-
-/// Qualified name (`T::f`, `&T::f`, `D::f`): reads the nominated class
-/// from the rebuilt `DeclRefExpr` (or qualified `MemberExpr`) in
-/// `row.spec` and runs post-image class member lookup for `new_dn`.
-fn check_qualified(
-    ctx: &mut Ctx<'_, '_, '_>,
-    name_loc: Loc,
-    row: Row,
-    entity: DeclId,
-    old_dn: Option<DeclName>,
-    new_dn: DeclName,
-    out: &mut Vec<Capture>,
-) {
-    let classes =
-        lookup_classes_in_spec(ctx.unit.ast(), row.spec, name_loc, entity, Lookup::Qualified);
     for class in classes {
-        check_class(ctx, row.spec, class, old_dn, new_dn, out);
+        check_class(
+            ctx,
+            row.spec,
+            class,
+            old_dn,
+            new_dn,
+            limits.base_depth,
+            has_class_new_name,
+            out,
+        );
     }
 }
 
@@ -364,7 +548,8 @@ fn check_qualified(
 /// `new_dn` in every associated namespace of `adl_id` for functions and
 /// function templates, admitting an `ADL_ONLY` hidden friend only when a
 /// declaration of it is lexically in an associated class. Any non-subject
-/// found is a capture.
+/// found is a capture (including non-viable overloads: Slip does not
+/// perform overload resolution).
 fn check_adl(
     ctx: &mut Ctx<'_, '_, '_>,
     spec: DeclId,
@@ -392,9 +577,200 @@ fn check_adl(
     }
     for d in found {
         if !is_subject(ctx, d) {
-            out.push(Capture { spec, found: d });
+            out.push(Capture { spec, kind: CaptureKind::Decl(d) });
         }
     }
+}
+
+/// Enclosing-scope ordinary unqualified lookup at the pattern's definition
+/// (Kiln Gap 2 fail-closed check): walks enclosing scopes outwards from
+/// `enclosing`, stopping at a scope that declares/introduces a subject
+/// named `old_dn` with no non-subject `new_dn` (post-image hiding).
+/// Any non-subject `new_dn` found is a capture.
+#[allow(clippy::too_many_arguments)]
+fn check_unqualified_enclosing(
+    ctx: &mut Ctx<'_, '_, '_>,
+    enclosing: Option<DeclId>,
+    spec: DeclId,
+    old_dn: Option<DeclName>,
+    new_dn: DeclName,
+    base_depth_limit: u32,
+    has_class_new_name: &mut Option<bool>,
+    out: &mut Vec<Capture>,
+) {
+    let start = enclosing.or_else(|| {
+        let ast = ctx.unit.ast();
+        ast.decls.get(spec).ctx().or(Some(spec))
+    });
+    let mut cur = start;
+    for _ in 0..CTX_LIMIT {
+        let Some(scope) = cur else { return };
+        let ast = ctx.unit.ast();
+        let c = ast.first(scope);
+        let kind = ast.decls.get(c).kind();
+        if matches!(kind, DeclKind::LinkageSpec | DeclKind::Export) {
+            cur = ast.decls.get(scope).ctx();
+            continue;
+        }
+        if ast.decls.record(c).is_some() {
+            let mut found = Vec::new();
+            let mut depth_hit = false;
+            let found_subject = member_lookup_post(
+                ctx,
+                c,
+                old_dn,
+                new_dn,
+                0,
+                base_depth_limit,
+                &mut found,
+                &mut depth_hit,
+            );
+            if depth_hit && class_new_name(ctx.unit.ast(), new_dn, has_class_new_name) {
+                out.push(Capture { spec, kind: CaptureKind::BaseDepthLimit });
+            }
+            if !found.is_empty() {
+                for k in found {
+                    out.push(Capture { spec, kind: k });
+                }
+                return;
+            }
+            if found_subject {
+                return;
+            }
+        } else if ast.decls.function(c).is_some() {
+            let mut candidates = ordinary_members(ast, c, new_dn);
+            let tmpl = ast.described_template(c).map(|t| ast.first(t));
+            for d in &ctx.named.new {
+                if let Some(p) = ast.decls.get(d.decl).ctx().map(|x| ast.first(x))
+                    && (p == c || tmpl == Some(p))
+                    && !candidates.contains(&d.decl)
+                {
+                    candidates.push(d.decl);
+                }
+            }
+            let mut captured = false;
+            for d in candidates {
+                if !is_subject(ctx, d) {
+                    out.push(Capture { spec, kind: CaptureKind::Decl(d) });
+                    captured = true;
+                }
+            }
+            if captured {
+                return;
+            }
+        } else if matches!(kind, DeclKind::Namespace | DeclKind::TranslationUnit) {
+            if check_unqualified_namespace(ctx, c, spec, old_dn, new_dn, out) {
+                return;
+            }
+        } else {
+            // Template declaration or other enclosing scope: check template
+            // parameters / declarations directly inside `c`.
+            let candidates: Vec<DeclId> = ctx
+                .named
+                .new
+                .iter()
+                .map(|d| d.decl)
+                .filter(|&d| ast.decls.get(d).ctx().is_some_and(|p| ast.first(p) == c))
+                .collect();
+            let mut captured = false;
+            for d in candidates {
+                if !is_subject(ctx, d) {
+                    out.push(Capture { spec, kind: CaptureKind::Decl(d) });
+                    captured = true;
+                }
+            }
+            if captured {
+                return;
+            }
+        }
+        cur = ctx.unit.ast().decls.get(scope).ctx();
+    }
+    out.push(Capture { spec, kind: CaptureKind::BaseDepthLimit });
+}
+
+/// Checks one enclosing namespace or translation unit `c` for ordinary
+/// unqualified lookup of `new_dn` (including transitive `using_directives`).
+/// Returns `true` when enclosing-scope search should stop (either a capture
+/// was recorded, or `c` directly declares/introduces a subject `old_dn` that
+/// hides outer scopes in the post-image).
+fn check_unqualified_namespace(
+    ctx: &mut Ctx<'_, '_, '_>,
+    c: DeclId,
+    spec: DeclId,
+    old_dn: Option<DeclName>,
+    new_dn: DeclName,
+    out: &mut Vec<Capture>,
+) -> bool {
+    let ast = ctx.unit.ast();
+    let mut candidates = ordinary_members(ast, c, new_dn);
+    if !ast.lookup.has_no_using_directives() {
+        let mut seen_ns = HashSet::from([c]);
+        let mut stack = vec![c];
+        let mut steps = 0usize;
+        while let Some(ns) = stack.pop() {
+            if steps >= CTX_LIMIT as usize {
+                break;
+            }
+            steps += 1;
+            for &nom in ast.lookup.using_directives(ns) {
+                let nom = ast.first(nom);
+                if seen_ns.insert(nom) {
+                    for d in ordinary_members(ast, nom, new_dn) {
+                        if !candidates.contains(&d) {
+                            candidates.push(d);
+                        }
+                    }
+                    stack.push(nom);
+                }
+            }
+        }
+    }
+    let mut captured = false;
+    for d in candidates {
+        if !is_subject(ctx, d) {
+            out.push(Capture { spec, kind: CaptureKind::Decl(d) });
+            captured = true;
+        }
+    }
+    if captured {
+        return true;
+    }
+    if let Some(old_dn) = old_dn {
+        let own_old = ordinary_members(ctx.unit.ast(), c, old_dn);
+        if own_old.into_iter().any(|d| is_subject(ctx, d)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Declarations named `name` visible to ordinary unqualified lookup directly
+/// in `scope` (`ADL_ONLY` hidden friends, using-declarations themselves, and
+/// hidden using-shadows are skipped).
+fn ordinary_members(ast: &Ast, scope: DeclId, name: DeclName) -> Vec<DeclId> {
+    let mut out = Vec::new();
+    for (raw, flags) in ast.lookup_local(scope, name).iter_with_flags() {
+        if flags.contains(LookupFlags::ADL_ONLY) {
+            continue;
+        }
+        let target = match ast.decls.get(raw).kind() {
+            DeclKind::UsingShadow | DeclKind::ConstructorUsingShadow => {
+                if ast.shadow_hider(raw).is_some() {
+                    continue;
+                }
+                ast.strip_shadow(raw)
+            }
+            DeclKind::Using
+            | DeclKind::UnresolvedUsingValue
+            | DeclKind::UnresolvedUsingTypename
+            | DeclKind::UnresolvedUsingIfExists => continue,
+            _ => raw,
+        };
+        if !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    out
 }
 
 /// True when some declaration of `d` (or of `d`'s pattern if it is a
@@ -417,60 +793,39 @@ fn friend_of_any(ast: &Ast, d: DeclId, classes: &[DeclId]) -> bool {
     false
 }
 
-/// What one subobject class in `[class.member.lookup]` supplies for
-/// `new_name` in the post-image.
-struct Provider {
-    /// First declaration of the class supplying the name.
-    class: DeclId,
-    /// Every path from the starting class to this subobject crossed at
-    /// least one virtual base specifier (so a derived class with `class`
-    /// as a virtual base dominates it, `[class.member.lookup]/6`).
-    via_virtual: bool,
-    /// `None`: this class supplies only the renamed subject(s).
-    /// `Some(decls)`: this class supplies non-subject declaration(s)
-    /// already named `new_name`.
-    non_subjects: Option<Vec<DeclId>>,
-}
-
 /// Checks `class` with post-image `[class.member.lookup]` for `new_dn`:
-/// any non-subject provider that is not dominated by a subject provider
-/// is a capture; a `new_name` declared only in a base hidden by a
-/// subject's class (or dominated via virtual inheritance) is not.
+/// any non-subject provider (or injected-class-name) reached through any
+/// base (virtual or non-virtual) is a capture; a `new_name` declared only
+/// in a base directly hidden by a subject's class is not. If
+/// `BASE_DEPTH_LIMIT` is hit, fails closed (unless no class in the TU has
+/// a member or name `new_dn`).
+#[allow(clippy::too_many_arguments)]
 fn check_class(
     ctx: &mut Ctx<'_, '_, '_>,
     spec: DeclId,
     class: DeclId,
     old_dn: Option<DeclName>,
     new_dn: DeclName,
+    base_depth_limit: u32,
+    has_class_new_name: &mut Option<bool>,
     out: &mut Vec<Capture>,
 ) {
-    let mut providers = Vec::new();
-    member_lookup_post(ctx, class, old_dn, new_dn, false, 0, &mut providers);
-    let ast = ctx.unit.ast();
-    let subject_classes: Vec<DeclId> =
-        providers.iter().filter(|p| p.non_subjects.is_none()).map(|p| p.class).collect();
-    for p in &providers {
-        let Some(decls) = &p.non_subjects else { continue };
-        // `[class.member.lookup]/6`: a non-subject found solely through a
-        // virtual base dominated by a class that supplies the renamed
-        // subject is hidden by the renamed subject.
-        if p.via_virtual
-            && subject_classes
-                .iter()
-                .any(|&sc| sc != p.class && is_virtual_base_of(ast, sc, p.class))
-        {
-            continue;
-        }
-        for &d in decls {
-            out.push(Capture { spec, found: d });
-        }
+    let mut found = Vec::new();
+    let mut depth_hit = false;
+    member_lookup_post(ctx, class, old_dn, new_dn, 0, base_depth_limit, &mut found, &mut depth_hit);
+    if depth_hit && class_new_name(ctx.unit.ast(), new_dn, has_class_new_name) {
+        out.push(Capture { spec, kind: CaptureKind::BaseDepthLimit });
+    }
+    for kind in found {
+        out.push(Capture { spec, kind });
     }
 }
 
 /// Post-image `[class.member.lookup]` in `class` for `new_dn`
-/// (`docs/wp/WP-152.md` item 2):
+/// (`docs/wp/WP-152.md` item 2 and fix round 1):
 ///
-/// 1. If `class` directly declares or introduces (via a non-hidden
+/// 1. If `class`'s own name is `new_dn` (injected-class-name, `[class.pre]/2`),
+///    or `class` directly declares or introduces (via a non-hidden
 ///    using-shadow) any non-subject named `new_dn`, lookup in `class`'s
 ///    subobject stops here and reports those non-subjects.
 /// 2. Else if `class` directly declares or introduces (via a non-hidden
@@ -478,47 +833,79 @@ fn check_class(
 ///    `new_dn` in the post-image), lookup in `class`'s subobject stops
 ///    here and does **not** recurse into `class`'s bases: any `new_name`
 ///    in `class`'s bases is hidden by the renamed entity.
-/// 3. Otherwise, recurse into every base class of `class`'s definition.
+/// 3. Otherwise, recurse into every base class of `class`'s definition
+///    (both virtual and non-virtual; no virtual-base dominance rule).
+///
+/// Returns `true` when `class` or any searched base declared/introduced a
+/// subject named `old_dn` without finding a non-subject on that path.
+#[allow(clippy::too_many_arguments)]
 fn member_lookup_post(
     ctx: &mut Ctx<'_, '_, '_>,
     class: DeclId,
     old_dn: Option<DeclName>,
     new_dn: DeclName,
-    via_virtual: bool,
     depth: u32,
-    out: &mut Vec<Provider>,
-) {
-    if depth >= BASE_DEPTH_LIMIT {
-        return;
+    base_depth_limit: u32,
+    out: &mut Vec<CaptureKind>,
+    depth_hit: &mut bool,
+) -> bool {
+    if depth >= base_depth_limit {
+        *depth_hit = true;
+        return false;
     }
     let ast = ctx.unit.ast();
     let c = ast.first(class);
+    let mut found_non_subject = false;
+    // `[class.pre]/2`: the class's own injected-class-name is in scope in `c`.
+    if ast.decls.get(c).name() == new_dn {
+        out.push(CaptureKind::InjectedClassName(c));
+        found_non_subject = true;
+    }
     let own_new = visible_members(ast, c, new_dn);
-    let non_subjects: Vec<DeclId> = own_new.into_iter().filter(|&d| !is_subject(ctx, d)).collect();
-    if !non_subjects.is_empty() {
-        out.push(Provider { class: c, via_virtual, non_subjects: Some(non_subjects) });
-        return;
+    for d in own_new {
+        if !is_subject(ctx, d) {
+            out.push(CaptureKind::Decl(d));
+            found_non_subject = true;
+        }
+    }
+    if found_non_subject {
+        return false;
     }
     if let Some(old_dn) = old_dn {
         let own_old = visible_members(ctx.unit.ast(), c, old_dn);
         if own_old.into_iter().any(|d| is_subject(ctx, d)) {
-            out.push(Provider { class: c, via_virtual, non_subjects: None });
-            return;
+            return true;
         }
     }
     let ast = ctx.unit.ast();
     let def = ast.definition(c).unwrap_or(c);
-    let bases: Vec<(DeclId, bool)> = ast
-        .decls
-        .bases(def, &ast.lists)
-        .filter_map(|b| {
-            let base = ast.types.as_record(ast.types.canonical(b.ty))?;
-            Some((base, b.is_virtual))
-        })
-        .collect();
-    for (base, is_virt) in bases {
-        member_lookup_post(ctx, base, old_dn, new_dn, via_virtual || is_virt, depth + 1, out);
+    let mut bases = Vec::new();
+    for b in ast.decls.bases(def, &ast.lists) {
+        if ast.types.is_dependent(b.ty) {
+            // Dependent base in a class template pattern (`[temp.dep]/3`):
+            // ordinary unqualified lookup does not search dependent bases.
+            continue;
+        }
+        if let Some(base) = ast.types.as_record(ast.types.canonical(b.ty)) {
+            bases.push(base);
+        } else {
+            *depth_hit = true;
+        }
     }
+    let mut found_subject = false;
+    for base in bases {
+        found_subject |= member_lookup_post(
+            ctx,
+            base,
+            old_dn,
+            new_dn,
+            depth + 1,
+            base_depth_limit,
+            out,
+            depth_hit,
+        );
+    }
+    found_subject
 }
 
 /// The visible members `class` directly declares or introduces named
@@ -547,59 +934,42 @@ fn visible_members(ast: &Ast, class: DeclId, name: DeclName) -> Vec<DeclId> {
     out
 }
 
-/// True when `base` (first declaration) is a virtual base of `derived`
-/// (first declaration) at any depth.
-fn is_virtual_base_of(ast: &Ast, derived: DeclId, base: DeclId) -> bool {
-    let mut seen: HashSet<(DeclId, bool)> = HashSet::new();
-    let mut stack = vec![(derived, false)];
-    let mut steps = 0usize;
-    while let Some((cur, virt)) = stack.pop() {
-        if steps >= CTX_LIMIT as usize || !seen.insert((cur, virt)) {
-            continue;
-        }
-        steps += 1;
-        let def = ast.definition(cur).unwrap_or(cur);
-        for b in ast.decls.bases(def, &ast.lists) {
-            let Some(bc) = ast.types.as_record(ast.types.canonical(b.ty)).map(|r| ast.first(r))
-            else {
-                continue;
-            };
-            let v = virt || b.is_virtual;
-            if bc == base && v {
-                return true;
-            }
-            stack.push((bc, v));
-        }
-    }
-    false
-}
-
 /// Finds the lookup class(es) for the dependent name at `name_loc`
 /// resolving to `entity` with lookup kind `how` inside specialisation
-/// `spec`'s instantiated AST.
+/// `spec`'s instantiated AST. Returns `(classes, walk_limit_hit)`.
 fn lookup_classes_in_spec(
     ast: &Ast,
     spec: DeclId,
     name_loc: Loc,
     entity: DeclId,
     how: Lookup,
-) -> Vec<DeclId> {
+    walk_limit: usize,
+) -> (Vec<DeclId>, bool) {
     let target = ast.first(ast.strip_shadow(entity));
     let mut stmts = Vec::new();
     let mut exprs = Vec::new();
     seed_spec_roots(ast, spec, &mut stmts, &mut exprs);
     if stmts.is_empty() && exprs.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
     let mut out = Vec::new();
     let mut seen_stmts: HashSet<StmtId> = HashSet::new();
     let mut seen_exprs: HashSet<ExprId> = HashSet::new();
     let mut steps = 0usize;
+    let mut limit_hit = false;
 
-    while (!stmts.is_empty() || !exprs.is_empty()) && steps < WALK_LIMIT {
+    while !stmts.is_empty() || !exprs.is_empty() {
+        if steps >= walk_limit {
+            limit_hit = true;
+            break;
+        }
         while let Some(e) = exprs.pop() {
-            if steps >= WALK_LIMIT || !seen_exprs.insert(e) {
+            if !seen_exprs.insert(e) {
                 continue;
+            }
+            if steps >= walk_limit {
+                limit_hit = true;
+                break;
             }
             steps += 1;
             if let Some(cls) = match_expr_class(ast, e, name_loc, target, how)
@@ -617,15 +987,22 @@ fn lookup_classes_in_spec(
             }
             ast.exprs.children_into(e, &ast.lists, &mut exprs);
         }
+        if limit_hit {
+            break;
+        }
         if let Some(st) = stmts.pop() {
-            if steps >= WALK_LIMIT || !seen_stmts.insert(st) {
+            if !seen_stmts.insert(st) {
                 continue;
+            }
+            if steps >= walk_limit {
+                limit_hit = true;
+                break;
             }
             steps += 1;
             push_stmt_children(ast, st, &mut stmts, &mut exprs);
         }
     }
-    out
+    (out, limit_hit)
 }
 
 /// Seeds `stmts` and `exprs` with the AST roots owned by specialisation
@@ -886,5 +1263,171 @@ fn push_local_decl(ast: &Ast, d: DeclId, exprs: &mut Vec<ExprId>) {
     } else if let Some(sa) = ast.decls.static_assert(d) {
         exprs.push(sa.cond);
         exprs.extend(sa.message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use slip_digest::query::Keys;
+    use slip_kiln::ParseOptions;
+    use slip_kiln::sites::Sites;
+    use slip_kiln::tree::Tree;
+    use slip_kiln::written;
+    use slip_model::transform::{Dependent, Ownership, Rename, TargetKind};
+
+    use super::*;
+    use crate::rename::{Claims, Ctx, Named, Subjects, families, followers, spec_members, target};
+
+    fn run_captures_with_limits(
+        tag: &str,
+        src: &str,
+        target_path: &[&str],
+        new_name: &str,
+        limits: Limits,
+    ) -> Vec<(String, CaptureKind)> {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap();
+        let tree = Tree::new(dir, tag, &[("main.cpp", src.as_bytes())]).unwrap();
+        let root = tree.root().to_str().unwrap().as_bytes().to_vec();
+        let ownership = Ownership { owned: vec![root], readonly: Vec::new(), rebuilt: Vec::new() };
+        let req = Rename {
+            target: target_path.iter().map(|s| s.as_bytes().to_vec()).collect(),
+            kind: TargetKind::Function,
+            new_name: new_name.as_bytes().to_vec(),
+            dependent: Dependent::Offer,
+        };
+        let obs = tree.observer("main.cpp", "c++20", &[]);
+        let mut o = ParseOptions::default();
+        o.written = true;
+        o.pp_record = true;
+        let (_, r) = tree
+            .parse(&obs, &o, |unit| {
+                assert_eq!(unit.errors(), 0, "{tag}: parse errors");
+                let subject = |p: &[u8]| p.to_vec();
+                slip_digest::map::with_input(unit, &subject, |input| {
+                    let mut keys = Keys::new(input);
+                    let old = req.target.last().unwrap();
+                    let mut ctx = Ctx {
+                        unit,
+                        keys: &mut keys,
+                        sites: Sites::new(unit, &ownership),
+                        request: &req,
+                        old,
+                        new: &req.new_name,
+                        subjects: Subjects::default(),
+                        claims: Claims::new(old, &req.new_name),
+                        changed: Vec::new(),
+                        named: Named::default(),
+                        settled: HashSet::new(),
+                    };
+                    let _ = target::seeds(&mut ctx);
+                    families::collect(&mut ctx);
+                    followers::collect(&mut ctx);
+                    spec_members::collect(&mut ctx);
+
+                    let names = written::dependent_names(ctx.unit);
+                    let rows = written::instances(ctx.unit);
+                    let mut out = Vec::new();
+                    for name in &names {
+                        let slice = rows.get(&name.name).map_or(&[][..], Vec::as_slice);
+                        let b: Vec<Bound> =
+                            slice.iter().filter_map(|r| bound(&mut ctx, *r)).collect();
+                        if !b.is_empty() && b.iter().all(|x| x.subject.is_some()) {
+                            for c in captures_with_limits(&mut ctx, name, &b, limits) {
+                                out.push((
+                                    slip_digest::display_name(ctx.unit.ast(), c.spec),
+                                    c.kind,
+                                ));
+                            }
+                        }
+                    }
+                    out
+                })
+            })
+            .unwrap();
+        r.unwrap().unwrap()
+    }
+
+    /// WP-152 fix round 1 item 3: hitting `WALK_LIMIT` fails closed when any
+    /// class in the TU declares or is named `new_name`, and accepts under the
+    /// one exception when no class in the TU declares or is named `new_name`.
+    #[test]
+    fn wp152_walk_limit_hit_refuses() {
+        let with_class_g = "\
+namespace n { template <class T> struct S { int f() { return 1; } }; }
+struct Other { int g() { return 9; } };
+template <class T> int call(T t) { int a = 1 + 2; int b = a + 3; return b + t.f(); }
+int u() { return call(n::S<int>()); }
+";
+        let got = run_captures_with_limits(
+            "wp152-walk-limit-refuse",
+            with_class_g,
+            &["n", "S", "f"],
+            "g",
+            Limits { walk: 2, base_depth: BASE_DEPTH_LIMIT },
+        );
+        assert!(
+            got.iter().any(|(_, k)| *k == CaptureKind::WalkLimit),
+            "expected WalkLimit capture, got {got:?}"
+        );
+
+        // One exception: free function `g`, no class has member or name `g`.
+        let only_free_g = "\
+namespace n { template <class T> struct S { int f() { return 1; } }; }
+int g() { return 9; }
+template <class T> int call(T t) { int a = 1 + 2; int b = a + 3; return b + t.f(); }
+int u() { return call(n::S<int>()); }
+";
+        let got_free = run_captures_with_limits(
+            "wp152-walk-limit-exception",
+            only_free_g,
+            &["n", "S", "f"],
+            "g",
+            Limits { walk: 2, base_depth: BASE_DEPTH_LIMIT },
+        );
+        assert!(got_free.is_empty(), "expected exception to accept, got {got_free:?}");
+    }
+
+    /// WP-152 fix round 1 item 7: observe `SpecRef.spec` directly for the
+    /// alias template reproducer (`template <class T> using A = decltype(T::s());`).
+    #[test]
+    fn wp152_alias_template_spec_ref_observed() {
+        let src = "\
+namespace n { template <class T> struct S { static int s() { return 1; } }; }
+template <class T> struct Der : T { static long sg() { return 0; } };
+template <class T> using A = decltype(T::s());
+int u() { A<Der<n::S<int>>> x = 0; return (int)sizeof(x); }
+";
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap();
+        let tree =
+            Tree::new(dir, "wp152-alias-spec-observe", &[("main.cpp", src.as_bytes())]).unwrap();
+        let obs = tree.observer("main.cpp", "c++20", &[]);
+        let mut o = ParseOptions::default();
+        o.written = true;
+        o.pp_record = true;
+        let (_, r) = tree
+            .parse(&obs, &o, |unit| {
+                assert_eq!(unit.errors(), 0);
+                let ast = unit.ast();
+                let mut rows = Vec::new();
+                for (_, sr) in ast.written_refs.specs() {
+                    if let Some(ent) = sr.entity
+                        && decls::name_of(ast, ast.strip_shadow(ent)) == Some(b"s")
+                    {
+                        rows.push((
+                            ast.decls.get(sr.spec).kind(),
+                            slip_digest::display_name(ast, sr.spec),
+                            sr.how,
+                        ));
+                    }
+                }
+                rows
+            })
+            .unwrap();
+        let rows = r.unwrap();
+        assert!(!rows.is_empty(), "expected SpecRef row for T::s() in alias template");
+        assert_eq!(rows[0].0, DeclKind::TypeAliasTemplate, "observed: {rows:?}");
+        assert_eq!(rows[0].1, "A", "observed: {rows:?}");
     }
 }

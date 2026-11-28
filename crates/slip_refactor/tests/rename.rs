@@ -2976,14 +2976,14 @@ template <class T> int call(T t) {{ return t.f(); }}\n"
 }
 
 /// WP-152 item 2 (`spec/edits.md` §9.4): a declaration named `new_name`
-/// that is hidden by the renamed entity (in a proper base of the renamed
-/// entity's class, or dominated via virtual inheritance), or in an
-/// unrelated enclosing class (`W::g` beside `t.f()`), or bypassed by a
-/// qualified member access (`this->T::f()`), is NOT a capture: it is
-/// edited, every instantiation compares equal (only the pattern differs
-/// until WP-154), and a non-dependent call verifies with zero differences.
-/// Contrast with a non-virtual diamond where the second base subobject is
-/// not dominated: refused `captured_at_instance`.
+/// that is directly hidden by the renamed entity (in a proper base of the
+/// renamed entity's class), or in an unrelated enclosing class (`W::g`
+/// beside `t.f()`), or bypassed by a qualified member access
+/// (`this->T::f()`), is NOT a capture: it is edited, every instantiation
+/// compares equal (only the pattern differs until WP-154), and a
+/// non-dependent call verifies with zero differences. Both virtual and
+/// non-virtual diamonds where another base path reaches `V::g` are refused
+/// `captured_at_instance` (virtual-base dominance removed in fix round 1).
 #[test]
 fn wp152_hidden_new_name_is_not_a_capture() {
     let run = |tag: &str, src: &str, target: &[&str], new: &str| {
@@ -3038,8 +3038,9 @@ int u() { return n::S<int>().f(); }\n";
         assert!(r.differences.iter().all(|d| !d.contains("<n::S<int>>")), "{tag}: {r:?}");
     }
 
-    // Virtual-base dominance (`[class.member.lookup]/6`): `L::g` dominates
-    // virtual base `V::g` -> NOT a capture; non-virtual diamond -> REFUSED.
+    // Virtual diamond and non-virtual diamond: virtual-base dominance was
+    // removed in WP-152 fix round 1 (any non-subject provider reached
+    // through any virtual base counts as a capture and refuses).
     let virt_diamond = "\
 namespace n {\n\
 template <class U> struct V { int g() { return 10; } };\n\
@@ -3049,9 +3050,10 @@ template <class U> struct Diamond : L<U>, R<U> {};\n\
 }\n\
 template <class T> int call(T t) { return t.f(); }\n\
 int u() { return call(n::Diamond<int>()); }\n";
-    let virt = run("wp152-virtual-diamond-dominates", virt_diamond, &["n", "L", "f"], "g");
-    assert!(holder_differs(&virt), "dominated virtual base falsely refused: {virt:?}");
-    assert!(virt.differences.iter().all(|d| !d.contains("<n::Diamond<int>>")), "{virt:?}");
+    let virt = run("wp152-virtual-diamond-refused", virt_diamond, &["n", "L", "f"], "g");
+    assert_eq!(causes(&virt), ["SiteRefused"], "{virt:?}");
+    assert!(virt.refusals[0].starts_with("SiteRefused captured_at_instance "), "{virt:?}");
+    assert!(virt.reports.iter().any(|m| m.contains("n::V<int>::g()")), "{virt:?}");
 
     let nonvirt_diamond = virt_diamond.replace("virtual ", "");
     let nonvirt =
@@ -3060,19 +3062,288 @@ int u() { return call(n::Diamond<int>()); }\n";
     assert!(nonvirt.refusals[0].starts_with("SiteRefused captured_at_instance "), "{nonvirt:?}");
 }
 
-/// WP-152 item 1 ("For Kiln"): lookup shapes Kiln does not expose the
-/// lookup context for at pin `60fb5ab9d` stay accepted and not verified
-/// (loud, caught by verification):
-/// 1. `SpecRef` has no lookup-context class, and alias templates /
-///    substituted signatures do not keep the rebuilt expression in `spec`.
-/// 2. Ordinary unqualified lookup at the template definition capturing an
-///    ADL call (`::g(m::A)` outside `m::A`'s associated set `[m]`): Kiln
-///    exposes no post-parse lexical unqualified lookup at a `WrittenRef`.
+/// WP-152 fix round 1 item 1 (and mutants O6, O14): virtual-base dominance
+/// is removed; any non-subject provider reached through a virtual base
+/// refuses `captured_at_instance` (probes `d1`, `d5`, and a direct virtual
+/// base provider).
 #[test]
-fn wp152_kiln_gaps_stay_accepted_and_not_verified() {
+fn wp152_virtual_base_providers_refused() {
+    let run = |tag: &str, src: &str, target: &[&str]| {
+        end_to_end(tag, &[("main.cpp", src.as_bytes())], &["main.cpp"], target, "g", &right)
+    };
+    let cases: [(&str, &str, &[&str], &str); 3] = [
+        (
+            "wp152-probe-d1",
+            "namespace n {\n\
+             template <class U> struct V { int g() { return 10; } };\n\
+             template <class U> struct X : V<U> {};\n\
+             template <class U> struct L : virtual V<U> { int f() { return 1; } };\n\
+             template <class U> struct D : virtual X<U>, L<U> {};\n\
+             }\n\
+             template <class T> int call(T t) { return t.f(); }\n\
+             int u() { return call(n::D<int>()); }\n",
+            &["n", "L", "f"],
+            "n::V<int>::g()",
+        ),
+        (
+            "wp152-probe-d5",
+            "namespace n {\n\
+             template <class U> struct V { int g() { return 10; } };\n\
+             template <class U> struct M : virtual V<U> { using V<U>::g; };\n\
+             template <class U> struct L : virtual V<U> { int f() { return 1; } };\n\
+             template <class U> struct D : L<U>, M<U> {};\n\
+             }\n\
+             template <class T> int call(T t) { return t.f(); }\n\
+             int u() { return call(n::D<int>()); }\n",
+            &["n", "L", "f"],
+            "n::V<int>::g()",
+        ),
+        (
+            "wp152-direct-virtual-base-provider",
+            "namespace n {\n\
+             template <class U> struct V { int g() { return 10; } };\n\
+             template <class U> struct S { int f() { return 1; } };\n\
+             template <class U> struct D : virtual V<U>, S<U> {};\n\
+             }\n\
+             template <class T> int call(T t) { return t.f(); }\n\
+             int u() { return call(n::D<int>()); }\n",
+            &["n", "S", "f"],
+            "n::V<int>::g()",
+        ),
+    ];
+    for (tag, src, target, want_decl) in cases {
+        let r = run(tag, src, target);
+        assert_eq!(causes(&r), ["SiteRefused"], "{tag}: {r:?}");
+        assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{tag}: {r:?}");
+        assert!(
+            r.reports.iter().any(|m| m.contains(want_decl)),
+            "{tag}: expected `{want_decl}` in {:?}",
+            r.reports
+        );
+    }
+}
+
+/// WP-152 fix round 1 item 2 (probe `a2`, mutant `M_icn`): a class on the
+/// lookup path whose own name is `new_name` (injected-class-name) is a
+/// non-subject provider and refuses `captured_at_instance` naming that class;
+/// a non-matching new name still accepts.
+#[test]
+fn wp152_injected_class_name_refused() {
+    let text = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ int run() {{ return this->f(); }} }};\n\
+int u() {{ return Der<n::S<int>>().run(); }}\n"
+    );
+    let files: [(&str, &[u8]); 1] = [("main.cpp", text.as_bytes())];
+    let r = end_to_end("wp152-icn-refused", &files, &["main.cpp"], &["n", "S", "f"], "Der", &right);
+    assert_eq!(causes(&r), ["SiteRefused"], "{r:?}");
+    assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r:?}");
+    assert!(
+        r.reports.iter().any(|m| {
+            m.contains("Der<n::S<int>>::run()")
+                && m.contains("injected-class-name")
+                && m.contains("Der<n::S<int>>")
+        }),
+        "{r:?}"
+    );
+
+    // Non-matching new name still accepts.
+    let ok = end_to_end("wp152-icn-ok", &files, &["main.cpp"], &["n", "S", "f"], "h", &right);
+    assert!(holder_differs(&ok), "non-matching class name falsely refused: {ok:?}");
+    assert!(ok.differences.iter().all(|d| !d.contains("Der<n::S<int>>::run()")), "{ok:?}");
+}
+
+/// WP-152 fix round 1 item 3 (probes `a3`, `a4`, mutants `M_unrec`, `M_limit`):
+/// when no lookup class is recovered or `BASE_DEPTH_LIMIT` is hit, the
+/// rename refuses `captured_at_instance` with a note — with the one
+/// exception that if no class in the TU declares a member named `new_name`
+/// and no class is itself named `new_name`, it accepts.
+#[test]
+fn wp152_unrecovered_context_and_limits_refuse() {
+    // Probe a3: default argument `int x = T::s()` when `Der::sg` exists -> REFUSED.
+    let a3_refuse = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ static int sg() {{ return 9; }} }};\n\
+template <class T> int call(int x = T::s()) {{ return x; }}\n\
+int u() {{ return call<Der<n::S<int>>>(); }}\n"
+    );
+    let r_a3 = end_to_end(
+        "wp152-a3-default-arg-refuse",
+        &[("main.cpp", a3_refuse.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert_eq!(causes(&r_a3), ["SiteRefused"], "{r_a3:?}");
+    assert!(r_a3.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_a3:?}");
+    assert!(r_a3.reports.iter().any(|m| m.contains("context was not recovered")), "{r_a3:?}");
+
+    // Probe a3 under the one exception: `sg` is interned (a free function),
+    // but no class in the TU has a member named `sg` or is named `sg` -> ACCEPTED.
+    let a3_accept = format!(
+        "{WP139_CLASSES}\
+int sg() {{ return 9; }}\n\
+template <class T> struct Der : T {{}};\n\
+template <class T> int call(int x = T::s()) {{ return x; }}\n\
+int u() {{ return call<Der<n::S<int>>>(); }}\n"
+    );
+    let r_a3_ok = end_to_end(
+        "wp152-a3-default-arg-exception",
+        &[("main.cpp", a3_accept.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert!(holder_differs(&r_a3_ok), "one-exception case falsely refused: {r_a3_ok:?}");
+
+    // Injected-class-name safety for the one exception: a class named `sg`
+    // in the TU (even with no member `sg`) still causes refusal.
+    let a3_class_named = format!(
+        "{WP139_CLASSES}\
+struct sg {{}};\n\
+template <class T> struct Der : T {{}};\n\
+template <class T> int call(int x = T::s()) {{ return x; }}\n\
+int u() {{ return call<Der<n::S<int>>>(); }}\n"
+    );
+    let r_a3_cls = end_to_end(
+        "wp152-a3-default-arg-class-named",
+        &[("main.cpp", a3_class_named.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert_eq!(causes(&r_a3_cls), ["SiteRefused"], "{r_a3_cls:?}");
+    assert!(r_a3_cls.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_a3_cls:?}");
+
+    // Probe a4: `using R = decltype(T::s());` in a body -> REFUSED.
+    let a4 = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ static long sg() {{ return 9; }} }};\n\
+template <class T> int call() {{ using R = decltype(T::s()); return (int)sizeof(R); }}\n\
+int u() {{ return call<Der<n::S<int>>>(); }}\n"
+    );
+    let r_a4 = end_to_end(
+        "wp152-a4-decltype-alias-in-body",
+        &[("main.cpp", a4.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "s"],
+        "sg",
+        &right,
+    );
+    assert_eq!(causes(&r_a4), ["SiteRefused"], "{r_a4:?}");
+    assert!(r_a4.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_a4:?}");
+    assert!(r_a4.reports.iter().any(|m| m.contains("context was not recovered")), "{r_a4:?}");
+
+    // `BASE_DEPTH_LIMIT` (64) exceeded -> REFUSED with limit note.
+    let mut deep = String::from("namespace n {\nstruct B0 { int f() { return 1; } };\n");
+    for i in 1..=65 {
+        use std::fmt::Write as _;
+        let _ = writeln!(deep, "struct B{i} : B{} {{}};", i - 1);
+    }
+    deep.push_str(
+        "}\nstruct Other { int g() { return 9; } };\n\
+         template <class T> int call(T t) { return t.f(); }\n\
+         int u() { return call(n::B65()); }\n",
+    );
+    let r_depth = end_to_end(
+        "wp152-base-depth-limit",
+        &[("main.cpp", deep.as_bytes())],
+        &["main.cpp"],
+        &["n", "B0", "f"],
+        "g",
+        &right,
+    );
+    assert_eq!(causes(&r_depth), ["SiteRefused"], "{r_depth:?}");
+    assert!(r_depth.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_depth:?}");
+    assert!(r_depth.reports.iter().any(|m| m.contains("base-class depth limit")), "{r_depth:?}");
+}
+
+/// WP-152 fix round 1 item 5 (probe `b1`): a non-viable ADL candidate
+/// (`o::g(int)` cannot take `(m::A, o::X)`) is deliberately refused
+/// `captured_at_instance` (no overload resolution in Slip, pending Kiln's
+/// overload facts), with a note naming `o::g`.
+#[test]
+fn wp152_adl_non_viable_candidate_refused() {
+    let b1 = "\
+namespace o { struct X {}; int g(int) { return 2; } }\n\
+namespace m { struct A {}; int f(A, o::X) { return 1; } }\n\
+template <class T, class U> int call(T t, U x) { return f(t, x); }\n\
+int u() { return call(m::A(), o::X()); }\n";
+    let r = end_to_end(
+        "wp152-probe-b1",
+        &[("main.cpp", b1.as_bytes())],
+        &["main.cpp"],
+        &["m", "f"],
+        "g",
+        &right,
+    );
+    assert_eq!(causes(&r), ["SiteRefused"], "{r:?}");
+    assert!(r.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r:?}");
+    assert!(r.reports.iter().any(|m| m.contains("o::g(int)")), "{r:?}");
+}
+
+/// WP-152 fix round 1 item 6 (probes `c7` and `c16`, mutant O2):
+/// `unpeel_object_base` peels implicit derived-to-base casts only, never
+/// explicit casts: `static_cast<B&>(t).f()` where `B = n::S<int>` accepts
+/// (`c7`), while `static_cast<M&>(t).f()` where `M = Mid<n::S<int>>`
+/// declares `g()` refuses (`c16`).
+#[test]
+fn wp152_explicit_cast_not_peeled() {
+    let c7 = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Der : T {{ int g() {{ return 9; }} }};\n\
+template <class T, class B> int call(T t) {{ return static_cast<B&>(t).f(); }}\n\
+int u() {{ return call<Der<n::S<int>>, n::S<int>>(Der<n::S<int>>()); }}\n"
+    );
+    let r_c7 = end_to_end(
+        "wp152-probe-c7",
+        &[("main.cpp", c7.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "f"],
+        "g",
+        &right,
+    );
+    assert!(holder_differs(&r_c7), "c7 falsely refused: {r_c7:?}");
+    assert!(
+        r_c7.differences.iter().all(|d| !d.contains("<Der<n::S<int>>, n::S<int>>")),
+        "{r_c7:?}"
+    );
+
+    let c16 = format!(
+        "{WP139_CLASSES}\
+template <class T> struct Mid : T {{ int g() {{ return 9; }} }};\n\
+template <class T> struct Der : Mid<T> {{}};\n\
+template <class T, class M> int call(T t) {{ return static_cast<M&>(t).f(); }}\n\
+int u() {{ return call<Der<n::S<int>>, Mid<n::S<int>>>(Der<n::S<int>>()); }}\n"
+    );
+    let r_c16 = end_to_end(
+        "wp152-probe-c16",
+        &[("main.cpp", c16.as_bytes())],
+        &["main.cpp"],
+        &["n", "S", "f"],
+        "g",
+        &right,
+    );
+    assert_eq!(causes(&r_c16), ["SiteRefused"], "{r_c16:?}");
+    assert!(r_c16.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_c16:?}");
+    assert!(r_c16.reports.iter().any(|m| m.contains("Mid<n::S<int>>::g()")), "{r_c16:?}");
+}
+
+/// WP-152 fix round 1 item 4 (mutant `M_gap2`): both Kiln gaps now fail
+/// closed (`SiteRefused captured_at_instance`):
+/// 1. `Member` / `Qualified` whose substituted expression is not kept in
+///    `spec` (alias templates, substituted signatures) refuse when `new_name`
+///    is declared as a member or name of any class in the TU.
+/// 2. Ordinary unqualified lookup along the pattern's enclosing scopes
+///    refuses when a non-subject `new_name` is found (`::g(m::A)` in the
+///    global namespace, or a local variable `g` in the pattern).
+#[test]
+fn wp152_kiln_gaps_fail_closed() {
     // Gap 1a: alias template `using A = decltype(T::s());` where `Der::sg()`
-    // returns `long` instead of `int` -> `SpecRef::spec` is `A` (no rebuilt
-    // expression), accepted, post-image differs loudly (`u` / `A` type changes).
+    // exists in TU -> context not recovered -> REFUSED.
     let alias_gap = format!(
         "{WP139_CLASSES}\
 template <class T> struct Der : T {{ static long sg() {{ return 0; }} }};\n\
@@ -3087,12 +3358,18 @@ int u() {{ A<Der<n::S<int>>> x = 0; return (int)sizeof(x); }}\n"
         "sg",
         &right,
     );
-    assert!(r_alias.refusals.is_empty(), "{r_alias:?}");
-    assert!(!r_alias.differences.is_empty(), "alias capture verified: {r_alias:?}");
+    assert_eq!(causes(&r_alias), ["SiteRefused"], "{r_alias:?}");
+    assert!(r_alias.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_alias:?}");
+    assert!(
+        r_alias
+            .reports
+            .iter()
+            .any(|m| m.contains("in A:") && m.contains("context was not recovered")),
+        "{r_alias:?}"
+    );
 
     // Gap 1b: substituted signature `auto call() -> decltype(T::s())` where
-    // the rebuilt expression is not kept in `spec` (only the substituted
-    // return type `int` is kept).
+    // the rebuilt expression is not kept in `spec` -> REFUSED.
     let sig_gap = format!(
         "{WP139_CLASSES}\
 template <class T> struct Der : T {{ static long sg() {{ return 0; }} }};\n\
@@ -3107,32 +3384,47 @@ int u() {{ return (int)sizeof(call<Der<n::S<int>>>()); }}\n"
         "sg",
         &right,
     );
-    assert!(r_sig.refusals.is_empty(), "{r_sig:?}");
-    assert!(!r_sig.differences.is_empty(), "signature capture verified: {r_sig:?}");
+    assert_eq!(causes(&r_sig), ["SiteRefused"], "{r_sig:?}");
+    assert!(r_sig.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_sig:?}");
+    assert!(r_sig.reports.iter().any(|m| m.contains("context was not recovered")), "{r_sig:?}");
 
-    // Gap 2: ordinary unqualified lookup at the pattern's definition finds
-    // `::g(m::A)` (outside `m::A`'s associated set `[m]`), colliding with
-    // ADL `m::g(m::A)` in the post-image (fails to compile: ambiguous).
+    // Gap 2a: ordinary unqualified lookup at the pattern's definition finds
+    // `::g(m::A)` in the global namespace (outside `m::A`'s associated set) -> REFUSED.
     let unqual_gap = "\
 namespace m { struct A {}; int f(A) { return 1; } }\n\
 int g(m::A) { return 2; }\n\
 template <class T> int call(T t) { return f(t); }\n\
 int u() { return call(m::A()); }\n";
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        end_to_end(
-            "wp152-gap-unqual-def",
-            &[("main.cpp", unqual_gap.as_bytes())],
-            &["main.cpp"],
-            &["m", "f"],
-            "g",
-            &right,
-        )
-    }));
-    let Err(e) = failed else {
-        panic!("expected post-image ambiguity error, got {:?}", failed.unwrap());
-    };
-    let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(msg.contains("main.cpp has errors"), "{msg}");
+    let r_unqual = end_to_end(
+        "wp152-gap-unqual-def",
+        &[("main.cpp", unqual_gap.as_bytes())],
+        &["main.cpp"],
+        &["m", "f"],
+        "g",
+        &right,
+    );
+    assert_eq!(causes(&r_unqual), ["SiteRefused"], "{r_unqual:?}");
+    assert!(r_unqual.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_unqual:?}");
+    assert!(
+        r_unqual.reports.iter().any(|m| m.contains("call<m::A>") && m.contains("g(m::A)")),
+        "{r_unqual:?}"
+    );
+
+    // Gap 2b: block-scope local variable `g` in the pattern -> REFUSED.
+    let local_gap = "\
+namespace m { struct A {}; int f(A) { return 1; } }\n\
+template <class T> int call(T t) { int g = 2; return f(t) + g; }\n\
+int u() { return call(m::A()); }\n";
+    let r_local = end_to_end(
+        "wp152-gap-unqual-local",
+        &[("main.cpp", local_gap.as_bytes())],
+        &["main.cpp"],
+        &["m", "f"],
+        "g",
+        &right,
+    );
+    assert_eq!(causes(&r_local), ["SiteRefused"], "{r_local:?}");
+    assert!(r_local.refusals[0].starts_with("SiteRefused captured_at_instance "), "{r_local:?}");
 }
 
 /// A dependent name whose enclosing declaration the front end records as
