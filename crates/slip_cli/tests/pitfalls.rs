@@ -835,8 +835,20 @@ fn compiler() -> Option<PathBuf> {
     None
 }
 
+/// Substrings of clang's standard error that mark a compiler crash even
+/// when the driver exits with status 1 (`docs/wp/WP-171.md`).
+const CRASH_MARKERS: [&str; 2] =
+    ["PLEASE submit a bug report", "frontend command failed due to signal"];
+
+fn has_crash_text(stderr: &str) -> bool {
+    CRASH_MARKERS.iter().any(|m| stderr.contains(m))
+}
+
 /// What the production compiler said of a tree: `Ok(None)` for skipped,
-/// `Ok(Some((accepted, diagnostics)))`.
+/// `Ok(Some((accepted, diagnostics)))` for a clean accept (exit 0) or clean
+/// rejection (exit 1 without crash text), or `Err` when the compiler crashed
+/// (any other exit status, termination by signal, or crash text on stderr),
+/// naming the tree.
 ///
 /// Isolates `TMPDIR` inside `tmp` (under the run's work directory, removed
 /// on pass) and passes `-fno-crash-diagnostics` (`WP-167`).
@@ -865,7 +877,29 @@ fn compile(
     .env("TMPDIR", tmp)
     .current_dir(tree);
     let out = run_bounded(cmd)?;
-    Ok(Some((out.code() == Some(0), out.stderr)))
+    if !has_crash_text(&out.stderr) {
+        match out.code() {
+            Some(0) => return Ok(Some((true, out.stderr))),
+            Some(1) => return Ok(Some((false, out.stderr))),
+            _ => {}
+        }
+    }
+    let how = match out.code() {
+        Some(c) => format!("exit {c}"),
+        None => "killed by signal".to_owned(),
+    };
+    let detail = out
+        .stderr
+        .lines()
+        .find(|l| CRASH_MARKERS.iter().any(|m| l.contains(m)))
+        .or_else(|| out.stderr.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim();
+    Err(format!(
+        "clang crashed on {} ({how}){}",
+        tree.display(),
+        if detail.is_empty() { String::new() } else { format!(": {detail}") }
+    ))
 }
 
 /// Every file under `a` is under `b` with the same bytes, and the reverse.
@@ -1961,5 +1995,103 @@ fn wp167_compile_isolates_tmp_and_disables_crash_diagnostics() {
     let res = compile(&env, &tree, "c++20", &tmp).unwrap();
     assert_eq!(res, Some((true, String::new())));
     assert!(tmp.join("main-abcdef.cpp").is_file(), "marker was not written into isolated TMPDIR");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// WP-171 item 2: a compiler crash (exit status other than 0/1, termination by
+/// signal, or clang crash text on stderr) fails the pitfalls run as `ERROR`,
+/// naming the tree — even when the tree is expected `not_parsed` or `xfail`.
+#[test]
+fn wp171_compiler_crash_fails_the_run() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = work_dir("wp171-crash");
+    let pre = "int f() { return 1; }\n";
+    let bad_syntax = "int f() { return 1 }\n";
+    let dir = write_row(
+        &root,
+        "x06-crash",
+        &[
+            ("pre/main.cpp", pre),
+            ("good/main.cpp", pre),
+            ("bad/main.cpp", bad_syntax),
+            ("bad-2/main.cpp", bad_syntax),
+            (
+                "expect.txt",
+                "good: verified\nbad: not_parsed\nbad-2: not_parsed\nxfail bad-2: allowed\n",
+            ),
+        ],
+    );
+    let make_cc = |name: &str, bad_body: &str| {
+        let p = root.join(name);
+        let script = format!(
+            "#!/bin/sh\n\
+             case \"$PWD\" in\n\
+               */bad|*/bad-2)\n\
+                 {bad_body}\n\
+                 ;;\n\
+             esac\n\
+             exit 0\n"
+        );
+        std::fs::write(&p, script).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+
+    // Control: clean exit 1 without crash text agrees with `not_parsed`.
+    let clean_reject = make_cc("cc-reject", "echo 'main.cpp:1:20: error: expected ;' >&2; exit 1");
+    let env = Env { cc: Some(clean_reject), require_all: false };
+    let r = run_row(&dir, &root.join("work-reject"), &env, Places::Mandatory);
+    let o: Vec<(&str, Outcome)> = r.iter().map(|r| (r.tree.as_str(), r.outcome)).collect();
+    assert_eq!(
+        o,
+        [("good", Outcome::Pass), ("bad", Outcome::Pass), ("bad-2", Outcome::Xpass)],
+        "{r:#?}"
+    );
+
+    // Every crash mode must produce Outcome::Error naming the tree, even for
+    // `not_parsed` and `xfail`.
+    for (tag, body, needle) in [
+        ("exit2", "exit 2", "exit 2"),
+        ("exit139", "echo 'Segmentation fault' >&2; exit 139", "exit 139"),
+        ("exit254", "exit 254", "exit 254"),
+        (
+            "bug-report",
+            "echo 'PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/' >&2; exit 1",
+            "PLEASE submit a bug report",
+        ),
+        (
+            "signal-text",
+            "echo 'clang: error: clang frontend command failed due to signal' >&2; exit 1",
+            "frontend command failed due to signal",
+        ),
+        ("sigsegv", "kill -SEGV $$", "killed by signal"),
+    ] {
+        let cc = make_cc(&format!("cc-{tag}"), body);
+        let env = Env { cc: Some(cc), require_all: false };
+        let direct_err =
+            compile(&env, &dir.join("bad"), "c++20", &root.join(format!("compile-tmp-{tag}")))
+                .unwrap_err();
+        assert!(
+            direct_err.contains("clang crashed on") && direct_err.contains(needle),
+            "{tag}: unexpected direct compile error: {direct_err}"
+        );
+        let r = run_row(&dir, &root.join(format!("work-{tag}")), &env, Places::Mandatory);
+        let o: Vec<(&str, Outcome)> = r.iter().map(|r| (r.tree.as_str(), r.outcome)).collect();
+        assert_eq!(
+            o,
+            [("good", Outcome::Pass), ("bad", Outcome::Error), ("bad-2", Outcome::Error)],
+            "{tag}: {r:#?}"
+        );
+        for res in &r[1..] {
+            assert!(
+                res.found.contains("clang crashed on")
+                    && res.found.contains(&res.tree)
+                    && res.found.contains(needle),
+                "{tag}: unexpected error for {}: {}",
+                res.tree,
+                res.found
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&root);
 }

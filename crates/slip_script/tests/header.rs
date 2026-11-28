@@ -3,6 +3,8 @@
 //! header check `transform-header`, and the headers under an ordinary C++26
 //! compiler. Decisions: `spec/landed/api/WP-082.md`.
 
+mod common;
+
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,8 @@ fn repository_resource() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resource")
 }
 
-/// A directory of its own under the system temp directory, removed on drop.
+/// A directory of its own under the crate's work root (`common::work_root()`,
+/// `spec/harness.md` §11.5), removed on drop.
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -29,7 +32,7 @@ impl Scratch {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("slip-header-{}-{n}-{name}", std::process::id()));
+            common::work_root().join(format!("slip-header-{}-{n}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Scratch(dir)
@@ -340,4 +343,20 @@ fn s2_1_6_examples_under_another_compiler() {
             }
         }
     }
+}
+
+/// WP-171 item 6 (`spec/harness.md` §11.5): `Scratch` lives under the crate's
+/// work root (`common::work_root()`), not under `std::env::temp_dir()`.
+#[test]
+fn s11_5_scratch_is_under_work_root() {
+    let s = Scratch::new("work-root");
+    let root = common::work_root();
+    assert_eq!(
+        s.0.parent(),
+        Some(root.as_path()),
+        "Scratch directory {} must be under work_root {} (not system temp_dir {})",
+        s.0.display(),
+        root.display(),
+        std::env::temp_dir().display()
+    );
 }
