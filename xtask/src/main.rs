@@ -15,7 +15,7 @@ commands:
   ci [--quick] [--step <name>]… [--keep-going] the gate (§2)
   corpus list|fetch|configure|status|path      the corpora (§8)
   corpus rename <corpus> --from <name> --to <identifier> [--kind <k>] [--owned <path>]…
-         [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]
+         [--expect <state>] [--accept] [--build] [--skip-census] [-j <n>] [--slip <path>]
                                                a rename over a corpus, checked (§6.5)
   jobserver status|refill [--fifo <p>] [--jobs <n>]
                                                the jobserver pool (§5); refill only
@@ -26,6 +26,8 @@ commands:
                                                the transform tests (§6)
   invariants a|b <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>]
                                                the corpus invariants (§9)
+  census <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>] [--store <dir>]
+                                               indeterminate causes over a corpus (§9.5)
   demo 1 [--slip <path>] [-j <n>] [--case <name>]… [--keep]
                                                Demo 1 (§10)
   fscheck <dir> [--rounds <n>] [--row <name>]…  the hard-link and inode probe of a file system (§11)
@@ -45,6 +47,7 @@ fn main() -> ExitCode {
         Some("perf") => xtask::perf::main(&root, rest),
         Some("transform") => xtask::transform::main(&root, rest),
         Some("invariants") => xtask::invariants::main(&root, rest),
+        Some("census") => xtask::census::main(&root, rest),
         Some("demo") => xtask::demo::main(&root, rest),
         Some("fscheck") => xtask::fscheck::main(rest),
         // The other process of `fscheck`'s row `create-new-xproc`.
