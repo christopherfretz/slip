@@ -92,6 +92,7 @@ const SHAPES: &[(&str, &str)] = &[
     ("variable-template", "template<class T> extern decltype(f(T())) @;\n"),
     ("requires", "template<class T> requires (sizeof(f(T())) > 1) void @(T t);\n"),
     ("operator", "template<class T> auto @(T t) -> decltype(t + t);\n"),
+    ("fold", "template<class... T> auto @(T... t) -> decltype((t + ...));\n"),
     (
         "member-initialiser",
         "template<class T> struct @ { static constexpr int v = sizeof(Z<sizeof(f(T()))>); };\n",
@@ -371,11 +372,38 @@ fn an_instantiated_member_reads_the_patterns_found_set() {
 }
 
 /// Rule 4 with a cause (N3): an alias whose own aliased type as written
-/// is indeterminate (a fold over `+`, with an `operator+` declared, in an
-/// instantiation-dependent argument: rule 7's profile) is an `Alias` entry
-/// of its user, whose own type holds only the argument's value.
+/// is indeterminate (a dependent `_BitInt` width inside an
+/// instantiation-dependent argument: rule 7's profile) is an `Alias`
+/// entry of its user, whose own type holds only the argument's value.
 #[test]
 fn an_alias_whose_spelling_is_indeterminate_is_listed() {
+    let src = format!(
+        "{PRELUDE}template<class T> using R = Z<sizeof(sizeof(_BitInt(sizeof(f(T())) * 8)))>;\n\
+         template<class T> void u(R<T> r);\n"
+    );
+    crate::decl_func::tests::with_walk(&src, |w| {
+        let alias_r = crate::decl_func::tests::named(w, "R", DeclKind::TypeAliasTemplate)[0];
+        let pattern = w.ast.template_info(alias_r).and_then(|i| i.pattern).expect("R's pattern");
+        let under = w.ast.decls.typedef(pattern).expect("R").underlying;
+        w.unit = crate::walk::UnitState::default();
+        let mut s = Stream::new();
+        super::left_out_of_type(w, &mut s, under, None);
+        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/bit-int")));
+        let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
+        let q = w.ast.decls.get(d).ty().expect("a type");
+        w.unit = crate::walk::UnitState::default();
+        w.alias_due.clear();
+        super::left_out_of_type(w, &mut Stream::new(), q, None);
+        assert_eq!(w.unit.facts, vec![Fact::Alias(w.ast.first(pattern))]);
+        assert!(w.unit.facts_due);
+    });
+}
+
+/// WP-138: a fold over `+` inside an alias template's own spelling
+/// (rule 7's profile) is determinate and records its `oper_lookups` set
+/// as `Fact::Oper`, so its user lists `Fact::Alias`.
+#[test]
+fn a_fold_in_an_alias_holds_its_oper_set_and_is_determinate() {
     let src = format!(
         "{PRELUDE}template<class... T> using R = Z<sizeof(sizeof((T() + ...)))>;\n\
          template<class... T> void u(R<T...> r);\n"
@@ -387,7 +415,12 @@ fn an_alias_whose_spelling_is_indeterminate_is_listed() {
         w.unit = crate::walk::UnitState::default();
         let mut s = Stream::new();
         super::left_out_of_type(w, &mut s, under, None);
-        assert_eq!(s.cause(), Some(Cause::Unaccounted("spelling/fold-operator")));
+        assert_eq!(s.cause(), None);
+        assert!(
+            w.unit.facts.iter().any(|f| matches!(f, Fact::Oper(ds) if !ds.is_empty())),
+            "{:?}",
+            w.unit.facts
+        );
         let d = crate::decl_func::tests::named(w, "u", DeclKind::Function)[0];
         let q = w.ast.decls.get(d).ty().expect("a type");
         w.unit = crate::walk::UnitState::default();
@@ -516,7 +549,8 @@ const REACHED: &[&str] = &[
     "spelling/bit-int",
     "spelling/profile",
     "spelling/conversion-name",
-    "spelling/fold-operator",
+    // Not `spelling/fold-operator`: removed by WP-138 (Kiln WP-2625 records
+    // the fold's definition-context operator set in `oper_lookups`).
     "spelling/full",
     "spelling/using-enum",
     "spelling/pseudo-destructor-qualifier",

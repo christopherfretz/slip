@@ -365,21 +365,15 @@ pub(crate) fn pack_expansion_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
 
 /// `CXXFoldExpr`: `aux` the operator, `a` the left operand, `b` the
 /// right, either absent (the pack's side is the one present when the
-/// fold is unary).
+/// fold is unary). Its definition-context operator set (`oper_lookups`,
+/// Kiln WP-2625) is written by `templ::expr_maps`, as for a dependent
+/// binary operator (WP-138).
 pub(crate) fn cxx_fold_expr(w: &mut Walk<'_>, s: &mut Stream, e: ExprId) {
     let n = expr::node(w, e);
     check_bits(s, &n, 0, row("ExprNode/CXXFoldExpr.bits"));
     match BinaryOp::from_u8(n.aux) {
         Some(op) => {
             s.tag(binary_op::row(&op));
-            // Kiln records a fold's definition-context operator set
-            // (`oper_lookups`, WP-2625; written by the record OperLookups)
-            // but this walk still treats what an overloadable operator
-            // finds at instantiation as outside the digest (digest-kinds
-            // §4.4 "Spellings", rule 9): fail closed until WP-138.
-            if crate::expr_profile::fold_left_out(w, op) {
-                s.indeterminate(Cause::Unaccounted("spelling/fold-operator"));
-            }
         }
         None => {
             s.uv(0).indeterminate(row("ExprNode/CXXFoldExpr.aux"));

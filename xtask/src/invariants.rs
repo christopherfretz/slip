@@ -770,13 +770,7 @@ impl Ctx<'_> {
 
     /// Runs `slip` with `args`; a status not in `accept` is an error.
     fn slip(&self, args: &[OsString], accept: &[i32]) -> Result<Ran, String> {
-        let what = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
-        let ran = slip_run::run(self.slip, args)?;
-        if accept.contains(&ran.status) {
-            Ok(ran)
-        } else {
-            Err(format!("`slip {what}` exited with status {}", ran.status))
-        }
+        run_slip(self.slip, args, accept)
     }
 
     /// `slip parse` into the fresh store `store` (§9.1): the store is
@@ -816,8 +810,19 @@ impl Ctx<'_> {
     }
 }
 
+/// Runs `slip` with `args`; a status not in `accept` is an error.
+pub(crate) fn run_slip(slip: &Path, args: &[OsString], accept: &[i32]) -> Result<Ran, String> {
+    let what = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+    let ran = slip_run::run(slip, args)?;
+    if accept.contains(&ran.status) {
+        Ok(ran)
+    } else {
+        Err(format!("`slip {what}` exited with status {}", ran.status))
+    }
+}
+
 /// The path of the latest map run record of `plan` in `store`, if any.
-fn latest_map_run(store: &Path, plan: &Digest) -> Result<Option<PathBuf>, String> {
+pub(crate) fn latest_map_run(store: &Path, plan: &Digest) -> Result<Option<PathBuf>, String> {
     let st = Store::open(store, Access::Shared)
         .map_err(|e| format!("{}: cannot open the store: {e}", store.display()))?;
     let Some(bytes) = st.latest_run(plan, Phase::Map).map_err(|e| e.to_string())? else {
@@ -860,8 +865,8 @@ fn invariant_a(c: &Corpus, ctx: &Ctx) -> Result<(String, bool), String> {
 }
 
 /// `slip --version`: `slip <version> (kiln <version>)`.
-fn versions(ctx: &Ctx) -> Result<(String, String), String> {
-    let ran = ctx.slip(&["--version".into()], &[0])?;
+pub(crate) fn versions(slip: &Path) -> Result<(String, String), String> {
+    let ran = run_slip(slip, &["--version".into()], &[0])?;
     let line = ran.stdout.lines().next().unwrap_or("");
     line.strip_prefix("slip ")
         .and_then(|r| r.strip_suffix(')'))
@@ -900,7 +905,7 @@ fn reusable(ctx: &Ctx, store: &Path, tools: &(String, String)) -> Result<Option<
 }
 
 fn invariant_b(c: &Corpus, ctx: &Ctx) -> Result<(String, bool), String> {
-    let tools = versions(ctx)?;
+    let tools = versions(ctx.slip)?;
     let store = ctx.stores().join("a1");
     let map = if let Some(map) = reusable(ctx, &store, &tools)? {
         map
