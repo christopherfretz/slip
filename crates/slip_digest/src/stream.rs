@@ -22,6 +22,7 @@
 //! byte, no hash and no allocation depends on it.
 
 use slip_kiln::kiln::ast::DeclId;
+use slip_kiln::kiln::source::Loc;
 use slip_model::Digest;
 use slip_model::hash::tagged_digest;
 use slip_model::wire::Encoder;
@@ -41,6 +42,9 @@ pub(crate) enum Hook {
     /// The declarations of entity `e`: their rows merged over the chain
     /// (scope, attributes, template maps, module rows).
     Decls(DeclId),
+    /// A site-9 entry of an operand unit (WP-156 fix round 3): where the
+    /// written name is (`spec/verify.md` §6.1).
+    Name(Loc),
 }
 
 /// `H("slip.unit.v1", stream)`: a unit's digest (`spec/model.md` §3,
@@ -255,10 +259,27 @@ impl Stream {
         }
     }
 
+    /// The hook of a site-9 entry (WP-156 fix round 3) written at `loc`,
+    /// which begins `ahead` bytes past the end of this stream: the group
+    /// that holds it is appended next. Nothing unless the stream is
+    /// traced.
+    #[inline]
+    pub(crate) fn mark_name(&mut self, ahead: usize, loc: Loc) {
+        if self.rec.is_some() {
+            self.record_mark_at(ahead, Hook::Name(loc));
+        }
+    }
+
     #[cold]
     #[inline(never)]
     fn record_mark(&mut self, node: Hook) {
-        let at = self.enc.as_bytes().len() as u64;
+        self.record_mark_at(0, node);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn record_mark_at(&mut self, ahead: usize, node: Hook) {
+        let at = (self.enc.as_bytes().len() + ahead) as u64;
         if let Some(r) = &mut self.rec {
             r.marks.push((at, node));
         }

@@ -15,8 +15,9 @@ use slip_model::keys::RuleTable;
 use slip_model::{Digest, Status, digests::Unit};
 
 /// The digest and determinacy of the unit named `name` in `source`,
-/// parsed as C++14.
-fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool) {
+/// parsed as C++14, and the translation unit's count of site-1 operands
+/// (`digest.operands.site.1`; 0 when absent).
+fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool, u64) {
     let tree = Tree::new(&common::work_root(), label, &[("main.cpp", source.as_bytes())])
         .expect("the tree");
     let observer = tree.observer("main.cpp", "c++14", &[]);
@@ -55,7 +56,12 @@ fn unit_of(label: &str, source: &str, name: &str) -> (Digest, bool) {
                             .find(|u| u.key == key)
                             .expect("its digest");
                         let indeterminate = o.causes.iter().any(|(k, _)| *k == key);
-                        (u.digest, indeterminate)
+                        let site1 = o
+                            .counters
+                            .iter()
+                            .find(|c| c.name == "digest.operands.site.1")
+                            .map_or(0, |c| c.value);
+                        (u.digest, indeterminate, site1)
                     })
                     .expect("the digest thread")
                     .join()
@@ -84,8 +90,10 @@ fn an_own_dynamic_exception_specification_is_written_before_cxx17() {
 /// types are written types, so `decltype(make(0))` in `throw(...)` is a
 /// site-1 operand of the function's operand unit. `make(0)` binds
 /// `make(int)` when it is declared before `g`, `make(long)` when after;
-/// both are `int`, so only the operand tells them apart (mutation 1 of
-/// the round: the types not passed to a `Type` slot).
+/// both are `int`, so only the operand tells them apart. L3 would write
+/// `make` at site 9 if no stream walked it, so the operand's own count
+/// is what shows Layer S read it (mutation 1 of the round: the types not
+/// passed to a `Type` slot).
 #[test]
 fn a5_a_dynamic_exception_specification_holds_its_operands() {
     const BEFORE: &str = "int make(long);\nint make(int);\nvoid g() throw(decltype(make(0)));\n";
@@ -96,4 +104,5 @@ fn a5_a_dynamic_exception_specification_holds_its_operands() {
     assert!(!a.1 && !b.1, "both determinate: {a:?} {b:?}");
     assert_ne!(a.0, b.0, "make(int) against make(long)");
     assert_eq!(a.0, again.0, "the same binding twice");
+    assert_eq!((a.2, b.2), (1, 1), "the dynamic specification's operand is read (site 1)");
 }

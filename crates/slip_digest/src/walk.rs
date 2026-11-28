@@ -385,7 +385,7 @@ pub(crate) struct Walk<'a> {
     pub ledger: Option<crate::operands::ledger::Ledger>,
     /// `<order>`'s site-9 entries (`operands::order_names`): their count
     /// and stream, written by `operands::order`.
-    pub order_names: Option<(usize, Stream)>,
+    pub order_names: Option<crate::operands::Names>,
 }
 
 /// `H("slip.names.v1", entries)`: the names digest of a unit or a constant

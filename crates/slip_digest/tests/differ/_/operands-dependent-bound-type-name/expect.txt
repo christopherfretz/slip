@@ -1,0 +1,5 @@
+# WP-156 fix round 3 (Layer S).
+exact derived
+removed n::X
+removed n::X::a
+derived-changed template <class> void n::f(int (*)[sizeof(T) + sizeof(W2<sizeof(X)>)])::<operands>

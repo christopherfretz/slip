@@ -2098,7 +2098,8 @@ Trace := key: KeyId, digest: digest
 Mark  := offset: uv                   the stream's length when the walk began to write the node
          node:   str                  the node's kind: the variant's name in Kiln's `ExprKind` or
                                       `StmtKind`; for a unit's first mark, the name of its key kind;
-                                      `declarations` for a declarations mark (below)
+                                      `declarations` for a declarations mark (below); `written name`
+                                      for a site-9 entry's mark (below)
          file:   bytes, line: uv, column: uv      subject path, line and column of the node's location in
                                                   the physical file (a `#line` directive does not
                                                   move it); empty, 0, 0 if it has none
@@ -2142,6 +2143,17 @@ RefAt := offset: uv, len: uv          a digest field of the stream (32 bytes) wh
   each side's operand refers to (`DeclRefExpr … refers to lib::make(lib::X)`
   and `… refers to make<lib::X>(lib::X)`). That is the report's detail
   of an operand unit: which operand is gone or binds another entity.
+- A site-9 entry of an operand unit (`digest.md` §2.4, a written name
+  no stream walked; WP-156 fix round 3) has a mark of its own where the
+  entry begins, node `written name`, at the name's location as written
+  (the start of its entry in Kiln's written-reference table, `name_lo`;
+  in a macro expansion, the outermost expansion's). The site of a
+  `derived_changed` whose first difference is in such an entry is that
+  name in each image, and `what` names the entity each side's entry
+  refers to when it is a unit (`refers to lib::X`). A mark is one
+  location: the name's end is not given. `<order>`'s operand unit has
+  these marks as well (its first mark has no place; the order unit
+  itself still has the first mark only).
 - The location of a node inside a macro expansion is that of the outermost
   expansion (as for a group's file, `digest.md` §11).
 - Tracing changes no byte of any stream: with and without it, `digests` are

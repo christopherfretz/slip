@@ -4,7 +4,7 @@ bad: mismatch derived_changed legacy::F::<friend legacy::Q<4>::f()>::<operands> 
 good-2: verified
 bad-2: mismatch derived_changed legacy::d()::<operands> @ main.cpp:10
 good-3: verified
-bad-3: mismatch derived_changed legacy::<operands> @ main.cpp:8
+bad-3: mismatch derived_changed legacy::<operands> @ main.cpp:10
 good-4: verified
 bad-4: mismatch derived_changed template <class> decltype(t , W2<sizeof (make(0))>()) legacy::f(type-parameter-0-0)::<operands> @ main.cpp:9
 good-5: verified

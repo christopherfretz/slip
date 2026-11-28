@@ -264,7 +264,9 @@ using-declaration, the owner of a closure, the checked mark of an
 attribute) is recorded where the source is parsed, whatever the unit
 uses, and the written-reference and declaration-extent tables exist only
 when a client turns them on, as does the preprocessing record, which is
-the preprocessor's and not the AST's.
+the preprocessor's and not the AST's. Every digested parse turns the
+written-reference table on (WP-156 fix round 3; §2.4 site 9): it is
+what the source wrote, the same whatever the unit uses.
 
 | State | In the digest as |
 |---|---|
@@ -401,7 +403,7 @@ name, each pinned by an equal pair whose comment names it
 
 | Limit | Why | Asked of Kiln |
 |---|---|---|
-| an array bound (`int buf[sizeof(make(x))]`) | Kiln keeps a constant bound as a value only, for every declarator; the site (3) is reserved | the bound as written (KR9 §5.11) |
+| a type name alone in an array bound (`int buf[sizeof(X)]`) | Kiln keeps a constant bound as a value only, for every declarator; the site (3) is reserved. A name in a bound's expression (`sizeof(make(x))`) is a site-9 entry and is written (§2.4, WP-156 fix round 3), so the limit narrows to a type name alone | the bound as written (KR9 §5.11) |
 | a pack index after substitution (`T...[sizeof(make(x)) - 4]`) | absent after substitution; site 5 is reserved | (asked, low) |
 | `explicit(e)` of a function template specialisation | the stored value only; the pattern's own stream walks the written operand | |
 | a template candidate that lost to a non-template | no declaration in the parse: Kiln did not instantiate it (the compatibility level of `docs/wp/WP-155.md`) | whether it deduces there |
@@ -518,10 +520,14 @@ compound literal, `__builtin_offsetof`, `__builtin_va_arg`,
 `__builtin_convertvector`, a generic selection, a pseudo-destructor's
 destroyed type, a requires-expression's parameters and type
 requirements; inside a written type, a nested-name-specifier's types,
-and a dependent name's qualifier and arguments. The three matches that
-decide this (`operands.rs` `signature`, `scan`, `expr_node`) list every
-declaration, type and expression kind by name, so a kind Kiln adds
-fails to compile until it is placed. Inside a written type the
+and a dependent name's qualifier and arguments. One traversal
+destructures every variant of a written type with every field bound
+(`operands::slots`, Layer S: each field is a slot that is read, a
+denotation, a folded value or plain), and the matches over
+declarations and expressions (`operands.rs` `signature`, `holders`)
+list every kind by name, so a kind or a field Kiln adds fails to
+compile until it is placed; a census (`operands::census::SLOTS`)
+gives every stored written type of Kiln's role tables a row. Inside a written type the
 **operands** are, by site:
 
 | Site | Operand |
@@ -534,6 +540,8 @@ fails to compile until it is placed. Inside a written type the
 | 6 | `noexcept(e)` of a function type |
 | 7 | reserved: `explicit(e)`, which the unit's own stream walks |
 | 8 | the written argument list of an alias template specialisation |
+| 9 | a written name no stream walked (below): the reference to its entity |
+| 0 | what Kiln does not keep, indeterminate for its cause |
 
 The walk of a written type reads only what is written: it stops at what
 a name denotes (a typedef's or alias's underlying type, a class), at a
@@ -543,8 +551,8 @@ declared with `auto` or `decltype(auto)`, and a function with a deduced
 return type, have no written type but the placeholder's
 type-constraint, `Same<decltype(make(x))> auto`: its initialiser or
 body is in its own stream; the type-constraint is read where Kiln keeps
-it, a template parameter's or an undeduced placeholder's, and fails
-closed where it does not, below). An instantiation-dependent alias
+it, a template parameter's or an undeduced placeholder's; where it
+does not, its names are site-9 entries and trigger T4's, below). An instantiation-dependent alias
 specialisation's list is not written, but an operand in it that is not
 instantiation-dependent is, as is one in a dependent name's qualifier
 or arguments: no pattern's spelling holds it. A holder met inside an operand gives
@@ -586,84 +594,75 @@ declaration holds (`void (*fp)(int a) noexcept(noexcept(f(a)))`) is
 written by its depth and index (`Ref::param`). The names digest (§9) of
 the entity is fed by the written entries only.
 
-**What Kiln does not keep** (at the pin; the request is
-`docs/requests/KT1-written-placeholder-and-qualifier.md`). Where a holder
-is written but Kiln keeps none of it, the operand unit gets an entry
-`uv 0` that is indeterminate for a named cause (fails closed), whether
-or not the holder had an operand:
+**Site 9: the written names no stream walked** (WP-156 fix round 3,
+the ledger; `spec/landed/digest/WP-156.md` §2.7). Every digested parse
+records Kiln's written-reference table (Kiln `spec/ast.md` §18): an
+entry for each name written in the source, in a macro or not, with
+its entity, its role and the declaration that holds it. An entry takes
+part when it has an entity, is neither dependent nor unresolved, and
+its entity is no namespace or namespace alias. Its unit is the unit
+that holds its holder (for a declarator group's shared entry, each
+declaration's); one the translation unit holds, or a declaration no
+unit holds (a parameter of a function type), belongs to `<order>`.
 
-A type of the arena is **linked** when a declaration holds it as written
-(its type, a parameter's before adjustment, a typedef's, a friend's,
-an enumeration's underlying type, a base, a template parameter's
-default, a using-declaration's or friend's qualifier, an argument list
-as written), with the types written inside it. Kiln interns a type
-holding an operand by its expressions, so one such spelling is one
-type. The causes below read the types that are not linked, hold an
-operand that is no literal, are not instantiation-dependent and hold
-no substituted template parameter (**unlinked held types**). A type
-written in an expression is not linked either, so the sets are wider
-than what is unkept, never narrower.
+- **Met**: the entry's name expression (role `Expr`, `Member`,
+  `Operator`, `UdSuffix`) was written by a kept stream of its unit (its
+  own, or an operand entry that is written): a `DeclRefExpr` or
+  `MemberExpr` at the entry's name location with its entity, an
+  operator call's callee, a `new` or `delete` expression's operator
+  function at its qualified name. Nothing more is written.
+- **Deferred**: its name is under a root a part of the unit walks (the
+  `noexcept` operand of `exception_spec`, a `default_argument` unit's
+  expression); the part decides it at its own end, met by its stream
+  or written in its operand unit.
+- **Unmet**: written in the unit's operand unit, after its groups, as
+  one more group in table order: `uv 9`, then the reference to the
+  entity, in the unit's state. No role, spelling or location is
+  written.
 
-- `kiln/placeholder-constraint`: a declaration whose type a placeholder
-  deduced (a variable's, a function's return type), or a `new`, when
-  an operand of an unlinked held constrained placeholder's arguments
-  is located (expansion location) between the bounds around the
-  declaration's name (the names of the declarations not in a function,
-  lambda or requires-expression and not a class or enumeration that is
-  no definition, and the ends of their bodies and initialisers) or
-  inside the `new` expression. Kiln replaces the declared type by the
-  deduced one and keeps the type-constraint only in its arena,
-  unlinked; a deduced declaration elsewhere fails nothing.
-- `kiln/explicit-instantiation-written`: an explicit instantiation of a
-  function, a variable or a member that its own directive names (not
-  its class's), when the directive may have spelt an operand: the
-  entity is a member of a class of `kiln/declarator-qualifier`'s set,
-  or its arguments hold a non-type argument (Kiln keeps the value:
-  `at<3>` and `at<sizeof(make(x))>` are one), or a type argument that
-  is canonically an unlinked held type, or the function's type is, up
-  to its exception specification, that of an unlinked held function
-  type (its declarator, its own `noexcept(e)` included: X3), or a
-  variable's type is an unlinked held type. Kiln keeps neither the
-  directive's arguments nor its declarator as written; the
-  specialisation's exception specification is substituted from the
-  pattern. A class's explicit instantiation keeps its arguments and is
-  read.
-- `kiln/declarator-qualifier`: a declaration written outside its class
-  (not an instantiation's), or a `using enum`, when a class around it
-  is in this set: a class an unlinked held template-id names (one whose
-  arguments hold an operand, or an alias template's, whose template-id
-  Kiln keeps as a type: `int AL<sizeof(make(x))>::s` with `template
-  <int> using AL = Pl;`); for a `using enum`, a class an unlinked held
-  `decltype` or `typeof` names; a specialisation of a class template
-  whose arguments hold a type argument that is canonically an unlinked
-  held type, or a non-type argument, when an expression that is no
-  literal is located between the bound before the declaration's name
-  and the name (`template <> int Q<sizeof(make(x))>::s = 5;`; for
-  `void Q<1>::f() {}` nothing fails). Kiln keeps no declarator's
-  qualifier as written. An alias template by itself, and a `decltype`
-  of an object (`decltype(obj) other;`, which a declaration links), is
-  nothing. A limit by name: an alias template whose target a dependent
-  name finds (`typename T::type`) names a class the arena cannot tell,
-  and is not failed closed.
-- `kiln/friend-specialization-declarator`: a friend function template
-  specialisation whose function type is that of an unlinked held
-  function type: Kiln links the specialisation, not its declarator. A
-  friend's qualifier and template arguments as written are read from
-  Kiln's friend-form row (X1, X7); a friend read from a module image
-  carries none (`kiln/friend-form-not-carried`).
-- `kiln/destructor-name`: a member access naming a destructor of a
-  class an unlinked held template-id, `decltype` or `typeof` names
-  (`wv.~Wr<decltype(make(x))>()`, X2): Kiln resolves the name and keeps
-  no type as written.
-- `kiln/bit-int-width`: a written `_BitInt(e)` (X8): Kiln keeps the
-  width as a number, or a profile in a pattern, never the expression,
-  and interns `_BitInt(8)` and `_BitInt(sizeof(make(x)))` alike. A
-  pattern's fails closed; another's where an expression that is no
-  literal begins between the bounds around the declaration's name, or
-  inside the expression that holds the type after its first token
-  (`_BitInt(8) v = 0;` fails nothing). `_BitInt` is not used in LLVM's
-  or libc++'s sources, so it fails closed rather than being a limit.
-- `operands/splice`: a splice in a written type or qualifier.
+A name that joins no expression (a type, template or concept name)
+cannot be met; it is written, with every entry of its range, where
+the unit has one of these **triggers** (each read from the AST, with
+no location):
+
+| | Trigger | Entries written |
+|---|---|---|
+| T1 | the unit is a namespace's or `<order>` | every entry |
+| T1b | a class one of whose members its own explicit instantiation names | every entry the class itself holds |
+| T2 | a declaration whose qualified declarator-id (`Redecl` entry) has a qualifier component that is not a namespace, a class that is no specialisation or an enumeration (a template-id, an alias or typedef, a `decltype`) | the declaration's entries through the last of its qualifier's |
+| T3 | the unit read a value Kiln folded (a `_BitInt` width, a vector's count, an address space) | every entry |
+| T4 | a declaration whose type a placeholder deduced, or a unit with a `new`, that holds a concept name | the declaration's entries through its last concept name (for `new`, every entry) |
+| T5 | a friend function template specialisation | every entry it holds, and every entry of the befriending class's unit (a parameter written in the friend's declarator is held by a `ParmVar` of the class, linked to no function: KT1 2.9 (f)) |
+
+In a trigger's range a name of the unit is written by its entity, so
+a transform that changes which names are written there (a typedef
+replaced by its type) changes the operand unit; a rename or a
+relocation does not.
+
+**Conservation.** Every entry that takes part is decided by its
+unit's end (or its part's). After the walk, an entry no unit decided
+(its unit was never written) is counted
+(`digest.operands.names.unclaimed`) and makes `<order>`'s operand unit
+indeterminate (`operands/unclaimed-name`); an entry deferred to a part
+never written is counted apart (`digest.operands.names.undemanded`)
+and is no cause. `unclaimed` is 0 on both sides of every fixture of
+the digest's tests (§13 item 9).
+
+**Named limits that fail closed:** `kiln/written-refs-not-recorded`
+(the table is off or not whole: `<order>`'s operand unit);
+`operands/unclaimed-name`; `kiln/friend-form-not-carried` (a friend
+read from a module image); `kiln/bit-int-width` (a pattern's
+`_BitInt(e)`, whose width Kiln keeps as a profile); `operands/splice`;
+`operands/dependent-body`; `operands/limit`; `operands/unwalked-local`
+(a site-9 entry naming a local the unit's numbering never met: a
+local class declared in a lambda inside an array bound).
+
+**Named limits that stay `equal`**, each with a pinned pair
+(`tests/equal/_/limit-operands-*`): a type name alone in an operand
+Kiln does not keep, in a slot no trigger names (the class is closed
+by Kiln, KT1 2.8); a type name alone in an array bound (§2.3; a name
+in a bound's expression is unmet and written); a member template name
+after `.template` in an expression no stream walks.
 
 **`noexcept` of a specialisation** (a function whose exception
 specification can be deferred, `digest-kinds.md` §11.2): its operand
@@ -2086,11 +2085,16 @@ comparison of unit sets (`verify.md`).
 | `digest.indeterminate.<cause>` | indeterminate keys whose first cause is of this kind: `error`, `unsupported`, `unaccounted`, `collision`, `undeclared_local`, `visibility_by_use`, and `pending` while the walk has areas not yet written. Present only when not 0 |
 | `digest.indeterminate.pending.<area>` | of the `pending` ones, by area. Goes with `Cause::Pending` |
 | `digest.operands.units` | operand units (§2.4, WP-156). Present only when not 0, as each `digest.operands` counter |
-| `digest.operands.site.<n>` | written operands of site `n` (1, 2, 4, 6, 8; §2.4), nested ones included |
+| `digest.operands.site.<n>` | written operands of site `n` (1, 2, 4, 6, 8; §2.4), nested ones included; site 9, the written names no stream walked (§2.4 site 9) |
 | `digest.operands.unreferenced` | operands of sites 1, 2, 4 and 6 not written because their walk wrote no reference (§2.4 "What is written") |
 | `digest.operands.dependent` | instantiation-dependent operands, not written |
 | `digest.operands.deduced` | variables declared with a placeholder, whose type is not read (§2.4) |
-| `digest.operands.unkept` | entries of a holder Kiln does not keep, indeterminate (§2.4 "What Kiln does not keep") |
+| `digest.operands.unkept` | entries that are indeterminate for a named cause (site 0: §2.4 "Named limits that fail closed") |
+| `digest.operands.names.unclaimed` | written-reference entries that take part and that no unit decided (§2.4 "Conservation"); always written, 0 on every fixture of the digest's tests; not 0 makes `<order>`'s operand unit indeterminate (`operands/unclaimed-name`) |
+| `digest.operands.names.undemanded` | entries deferred to a part that was never written (§2.4 "Conservation"), no cause |
+| `digest.operands.names.unmet`, `digest.operands.names.trigger.<t>` | site-9 entries by why they are written: a name a join takes that no stream met (L3), or a name a trigger covers (`t1`, `t1b`, `t2`, `t3`, `t4`, `t5`; `<order>`'s are `t1`) |
+| `digest.operands.names.role.<role>`, `digest.operands.names.holder.<kind>` | site-9 entries by the entry's role and by its holder's declaration kind (`none`: no holder), each as a word (`ud_suffix`, `cxx_record`) |
+| `digest.operands.names.unmet.<role>.<kind>` | the unmet site-9 entries by role and holder kind: the shapes of the names no stream walks, for the corpus run |
 | `digest.cause.<cause>.<word>` | for the causes that carry a text (`unsupported`, `unaccounted`): indeterminate keys whose first cause has this text. The word's form and the function that makes it (`slip_digest::map::cause_word`) are `spec/model.md` §8.5 |
 
 These three count keys, each once, under the first cause the walk met
@@ -2181,6 +2185,18 @@ true by mechanism, not by review alone.
    moves, the operand unit differs) and a mutation of the package's
    handback (the holder skipped, the test fails); a holder that a new
    Kiln type adds is a row of §11.11 before the walk reads it.
+9. **Every written name is accounted for** (WP-156 fix round 3). The
+   counter `digest.operands.names.unclaimed` (§2.4 "Conservation",
+   §12) is 0 for both sides of every fixture the digest's tests parse
+   (`tests/common`): an entry of Kiln's written-reference table that
+   takes part is met by a stream, deferred to a part, or written at
+   site 9, so a holder the walk does not read costs a duplicate-free
+   entry, not a wrong answer. A unit test
+   (`operands::ledger::tests::sweep_counts_what_no_unit_decided`) shows
+   that the sweep counts what no unit decided. Layer S's census
+   (`operands::census::SLOTS`) gives every stored written type of
+   Kiln's role tables and schema descriptors a row, and its test holds
+   the two together.
 
 ## 14. What the tests must show
 

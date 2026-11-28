@@ -1,0 +1,5 @@
+# WP-156 fix round 3 (L1).
+exact derived
+added operator+(lib::X, lib::X)
+removed lib::operator+(lib::X, lib::X)
+derived-changed n::buf::<operands>

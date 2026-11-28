@@ -152,3 +152,92 @@ impl Ledger {
         (unclaimed, undemanded)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use slip_model::keys::RuleTable;
+
+    use super::{Claim, PartOf, build};
+    use crate::Input;
+    use crate::walk::Walk;
+
+    /// L6 (WP-156 fix round 3): the sweep counts an entry no unit decided
+    /// (`unclaimed`) and one deferred to a part never written
+    /// (`undemanded`), and nothing decided.
+    #[test]
+    fn sweep_counts_what_no_unit_decided() {
+        let files = [("main.cpp", "struct S {}; int f(S); S s; int g() { return f(s); }\n")];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |_| Vec::new();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let rules = RuleTable::empty();
+                let mut w = Walk::new(&input, &rules);
+                let mut book = build(&mut w);
+                let n = book.rows.len() as u64;
+                assert!(n >= 3, "the rows: {:?}", book.rows);
+                assert_eq!(book.sweep(), (n, 0), "no unit written: every row unclaimed");
+                book.rows[0].claim = Claim::Deferred(PartOf::ExceptionSpec);
+                book.rows[1].claim = Claim::ByPart(PartOf::DefaultArgument(0));
+                for r in &mut book.rows[2..] {
+                    r.claim = Claim::Claimed;
+                }
+                assert_eq!(book.sweep(), (0, 1), "one deferred to a part never written");
+                book.rows[0].claim = Claim::Open;
+                assert_eq!(book.sweep(), (1, 0), "one whose unit was never written");
+            },
+        )
+        .expect("parses");
+    }
+
+    /// L6 through `operands::order` (mutation 9 of the round): with every
+    /// entry decided, `<order>` has no operand unit; an entry no unit
+    /// decided is counted and makes `<order>`'s operand unit indeterminate
+    /// (`operands/unclaimed-name`).
+    #[test]
+    fn an_unclaimed_entry_makes_order_indeterminate() {
+        let files = [("main.cpp", "struct S {}; int f(S); S s; int g() { return f(s); }\n")];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse_with_tables(
+            &snippet,
+            &slip_kiln::snippet::Extra::default(),
+            |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let path = |_| Vec::new();
+                let input = Input { ast: p.ast, sm: p.sm, subject_path: &path };
+                let rules = RuleTable::empty();
+                let mut w = Walk::new(&input, &rules);
+                let parent = crate::units::order_unit(&mut w);
+                let mut book = build(&mut w);
+                for r in &mut book.rows {
+                    r.claim = Claim::Claimed;
+                }
+                book.rows[0].claim = Claim::Open;
+                w.ledger = Some(book);
+                let u = crate::operands::order(&mut w, &parent).expect("an operand unit");
+                assert_eq!(w.op_counts.unclaimed, 1, "the one entry no unit decided");
+                assert_eq!(u.cause, Some(crate::operands::UNCLAIMED));
+                if let Some(b) = w.ledger.as_mut() {
+                    b.rows[0].claim = Claim::Claimed;
+                }
+                assert!(crate::operands::order(&mut w, &parent).is_none(), "every entry decided");
+                assert_eq!(w.op_counts.unclaimed, 0);
+            },
+        )
+        .expect("parses");
+    }
+}

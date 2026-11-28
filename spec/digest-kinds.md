@@ -7335,18 +7335,28 @@ operands = group* own-spelling-list
 group    = count entry+            ; per declaration with written operands
 entry    = uv site expr            ; sites 1, 2, 4, 6
          | uv site count argument* ; site 8: the canonical arguments
+         | uv 0                    ; indeterminate for a named cause
+names    = count (uv 9 ref)+       ; after the groups: site 9, in table order
 ```
+
+The `names` group (WP-156 fix round 3, digest §2.4 site 9) is written
+when the unit has written names no stream walked: each is `uv 9` and
+the reference to the entry's entity (§4.1), in the parent's state; no
+role, spelling or location. `<order>`'s operand unit holds the entries
+the translation unit holds (trigger T1), and those of a declaration no
+unit holds (a parameter of a function type).
 
 | Site | Holder in a written type | Written when |
 |---|---|---|
 | 1 | `Decltype` (`decltype(e)`) | its walk writes a reference, or is indeterminate |
 | 2 | `TypeOfExpr` (`typeof(e)`) | as 1 |
-| 3 | reserved: `ArrayDep`/`ConstantArray` bound | never (the limit of digest §2.3) |
+| 3 | reserved: `ArrayDep`/`ConstantArray` bound | never (the limit of digest §2.3; a name in a bound's expression is site 9) |
 | 4 | an `Expr` template argument (`ArgView::Expr`) as written | as 1 |
 | 5 | reserved: `PackIndexing` index | never (digest §2.3) |
 | 6 | `NoexceptExpr` of a `FunctionProto` | as 1; of a specialisation whose specification is deferred (§11.2), only in its `exception_spec` unit's operand unit |
 | 7 | reserved: `explicit(e)` | never (the unit's own stream walks it) |
 | 8 | a `TemplateSpecialization` of an alias template, as written | always, unless instantiation-dependent |
+| 9 | an entry of Kiln's written-reference table (`spec/ast.md` §18) that takes part, of a role L3 joins (`Expr`, `Member`, `Operator`, `UdSuffix`) and met by no stream of its unit, or of another role in the range of one of L4's triggers (digest §2.4) | always |
 
 An operand that is instantiation-dependent is not written as one
 (§4.4); the holders inside it whose own operands are not

@@ -145,8 +145,19 @@ pub(crate) enum Op {
     /// entry is indeterminate for the cause.
     Unkept(Cause),
     /// Site 9 (L5): a written name of the unit that no stream of it
-    /// walked, by the entity it names.
-    Name(DeclId),
+    /// walked, by the entity it names, and its entry (the trace's mark).
+    Name(DeclId, WrittenRefId),
+}
+
+/// A group of site-9 entries written ahead of its unit's stream
+/// (`<order>`'s, [`order_names`]): how many, the stream, and where each
+/// entry begins in it with its written name's location (the trace's
+/// marks, `spec/verify.md` §6.1).
+#[derive(Debug)]
+pub(crate) struct Names {
+    count: usize,
+    stream: Stream,
+    marks: Vec<(usize, Loc)>,
 }
 
 /// The operand state of the unit being written (`UnitState::operands`).
@@ -210,6 +221,51 @@ pub(crate) struct Counts {
     pub deduced: u64,
     /// Entries of a holder Kiln does not keep ([`Op::Unkept`]).
     pub unkept: u64,
+    /// The site-9 entries by why they are written, by role, by holder
+    /// kind, and the unmet ones by role and holder kind (the corpus
+    /// command's split, item 9): `names.<key>`.
+    pub names: std::collections::BTreeMap<String, u64>,
+}
+
+impl Counts {
+    /// One site-9 entry of role `role` held by a declaration of kind
+    /// `holder` (`None`: no holder), written as `why` (`unmet`, or the
+    /// trigger: `t1` ... `t5`).
+    fn name(&mut self, why: &str, role: RefRole, holder: Option<DeclKind>) {
+        let holder = holder.map_or_else(|| "none".to_owned(), |k| snake(&format!("{k:?}")));
+        let role = snake(&format!("{role:?}"));
+        let mut bump = |k: String| *self.names.entry(k).or_insert(0) += 1;
+        if why == "unmet" {
+            bump("unmet".to_owned());
+            bump(format!("unmet.{role}.{holder}"));
+        } else {
+            bump(format!("trigger.{why}"));
+        }
+        bump(format!("role.{role}"));
+        bump(format!("holder.{holder}"));
+    }
+}
+
+/// A kind's name as a counter's word (`spec/digest.md` §12: `[a-z0-9_]`):
+/// `CXXRecord` is `cxx_record`, `UdSuffix` is `ud_suffix`.
+fn snake(name: &str) -> String {
+    let b = name.as_bytes();
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, &c) in b.iter().enumerate() {
+        if c.is_ascii_uppercase() {
+            let after_lower = i > 0 && !b[i - 1].is_ascii_uppercase();
+            let before_lower = i > 0 && b.get(i + 1).is_some_and(u8::is_ascii_lowercase);
+            if after_lower || (before_lower && b[i - 1].is_ascii_uppercase()) {
+                out.push('_');
+            }
+            out.push(char::from(c.to_ascii_lowercase()));
+        } else if c.is_ascii_alphanumeric() {
+            out.push(char::from(c));
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 /// Whether the walk collects operands now: the unit has an operand unit
@@ -751,7 +807,7 @@ pub(crate) fn exception_spec(w: &mut Walk<'_>, spec: ExcSpec) {
 fn is_dependent(w: &Walk<'_>, op: Op) -> bool {
     match op {
         Op::Expr(_, e) => w.ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION),
-        Op::Alias(_) | Op::Unkept(_) | Op::Name(_) => false,
+        Op::Alias(_) | Op::Unkept(_) | Op::Name(..) => false,
     }
 }
 
@@ -1303,6 +1359,7 @@ pub(crate) fn finish(w: &mut Walk<'_>) -> Option<Hashed> {
     if !names.is_empty() {
         let mut gs = Stream::new();
         let mut count = 0usize;
+        let mut at = Vec::new();
         for op in names {
             entries += 1;
             if entries > MAX_ENTRIES {
@@ -1311,9 +1368,15 @@ pub(crate) fn finish(w: &mut Walk<'_>) -> Option<Hashed> {
             }
             let (es, _, _) = entry(w, op);
             count += 1;
+            if let Op::Name(_, r) = op {
+                at.push((gs.as_bytes().len(), w.ast.written_refs.name_lo(r)));
+            }
             gs.raw(es.as_bytes()).absorb(es.cause());
         }
         s.count(count);
+        for (ahead, loc) in at {
+            s.mark_name(ahead, loc);
+        }
         s.raw(gs.as_bytes()).absorb(gs.cause());
         total += count;
     }
@@ -1375,6 +1438,8 @@ fn decide(w: &mut Walk<'_>) -> Vec<Op> {
     let mut marks = std::mem::take(&mut w.unit.operands.marks);
     marks.sort_unstable();
     marks.dedup();
+    let count = counting(w);
+    let holder = |r: &ledger::Row| r.holder.map(|h| ast.decls.get(h).kind());
     let mut out = Vec::new();
     let mut roots: Option<HashMap<Loc, ledger::PartOf>> = None;
     let range = book.of(Some(e));
@@ -1398,8 +1463,11 @@ fn decide(w: &mut Walk<'_>) -> Vec<Op> {
                 }
                 if !row.joined {
                     row.claim = Claim::Claimed;
-                    if triggers.covers(row) {
-                        out.push(Op::Name(row.entity));
+                    if let Some(why) = triggers.covers(row) {
+                        if count {
+                            w.op_counts.name(why, refs.get(row.entry).role, holder(row));
+                        }
+                        out.push(Op::Name(row.entity, row.entry));
                     }
                     continue;
                 }
@@ -1413,7 +1481,10 @@ fn decide(w: &mut Walk<'_>) -> Vec<Op> {
                     continue;
                 }
                 row.claim = Claim::Claimed;
-                out.push(Op::Name(row.entity));
+                if count {
+                    w.op_counts.name("unmet", refs.get(row.entry).role, holder(row));
+                }
+                out.push(Op::Name(row.entity, row.entry));
             }
             Some(p) => {
                 match row.claim {
@@ -1425,7 +1496,10 @@ fn decide(w: &mut Walk<'_>) -> Vec<Op> {
                 let met = met();
                 row.claim = Claim::ByPart(p);
                 if !met {
-                    out.push(Op::Name(row.entity));
+                    if count {
+                        w.op_counts.name("unmet", refs.get(row.entry).role, holder(row));
+                    }
+                    out.push(Op::Name(row.entity, row.entry));
                 }
             }
         }
@@ -1464,11 +1538,11 @@ fn decide(w: &mut Walk<'_>) -> Vec<Op> {
 #[derive(Debug, Default)]
 struct Triggers {
     /// T1, T3, T4 for `new`, T5 for the befriending class: every entry
-    /// of the unit.
-    all: bool,
+    /// of the unit (the trigger's name, for the counters).
+    all: Option<&'static str>,
     /// T1b, T2, T4, T5: the entries of a holder from the first index
-    /// through the second (table indexes).
-    ranges: HashMap<DeclId, (usize, usize)>,
+    /// through the second (table indexes), and the trigger's name.
+    ranges: HashMap<DeclId, (usize, usize, &'static str)>,
 }
 
 impl Triggers {
@@ -1478,12 +1552,19 @@ impl Triggers {
         let refs = &ast.written_refs;
         let st = &w.unit.operands;
         let concept = rows.iter().any(|r| refs.get(r.entry).role == RefRole::Concept);
-        let all = ast.decls.get(e).kind() == DeclKind::Namespace
-            || st.folded
-            || (st.news && concept)
-            || befriends_specialisation(w, e);
+        let all = if ast.decls.get(e).kind() == DeclKind::Namespace {
+            Some("t1")
+        } else if st.folded {
+            Some("t3")
+        } else if st.news && concept {
+            Some("t4")
+        } else if befriends_specialisation(w, e) {
+            Some("t5")
+        } else {
+            None
+        };
         let mut ranges = HashMap::new();
-        if all {
+        if all.is_some() {
             return Triggers { all, ranges };
         }
         // Per holder: its first entry, its last `Concept` entry, its
@@ -1508,7 +1589,7 @@ impl Triggers {
         for (&h, &lo) in &first {
             // T5.
             if friend_specialisation(ast, h) {
-                ranges.insert(h, (lo, usize::MAX));
+                ranges.insert(h, (lo, usize::MAX, "t5"));
                 continue;
             }
             // T1b.
@@ -1519,11 +1600,12 @@ impl Triggers {
                         .any(|x| ast.members(x).any(|m| own_explicit_instantiation(w, m)))
                 });
                 if explicit {
-                    ranges.insert(h, (lo, usize::MAX));
+                    ranges.insert(h, (lo, usize::MAX, "t1b"));
                     continue;
                 }
             }
             let mut hi = None;
+            let mut which = "t2";
             // T2.
             if let Some(&r) = redecls.get(&h) {
                 hi = qualifier_range(ast, r);
@@ -1533,22 +1615,26 @@ impl Triggers {
                 ast.decls.var(h).is_some_and(|v| v.spec.placeholder() != VarPlaceholder::None)
                     || ast.decls.function(h).is_some_and(|f| f.spec.return_deduced());
             if deduced && let Some(&c) = concepts.get(&h) {
+                if hi.is_none_or(|x| c > x) {
+                    which = "t4";
+                }
                 hi = Some(hi.map_or(c, |x: usize| x.max(c)));
             }
             if let Some(hi) = hi {
-                ranges.insert(h, (lo, hi));
+                ranges.insert(h, (lo, hi, which));
             }
         }
         Triggers { all, ranges }
     }
 
-    /// Whether row `r` is in a trigger's range.
-    fn covers(&self, r: &ledger::Row) -> bool {
-        self.all
-            || r.holder.and_then(|h| self.ranges.get(&h)).is_some_and(|&(lo, hi)| {
+    /// The trigger whose range row `r` is in, if any.
+    fn covers(&self, r: &ledger::Row) -> Option<&'static str> {
+        self.all.or_else(|| {
+            r.holder.and_then(|h| self.ranges.get(&h)).and_then(|&(lo, hi, which)| {
                 let i = r.entry.index();
-                lo <= i && i <= hi
+                (lo <= i && i <= hi).then_some(which)
             })
+        })
     }
 }
 
@@ -1660,22 +1746,29 @@ pub(crate) fn order_names(w: &mut Walk<'_>) {
     let Some(mut book) = w.ledger.take() else { return };
     let mut ops = Vec::new();
     // T1 (L4): every entry, of every role.
+    let count = counting(w);
     for i in book.of(None) {
         let row = &mut book.rows[i];
         row.claim = Claim::Claimed;
-        ops.push(Op::Name(row.entity));
+        if count {
+            let holder = row.holder.map(|h| w.ast.decls.get(h).kind());
+            w.op_counts.name("t1", w.ast.written_refs.get(row.entry).role, holder);
+        }
+        ops.push(Op::Name(row.entity, row.entry));
     }
     w.ledger = Some(book);
     let saved = w.take_unit();
-    let mut gs = Stream::new();
-    let mut count = 0usize;
+    let mut stream = Stream::new();
+    let mut marks = Vec::new();
     for op in ops {
         let (es, _, _) = entry(w, op);
-        count += 1;
-        gs.raw(es.as_bytes()).absorb(es.cause());
+        if let Op::Name(_, r) = op {
+            marks.push((stream.as_bytes().len(), w.ast.written_refs.name_lo(r)));
+        }
+        stream.raw(es.as_bytes()).absorb(es.cause());
     }
     w.unit = saved;
-    w.order_names = Some((count, gs));
+    w.order_names = Some(Names { count: marks.len(), stream, marks });
 }
 
 /// L6: an entry of the ledger no unit decided (its unit was never
@@ -1727,7 +1820,7 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
         // A local that no numbering of the unit met (it is declared inside
         // an expression no stream walks: a local class of a lambda in an
         // array bound) is the named limit `UNWALKED_LOCAL`.
-        Op::Name(d) => {
+        Op::Name(d, _) => {
             es.uv(u64::from(NAME));
             let mut ns = Stream::new();
             w.write_ref(&mut ns, d);
@@ -1826,7 +1919,7 @@ fn order_stream(
     w: &mut Walk<'_>,
     s: &mut Stream,
     not_recorded: bool,
-    names: Option<(usize, Stream)>,
+    names: Option<Names>,
     unclaimed: u64,
 ) -> usize {
     let mut total = 0usize;
@@ -1836,12 +1929,15 @@ fn order_stream(
         s.raw(es.as_bytes()).absorb(es.cause());
         total += 1;
     }
-    if let Some((count, gs)) = names
-        && count > 0
+    if let Some(n) = names
+        && n.count > 0
     {
-        s.count(count);
-        s.raw(gs.as_bytes()).absorb(gs.cause());
-        total += count;
+        s.count(n.count);
+        for (ahead, loc) in n.marks {
+            s.mark_name(ahead, loc);
+        }
+        s.raw(n.stream.as_bytes()).absorb(n.stream.cause());
+        total += n.count;
     }
     if unclaimed > 0 {
         let (es, _, _) = entry(w, Op::Unkept(UNCLAIMED));
@@ -1940,6 +2036,9 @@ pub(crate) fn counters(w: &Walk<'_>, out: &mut Vec<slip_model::Counter>) {
     push("deduced", c.deduced);
     push("unkept", c.unkept);
     push("names.undemanded", c.undemanded);
+    for (k, &v) in &c.names {
+        push(&format!("names.{k}"), v);
+    }
     // Always (L6): 0 on both sides of every fixture (`tests/common`).
     out.push(slip_model::Counter {
         name: "digest.operands.names.unclaimed".to_owned(),

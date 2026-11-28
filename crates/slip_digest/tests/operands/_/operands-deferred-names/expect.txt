@@ -1,0 +1,5 @@
+# WP-156 fix round 3 (L3: deferral; a known duplicate).
+operands D
+operands D::~D()::<exception_spec>
+count digest.operands.site.6 1
+count digest.operands.site.9 2

@@ -14,7 +14,7 @@ bad-6: mismatch derived_changed legacy::U::<using W2<sizeof (make(0))>::f>::<ope
 good-7: verified
 bad-7: mismatch derived_changed legacy::Q<4>::s::<operands> @ main.cpp:10
 good-8: verified
-bad-8: mismatch derived_changed legacy::<operands> @ main.cpp:8
+bad-8: mismatch derived_changed legacy::<operands> @ main.cpp:10
 good-9: verified
 bad-9: mismatch derived_changed legacy::r::<operands> @ main.cpp:9
 good-10: verified

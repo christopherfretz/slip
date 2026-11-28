@@ -84,6 +84,11 @@ use crate::{Input, Options, Output};
 /// declarations begin (§6.1): neither a node kind nor a key kind.
 pub const DECLARATIONS: &str = "declarations";
 
+/// The `node` of the mark where a site-9 entry of an operand unit begins
+/// (§6.1, WP-156 fix round 3): at the written name, neither a node kind
+/// nor a key kind.
+pub const WRITTEN_NAME: &str = "written name";
+
 /// Where the walk began to write a node of a unit's stream (§6.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mark {
@@ -192,7 +197,9 @@ fn traces_into(w: &mut Walk<'_>, written: &[Written], keys: &[Digest], out: &mut
         if tagged_digest(UNIT_TAG, &again.bytes) != u.digest {
             continue;
         }
-        let first_only = u.entity.is_none() || (u.owner.is_none() && content(w, u.entity));
+        // `<order>`'s operand unit has its site-9 entries' marks.
+        let first_only = (u.entity.is_none() && u.operands.is_none())
+            || (u.owner.is_none() && content(w, u.entity));
         out.push(made(w, u, again, first_only, &unit_keys));
         #[cfg(test)]
         tests::panic_at(tests::IN_THE_LOOP);
@@ -411,6 +418,7 @@ fn made(
                     (names.stmt(stmt.kind()), stmt.loc())
                 }
                 Hook::Decls(e) => (DECLARATIONS, entity_place(w, e)),
+                Hook::Name(loc) => (WRITTEN_NAME, loc),
             };
             let (file, line, column) = located(w, loc);
             marks.push(Mark { offset, node, file, line, column });
