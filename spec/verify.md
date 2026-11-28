@@ -31,44 +31,56 @@ when every observer is (§7). What per-observer verification cannot show is
 ## 2. Declared changes
 
 ```
-Declared := rules:   list<Rule>      digest.md §3.4; sorted by (parent, kind, name, disc), no two with the same
-            changed: list<KeyId>     units whose digest may differ
-            created: list<KeyId>     units that may exist only in the post-image
-            removed: list<KeyId>     units that may exist only in the pre-image
-            kept:    list<KeyId>     version 2: owned entities that are, on purpose, members of a namespace a rule maps onto (§9.2)
-            files:   opt<Ownership>  version 2: the run's files (`spec/edits.md` §2.1); required when `rules` is not empty. Version 3: with `rebuilt`
+Declared := rules:          list<Rule>            digest.md §3.4; sorted by (parent, kind, name, disc), no two with the same
+            changed:        list<KeyId>           units whose digest may differ
+            created:        list<KeyId>           units that may exist only in the post-image
+            removed:        list<KeyId>           units that may exist only in the pre-image
+            kept:           list<KeyId>           version 2: owned entities that are, on purpose, members of a namespace a rule maps onto (§9.2)
+            files:          opt<Ownership>        version 2: the run's files (`spec/edits.md` §2.1); required when `rules` is not empty. Version 3: with `rebuilt`
+            existing:       list<KeyId>           version 4 (WP-144): owned program-wide entities and whole namespaces already in a rule's target (§2.1); strictly ascending
+            existing_local: list<ExistingLocal>   version 4 (WP-144): owned local entities already in a rule's target, by (key, file); strictly ascending
+ExistingLocal := key: KeyId, file: bytes          canonical absolute subject path, as an `Ownership` entry is
 ```
 
 `kept` and `files` are version 2 of the container (WP-110); a version 1
-`DECL` is read as one with `kept` empty and `files` absent, and a
-version 1 `DECL` with a rule is refused. `kept` is sorted and has no
-duplicate, like the other lists. `files` is part of the rule table's
-identity (below).
+`DECL` is read as one with `kept`, `existing` and `existing_local` empty
+and `files` absent, and a version 1 `DECL` with a rule is refused.
+`kept`, `existing` and `existing_local` are sorted and have no duplicate,
+like the other lists. `files` is part of the rule table's identity (below).
 
 Each list is sorted and has no duplicate (rules by the bytes of their
-encoded `(parent, kind, name, disc)`, keys by their bytes); a key may be in more than one of
+encoded `(parent, kind, name, disc)`, keys by their bytes, `existing_local`
+by `(key, file)`); a key may be in more than one of
 the exemption lists and in `kept`. Every `KeyId` is in the key space
 of the pre-image: for an entity a rule renames, the key it had before. The
-container form is kind `DECL`, version 2 (a reader also reads version 1),
-one required section `declared` (id 1) holding this record; its JSON
-rendering follows `spec/model.md` §10, with members `rules`, `changed`,
-`created`, `removed`, and in version 2 `kept` and `files` (`null`, or
-`{"owned": [...], "readonly": [...]}`, each path in the form of
-`spec/model.md` §10 for bytes). `files` is encoded as `opt` of the
-record `owned: list<bytes>, readonly: list<bytes>`. A writer writes
-version 2; `dump` and `undump` keep a file's version, so a version 1
-file's rendering has version 1 and the four members.
-`files` is part of the rule table's identity. `rules_id` is
-`H("slip.rules.v1", rules)` when `files` is absent,
-`H("slip.rules.v2", rules, owned, readonly)` when it is present and
-its `rebuilt` list is empty, and `H("slip.rules.v3", rules, owned,
-readonly, rebuilt)` when that list is not empty (rules as
-`list<Rule>`, each list of paths as `list<bytes>`). The container is
-version 3 exactly when `files.rebuilt` is not empty (WP-118): version
-2 with `rebuilt: list<bytes>` after `readonly`, and in JSON the member
-`"rebuilt"` of `files`. A writer writes version 2 otherwise, so a
-`DECL` that declares nothing rebuilt has the bytes and the ids it had;
-a reader reads version 2 as `rebuilt` empty.
+container form is kind `DECL`, versions 1 to 4 (one required section
+`declared`, id 1, holding this record); its JSON rendering follows
+`spec/model.md` §10, with members `rules`, `changed`, `created`,
+`removed`, in version 2 `kept` and `files` (`null`, or `{"owned": [...],
+"readonly": [...]}`, each path in the form of `spec/model.md` §10 for
+bytes), in version 3 `"rebuilt"` inside `files`, and in version 4
+`"existing"` and `"existing_local"` (`[{"key": …, "file": …}]`). `files`
+is encoded as `opt` of the record `owned: list<bytes>, readonly:
+list<bytes>` (plus `rebuilt: list<bytes>` in versions 3 and 4, which may
+be empty in version 4). A writer writes version 4 when `existing` or
+`existing_local` is not empty, else version 3 when `files.rebuilt` is not
+empty, else version 2; `dump` and `undump` keep a file's version, so a
+version 1, 2 or 3 file's rendering keeps its version and members.
+`files`, `existing` and `existing_local` are part of the rule table's
+identity. `rules_id` is:
+
+- `H("slip.rules.v1", rules)` when `files` is absent;
+- `H("slip.rules.v2", rules, owned, readonly)` when `files` is present,
+  `rebuilt` is empty and both `existing` lists are empty;
+- `H("slip.rules.v3", rules, owned, readonly, rebuilt)` when `rebuilt` is
+  not empty and both `existing` lists are empty;
+- `H("slip.rules.v4", rules, owned, readonly, rebuilt, existing,
+  existing_local)` when `existing` or `existing_local` is not empty
+
+(rules as `list<Rule>`, each list of paths as `list<bytes>`, `existing`
+as `list<digest>`, `existing_local` as `list<ExistingLocal>`). A `DECL`
+with neither `existing` entry has the exact bytes and `rules_id` of
+version 2 or 3; a reader reads versions 1 to 3 with both lists empty.
 
 **The reader's checks**, in this order, each with its message; a binary
 reader reports `Malformed` at the offset named, a JSON reader at the path
@@ -88,13 +100,25 @@ reader reports `Malformed` at the offset named, a JSON reader at the path
    `owned is empty` (at `owned`); `not a canonical absolute path`,
    `owned is not strictly ascending` (at the entry); the same two for
    `readonly`; `a readonly entry is also in owned` (at the `readonly`
-   entry); then for `rebuilt` (version 3): the same two rows, `a rebuilt
-   entry is /`, `a rebuilt entry is also in owned`, `a rebuilt entry is
-   also in readonly` (at the `rebuilt` entry); and `a version 3
-   container has no rebuilt entry`, at the list, or **at the `files`
-   tag** when a version 3 container has no `files` at all (there is
-   then no list to point at); `a version 2 container has a rebuilt
-   entry` for a value in memory written as version 2.
+   entry); then for `rebuilt` (versions 3 and 4): the same two rows,
+   `a rebuilt entry is /`, `a rebuilt entry is also in owned`, `a rebuilt
+   entry is also in readonly` (at the `rebuilt` entry); and (version 3
+   alone) `a version 3 container has no rebuilt entry`, at the list, or
+   **at the `files` tag** when a version 3 container has no `files` at
+   all (there is then no list to point at); `a version 2 container has a
+   rebuilt entry` for a value in memory written as version 2.
+4a. `existing` and `existing_local` (WP-144): `existing is not strictly
+   ascending` (at the later key); for each entry of `existing_local`,
+   `not a canonical absolute path` (at the entry's `file`) and
+   `existing_local is not strictly ascending` (at the later entry);
+   `a version 4 container has no existing entry` (at `existing`, for a
+   version 4 container with both lists empty); `a version 2 container has
+   an existing entry` and `a version 3 container has an existing entry`
+   (for a value in memory checked against version 2 or 3); and `existing
+   without a namespace rule` (at `existing` or `existing_local`, when
+   either list is not empty and `rules` has no rule of kind `namespace`:
+   the lists then say nothing, and a second encoding of one meaning is
+   refused, as `files without a rule` is).
 5. `a version 1 container has a rule`, at the first rule.
 6. `rules without files`, and `files without a rule`, at `files` (its
    tag byte). `files`
@@ -287,16 +311,20 @@ declaration, nor by its definition (an owned definition of a function a
 dependency header declares is the dependency's). The walk maps a key bottom-up as above,
 with two changes:
 
-1. **A rule matches an entity only if the entity is owned.**
+1. **A rule matches an entity only if the entity is owned and not
+   existing** (`mapped(e) := owned(e) && !existing(e)`; for a namespace,
+   its own view below).
 2. **The namespaces that enclose a member of a namespace are mapped from
-   the member's point of view.** For an owned member, the rules of kind
-   `namespace` apply along the chain of namespaces that enclose it,
-   whoever else opens them. For a dependency member, no rule applies to
-   any namespace of that chain. A parent that is not a namespace (a
-   class, a function, a specialisation) has one key, its own, and its
-   members have it as their parent. A namespace's own unit is a member
-   of the namespace that encloses it like any other entity: it is owned
-   if none of its openings lies in a read-only file.
+   the member's point of view.** For a mapped member (owned and not
+   existing), the rules of kind `namespace` apply along the chain of
+   namespaces that enclose it, whoever else opens them. For a dependency
+   member or an existing member, no rule applies to any namespace of that
+   chain. A parent that is not a namespace (a class, a function, a
+   specialisation) has one key, its own, and its members have it as their
+   parent. A namespace's own unit is a member of the namespace that
+   encloses it like any other entity: its own view is mapped iff it is
+   owned (none of its openings lies in a read-only file) and does not
+   stay ("Entities that were already there" below).
 
 What a discriminator mentions (template arguments, parameter types) is
 mapped as that entity is, by its own ownership: with a dependency
@@ -337,17 +365,18 @@ came from, and nothing about the rest:
   `inline-reopened-plain`); so is an attribute that applies to its own
   opening only (`visibility`), which fails closed
   (`views/visibility-owned-opening`). **A view of a namespace exists iff
-  a member of that ownership exists in it**, where a member is (a) an
+  a member of that view exists in it**, where a member is (a) an
   entity whose semantic parent is the namespace, declared by the source
   or made by the compiler (an entity with C language linkage counts in
   every namespace one of its declarations is in, through linkage
   specifications, though it is keyed under `c_linkage`), (b) a written content-keyed declaration
   (using-directive, namespace alias, using-declaration, `static_assert`),
   or (c) a nested namespace, named, inline or unnamed, one of whose
-  views of that ownership exists. A read-only opening holds in the
-  dependency view even when empty (Addendum A4); an empty owned opening
-  is nothing; a declaration the compiler makes that is no entity (the using-directive
-  an unnamed namespace implies) is nothing. It is decided from the
+  views of that view exists. A read-only opening or a namespace listed
+  whole in `Declared.existing` holds in the dependency (unmapped) view
+  even when empty (Addendum A4, WP-144); an empty owned opening is
+  nothing; a declaration the compiler makes that is no entity (the
+  using-directive an unnamed namespace implies) is nothing. It is decided from the
   declarations, never from what the walk keyed (WP-141 ruling, after
   WP-140 review F3). So an observer the edit did not touch that opens the dependency's
   `acme` only to specialise its template, or with an empty opening, is
@@ -582,10 +611,97 @@ class: the include-chain rule above makes such a class read-only where
 an observer sees the dependency include it, and otherwise it is the
 guard-skipped or two-observer hole.
 
+**Entities that were already there** (WP-144). Owned code that already
+lived in a rule's target namespace before the edit (`acme::x` beside a
+moved `legacy::g`, under `relocate legacy => :: acme`) is declared in
+`Declared.existing` and `Declared.existing_local` (§2). Whatever the
+lists say, the keys remain a function of the post-image and the `DECL`,
+the same function in every observer, so a wrong entry in either direction
+moves a key away from the pre-image's (a finding):
+
+- **Program-wide vs local.** An owned non-namespace entity whose key's
+  parent is a namespace is **program-wide** iff WP-146's ownership lists
+  take it (`own_lists.rs` `is_program_wide`, shared with `candidate` less
+  its deduction-guide clause): not of a repeatable kind (`using`-declaration,
+  using-shadow, namespace alias, using-directive, `static_assert`,
+  friend), not of internal linkage by `Ast::linkage`, and not in or under
+  an unnamed namespace (a linkage the walk cannot read is program-wide;
+  typedefs and aliases are program-wide, as in WP-146 ruling 4). Every
+  other owned non-namespace entity whose parent is a namespace is
+  **local** (`static` helpers, unnamed-namespace members, namespace-scope
+  `const`, `using`-declarations, etc.).
+- **Two lists, one meaning each.** A program-wide entity is matched
+  against `Declared.existing` by its probe key `U(e)`. A local entity is
+  matched against `Declared.existing_local` by `(U(e), file(d))` for
+  **every** declaration `d` of `e` (the subject path of `d`'s expansion
+  location; a declaration in no file is not existing). A key entry never
+  makes a local entity existing, and a file entry never makes a
+  program-wide entity existing (the latter is soundness: a per-file
+  answer for an entity with external linkage would verify a cross-observer
+  collision). Any entity whose key's parent is not a namespace (a class
+  member, a specialisation, a member of an instantiation, a local entity,
+  a part, an entity with C language linkage) is not asked: it follows the
+  key it is keyed under.
+- **The probe key `U(e)`** (`digest.md` §3.4 "Probe writing"). The key
+  compared with the lists is formed without consulting `ns_table` or R1
+  and R2: `e`'s key formed as a dependency entity's (namespace parents in
+  the unmapped view, no rule applied to `e`'s own key), in probe writing,
+  where any namespace named is written by its unmapped view key and any
+  entity mentioned is written by its own key in probe writing. A probe
+  that cannot be formed (a cycle, depth limit, or any cause) answers "not
+  existing".
+- **Whole namespaces.** A named owned namespace `n` is **listed**
+  (`listed(n)`) if `U(n)` is in `Declared.existing`, or if the namespace
+  it is keyed under is listed. An unnamed namespace is listed only
+  through an enclosing namespace. Every entity keyed under a listed
+  namespace (at any depth) is existing, and a listed namespace holds in
+  the unmapped view even when empty, as a read-only opening does.
+- **A namespace's own view.** A namespace **stays** if it is listed,
+  holds an existing member, or holds a nested namespace that stays. An
+  owned namespace that stays takes the unmapped (dependency) view as its
+  own unit (so untouched `using namespace acme;` and `namespace A = acme;`
+  verify even when no dependency opens `acme`, and a namespace whose
+  every member is listed has one unit, `acme::newlib`). When moved
+  members also exist in it, it gets a view unit in the mapped view,
+  named `legacy (the moved part of acme)` (`digest.md` §3.4; provisional
+  wording).
+- **Who may write stays `owned`.** `mapped(e) := owned(e) && !existing(e)`
+  governs rule 1, rule 2, `ns_table`'s member view, and R1's `route`.
+  Everything about who may write (`decide_owned`, `only_by_inclusion`,
+  `records::facts`, rebuilt accounting, and the counts of §9.2) still
+  reads `owned`.
+
+**Limits of `existing`, all failing closed** ("Open questions"):
+
+1. An existing entity renamed or relocated in the same run (no rule
+   applies to its own key), and a rule on a member of an existing entity
+   (its parent is written in mapped terms, without the existing lists, so
+   it cannot match and fails closed:
+   `rules/existing/member-of-existing-renamed`).
+2. An existing entity whose own key holds a namespace-level reference
+   the edit redirected (`decltype(legacy::h(t))` to `acme::h`): the
+   probe misses, so it is keyed as moved (`rules/existing/probe-redirected`).
+3. Two identical repeatable declarations, or two local entities of one
+   key, one existing and one moved, in one file
+   (`rules/existing/local-one-file-both`).
+4. A typedef or alias of one name under both roots in headers no observer
+   includes together (program-wide by WP-146 ruling 4).
+5. A declaration with C language linkage in an existing opening of a
+   namespace that is not listed whole counts as a mapped member of the
+   namespace (its key has parent `c_linkage`).
+6. A reference from existing code that now names more than it did
+   (`using namespace acme;` where `acme` gained moved members, under the
+   key's other reading): WP-143's, unchanged.
+7. Enumeration at scale: listing every owned pre-image member of a shared
+   namespace across 10^5 observers requires map-phase enumeration or a
+   full parse (a separate package).
+
 A pre-existing entity that a rule would capture is caught by the same
 comparison: if the pre-image already had an entity with the key a rule
 matches, the post-image's entity of that key is mapped away, and the
-pre-image's unit has no counterpart (`removed`).
+pre-image's unit has no counterpart (`removed`, and `added` under the
+mapped key), **unless it is listed** in `Declared.existing` or
+`Declared.existing_local` (above).
 
 ### 2.2 Exemptions
 
@@ -2732,8 +2848,23 @@ WP-118's P0 (an empty list changes no byte), accepted before the first
 release because no shard outlives the build that wrote it
 (`digest.md` §11).
 
+```
+ExistingUse := existing: list<uv>    indices into Declared.existing that some entity matched; strictly ascending
+               local:    list<uv>    indices into Declared.existing_local that some entity matched; strictly ascending
+```
+
+Section **34, `existing_use`** (WP-144), in an `ok` shard of phase
+`verify`, written only when not empty (`existing` or `local` non-empty).
+Records which entries of `Declared.existing` and `Declared.existing_local`
+matched some entity during the walk (`slip_digest::Output::existing_use`).
+`rule_use` (29) is not touched. An index out of range for the run's
+`Declared` makes the shard not this run's (`failed`, `slip_verify::run`).
+Reporting entries that no folded observer matched (like a `kept` key with
+0 observers, changing no verdict) is WP-144 item 2b.
+
 Sections of a shard of phase `verify` (`spec/model.md` §8): **24,
-`binding`** and **29, `rule_use`**. (Ids 22 and 23 are not assigned; 26
+`binding`**, **29, `rule_use`**, **33, `rebuilt_use`**, and **34,
+`existing_use`**. (Ids 22 and 23 are not assigned; 26
 is `spellings`, §10.4; 25 is retired, below.)
 
 - `binding` is present in every shard a verify job writes, whatever the
@@ -2864,7 +2995,16 @@ observer needed (§2.2).
 - *Who is a member*: an entity keyed directly under a namespace, not a
   namespace, and owned (a dependency entity is keyed in the dependency
   view, and no rule reaches it), or a dependency entity by the
-  per-inclusion rule alone (above). A class member follows its class; a
+  per-inclusion rule alone (above). An **existing** entity (§2.1, WP-144)
+  is owned and is counted as a member with its chain climbed in the
+  dependency (unmapped) view, as `only_by_inclusion`'s is: it is never
+  `via` (and never `kept_via` for a rule matching its namespace's mapped
+  view), and it counts `direct` for any rule that produces a level of its
+  unmapped chain unless its key is in `Declared.kept` (so under chained
+  rules `legacy => acme` and `acme => modern`, an existing `acme::y` left
+  behind counts `direct` for the second rule unless kept,
+  `tests/rules/existing/existing-not-direct`, `chained-existing-left`,
+  `chained-existing-left-kept`). A class member follows its class; a
   specialisation and a member of one are keyed under their template, and
   a friend under its class, so neither is counted; a deduction guide is
   not counted **only when its template is a dependency entity** (pitfall
@@ -3414,7 +3554,11 @@ is pending, until Kiln records a range for it
   trip; rejected forms (unsorted, duplicate, two rules with one match).
 - `crates/slip_digest/tests/rules.rs` — §2.1: mapped keys under rules, one
   directory per case: a relocated namespace, a merged namespace, a renamed
-  member, a swap, a collision, a rule that captures a pre-existing entity.
+  member, a swap, a collision, a rule that captures a pre-existing entity,
+  and `rules/existing/` (40 cases, with `existing.txt`) plus
+  `wp144_shared_detail_view_name_and_existing_use` and
+  `tests/ns_holds_order.rs` `wp144_mutual_using_declarations_order_independent`
+  (WP-144).
 - `crates/slip_digest/tests/records.rs` — §2.3 "Records": the records of
   snippets, a fallback key, two entities of one name, and the id of every
   record's `Key` being its `KeyId`.
@@ -3571,9 +3715,26 @@ is pending, until Kiln records a range for it
 - **TU-local entities of one name in two units** (§9.2, "A stated
   limit"). One left in the old namespace and one moved is correct, and
   one observer is stale either way. A `kept` key that holds for one
-  translation unit only (a `kept` given per file, as above, or an entity
-  of internal linkage told apart by its unit) would let it be declared
-  with a namespace rule; until then it fails closed.
+  translation unit only (`ExistingLocal` of §2, WP-144, is the per-file
+  form `kept` could take, or an entity of internal linkage told apart by
+  its unit) would let it be declared with a namespace rule; until then it
+  fails closed.
+- **Limits of `existing` and enumeration at scale** (§2.1 "Entities that
+  were already there", WP-144). The seven stated limits fail closed: an
+  existing entity renamed or relocated in the same run, or a rule on a
+  member of an existing entity (whose parent is written in mapped terms
+  without the existing lists: `rules/existing/member-of-existing-renamed`);
+  an existing
+  entity whose own key holds a redirected namespace-level reference
+  (`rules/existing/probe-redirected`); two local or repeatable entities
+  of one key, one existing and one moved, in one file
+  (`rules/existing/local-one-file-both`); a typedef or alias of one name
+  under both roots in headers no observer includes together; a C-linkage
+  declaration in an existing opening of a namespace not listed whole; a
+  reference from existing code that now names more (WP-143); and
+  enumerating every owned pre-image member of a shared namespace across
+  10^5 observers (needs map-phase candidate emission + reducer union or a
+  full parse, a package of its own before the first real run).
 - **References to a namespace that two views key** (WP-140; §2.1,
   "A dependency that itself opens `acme`"; `digest.md` §3.4). A
   namespace with a unit in each view keeps **one** key wherever it is

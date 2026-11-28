@@ -554,6 +554,10 @@ pub struct Report {
     names: BTreeMap<Digest, NameGroup>,
     /// Section 33's fold (WP-118).
     rebuilt: RebuiltFold,
+    /// Lengths of `Declared.existing` and `Declared.existing_local` for
+    /// section 34 bounds checks (WP-144; unused reporting lands in 2b).
+    existing_len: u64,
+    existing_local_len: u64,
 }
 
 impl Report {
@@ -602,6 +606,8 @@ impl Report {
             names: BTreeMap::new(),
             identities: None,
             rebuilt,
+            existing_len: declared.existing().len() as u64,
+            existing_local_len: declared.existing_local().len() as u64,
         }
     }
 
@@ -802,6 +808,20 @@ impl Report {
                     return Err(format!(
                         "the shard's rebuilt_use names rule {}; the run has {n}",
                         d.rule
+                    ));
+                }
+            }
+            if let Some(e) = &s.existing_use {
+                let n = self.existing_len;
+                if let Some(i) = e.existing.iter().find(|&&i| i >= n) {
+                    return Err(format!(
+                        "the shard's existing_use names existing entry {i}; the run has {n}"
+                    ));
+                }
+                let m = self.existing_local_len;
+                if let Some(i) = e.local.iter().find(|&&i| i >= m) {
+                    return Err(format!(
+                        "the shard's existing_use names existing_local entry {i}; the run has {m}"
                     ));
                 }
             }

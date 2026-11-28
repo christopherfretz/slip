@@ -830,7 +830,8 @@ fn with_input<R: Send>(source: &str, f: impl FnOnce(&Input<'_>) -> R + Send) -> 
 }
 
 fn records_of(source: &str, rules: &RuleTable) -> Vec<Record> {
-    with_input(source, |i| records(i, rules, slip_digest::ReadOnly::NO_FILE)).expect("records")
+    with_input(source, |i| records(i, rules, slip_digest::ReadOnly::NO_FILE, &[], &[]))
+        .expect("records")
 }
 
 fn digest_of(source: &str, rules: &RuleTable) -> Output {
@@ -840,6 +841,8 @@ fn digest_of(source: &str, rules: &RuleTable) -> Output {
             &Options {
                 rules,
                 read_only: slip_digest::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: Detail::All,
                 names: true,
                 rule_use: false,

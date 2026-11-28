@@ -296,6 +296,15 @@ pub struct Options<'a> {
     /// are not known; [`ReadOnly::files`] of [`ReadOnlyFiles`] for the verify
     /// job.
     pub read_only: ReadOnly<'a>,
+    /// Program-wide entities and whole namespaces that were already in the
+    /// target namespace before the edit (`spec/verify.md` §2.1, WP-144).
+    /// Strictly ascending. Not read when `rules` is empty.
+    pub existing: &'a [Digest],
+    /// Local entities that were already in the target namespace before the
+    /// edit, each paired with the subject path of a file a declaration of
+    /// it lies in (`spec/verify.md` §2.1, WP-144). Strictly ascending by
+    /// `(key, file)`. Not read when `rules` is empty.
+    pub existing_local: &'a [slip_model::declared::ExistingLocal],
     pub detail: Detail<'a>,
     /// Fill `Output::names`.
     pub names: bool,
@@ -345,6 +354,11 @@ pub struct Output {
     /// files that cut an include chain; empty when `rule_use` is not asked
     /// for or the table is empty.
     pub rebuilt: RebuiltOutput,
+    /// Which entries of `Options::existing` and `Options::existing_local`
+    /// some entity of the walk matched (WP-144, `spec/verify.md` §9.1
+    /// section 34); empty when `rule_use` is not asked for or the table is
+    /// empty.
+    pub existing_use: slip_model::ExistingUse,
 }
 
 /// The names digest of one key (`Output::name_strings`), with what a note

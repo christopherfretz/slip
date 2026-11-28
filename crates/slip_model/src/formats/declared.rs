@@ -5,7 +5,7 @@
 //! checks"; `spec/landed/digest/WP-110.md`).
 
 use crate::Digest;
-use crate::declared::{Declared, first_not_ascending};
+use crate::declared::{Declared, ExistingLocal, first_local_not_ascending, first_not_ascending};
 use crate::json::Value;
 use crate::keys::{
     DUPLICATE_RULE, KEY_KINDS, KeyKind, NAME_FORMS, Name, OPERATOR_ZERO, Parent, Rule, RuleTable,
@@ -43,6 +43,8 @@ const LISTS: [(&str, &str); 3] = [
 
 const FIELDS: [&str; 4] = ["rules", "changed", "created", "removed"];
 const FIELDS_V2: [&str; 6] = ["rules", "changed", "created", "removed", "kept", "files"];
+const FIELDS_V4: [&str; 8] =
+    ["rules", "changed", "created", "removed", "kept", "files", "existing", "existing_local"];
 const RULE_FIELDS: [&str; 6] = ["parent", "kind", "name", "disc", "to_parent", "to_name"];
 
 fn sort_what(e: SortError) -> &'static str {
@@ -69,6 +71,13 @@ enum Loc {
     /// `files.rebuilt` (version 3).
     Rebuilt,
     RebuiltAt(usize),
+    /// `existing` (version 4).
+    Existing,
+    ExistingAt(usize),
+    /// `existing_local` (version 4).
+    ExistingLocal,
+    ExistingLocalAt(usize),
+    ExistingLocalFileAt(usize),
 }
 
 impl Loc {
@@ -83,6 +92,11 @@ impl Loc {
             Loc::ReadonlyAt(i) => format!("{S}.files.readonly[{i}]"),
             Loc::Rebuilt => format!("{S}.files.rebuilt"),
             Loc::RebuiltAt(i) => format!("{S}.files.rebuilt[{i}]"),
+            Loc::Existing => format!("{S}.existing"),
+            Loc::ExistingAt(i) => format!("{S}.existing[{i}]"),
+            Loc::ExistingLocal => format!("{S}.existing_local"),
+            Loc::ExistingLocalAt(i) => format!("{S}.existing_local[{i}]"),
+            Loc::ExistingLocalFileAt(i) => format!("{S}.existing_local[{i}].file"),
         }
     }
 }
@@ -93,6 +107,12 @@ pub(super) const NOT_CANONICAL: &str = "not a canonical absolute path";
 pub(super) const OWNED_UNSORTED: &str = "owned is not strictly ascending";
 pub(super) const READONLY_UNSORTED: &str = "readonly is not strictly ascending";
 pub(super) const READONLY_OWNED: &str = "a readonly entry is also in owned";
+pub(super) const EXISTING_UNSORTED: &str = "existing is not strictly ascending";
+pub(super) const EXISTING_LOCAL_UNSORTED: &str = "existing_local is not strictly ascending";
+pub(super) const V4_NO_EXISTING: &str = "a version 4 container has no existing entry";
+pub(super) const V2_EXISTING: &str = "a version 2 container has an existing entry";
+pub(super) const V3_EXISTING: &str = "a version 3 container has an existing entry";
+pub(super) const EXISTING_NO_NS_RULE: &str = "existing without a namespace rule";
 pub(super) const V1_RULE: &str = "a version 1 container has a rule";
 pub(super) const RULES_NO_FILES: &str = "rules without files";
 pub(super) const FILES_NO_RULES: &str = "files without a rule";
@@ -104,8 +124,9 @@ fn paths_not_ascending(list: &[Vec<u8>]) -> Option<usize> {
 /// The checks after the four lists of version 1 (theirs are the
 /// constructors' and the readers'), in order (`spec/verify.md` §2, "The
 /// reader's checks", rows 3 to 6): `kept`; `files`, as `Transform`'s
-/// ownership (`spec/edits.md` §2.1); a rule in a version 1 container;
-/// `files` present exactly when the rules are not empty.
+/// ownership (`spec/edits.md` §2.1); `existing` and `existing_local`
+/// (WP-144); a rule in a version 1 container; `files` present exactly
+/// when the rules are not empty.
 fn violation(x: &Declared, version: u32) -> Option<(Loc, &'static str)> {
     if let Some(i) = first_not_ascending(x.kept()) {
         return Some((Loc::KeptAt(i), KEPT_UNSORTED));
@@ -117,13 +138,38 @@ fn violation(x: &Declared, version: u32) -> Option<(Loc, &'static str)> {
     }
     // Row 4's last rows (WP-118 R5.4): one encoding per value. At the list,
     // or at the `files` tag when there is no list to point at.
+    // `a version 3 container has no rebuilt entry` stays version 3's alone
+    // (WP-144: version 4 may have an empty `rebuilt`).
     let rebuilt = x.files().is_some_and(|o| !o.rebuilt.is_empty());
-    if version >= 3 && !rebuilt {
+    if version == 3 && !rebuilt {
         let at = if x.files().is_some() { Loc::Rebuilt } else { Loc::Files };
         return Some((at, super::transform::V3_NO_REBUILT));
     }
     if version < 3 && rebuilt {
         return Some((Loc::RebuiltAt(0), super::transform::V2_REBUILT));
+    }
+    // WP-144: after row 4, before row 5.
+    if let Some(i) = first_not_ascending(x.existing()) {
+        return Some((Loc::ExistingAt(i), EXISTING_UNSORTED));
+    }
+    if let Some(i) = first_local_not_ascending(x.existing_local()) {
+        return Some((Loc::ExistingLocalAt(i), EXISTING_LOCAL_UNSORTED));
+    }
+    if let Some(i) = x.existing_local().iter().position(|e| !is_canonical(&e.file)) {
+        return Some((Loc::ExistingLocalFileAt(i), NOT_CANONICAL));
+    }
+    let has_existing = !x.existing().is_empty() || !x.existing_local().is_empty();
+    if version == 4 && !has_existing {
+        return Some((Loc::Existing, V4_NO_EXISTING));
+    }
+    if version < 4 && has_existing {
+        let at = if x.existing().is_empty() { Loc::ExistingLocalAt(0) } else { Loc::ExistingAt(0) };
+        let what = if version == 3 { V3_EXISTING } else { V2_EXISTING };
+        return Some((at, what));
+    }
+    if has_existing && !x.rules().rules().iter().any(|r| r.kind == KeyKind::Namespace) {
+        let at = if x.existing().is_empty() { Loc::ExistingLocal } else { Loc::Existing };
+        return Some((at, EXISTING_NO_NS_RULE));
     }
     let rules = !x.rules().rules().is_empty();
     if version == 1 && rules {
@@ -163,15 +209,22 @@ fn ownership_violation(o: &Ownership) -> Option<(Loc, &'static str)> {
     None
 }
 
-/// The version a value is written in (WP-118 R5.4): 3 exactly when its
-/// files have a `rebuilt` entry, else 2.
+/// The version a value is written in: 4 exactly when `existing` or
+/// `existing_local` is not empty (WP-144), else 3 when its files have a
+/// `rebuilt` entry (WP-118 R5.4), else 2.
 pub(super) fn version_of(x: &Declared) -> u32 {
-    if x.files().is_some_and(|o| !o.rebuilt.is_empty()) { Declared::VERSION } else { 2 }
+    if !x.existing().is_empty() || !x.existing_local().is_empty() {
+        Declared::VERSION
+    } else if x.files().is_some_and(|o| !o.rebuilt.is_empty()) {
+        3
+    } else {
+        2
+    }
 }
 
 /// The four lists are checked by the constructors; what is left is
-/// [`violation`], as a value written now (version 2 or 3, by the value)
-/// is read.
+/// [`violation`], as a value written now (version 2, 3, or 4, by the
+/// value) is read.
 pub(super) fn check(x: &Declared) -> std::result::Result<(), (String, &'static str)> {
     violation(x, version_of(x)).map_or(Ok(()), |(l, what)| Err((l.path(), what)))
 }
@@ -186,7 +239,8 @@ pub(super) fn encode(x: &Declared, extras: &[Extra<'_>]) -> Vec<u8> {
 /// The file in `version`'s layout: version 1 has no `kept` and no `files`
 /// (a value read from a version 1 file has neither), so that `undump` of
 /// a version 1 file's `dump` gives its bytes back; version 3 has
-/// `rebuilt` after `readonly` (WP-118).
+/// `rebuilt` after `readonly` (WP-118); version 4 adds `existing` and
+/// `existing_local` after `files` (WP-144).
 pub(super) fn encode_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Vec<u8> {
     let mut e = Encoder::new();
     let rules = x.rules().rules();
@@ -223,6 +277,16 @@ pub(super) fn encode_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Vec
                     }
                 }
             }
+        }
+    }
+    if version >= 4 {
+        e.count(x.existing().len());
+        for key in x.existing() {
+            e.digest(key);
+        }
+        e.count(x.existing_local().len());
+        for entry in x.existing_local() {
+            e.digest(&entry.key).bytes(&entry.file);
         }
     }
     seal(Declared::KIND, version, &[(DECLARED, e.as_bytes())], extras)
@@ -267,6 +331,20 @@ pub(super) fn decode_versioned(bytes: &[u8]) -> Result<(Declared, Vec<Extra<'_>>
     } else {
         (Vec::new(), None)
     };
+    let (existing, existing_local) = if opened.version >= 4 {
+        o.existing = d.offset();
+        let existing = dec_list(&mut d, Some(&mut o.existing_at), Decoder::digest)?;
+        o.existing_local = d.offset();
+        let existing_local = dec_list(&mut d, Some(&mut o.existing_local_at), |d| {
+            let key = d.digest()?;
+            o.existing_local_file_at.push(d.offset());
+            let file = d.bytes()?.to_vec();
+            Ok(ExistingLocal { key, file })
+        })?;
+        (existing, existing_local)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     d.finish()?;
 
     let rules =
@@ -277,7 +355,13 @@ pub(super) fn decode_versioned(bytes: &[u8]) -> Result<(Declared, Vec<Extra<'_>>
         }
     }
     o.first_rule = rule_at.first().copied().unwrap_or(opened.end);
-    let x = Declared::from_checked(rules, [changed, created, removed, kept], files);
+    let x = Declared::from_checked(
+        rules,
+        [changed, created, removed, kept],
+        files,
+        existing,
+        existing_local,
+    );
     if let Some((l, what)) = violation(&x, opened.version) {
         return Err(malformed(o.of(l), what));
     }
@@ -295,6 +379,11 @@ struct Offsets {
     readonly_at: Vec<usize>,
     rebuilt: usize,
     rebuilt_at: Vec<usize>,
+    existing: usize,
+    existing_at: Vec<usize>,
+    existing_local: usize,
+    existing_local_at: Vec<usize>,
+    existing_local_file_at: Vec<usize>,
 }
 
 impl Offsets {
@@ -308,6 +397,11 @@ impl Offsets {
             Loc::ReadonlyAt(i) => self.readonly_at[i],
             Loc::Rebuilt => self.rebuilt,
             Loc::RebuiltAt(i) => self.rebuilt_at[i],
+            Loc::Existing => self.existing,
+            Loc::ExistingAt(i) => self.existing_at[i],
+            Loc::ExistingLocal => self.existing_local,
+            Loc::ExistingLocalAt(i) => self.existing_local_at[i],
+            Loc::ExistingLocalFileAt(i) => self.existing_local_file_at[i],
         }
     }
 }
@@ -498,6 +592,19 @@ pub(super) fn render_as(x: &Declared, extras: &[Extra<'_>], version: u32) -> Val
         .collect();
     if version < 2 {
         declared.truncate(FIELDS.len());
+    } else if version >= 4 {
+        declared.push(("existing", json_keys(x.existing())));
+        declared.push((
+            "existing_local",
+            Value::Array(
+                x.existing_local()
+                    .iter()
+                    .map(|e| {
+                        object(vec![("key", json_digest(&e.key)), ("file", json_bytes(&e.file))])
+                    })
+                    .collect(),
+            ),
+        ));
     }
     render_container(Declared::KIND, version, vec![("declared", object(declared))], extras)
 }
@@ -518,12 +625,16 @@ pub(super) fn read_versioned(v: &Value) -> JResult<(Declared, OwnedExtras, u32)>
     let root = At::Root;
     let sections = root.key("sections");
     let at = sections.key("declared");
-    let (rules, changed, created, removed, v2) = if s.version >= 2 {
+    let (rules, changed, created, removed, v2, v4) = if s.version >= 4 {
+        let [rules, changed, created, removed, kept, files, existing, existing_local] =
+            read_record(section, &at, FIELDS_V4)?;
+        (rules, changed, created, removed, Some((kept, files)), Some((existing, existing_local)))
+    } else if s.version >= 2 {
         let [rules, changed, created, removed, kept, files] = read_record(section, &at, FIELDS_V2)?;
-        (rules, changed, created, removed, Some((kept, files)))
+        (rules, changed, created, removed, Some((kept, files)), None)
     } else {
         let [rules, changed, created, removed] = read_record(section, &at, FIELDS)?;
-        (rules, changed, created, removed, None)
+        (rules, changed, created, removed, None, None)
     };
     let rules_at = at.key("rules");
     let rules = read_list(rules, &rules_at, read_rule)?;
@@ -556,6 +667,20 @@ pub(super) fn read_versioned(v: &Value) -> JResult<(Declared, OwnedExtras, u32)>
             (kept, files)
         }
     };
+    let (existing, existing_local) = match v4 {
+        None => (Vec::new(), Vec::new()),
+        Some((existing, existing_local)) => {
+            let existing = read_list(existing, &at.key("existing"), read_digest)?;
+            let existing_local = read_list(existing_local, &at.key("existing_local"), |v, at| {
+                let [key, file] = read_record(v, at, ["key", "file"])?;
+                Ok(ExistingLocal {
+                    key: read_digest(key, &at.key("key"))?,
+                    file: read_bytes(file, &at.key("file"))?,
+                })
+            })?;
+            (existing, existing_local)
+        }
+    };
 
     let rules =
         RuleTable::from_sorted(rules).map_err(|(i, e)| rules_at.index(i).error(sort_what(e)))?;
@@ -564,9 +689,59 @@ pub(super) fn read_versioned(v: &Value) -> JResult<(Declared, OwnedExtras, u32)>
             return Err(lists_at[k].index(i).error(LISTS[k].1));
         }
     }
-    let x = Declared::from_checked(rules, [changed, created, removed, kept], files);
+    let x = Declared::from_checked(
+        rules,
+        [changed, created, removed, kept],
+        files,
+        existing,
+        existing_local,
+    );
     if let Some((l, what)) = violation(&x, s.version) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });
     }
     Ok((x, s.extras, s.version))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn violation_refuses_existing_in_v2_and_v3() {
+        let r = Rule {
+            parent: Parent::Root,
+            kind: KeyKind::Namespace,
+            name: Name::Identifier(b"acme".to_vec()),
+            disc: None,
+            to_parent: Parent::Root,
+            to_name: Name::Identifier(b"legacy".to_vec()),
+        };
+        let o = Ownership {
+            owned: vec![b"/src".to_vec()],
+            readonly: Vec::new(),
+            rebuilt: vec![b"/src/gen".to_vec()],
+        };
+        let x = Declared::new(vec![r], vec![], vec![], vec![])
+            .unwrap()
+            .with_files(Some(o))
+            .with_existing(vec![Digest([1; 32])], vec![])
+            .unwrap();
+        assert_eq!(
+            violation(&x, 3).map(|(l, m)| (l.path(), m)),
+            Some(("sections.declared.existing[0]".into(), V3_EXISTING))
+        );
+        let x2 = Declared::new(x.rules().rules().to_vec(), vec![], vec![], vec![])
+            .unwrap()
+            .with_files(Some(Ownership {
+                owned: vec![b"/src".to_vec()],
+                readonly: Vec::new(),
+                rebuilt: Vec::new(),
+            }))
+            .with_existing(vec![Digest([1; 32])], vec![])
+            .unwrap();
+        assert_eq!(
+            violation(&x2, 2).map(|(l, m)| (l.path(), m)),
+            Some(("sections.declared.existing[0]".into(), V2_EXISTING))
+        );
+    }
 }

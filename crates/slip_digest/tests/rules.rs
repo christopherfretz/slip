@@ -152,6 +152,7 @@ const CONTROL: &[&str] = &[
     "readonly.txt",
     "relocate.txt",
     "kept.txt",
+    "existing.txt",
     "rebuilt.txt",
     "expect-undeclared.txt",
     "expect-as-owned.txt",
@@ -447,20 +448,88 @@ fn kept_keys(names: &[String], recs: &[Record]) -> Result<Vec<slip_model::Digest
     Ok(out)
 }
 
-fn digest_under(input: &Input<'_>, rules: &RuleTable, read_only: ReadOnly<'_>) -> Output {
-    digest_with(input, rules, read_only, false, &[])
+/// `existing.txt` (WP-144, absent: both empty): one entry per line (`#`
+/// starts a comment). `<name>` resolves in the pre-image's records (`pre`);
+/// `post <name>` resolves in the post-image's unruled records (`plain`,
+/// for cases like `moved-listed-by-mistake` or `collision-observer-moved`
+/// where the listed key is not declared in this observer's pre-image).
+/// `<name> @ <file>` (or `post <name> @ <file>`) produces an
+/// `ExistingLocal` entry for `<file>`.
+fn existing_of(
+    dir: &Path,
+    pre: &[Record],
+    plain: &[Record],
+) -> Result<(Vec<slip_model::Digest>, Vec<slip_model::declared::ExistingLocal>), String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("existing.txt")) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let resolve_key =
+        |src: &[Record], which: &str, name: &str| -> Result<slip_model::Digest, String> {
+            let ids: BTreeSet<_> = src.iter().filter(|r| r.name == name).map(|r| r.id).collect();
+            match ids.len() {
+                1 => Ok(*ids.iter().next().unwrap()),
+                0 => Err(format!("existing.txt: `{name}` names no record of {which}")),
+                _ => Err(format!("existing.txt: `{name}` names {} keys in {which}", ids.len())),
+            }
+        };
+    let mut existing = Vec::new();
+    let mut local = Vec::new();
+    for line in text.lines() {
+        let l = line.split('#').next().unwrap_or("").trim();
+        if l.is_empty() {
+            continue;
+        }
+        let (src, which, rest) = match l.strip_prefix("post ") {
+            Some(r) => (plain, "the unruled post-image", r.trim()),
+            None => (pre, "the pre-image", l),
+        };
+        if let Some((name, file)) = rest.split_once(" @ ") {
+            let key = resolve_key(src, which, name.trim())?;
+            local.push(slip_model::declared::ExistingLocal {
+                key,
+                file: file.trim().as_bytes().to_vec(),
+            });
+        } else {
+            existing.push(resolve_key(src, which, rest)?);
+        }
+    }
+    existing.sort();
+    existing.dedup();
+    local.sort();
+    local.dedup();
+    Ok((existing, local))
+}
+
+fn digest_under(
+    input: &Input<'_>,
+    rules: &RuleTable,
+    read_only: ReadOnly<'_>,
+    existing: &[slip_model::Digest],
+    existing_local: &[slip_model::declared::ExistingLocal],
+) -> Output {
+    digest_with(input, rules, read_only, existing, existing_local, false, &[])
 }
 
 fn digest_with(
     input: &Input<'_>,
     rules: &RuleTable,
     read_only: ReadOnly<'_>,
+    existing: &[slip_model::Digest],
+    existing_local: &[slip_model::declared::ExistingLocal],
     rule_use: bool,
     kept: &[slip_model::Digest],
 ) -> Output {
     slip_digest::digest_kept(
         input,
-        &Options { rules, read_only, detail: Detail::All, names: true, rule_use },
+        &Options {
+            rules,
+            read_only,
+            existing,
+            existing_local,
+            detail: Detail::All,
+            names: true,
+            rule_use,
+        },
         kept,
     )
 }
@@ -502,7 +571,7 @@ fn rule_use(out: &Output, t: &Table, n: usize) -> Result<Count, String> {
 fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<(), String> {
-        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)?;
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])?;
         match table(&lines, pre, &plain) {
             Ok(t) => return Err(format!("the table is not refused: {:#?}", t.table.rules())),
             Err(e) if e.contains(text) => {}
@@ -538,7 +607,7 @@ fn refused_side(dir: &Path, pre: &[Record], text: &str) -> Result<(), String> {
         if read.rules().refused().is_none() {
             return Err("the table read from the container holds no refused rule".into());
         }
-        let d = common::digested(digest_under(input, read.rules(), ReadOnly::NO_FILE));
+        let d = common::digested(digest_under(input, read.rules(), ReadOnly::NO_FILE, &[], &[]));
         let keyed: Vec<&str> = d
             .units
             .values()
@@ -565,14 +634,15 @@ fn post_side(
 ) -> Result<Post, String> {
     let lines = lines_of(dir)?;
     common::with_side(dir, Side::B, |input| -> Result<Post, String> {
-        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)?;
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])?;
         let t = table(&lines, pre, &plain)?;
+        let (existing, existing_local) = existing_of(dir, pre, &plain)?;
         with_own(input, own, move |ro| -> Result<Post, String> {
-            let recs = records(input, &t.table, ro)
+            let recs = records(input, &t.table, ro, &existing, &existing_local)
                 .map_err(|e| format!("records under the table: {e}"))?;
             let kept = kept_keys(&kept_names(dir), &recs)?;
-            let first = digest_with(input, &t.table, ro, true, &kept);
-            if digest_with(input, &t.table, ro, true, &kept) != first {
+            let first = digest_with(input, &t.table, ro, &existing, &existing_local, true, &kept);
+            if digest_with(input, &t.table, ro, &existing, &existing_local, true, &kept) != first {
                 return Err("the post-image under its table: two walks differ".into());
             }
             if first.kept != (0..kept.len() as u64).collect::<Vec<_>>() {
@@ -591,13 +661,14 @@ fn post_side(
                 eprintln!("  kept {:?}", o.kept);
                 eprintln!("  name_strings {:?}", o.name_strings);
             }
-            let off = digest_under(input, &t.table, ro);
+            let off = digest_under(input, &t.table, ro, &existing, &existing_local);
             let cleared = Output {
                 rule_use: Vec::new(),
                 kept: Vec::new(),
                 made: Vec::new(),
                 fixed: Vec::new(),
                 rebuilt: RebuiltOutput::default(),
+                existing_use: slip_model::ExistingUse::default(),
                 ..first.clone()
             };
             if !off.rule_use.is_empty()
@@ -605,28 +676,36 @@ fn post_side(
                 || !off.made.is_empty()
                 || !off.fixed.is_empty()
                 || off.rebuilt != RebuiltOutput::default()
+                || !off.existing_use.is_empty()
                 || cleared != off
             {
                 return Err("the post-image under its table: rule_use on and off differ".into());
             }
-            slip_digest::records::key_agreement(input, &t.table, ro)
+            slip_digest::records::key_agreement(input, &t.table, ro, &existing, &existing_local)
                 .map_err(|e| format!("key agreement ({own:?}): {e}"))?;
             let mut got = Vec::new();
             for c in uses {
                 got.push(rule_use(&first, &t, c.line)?);
             }
             let unruled = (!t.table.is_empty())
-                .then(|| digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE));
+                .then(|| digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[]));
             if properties && let Some(u) = &unruled {
                 // Every file read-only: every key is the empty table's.
-                let none = digest_under(input, &t.table, ReadOnly::EVERY_FILE);
+                let none =
+                    digest_under(input, &t.table, ReadOnly::EVERY_FILE, &existing, &existing_local);
                 if none.digests != u.digests || none.causes != u.causes {
                     return Err(
                         "every file read-only: the digests are not those under no rule".into()
                     );
                 }
-                slip_digest::records::key_agreement(input, &t.table, ReadOnly::EVERY_FILE)
-                    .map_err(|e| format!("key agreement (every file read-only): {e}"))?;
+                slip_digest::records::key_agreement(
+                    input,
+                    &t.table,
+                    ReadOnly::EVERY_FILE,
+                    &existing,
+                    &existing_local,
+                )
+                .map_err(|e| format!("key agreement (every file read-only): {e}"))?;
             }
             let rebuilt = rebuilt_lines(&t, own, &first.rebuilt)?;
             Ok(Post { table: t, digested: common::digested(first), uses: got, unruled, rebuilt })
@@ -741,8 +820,8 @@ fn judge(e: &Expected, a: &Digested, b: &Digested) -> Result<(), String> {
 /// owned by `expect.txt`).
 fn case(dir: &Path) -> Result<(), String> {
     let (pre, a) = common::with_side(dir, Side::A, |input| {
-        let recs = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE);
-        (recs, digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE))
+        let recs = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[]);
+        (recs, digest_under(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[]))
     })?;
     let pre = pre.map_err(|x| format!("records of the pre-image: {x}"))?;
     let a = common::digested(a);
@@ -990,7 +1069,7 @@ fn rules() {
 /// owned): the observer the case stands for.
 fn observer(dir: &Path) -> Output {
     let pre = common::with_side(dir, Side::A, |input| {
-        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])
     })
     .unwrap()
     .unwrap();
@@ -1017,7 +1096,7 @@ fn wp118_a7_one_key() {
     let key = |case: &str, undeclared: bool| -> slip_model::Digest {
         let dir = observers_dir(case);
         let pre = common::with_side(&dir, Side::A, |input| {
-            records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+            records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])
         })
         .unwrap()
         .unwrap();
@@ -1075,6 +1154,32 @@ fn wp146_list_entries() {
     assert_eq!(got, ENTRIES, "\n{}", got.join("\n"));
 }
 
+/// WP-144 (§3(b), section 34): on `existing/shared-detail`, the staying
+/// namespaces `acme` and `acme::detail` keep their own units under their
+/// own names, their moved parts are named `legacy (the moved part of acme)`
+/// and `legacy::detail (the moved part of acme::detail)`, and
+/// `Output::existing_use` records the matched entry.
+#[test]
+fn wp144_shared_detail_view_name_and_existing_use() {
+    let dir = common::manifest().join("tests/rules/existing/shared-detail");
+    let pre = common::with_side(&dir, Side::A, |input| {
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])
+    })
+    .unwrap()
+    .unwrap();
+    let o = post_side(&dir, &pre, &[], &Own::All, false).unwrap().digested.output;
+    let names: BTreeSet<&str> = o.names.iter().map(|(_, n)| n.as_str()).collect();
+    for want in [
+        "acme",
+        "legacy (the moved part of acme)",
+        "acme::detail",
+        "legacy::detail (the moved part of acme::detail)",
+    ] {
+        assert!(names.contains(want), "missing `{want}` in {names:?}");
+    }
+    assert_eq!(o.existing_use, slip_model::ExistingUse { existing: vec![0], local: Vec::new() });
+}
+
 const ENTRIES_CASES: &[&str] = &["places", "f1-rename-x"];
 const ENTRIES: &[&str] = &[
     "places: made fresh::C rule 0 main.cpp:5:26",
@@ -1096,15 +1201,15 @@ const ENTRIES: &[&str] = &[
 fn wp146_made_without_post() {
     let dir = common::manifest().join("tests/own_lists/deep-no-post");
     let pre = common::with_side(&dir, Side::A, |input| {
-        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE)
+        records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[])
     })
     .unwrap()
     .unwrap();
     let lines = lines_of(&dir).unwrap();
     let made = common::with_side(&dir, Side::B, |input| {
-        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE).unwrap();
+        let plain = records(input, &RuleTable::empty(), ReadOnly::EVERY_FILE, &[], &[]).unwrap();
         let t = table(&lines, &pre, &plain).unwrap();
-        digest_with(input, &t.table, ReadOnly::NO_FILE, true, &[]).made
+        digest_with(input, &t.table, ReadOnly::NO_FILE, &[], &[], true, &[]).made
     })
     .unwrap();
     let got: Vec<(String, bool)> = made

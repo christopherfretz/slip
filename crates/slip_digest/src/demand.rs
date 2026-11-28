@@ -226,6 +226,7 @@ fn write_part(
         owner: Some(owner.key),
         collided: false,
         view: None,
+        stays: false,
         denotes: None,
         emitted,
     }
@@ -1098,6 +1099,7 @@ pub(crate) fn local_owner(w: &mut Walk<'_>, e: DeclId) -> Written {
         owner: None,
         collided: false,
         view: None,
+        stays: false,
         denotes: None,
         emitted: false,
     }
@@ -1324,6 +1326,8 @@ mod tests {
             let options = crate::Options {
                 rules: &rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,

@@ -243,8 +243,9 @@ fn job(store: &Store, o: &Observer, phase: Phase, round: u64) -> Job {
 
 /// The records of `o`'s image `side` under `rules`.
 fn records_of(image: &Image, o: &Observer, side: Side, rules: &RuleTable) -> Vec<Record> {
-    let (shard, r) =
-        image.parse(o, side, Phase::Verify, 1, |i| records(i, rules, ReadOnly::NO_FILE)).unwrap();
+    let (shard, r) = image
+        .parse(o, side, Phase::Verify, 1, |i| records(i, rules, ReadOnly::NO_FILE, &[], &[]))
+        .unwrap();
     assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
     r.unwrap().unwrap()
 }

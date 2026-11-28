@@ -1,0 +1,5 @@
+# Limit 2 pinned: signature redirected from legacy::h(t) to acme::h(t); probe misses, keyed as moved.
+added template <class> decltype(acme::h(t)) acme::f(type-parameter-0-0)
+removed acme
+removed template <class> decltype(legacy::h(t)) acme::f(type-parameter-0-0)
+use 1 via 1 direct 0

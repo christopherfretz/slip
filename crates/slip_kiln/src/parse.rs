@@ -537,6 +537,7 @@ fn new_shard(
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 

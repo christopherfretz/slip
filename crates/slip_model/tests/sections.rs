@@ -236,6 +236,9 @@ fn raw_sections(s: &Shard) -> Vec<(u64, Vec<u8>)> {
     if let Some(r) = &s.rebuilt_use {
         out.push((33, raw_rebuilt_use(r).0));
     }
+    if let Some(e) = &s.existing_use {
+        out.push((34, raw_existing_use(e).0));
+    }
     if let Some(x) = &s.edits {
         // Only an empty section: `tests/edits.rs` encodes the rest. Section
         // 32 since WP-139 (17 before `instances`).
@@ -328,6 +331,28 @@ struct RebuiltAt {
     hints_more: usize,
 }
 
+fn raw_existing_use(x: &slip_model::ExistingUse) -> (Vec<u8>, ExistingAt) {
+    let mut e = Encoder::new();
+    let mut at = ExistingAt::default();
+    e.count(x.existing.len());
+    for &i in &x.existing {
+        at.existing.push(e.as_bytes().len());
+        e.uv(i);
+    }
+    e.count(x.local.len());
+    for &i in &x.local {
+        at.local.push(e.as_bytes().len());
+        e.uv(i);
+    }
+    (e.into_bytes(), at)
+}
+
+#[derive(Default)]
+struct ExistingAt {
+    existing: Vec<usize>,
+    local: Vec<usize>,
+}
+
 /// The payload of a spellings section, and the offsets in it of each
 /// span, each span's count and each failed entry.
 fn raw_spellings(x: &Spellings) -> (Vec<u8>, Vec<usize>, Vec<usize>, Vec<usize>) {
@@ -410,6 +435,7 @@ fn map_shard() -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 
@@ -516,6 +542,7 @@ fn verify_shard() -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 
@@ -749,6 +776,7 @@ fn sample_map_shard(digests: Digests) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        existing_use: None,
     }
 }
 
@@ -2311,4 +2339,85 @@ fn rebuilt_use_phase_and_status() {
     assert!(rejected_at(&m, "sections.rebuilt_use", 33, 0).contains("status is not ok"));
     m.outcome.status = Status::Diagnosed;
     assert!(rejected_at(&m, "sections.rebuilt_use", 33, 0).contains("status is not ok"));
+}
+
+// ---------------------------------------------------------------------------
+// WP-144: the `existing_use` section (34)
+
+fn existing_use() -> slip_model::ExistingUse {
+    slip_model::ExistingUse { existing: vec![0, 2, 1 << 40], local: vec![1, 5] }
+}
+
+fn existing_shard(e: slip_model::ExistingUse) -> Shard {
+    Shard { existing_use: Some(e), ..m2_shard() }
+}
+
+fn existing_rejected(
+    e: slip_model::ExistingUse,
+    path: &str,
+    rel: impl Fn(&ExistingAt) -> usize,
+) -> String {
+    let s = existing_shard(e);
+    let at = raw_existing_use(s.existing_use.as_ref().unwrap()).1;
+    rejected_at(&s, path, 34, rel(&at))
+}
+
+#[test]
+fn existing_use_round_trip() {
+    round_trip(&existing_shard(existing_use()));
+    round_trip(&Shard { existing_use: Some(existing_use()), ..sample_verify_shard(verified()) });
+    round_trip(&existing_shard(slip_model::ExistingUse { existing: vec![0], local: Vec::new() }));
+    round_trip(&existing_shard(slip_model::ExistingUse { existing: Vec::new(), local: vec![3] }));
+    let v = existing_shard(existing_use()).to_json();
+    let e = v.get("sections").unwrap().get("existing_use").unwrap();
+    let names: Vec<String> = e.as_object().unwrap().iter().map(|(k, _)| k.clone()).collect();
+    assert_eq!(names, ["existing", "local"]);
+    payload_at(&existing_shard(existing_use()).to_bytes(), 34);
+}
+
+#[test]
+fn existing_use_invariants() {
+    for bad in [vec![1, 0], vec![2, 2]] {
+        let got = existing_rejected(
+            slip_model::ExistingUse { existing: bad, ..existing_use() },
+            "sections.existing_use.existing[1]",
+            |a| a.existing[1],
+        );
+        assert!(got.contains("existing is not strictly ascending"), "{got}");
+    }
+    for bad in [vec![3, 1], vec![4, 4]] {
+        let got = existing_rejected(
+            slip_model::ExistingUse { local: bad, ..existing_use() },
+            "sections.existing_use.local[1]",
+            |a| a.local[1],
+        );
+        assert!(got.contains("local is not strictly ascending"), "{got}");
+    }
+    let got = existing_rejected(
+        slip_model::ExistingUse { existing: Vec::new(), local: Vec::new() },
+        "sections.existing_use",
+        |_| 0,
+    );
+    assert!(got.contains("an empty existing_use"), "{got}");
+
+    let s = Shard { existing_use: Some(existing_use()), ..sample_verify_shard(verified()) };
+    let m = Shard { phase: Phase::Map, verdict: None, ..s.clone() };
+    assert!(rejected_at(&m, "sections.existing_use", 34, 0).contains("phase is not verify"));
+    let mut m = Shard {
+        outcome: Outcome {
+            status: Status::Failed,
+            errors: 1,
+            warnings: 0,
+            message: "x".to_owned(),
+        },
+        digests: None,
+        names: None,
+        verdict: None,
+        inputs: None,
+        counters: Vec::new(),
+        ..s.clone()
+    };
+    assert!(rejected_at(&m, "sections.existing_use", 34, 0).contains("status is not ok"));
+    m.outcome.status = Status::Diagnosed;
+    assert!(rejected_at(&m, "sections.existing_use", 34, 0).contains("status is not ok"));
 }

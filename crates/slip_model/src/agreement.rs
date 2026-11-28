@@ -1,6 +1,6 @@
 //! The records of agreement between observers (`spec/verify.md` §9.1):
-//! sections 24, `binding`, 29, `rule_use`, and 33, `rebuilt_use`
-//! (WP-118), of a verify shard. Work package WP-060.
+//! sections 24, `binding`, 29, `rule_use`, 33, `rebuilt_use` (WP-118),
+//! and 34, `existing_use` (WP-144), of a verify shard. Work package WP-060.
 //!
 //! Plain data. The binary and JSON forms and the invariants are in
 //! `formats` (`spec/landed/edits/WP-060.md`).
@@ -99,4 +99,23 @@ pub struct Declares {
     pub mapped: u64,
     pub left: u64,
     pub left_kept: u64,
+}
+
+/// Section 34, `existing_use` (`spec/verify.md` §9.1, WP-144): which
+/// entries of `Declared.existing` and `Declared.existing_local` some
+/// entity of this observer's walk matched. Present only in an `ok` verify
+/// shard, and only when at least one list is not empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ExistingUse {
+    /// Indices into `Declared.existing`; strictly ascending.
+    pub existing: Vec<u64>,
+    /// Indices into `Declared.existing_local`; strictly ascending.
+    pub local: Vec<u64>,
+}
+
+impl ExistingUse {
+    /// Both lists empty: the section is not written.
+    pub fn is_empty(&self) -> bool {
+        self.existing.is_empty() && self.local.is_empty()
+    }
 }

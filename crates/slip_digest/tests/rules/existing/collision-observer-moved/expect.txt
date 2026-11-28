@@ -1,0 +1,5 @@
+# (b) observer moving legacy::x onto listed acme::x -> mismatch.
+added acme
+added acme::x()
+removed legacy::x()
+use 1 via 1 direct 0

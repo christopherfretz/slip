@@ -4524,3 +4524,205 @@ fn s2_1_still_there_and_as_recorded_on_unlistable_dir() {
         "expected unlistable detail, got: {r}"
     );
 }
+
+// WP-144 (against a wrong `verified`, test 1): `a.cpp` has the listed
+// program-wide `acme::x`, `b.cpp` moves an external `legacy::x` to `acme::x`;
+// the run is `NotVerified` (a mechanism that decided per observer or per file
+// would wrongly verify it).
+#[test]
+fn wp144_existing_and_moved_collide_across_observers_is_not_verified() {
+    use slip_cli::image::Side;
+    use slip_model::ExistingUse;
+    use slip_verify::run::{Header, MapShard, Report, RunVerdict};
+
+    let tree = Tree::new(
+        "wp144-collide",
+        &[
+            (
+                "a.cpp",
+                "namespace acme { int x() { return 1; } }\nnamespace legacy { int g() { return 2; } }\n",
+            ),
+            ("b.cpp", "namespace legacy { int x() { return 3; } int h() { return 4; } }\n"),
+        ],
+    );
+    write(
+        &tree.post.join("a.cpp"),
+        "namespace acme { int x() { return 1; } int g() { return 2; } }\n",
+    );
+    write(
+        &tree.post.join("b.cpp"),
+        "namespace acme { int x() { return 3; } int h() { return 4; } }\n",
+    );
+    let oa = tree.observer_of("a.cpp", &[]);
+    let ob = tree.observer_of("b.cpp", &[]);
+    tree.map(&oa);
+    tree.map(&ob);
+    let (ma, first_map_id) = tree.stored_map(&oa);
+    let (mb, second_map_id) = tree.stored_map(&ob);
+
+    // Pre-image key of `acme::x()` from `a.cpp`.
+    let x_key = tree
+        .image()
+        .parse(&oa, Side::Pre, Phase::Map, 0, |input| {
+            slip_digest::records::records(
+                input,
+                &RuleTable::empty(),
+                slip_digest::ReadOnly::EVERY_FILE,
+                &[],
+                &[],
+            )
+            .unwrap()
+        })
+        .unwrap()
+        .1
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "acme::x()")
+        .expect("acme::x()")
+        .id;
+
+    let declared = Declared::new(vec![rename_ns("acme", "legacy")], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(&[])))
+        .with_existing(vec![x_key], vec![])
+        .unwrap();
+    declared.validate().unwrap();
+    let params = tree.params(declared.clone());
+    let va = tree.verify_with(&oa, &params).unwrap();
+    let vb = tree.verify_with(&ob, &params).unwrap();
+
+    assert_eq!(kind(&va), VerdictKind::Verified);
+    assert_eq!(va.existing_use, Some(ExistingUse { existing: vec![0], local: Vec::new() }));
+    assert_eq!(kind(&vb), VerdictKind::Mismatch);
+    assert_eq!(vb.existing_use, Some(ExistingUse { existing: vec![0], local: Vec::new() }));
+
+    let header = Header {
+        plan: Digest([7; 32]),
+        round: 1,
+        declared: params.declared_id,
+        rules: declared.rules_id(),
+        image: Vec::new(),
+        limit: 64,
+        locate: 16,
+        plan_observers: 2,
+        run: Vec::new(),
+    };
+    let mut report = Report::new(header, &declared);
+    report.add(
+        &oa.id,
+        &oa.main.path,
+        Some(&va),
+        Some(MapShard::Read { status: ma.outcome.status, id: first_map_id }),
+    );
+    report.add(
+        &ob.id,
+        &ob.main.path,
+        Some(&vb),
+        Some(MapShard::Read { status: mb.outcome.status, id: second_map_id }),
+    );
+    assert_eq!(report.verdict(), RunVerdict::NotVerified);
+}
+
+// WP-144 (against a wrong `verified`, test 3): the same shape as
+// `wp144_existing_and_moved_collide_across_observers_is_not_verified` with
+// `static` (`existing_local` naming `(key, a.cpp)`): both observers verify
+// and the run is `Verified`.
+#[test]
+fn wp144_existing_local_two_observers_verified() {
+    use slip_cli::image::Side;
+    use slip_model::ExistingUse;
+    use slip_model::declared::ExistingLocal;
+    use slip_verify::run::{Header, MapShard, Report, RunVerdict};
+
+    let tree = Tree::new(
+        "wp144-local-ok",
+        &[
+            (
+                "a.cpp",
+                "namespace acme { static int x() { return 1; } }\nnamespace legacy { int g() { return 2; } }\nint ua() { return acme::x() + legacy::g(); }\n",
+            ),
+            (
+                "b.cpp",
+                "namespace legacy { static int x() { return 3; } int h() { return 4; } }\nint ub() { return legacy::x() + legacy::h(); }\n",
+            ),
+        ],
+    );
+    write(
+        &tree.post.join("a.cpp"),
+        "namespace acme { static int x() { return 1; } int g() { return 2; } }\nint ua() { return acme::x() + acme::g(); }\n",
+    );
+    write(
+        &tree.post.join("b.cpp"),
+        "namespace acme { static int x() { return 3; } int h() { return 4; } }\nint ub() { return acme::x() + acme::h(); }\n",
+    );
+    let oa = tree.observer_of("a.cpp", &[]);
+    let ob = tree.observer_of("b.cpp", &[]);
+    tree.map(&oa);
+    tree.map(&ob);
+    let (ma, first_map_id) = tree.stored_map(&oa);
+    let (mb, second_map_id) = tree.stored_map(&ob);
+
+    let x_key = tree
+        .image()
+        .parse(&oa, Side::Pre, Phase::Map, 0, |input| {
+            slip_digest::records::records(
+                input,
+                &RuleTable::empty(),
+                slip_digest::ReadOnly::EVERY_FILE,
+                &[],
+                &[],
+            )
+            .unwrap()
+        })
+        .unwrap()
+        .1
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "acme::x()")
+        .expect("acme::x()")
+        .id;
+
+    let declared = Declared::new(vec![rename_ns("acme", "legacy")], vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(tree.files(&[])))
+        .with_existing(
+            vec![],
+            vec![ExistingLocal { key: x_key, file: bytes(&tree.subject.join("a.cpp")) }],
+        )
+        .unwrap();
+    declared.validate().unwrap();
+    let params = tree.params(declared.clone());
+    let va = tree.verify_with(&oa, &params).unwrap();
+    let vb = tree.verify_with(&ob, &params).unwrap();
+
+    assert_eq!(kind(&va), VerdictKind::Verified);
+    assert_eq!(va.existing_use, Some(ExistingUse { existing: Vec::new(), local: vec![0] }));
+    assert_eq!(kind(&vb), VerdictKind::Verified);
+    assert_eq!(vb.existing_use, None);
+
+    let header = Header {
+        plan: Digest([7; 32]),
+        round: 1,
+        declared: params.declared_id,
+        rules: declared.rules_id(),
+        image: Vec::new(),
+        limit: 64,
+        locate: 16,
+        plan_observers: 2,
+        run: Vec::new(),
+    };
+    let mut report = Report::new(header, &declared);
+    report.add(
+        &oa.id,
+        &oa.main.path,
+        Some(&va),
+        Some(MapShard::Read { status: ma.outcome.status, id: first_map_id }),
+    );
+    report.add(
+        &ob.id,
+        &ob.main.path,
+        Some(&vb),
+        Some(MapShard::Read { status: mb.outcome.status, id: second_map_id }),
+    );
+    assert_eq!(report.verdict(), RunVerdict::Verified);
+}

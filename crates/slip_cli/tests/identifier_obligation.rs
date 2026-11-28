@@ -215,7 +215,7 @@ fn check(post: &str, rules: &RuleTable, obligations: &[Obligation]) -> Vec<Spell
             sm: p.sm,
             subject_path: &|f| paths.get(f.index()).cloned().unwrap_or_default(),
         };
-        check_spellings(p.unit(), &input, rules, ReadOnly::NO_FILE, obligations)
+        check_spellings(p.unit(), &input, rules, ReadOnly::NO_FILE, &[], &[], obligations)
     })
     .expect("the post-image parses")
 }

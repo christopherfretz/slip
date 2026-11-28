@@ -1,0 +1,5 @@
+# (a) control: acme::x not listed -> today's answer.
+added acme::x()
+removed acme
+removed acme::x()
+use 1 via 1 direct 0

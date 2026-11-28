@@ -1,0 +1,6 @@
+# WP-144 ns_refs.rs:563 (ro-first): own_open.h is entered through read-only ro_inc.h first,
+# so its empty opening of legacy holds in the dependency view (!in_owned_file), adding legacy
+# to E(k) and turning `using namespace acme;` from a whole reading into a part reading.
+added <using_directive acme (the part the rule moves)>
+removed <using_directive legacy>
+use 1 via 1 direct 0

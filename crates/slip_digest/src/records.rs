@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use slip_kiln::kiln::ast::decl::DeclKind;
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_model::Digest;
+use slip_model::declared::ExistingLocal;
 use slip_model::digests::GroupClass;
 use slip_model::keys::{Key, KeyKind, Name, Parent, RuleTable};
 
@@ -53,8 +54,18 @@ pub fn records(
     input: &Input<'_>,
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
 ) -> Result<Vec<Record>, String> {
-    let options = Options { rules, read_only, detail: Detail::None, names: true, rule_use: false };
+    let options = Options {
+        rules,
+        read_only,
+        existing,
+        existing_local,
+        detail: Detail::None,
+        names: true,
+        rule_use: false,
+    };
     walk::run_with(input, &options, |w, written, output| collect(w, written, &output))
 }
 
@@ -94,8 +105,15 @@ impl Facts {
 /// does not depend on the table, is asked after it.
 pub fn facts(input: &Input<'_>, read_only: crate::ReadOnly<'_>) -> Facts {
     let empty = RuleTable::empty();
-    let options =
-        Options { rules: &empty, read_only, detail: Detail::None, names: false, rule_use: false };
+    let options = Options {
+        rules: &empty,
+        read_only,
+        existing: &[],
+        existing_local: &[],
+        detail: Detail::None,
+        names: false,
+        rule_use: false,
+    };
     walk::run_with(input, &options, |w, written, _| {
         w.owned_state.query = true;
         let mut out = Facts::default();
@@ -154,17 +172,27 @@ pub fn key_agreement(
     input: &Input<'_>,
     rules: &RuleTable,
     read_only: crate::ReadOnly<'_>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
 ) -> Result<usize, String> {
-    let options = Options { rules, read_only, detail: Detail::None, names: false, rule_use: false };
+    let options = Options {
+        rules,
+        read_only,
+        existing,
+        existing_local,
+        detail: Detail::None,
+        names: false,
+        rule_use: false,
+    };
     let (memo, views) = walk::run_with(input, &options, |w, _, _| {
         let mut memo: Vec<(DeclId, KeyRes)> = w.keys.iter().map(|(&e, &r)| (e, r)).collect();
         memo.sort_by_key(|&(e, _)| e.index());
-        // Every namespace's own key, in the view of its own ownership.
+        // Every namespace's own key, in its own view (WP-144: `ns_own_view`).
         let mut views: Vec<(DeclId, bool, KeyRes)> = Vec::new();
         if !w.rules.is_empty() {
             for &(e, r) in &memo {
                 if w.ast.decls.get(e).kind() == DeclKind::Namespace {
-                    let o = w.owned(e);
+                    let o = w.ns_own_view(e);
                     views.push((e, o, r));
                 }
             }
@@ -174,7 +202,7 @@ pub fn key_agreement(
         (memo, views)
     });
     let name = |e: DeclId| crate::names::entity_name(input.ast, e, KeyKind::Class);
-    let mut w = fresh(input, read_only, rules);
+    let mut w = fresh(input, read_only, rules, existing, existing_local);
     for &(e, r) in memo.iter().rev() {
         let again = w.key(e);
         if again != r {
@@ -190,8 +218,8 @@ pub fn key_agreement(
         return Ok(memo.len());
     }
     let empty = RuleTable::empty();
-    let mut all = fresh(input, crate::ReadOnly::NO_FILE, rules);
-    let mut none = fresh(input, crate::ReadOnly::EVERY_FILE, &empty);
+    let mut all = fresh(input, crate::ReadOnly::NO_FILE, rules, &[], &[]);
+    let mut none = fresh(input, crate::ReadOnly::EVERY_FILE, &empty, &[], &[]);
     for &(n, b, r) in &views {
         let expected = if b {
             if !all.owned(n) {
@@ -212,11 +240,19 @@ pub fn key_agreement(
     Ok(memo.len() + views.len())
 }
 
-/// A walk of `input` under `table` and `ro`, its units collected and
-/// its locals numbered, as `key_agreement` recomputes keys in.
-fn fresh<'a>(input: &Input<'a>, ro: crate::ReadOnly<'a>, table: &'a RuleTable) -> Walk<'a> {
+/// A walk of `input` under `table`, `ro`, and `existing` lists, its units
+/// collected and its locals numbered, as `key_agreement` recomputes keys in.
+fn fresh<'a>(
+    input: &Input<'a>,
+    ro: crate::ReadOnly<'a>,
+    table: &'a RuleTable,
+    existing: &'a [Digest],
+    existing_local: &'a [ExistingLocal],
+) -> Walk<'a> {
     let mut w = Walk::new(input, table);
     w.read_only = ro;
+    w.existing = existing;
+    w.existing_local = existing_local;
     crate::units::collect(&mut w);
     crate::local::number_all(&mut w);
     w
@@ -404,6 +440,7 @@ mod tests {
             made: Vec::new(),
             fixed: Vec::new(),
             rebuilt: crate::RebuiltOutput::default(),
+            existing_use: slip_model::ExistingUse::default(),
         }
     }
 
@@ -473,6 +510,7 @@ mod tests {
                 made: Vec::new(),
                 fixed: Vec::new(),
                 rebuilt: crate::RebuiltOutput::default(),
+                existing_use: slip_model::ExistingUse::default(),
             };
             let recs = collect(&mut w, &written, &output).expect("records");
             assert_eq!(recs.len(), 2, "{recs:#?}");

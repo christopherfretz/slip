@@ -1,0 +1,3 @@
+# Counts: chained existing acme::y in kept.txt -> direct 0 for rule 2.
+use 1 via 1 direct 0
+use 2 via 1 direct 0

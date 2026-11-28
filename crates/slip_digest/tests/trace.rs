@@ -51,6 +51,8 @@ fn options(rules: &RuleTable) -> Options<'_> {
     Options {
         rules,
         read_only: ReadOnly::NO_FILE,
+        existing: &[],
+        existing_local: &[],
         detail: Detail::All,
         names: true,
         rule_use: false,

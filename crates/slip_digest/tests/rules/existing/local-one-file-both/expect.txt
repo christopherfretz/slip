@@ -1,0 +1,4 @@
+# Limit 3 pinned: two identical repeatable decls (one existing, one moved) in one file.
+removed legacy::<shadow other::v>
+removed legacy::<using other::v>
+use 1 via 1 direct 0

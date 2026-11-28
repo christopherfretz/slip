@@ -58,10 +58,14 @@ pub(crate) struct Written {
     /// Whether the unit's key is in a collision (§3.4), whatever cause
     /// `cause` keeps first.
     pub collided: bool,
-    /// For a namespace's unit in a view that is not its own ownership
-    /// ([`view_units`], WP-140), that view (`true`: owned); `None` for
-    /// every other unit.
+    /// For a namespace's unit in a view that is not its own view
+    /// ([`view_units`], WP-140, WP-144), that view (`true`: mapped/owned);
+    /// `None` for every other unit.
     pub view: Option<bool>,
+    /// For a view unit, whether the namespace stays (WP-144 §3(b): its
+    /// mapped view is named `(the moved part of …)` rather than `(the
+    /// owned part of …)`).
+    pub stays: bool,
     /// For a view unit, the name its key denotes (`legacy` for the owned
     /// view of a dependency's `acme` under `relocate legacy => :: acme`),
     /// read from the key; `None` for every other unit, and when the key's
@@ -674,6 +678,7 @@ pub(crate) fn write(w: &mut Walk<'_>, e: DeclId, class: UnitClass) -> Option<Wri
         owner: None,
         collided: false,
         view: None,
+        stays: false,
         denotes: None,
         emitted,
     })
@@ -770,10 +775,11 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
     let first_view = written.len();
     for (i, e) in views {
         let KeyRes::Key { id: own, .. } = w.key(e) else { continue };
-        let view = !w.owned(e);
+        let view = !w.ns_own_view(e);
         if !w.ns_holds(e, view) {
             continue;
         }
+        let stays = w.ns_stays(e);
         match w.view_key(e, view) {
             KeyRes::Key { id, cause, .. } => {
                 if id == own {
@@ -782,6 +788,7 @@ pub(crate) fn view_units(w: &mut Walk<'_>, written: &mut Vec<Written>) {
                 let mut u = written[i].clone();
                 u.key = id;
                 u.view = Some(view);
+                u.stays = stays;
                 // A guard (WP-140 review F5): a namespace key's cause is made
                 // of its name's (an identifier or the unnamed namespace:
                 // none) and its parents', which are the same namespaces'
@@ -916,6 +923,7 @@ pub(crate) fn order_unit(w: &mut Walk<'_>) -> Written {
         resolved: None,
         default_argument: None,
         view: None,
+        stays: false,
         denotes: None,
         emitted: false,
     }
@@ -1585,6 +1593,8 @@ mod tests {
             let options = crate::Options {
                 rules: &rules,
                 read_only: crate::ReadOnly::NO_FILE,
+                existing: &[],
+                existing_local: &[],
                 detail: crate::Detail::All,
                 names: true,
                 rule_use: false,

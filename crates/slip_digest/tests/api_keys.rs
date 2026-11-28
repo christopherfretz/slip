@@ -66,6 +66,8 @@ fn digest(input: &Input<'_>, rules: &RuleTable) -> Output {
         &Options {
             rules,
             read_only: ReadOnly::NO_FILE,
+            existing: &[],
+            existing_local: &[],
             detail: Detail::All,
             names: true,
             rule_use: false,
@@ -288,7 +290,7 @@ fn sweep_side(dir: &Path, side: Side) -> Result<Tally, String> {
     let got = with_input(&files, &head.std, &args, head.target.as_deref(), |input| {
         let mut t = Tally { sides: 1, ..Tally::default() };
         let empty = RuleTable::empty();
-        let all_units = walk_units(input, &empty, ReadOnly::NO_FILE);
+        let all_units = walk_units(input, &empty, ReadOnly::NO_FILE, &[], &[]);
         let units: Vec<(DeclId, Digest, Option<Cause>)> =
             all_units.iter().filter(|u| !u.part).map(|u| (u.entity, u.key, u.key_cause)).collect();
         let out = digest(input, &empty);
@@ -843,10 +845,10 @@ fn check_rename(r: &Rename) -> Result<(), String> {
         let e = one(input.ast, r.new, r.kind);
         let same = digest(input, &table).digests == pre.digests;
         let differs = digest(input, &wrong).digests != pre.digests;
-        let mut k = Keys::with_rules(input, &table, ReadOnly::NO_FILE);
+        let mut k = Keys::with_rules(input, &table, ReadOnly::NO_FILE, &[], &[]);
         // WP-110 (verify §2.1, rule 1): with every file read-only the rule
         // matches nothing, and the entity keeps its post-image key.
-        let unmapped = Keys::with_rules(input, &table, ReadOnly::EVERY_FILE).key_id(e);
+        let unmapped = Keys::with_rules(input, &table, ReadOnly::EVERY_FILE, &[], &[]).key_id(e);
         let plain = Keys::new(input).key_id(e);
         assert!(
             unmapped == plain && unmapped != Ok(pre.id),
@@ -1123,7 +1125,7 @@ fn a_refused_table_keys_nothing() {
         let table = RuleTable::new(vec![refused_rule]).expect("a table may hold it");
         assert!(table.refused().is_some());
         let cause = NoKey::Indeterminate(Cause::Unaccounted("key/refused-rule"));
-        let mut k = Keys::with_rules(input, &table, ReadOnly::NO_FILE);
+        let mut k = Keys::with_rules(input, &table, ReadOnly::NO_FILE, &[], &[]);
         let f = one(ast, "f", DeclKind::Function);
         let s = one(ast, "S", DeclKind::ClassTemplate);
         let sa = of_kind(ast, DeclKind::StaticAssert)[0];
@@ -1139,7 +1141,7 @@ fn a_refused_table_keys_nothing() {
         // The walk agrees: every unit it writes under the table is
         // indeterminate.
         let out = digest(input, &table);
-        let units = walk_units(input, &table, ReadOnly::NO_FILE);
+        let units = walk_units(input, &table, ReadOnly::NO_FILE, &[], &[]);
         let causes: BTreeSet<Digest> = out.causes.iter().map(|(k, _)| *k).collect();
         assert!(!units.is_empty() && units.iter().all(|u| causes.contains(&u.key)));
     });

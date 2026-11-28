@@ -13,8 +13,9 @@ use super::common::{
     read_list, read_record, read_str, read_uv,
 };
 use super::{
-    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, found, names,
-    negatives, open, read_container, rebuilt_use, render_container, seal, spellings, verdict,
+    At, Extra, JsonFormError, OwnedExtras, SectionName, agreement, digests, edits, existing_use,
+    found, names, negatives, open, read_container, rebuilt_use, render_container, seal, spellings,
+    verdict,
 };
 
 const HEADER: u64 = 1;
@@ -31,6 +32,7 @@ const NAMES: u64 = names::ID;
 const NEGATIVES: u64 = negatives::ID;
 const FOUND: u64 = found::ID;
 const REBUILT_USE: u64 = rebuilt_use::ID;
+const EXISTING_USE: u64 = existing_use::ID;
 
 use super::MESSAGE_MAX;
 
@@ -55,6 +57,7 @@ enum Loc {
     Negatives(negatives::Loc),
     Found(found::Loc),
     RebuiltUse(rebuilt_use::Loc),
+    ExistingUse(existing_use::Loc),
 }
 
 impl Loc {
@@ -75,6 +78,7 @@ impl Loc {
             Loc::Negatives(l) => l.path(),
             Loc::Found(l) => l.path(),
             Loc::RebuiltUse(l) => l.path(),
+            Loc::ExistingUse(l) => l.path(),
         }
     }
 }
@@ -171,6 +175,12 @@ fn violation(s: &Shard) -> Option<(Loc, &'static str)> {
     {
         return Some((Loc::RebuiltUse(l), what));
     }
+    // WP-144: section 34 (`existing_use`), after `rebuilt_use`.
+    if let Some(e) = &s.existing_use
+        && let Some((l, what)) = existing_use::violation(e, phase, status)
+    {
+        return Some((Loc::ExistingUse(l), what));
+    }
     if let Some(n) = &s.negatives
         && let Some((l, what)) = negatives::violation(n, phase, s.inputs.is_some())
     {
@@ -246,6 +256,7 @@ pub(super) fn encode(s: &Shard, extras: &[Extra<'_>]) -> Vec<u8> {
         (FOUND, section(s.found.as_ref(), found::encode)),
         (EDITS, section(s.edits.as_ref(), edits::encode)),
         (REBUILT_USE, section(s.rebuilt_use.as_ref(), rebuilt_use::encode)),
+        (EXISTING_USE, section(s.existing_use.as_ref(), existing_use::encode)),
     ];
     for (id, bytes) in &optional {
         if let Some(bytes) = bytes {
@@ -286,6 +297,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             FOUND,
             EDITS,
             REBUILT_USE,
+            EXISTING_USE,
         ],
     )?;
     if opened.version < FIRST_READ {
@@ -307,6 +319,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         found,
         edits,
         rebuilt_use,
+        existing_use,
     ] = opened.sections;
 
     let mut d = super::required(header, end, "shard has no header section")?;
@@ -422,6 +435,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
             (Some(v), Some(at))
         }
     };
+    let (existing_use, existing_use_at) = match existing_use {
+        None => (None, None),
+        Some(mut d) => {
+            let (v, at) = existing_use::decode(&mut d)?;
+            d.finish()?;
+            (Some(v), Some(at))
+        }
+    };
 
     let shard = Shard {
         observer,
@@ -440,6 +461,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
         negatives,
         found,
         rebuilt_use,
+        existing_use,
     };
     if let Some((l, what)) = violation(&shard) {
         let at = match l {
@@ -482,6 +504,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
                 || unreachable!("a rebuilt_use violation without rebuilt_use"),
                 |o| o.of(l),
             ),
+            Loc::ExistingUse(l) => existing_use_at.as_ref().map_or_else(
+                || unreachable!("an existing_use violation without existing_use"),
+                |o| o.of(l),
+            ),
         };
         return Err(malformed(at, what));
     }
@@ -491,7 +517,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Shard, Vec<Extra<'_>>, Digest)> {
 // ---------------------------------------------------------------------------
 // JSON
 
-const SECTION_NAMES: [SectionName; 14] = [
+const SECTION_NAMES: [SectionName; 15] = [
     SectionName { id: HEADER, name: "header", required: true },
     SectionName { id: OUTCOME, name: "outcome", required: true },
     SectionName { id: INPUTS, name: "inputs", required: false },
@@ -506,6 +532,7 @@ const SECTION_NAMES: [SectionName; 14] = [
     SectionName { id: FOUND, name: "found", required: false },
     SectionName { id: EDITS, name: "edits", required: false },
     SectionName { id: REBUILT_USE, name: "rebuilt_use", required: false },
+    SectionName { id: EXISTING_USE, name: "existing_use", required: false },
 ];
 
 pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
@@ -567,6 +594,9 @@ pub(super) fn render(s: &Shard, extras: &[Extra<'_>]) -> Value {
     if let Some(x) = &s.rebuilt_use {
         sections.push(("rebuilt_use", rebuilt_use::render(x)));
     }
+    if let Some(x) = &s.existing_use {
+        sections.push(("existing_use", existing_use::render(x)));
+    }
     render_container(Shard::KIND, Shard::VERSION, sections, extras)
 }
 
@@ -591,6 +621,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         found,
         edits,
         rebuilt_use,
+        existing_use,
     ] = s.known
     else {
         unreachable!("read_container returns every required section")
@@ -639,6 +670,8 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
     let found = found.map(|v| found::read(v, &sections.key("found"))).transpose()?;
     let rebuilt_use =
         rebuilt_use.map(|v| rebuilt_use::read(v, &sections.key("rebuilt_use"))).transpose()?;
+    let existing_use =
+        existing_use.map(|v| existing_use::read(v, &sections.key("existing_use"))).transpose()?;
 
     let shard = Shard {
         observer,
@@ -657,6 +690,7 @@ pub(super) fn read(v: &Value) -> JResult<(Shard, OwnedExtras)> {
         negatives,
         found,
         rebuilt_use,
+        existing_use,
     };
     if let Some((l, what)) = violation(&shard) {
         return Err(JsonFormError { path: l.path(), message: what.to_owned() });

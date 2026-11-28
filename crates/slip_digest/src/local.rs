@@ -1698,6 +1698,8 @@ mod tests {
                         let options = Options {
                             rules: &rules,
                             read_only: crate::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
                             detail: Detail::None,
                             names: true,
                             rule_use: false,
@@ -2093,6 +2095,8 @@ mod tests {
                         let options = Options {
                             rules: &rules,
                             read_only: crate::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
                             detail: Detail::None,
                             names: false,
                             rule_use: false,
@@ -2175,6 +2179,8 @@ mod tests {
                         let options = Options {
                             rules: &rules,
                             read_only: crate::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
                             detail: Detail::None,
                             names: false,
                             rule_use: false,

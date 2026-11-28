@@ -33,6 +33,8 @@ fn units_of(input: &Input<'_>) -> BTreeMap<String, U> {
         &crate::Options {
             rules: &rules,
             read_only: crate::ReadOnly::NO_FILE,
+            existing: &[],
+            existing_local: &[],
             detail: crate::Detail::All,
             names: true,
             rule_use: false,

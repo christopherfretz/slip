@@ -1,0 +1,2 @@
+# (a) owned acme::x untouched beside moved legacy::g, with dependency opening.
+use 1 via 1 direct 0

@@ -9,7 +9,9 @@ use std::path::Path;
 
 use slip_model::Digest;
 use slip_model::container::{HEADER_LEN, TRAILER_LEN, Writer};
-use slip_model::declared::{Declared, DeclaredError, RULES_V2_TAG, RULES_V3_TAG};
+use slip_model::declared::{
+    Declared, DeclaredError, ExistingLocal, RULES_V2_TAG, RULES_V3_TAG, RULES_V4_TAG,
+};
 use slip_model::formats::{JsonFormError, content_id, dump, undump};
 use slip_model::hash::tagged_digest;
 use slip_model::json::{self, Value};
@@ -790,12 +792,12 @@ fn rejects_wrong_kind() {
     assert_eq!(Declared::from_json(&v).unwrap_err().path, "kind");
 }
 
-// model §5.3: a wrong version is UnsupportedVersion at byte 12. Version 3
-// is read since WP-118 (`declared_v3_*`); 4 is the first unknown one.
+// model §5.3: a wrong version is UnsupportedVersion at byte 12. Version 4
+// is read since WP-144 (`declared_v4_*`); 5 is the first unknown one.
 #[test]
 fn rejects_wrong_version() {
     let payload = raw_payload(&[], [&[], &[], &[]]);
-    for version in [0u32, 4] {
+    for version in [0u32, 5] {
         let mut bytes = file(*b"DECL", 1, &[(1, &payload)]);
         bytes[12..16].copy_from_slice(&version.to_le_bytes());
         let e = Declared::from_bytes(&bytes).unwrap_err();
@@ -999,4 +1001,300 @@ fn rules_id_v3() {
     assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
     // The v2 id is the one it was.
     assert_eq!(golden_declared().rules_id(), with(&["/src"], &["/src/dep"], &[]));
+}
+
+// ---------------------------------------------------------------------------
+// WP-144: `existing` / `existing_local`, DECL version 4
+
+#[derive(Default)]
+struct At4 {
+    existing: usize,
+    existing_at: Vec<usize>,
+    existing_local: usize,
+    existing_local_at: Vec<usize>,
+    existing_local_file_at: Vec<usize>,
+}
+
+fn raw_payload_v4(
+    rules: &[Rule],
+    lists: [&[Digest]; 3],
+    kept: &[Digest],
+    files: Option<&Ownership>,
+    existing: &[Digest],
+    existing_local: &[ExistingLocal],
+) -> (Vec<u8>, At4) {
+    let mut e = Encoder::new();
+    e.count(rules.len());
+    for r in rules {
+        r.encode(&mut e);
+    }
+    for list in lists {
+        e.count(list.len());
+        for k in list {
+            e.digest(k);
+        }
+    }
+    e.count(kept.len());
+    for k in kept {
+        e.digest(k);
+    }
+    match files {
+        None => {
+            e.u8(0);
+        }
+        Some(o) => {
+            e.u8(1);
+            for list in [&o.owned, &o.readonly, &o.rebuilt] {
+                e.count(list.len());
+                for p in list {
+                    e.bytes(p);
+                }
+            }
+        }
+    }
+    let mut at = At4 { existing: e.as_bytes().len(), ..At4::default() };
+    e.count(existing.len());
+    for k in existing {
+        at.existing_at.push(e.as_bytes().len());
+        e.digest(k);
+    }
+    at.existing_local = e.as_bytes().len();
+    e.count(existing_local.len());
+    for entry in existing_local {
+        at.existing_local_at.push(e.as_bytes().len());
+        e.digest(&entry.key);
+        at.existing_local_file_at.push(e.as_bytes().len());
+        e.bytes(&entry.file);
+    }
+    (e.into_bytes(), at)
+}
+
+fn decl4(payload: &[u8]) -> Vec<u8> {
+    file(*b"DECL", 4, &[(1, payload)])
+}
+
+fn json_existing_local(list: &[ExistingLocal]) -> Value {
+    Value::Array(
+        list.iter()
+            .map(|e| {
+                Value::Object(vec![
+                    ("key".into(), Value::Str(e.key.to_string())),
+                    ("file".into(), Value::Str(String::from_utf8(e.file.clone()).unwrap())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn local(k: u8, path: &str) -> ExistingLocal {
+    ExistingLocal { key: d(k), file: path.as_bytes().to_vec() }
+}
+
+// WP-144: version 4 round-trips with `existing`, `existing_local`, or both,
+// with empty or non-empty `rebuilt`; version 2 and 3 keep their exact bytes.
+#[test]
+fn declared_v4_round_trip() {
+    let base_v2 = golden_declared();
+    let base_v3 = base_v2.clone().with_files(Some(files3()));
+    // Version 2 and 3 unchanged.
+    assert_eq!(base_v2.to_bytes()[12..16], 2u32.to_le_bytes());
+    assert_eq!(base_v3.to_bytes()[12..16], 3u32.to_le_bytes());
+
+    let cases = [
+        base_v2.clone().with_existing(vec![d(10), d(11)], vec![]).unwrap(),
+        base_v2.clone().with_existing(vec![], vec![local(10, "/src/a.cpp")]).unwrap(),
+        base_v3
+            .clone()
+            .with_existing(vec![d(10)], vec![local(10, "/src/a.cpp"), local(10, "/src/b.cpp")])
+            .unwrap(),
+    ];
+    for x in &cases {
+        x.validate().unwrap();
+        let bytes = x.to_bytes();
+        assert_eq!(bytes[12..16], 4u32.to_le_bytes());
+        let (payload, _) = raw_payload_v4(
+            x.rules().rules(),
+            [x.changed(), x.created(), x.removed()],
+            x.kept(),
+            x.files(),
+            x.existing(),
+            x.existing_local(),
+        );
+        assert_eq!(bytes, decl4(&payload));
+        let back = Declared::from_bytes(&bytes).unwrap();
+        assert_eq!(&back, x);
+        let text = json::write_pretty(&x.to_json()).unwrap();
+        let from_text = Declared::from_json(&parse(&text)).unwrap();
+        assert_eq!(&from_text, x);
+        assert_eq!(from_text.to_bytes(), bytes);
+        assert_eq!(dump(&bytes).unwrap(), text);
+        assert_eq!(undump(&parse(&text)).unwrap(), bytes);
+        assert_eq!(get(&x.to_json(), &["version"]), &Value::Int(4));
+    }
+    // Version 4 with empty `rebuilt` is accepted (unlike version 3).
+    assert!(cases[0].files().unwrap().rebuilt.is_empty());
+    assert!(dump(&cases[0].to_bytes()).unwrap().contains("\"rebuilt\": []"));
+}
+
+fn v4_base_json() -> Value {
+    let mut v = golden_declared().with_existing(vec![d(1)], vec![]).unwrap().to_json();
+    for list in ["changed", "created", "removed", "kept"] {
+        set(&mut v, &["sections", "declared", list], Value::Array(vec![]));
+    }
+    v
+}
+
+// WP-144: reader checks between row 4 and row 5 (order and canonical path).
+#[test]
+fn declared_v4_reader_order_and_paths() {
+    let rules = golden_rules();
+    let o = files();
+
+    // 1. existing is not strictly ascending.
+    for bad in [[d(2), d(1)], [d(2), d(2)]] {
+        let (payload, at) = raw_payload_v4(&rules, [&[], &[], &[]], &[], Some(&o), &bad, &[]);
+        let mut json = v4_base_json();
+        set(&mut json, &["sections", "declared", "existing"], json_keys(&bad));
+        rejected(
+            &decl4(&payload),
+            base(&payload) + at.existing_at[1],
+            &json,
+            "sections.declared.existing[1]",
+        );
+        assert_eq!(
+            Declared::from_bytes(&decl4(&payload)).unwrap_err().what,
+            "existing is not strictly ascending"
+        );
+        assert_eq!(
+            Declared::none().with_existing(bad.to_vec(), vec![]),
+            Err(DeclaredError::NotAscending { list: "existing", index: 1 })
+        );
+    }
+
+    // 2. existing_local is not strictly ascending (by key, then file).
+    for bad in [
+        [local(2, "/src/a.cpp"), local(1, "/src/b.cpp")],
+        [local(1, "/src/b.cpp"), local(1, "/src/a.cpp")],
+        [local(1, "/src/a.cpp"), local(1, "/src/a.cpp")],
+    ] {
+        let (payload, at) = raw_payload_v4(&rules, [&[], &[], &[]], &[], Some(&o), &[], &bad);
+        let mut json = v4_base_json();
+        set(&mut json, &["sections", "declared", "existing"], Value::Array(vec![]));
+        set(&mut json, &["sections", "declared", "existing_local"], json_existing_local(&bad));
+        rejected(
+            &decl4(&payload),
+            base(&payload) + at.existing_local_at[1],
+            &json,
+            "sections.declared.existing_local[1]",
+        );
+        assert_eq!(
+            Declared::from_bytes(&decl4(&payload)).unwrap_err().what,
+            "existing_local is not strictly ascending"
+        );
+        assert_eq!(
+            Declared::none().with_existing(vec![], bad.to_vec()),
+            Err(DeclaredError::NotAscending { list: "existing_local", index: 1 })
+        );
+    }
+
+    // 3. existing_local[i].file not a canonical absolute path.
+    for bad_path in ["src/a.cpp", "/src/a.cpp/", "/src/../a.cpp"] {
+        let bad = [local(1, "/src/ok.cpp"), local(2, bad_path)];
+        let (payload, at) = raw_payload_v4(&rules, [&[], &[], &[]], &[], Some(&o), &[], &bad);
+        let mut json = v4_base_json();
+        set(&mut json, &["sections", "declared", "existing"], Value::Array(vec![]));
+        set(&mut json, &["sections", "declared", "existing_local"], json_existing_local(&bad));
+        rejected(
+            &decl4(&payload),
+            base(&payload) + at.existing_local_file_at[1],
+            &json,
+            "sections.declared.existing_local[1].file",
+        );
+        assert_eq!(
+            Declared::from_bytes(&decl4(&payload)).unwrap_err().what,
+            "not a canonical absolute path"
+        );
+        let x = golden_declared().with_existing(vec![], bad.to_vec()).unwrap();
+        assert!(x.validate().unwrap_err().contains("not a canonical absolute path"));
+    }
+}
+
+// WP-144: reader checks between row 4 and row 5 (version and namespace rule).
+#[test]
+fn declared_v4_reader_version_and_rules() {
+    let rules = golden_rules();
+    let o = files();
+
+    // 4. a version 4 container has no existing entry.
+    let (payload, at) = raw_payload_v4(&rules, [&[], &[], &[]], &[], Some(&o), &[], &[]);
+    let mut json = v4_base_json();
+    set(&mut json, &["sections", "declared", "existing"], Value::Array(vec![]));
+    rejected(&decl4(&payload), base(&payload) + at.existing, &json, "sections.declared.existing");
+    assert_eq!(
+        Declared::from_bytes(&decl4(&payload)).unwrap_err().what,
+        "a version 4 container has no existing entry"
+    );
+
+    // 5. version 2 and version 3 JSON with existing members refused.
+    for vnum in [2i128, 3] {
+        let mut json = v4_base_json();
+        set(&mut json, &["version"], Value::Int(vnum));
+        assert!(Declared::from_json(&json).is_err(), "v{vnum}");
+    }
+
+    // 6. existing without a namespace rule (no rules, and non-namespace rule only).
+    let fn_rule = vec![rule(
+        Parent::Unit(d(0x1e)),
+        KeyKind::Function,
+        id("g"),
+        Some(d(0xd1)),
+        (Parent::Unit(d(0xac)), id("f")),
+    )];
+    let (payload, at) = raw_payload_v4(&fn_rule, [&[], &[], &[]], &[], Some(&o), &[d(9)], &[]);
+    let mut json = v4_base_json();
+    set(&mut json, &["sections", "declared", "rules"], json_rules(&fn_rule));
+    set(&mut json, &["sections", "declared", "existing"], json_keys(&[d(9)]));
+    rejected(&decl4(&payload), base(&payload) + at.existing, &json, "sections.declared.existing");
+    assert_eq!(
+        Declared::from_bytes(&decl4(&payload)).unwrap_err().what,
+        "existing without a namespace rule"
+    );
+    let x = Declared::new(fn_rule, vec![], vec![], vec![])
+        .unwrap()
+        .with_files(Some(o.clone()))
+        .with_existing(vec![], vec![local(9, "/src/a.cpp")])
+        .unwrap();
+    assert!(x.validate().unwrap_err().contains("existing without a namespace rule"));
+}
+
+// WP-144: `rules_id` uses `slip.rules.v4` iff `existing` or `existing_local`
+// is non-empty; v1, v2, and v3 ids are unchanged when both are empty.
+#[test]
+fn rules_id_v4() {
+    let x = golden_declared()
+        .with_files(Some(files3()))
+        .with_existing(vec![d(10)], vec![local(11, "/src/a.cpp")])
+        .unwrap();
+    let mut e = Encoder::new();
+    e.count(x.rules().rules().len());
+    for r in x.rules().rules() {
+        r.encode(&mut e);
+    }
+    e.count(1).bytes(b"/src").count(1).bytes(b"/src/dep").count(1).bytes(b"/src/build");
+    e.count(1).digest(&d(10));
+    e.count(1).digest(&d(11)).bytes(b"/src/a.cpp");
+    assert_eq!(x.rules_id(), tagged_digest(RULES_V4_TAG, e.as_bytes()));
+    assert_ne!(RULES_V4_TAG, RULES_V3_TAG);
+    assert_ne!(RULES_V4_TAG, RULES_V2_TAG);
+    // Changing existing or existing_local changes rules_id.
+    let y = golden_declared()
+        .with_files(Some(files3()))
+        .with_existing(vec![d(10)], vec![local(11, "/src/b.cpp")])
+        .unwrap();
+    assert_ne!(x.rules_id(), y.rules_id());
+    let z = golden_declared()
+        .with_files(Some(files3()))
+        .with_existing(vec![d(12)], vec![local(11, "/src/a.cpp")])
+        .unwrap();
+    assert_ne!(x.rules_id(), z.rules_id());
 }

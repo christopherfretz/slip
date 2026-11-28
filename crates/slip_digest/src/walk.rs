@@ -211,8 +211,22 @@ pub(crate) struct Walk<'a> {
     /// Which files are read-only, read under a non-empty table only
     /// (`owned.rs`, WP-110).
     pub read_only: crate::ReadOnly<'a>,
+    /// Program-wide entities and whole namespaces already in the target
+    /// namespace (`spec/verify.md` §2.1, WP-144).
+    pub existing: &'a [Digest],
+    /// Local entities already in the target namespace (`spec/verify.md`
+    /// §2.1, WP-144).
+    pub existing_local: &'a [slip_model::declared::ExistingLocal],
     /// Ownership of entities and namespace views (`owned.rs`).
     pub owned_state: crate::owned::OwnedState,
+    /// State for `existing` / `existing_local` (`owned.rs`, WP-144).
+    pub existing_state: crate::owned::ExistingState,
+    /// Nesting depth of probe writing (WP-144 amendment 2): above 0,
+    /// namespaces are written by their dependency-view key without R1, R2,
+    /// or `ns_table`, using the separate probe memos.
+    pub probe: u32,
+    /// Separate memos swapped into `Walk` while `probe > 0`.
+    pub probe_memos: ProbeMemos,
     /// References to namespaces under rules (`ns_refs.rs`, WP-141).
     pub ns_refs: crate::ns_refs::NsRefState,
     /// Type digests by the raw canonical `QualType`.
@@ -376,6 +390,31 @@ pub(crate) struct TypeState {
     abort_memo: HashMap<(u32, bool), (TypeRef, bool)>,
 }
 
+/// Separate memos swapped into [`Walk`] during probe writing (WP-144
+/// amendment 2), so probe keys never pollute normal memos or read
+/// `ns_table`-dependent entries from them.
+#[derive(Default)]
+pub(crate) struct ProbeMemos {
+    type_memo: HashMap<u32, TypeRef>,
+    type_memo_no_exc: HashMap<u32, TypeRef>,
+    keys: HashMap<DeclId, KeyRes>,
+    keys_in_progress: HashSet<DeclId>,
+    views: HashMap<(DeclId, bool), KeyRes>,
+    content: HashMap<DeclId, Hashed>,
+    content_in_progress: HashSet<DeclId>,
+    content_emits: HashMap<DeclId, Vec<DeclId>>,
+    const_memo: HashMap<u32, Hashed>,
+    const_memo_by_value: HashMap<u32, Hashed>,
+}
+
+/// Saved walk state while an outermost probe call is active.
+pub(crate) struct ProbeSaved {
+    rule_use: Option<crate::rule_use::Counting>,
+    bytes: u64,
+    record_parents: bool,
+    pending: Option<Vec<DeclId>>,
+}
+
 impl std::fmt::Debug for Walk<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Walk").field("queue", &self.queue.len()).finish_non_exhaustive()
@@ -390,7 +429,12 @@ impl<'a> Walk<'a> {
             subject_path: input.subject_path,
             rules,
             read_only: crate::ReadOnly::EVERY_FILE,
+            existing: &[],
+            existing_local: &[],
             owned_state: crate::owned::OwnedState::default(),
+            existing_state: crate::owned::ExistingState::default(),
+            probe: 0,
+            probe_memos: ProbeMemos::default(),
             ns_refs: crate::ns_refs::NsRefState::default(),
             type_memo: HashMap::new(),
             type_memo_no_exc: HashMap::new(),
@@ -450,6 +494,53 @@ impl<'a> Walk<'a> {
             return None;
         }
         self.names.as_mut()
+    }
+
+    /// Enters probe writing (WP-144 amendment 2). On the outermost entry
+    /// (`probe == 0`), swaps the normal memos with [`Walk::probe_memos`]
+    /// and puts aside `rule_use`, `bytes`, `record_parents`, and `pending`.
+    pub(crate) fn enter_probe(&mut self) -> Option<ProbeSaved> {
+        let saved = if self.probe == 0 {
+            self.swap_probe_memos();
+            self.dropped += 1;
+            let rule_use = self.rule_use.take();
+            let bytes = self.bytes;
+            let record_parents = std::mem::replace(&mut self.owned_state.record_parents, false);
+            let pending = self.ns_refs.pending.take();
+            Some(ProbeSaved { rule_use, bytes, record_parents, pending })
+        } else {
+            None
+        };
+        self.probe += 1;
+        saved
+    }
+
+    /// Leaves probe writing, restoring the normal memos and state when the
+    /// outermost probe finishes.
+    pub(crate) fn leave_probe(&mut self, saved: Option<ProbeSaved>) {
+        self.probe -= 1;
+        if let Some(s) = saved {
+            debug_assert_eq!(self.probe, 0);
+            self.ns_refs.pending = s.pending;
+            self.owned_state.record_parents = s.record_parents;
+            self.bytes = s.bytes;
+            self.rule_use = s.rule_use;
+            self.dropped -= 1;
+            self.swap_probe_memos();
+        }
+    }
+
+    fn swap_probe_memos(&mut self) {
+        std::mem::swap(&mut self.type_memo, &mut self.probe_memos.type_memo);
+        std::mem::swap(&mut self.type_memo_no_exc, &mut self.probe_memos.type_memo_no_exc);
+        std::mem::swap(&mut self.keys, &mut self.probe_memos.keys);
+        std::mem::swap(&mut self.keys_in_progress, &mut self.probe_memos.keys_in_progress);
+        std::mem::swap(&mut self.owned_state.views, &mut self.probe_memos.views);
+        std::mem::swap(&mut self.content, &mut self.probe_memos.content);
+        std::mem::swap(&mut self.content_in_progress, &mut self.probe_memos.content_in_progress);
+        std::mem::swap(&mut self.content_emits, &mut self.probe_memos.content_emits);
+        std::mem::swap(&mut self.const_memo, &mut self.probe_memos.const_memo);
+        std::mem::swap(&mut self.const_memo_by_value, &mut self.probe_memos.const_memo_by_value);
     }
 
     /// Starts collecting a names digest, and returns what was being
@@ -775,6 +866,8 @@ pub(crate) fn run_kept<R>(
 ) -> R {
     let mut w = Walk::new(input, options.rules);
     w.read_only = options.read_only;
+    w.existing = options.existing;
+    w.existing_local = options.existing_local;
     if options.rule_use && !options.rules.is_empty() {
         w.rule_use = Some(crate::rule_use::Counting::new(kept));
         w.owned_state.record_parents = true;
@@ -859,6 +952,14 @@ pub(crate) fn run_kept<R>(
     let (made, fixed) = crate::own_lists::lists(&mut w, counting.as_ref());
     let rebuilt =
         crate::rule_use::rebuilt(counting.as_ref(), &w.owned_state.cutters, w.subject_path);
+    let existing_use = if options.rule_use && !options.rules.is_empty() {
+        slip_model::ExistingUse {
+            existing: w.existing_state.used_existing.iter().map(|&i| i as u64).collect(),
+            local: w.existing_state.used_local.iter().map(|&i| i as u64).collect(),
+        }
+    } else {
+        slip_model::ExistingUse::default()
+    };
     let (rule_use, kept) = crate::rule_use::finish(counting);
     let output = Output {
         digests,
@@ -872,6 +973,7 @@ pub(crate) fn run_kept<R>(
         made,
         fixed,
         rebuilt,
+        existing_use,
     };
     f(&mut w, &written, output)
 }

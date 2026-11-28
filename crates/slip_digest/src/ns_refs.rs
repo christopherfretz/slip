@@ -71,6 +71,9 @@ const ROUTE_LIMIT: usize = 4096;
 #[derive(Default)]
 pub(crate) struct NsRefState {
     table: Option<Arc<Table>>,
+    /// Guard against re-entering `ns_table` during Pass 1 or Pass 2
+    /// (WP-144 amendment 2: probes must never read `ns_table`).
+    building: bool,
     by_key: Option<Arc<ByKey>>,
     /// `digest.ref.namespace_no_referent`: references named to find
     /// members that found nothing, written with every view key.
@@ -95,21 +98,32 @@ pub(crate) struct NsRefState {
 struct NsInfo {
     /// Its own ownership (`Walk::owned`).
     owned: bool,
+    /// WP-144 amendment 3: listed whole, or holds an existing member or a
+    /// nested namespace that stays.
+    stays: bool,
     /// Some declaration of it is `inline`.
     inline: bool,
     /// Its enclosing namespace entity (`None`: the global namespace, or
     /// not at namespace scope).
     parent: Option<DeclId>,
-    /// By view (`[dependency, owned]`): an entity of that ownership
-    /// (`Walk::owned`, the entity's, not the file of one declaration)
-    /// that is not a namespace is keyed with it as its namespace parent
-    /// (`Walk::key_namespace`): a member, or a content-keyed using-directive,
-    /// alias, using-declaration or `static_assert`.
+    /// By view (`[unmapped, mapped]`): a member of that view (`mapped(e)`),
+    /// or a read-only opening (`!in_owned_file`) or listed namespace for
+    /// `[0]`.
     member: [bool; 2],
     /// By view: it holds something (A4; WP-140 review F3): a member of
     /// that view, or a nested namespace that holds something in that view,
-    /// transitively. An opening alone holds nothing.
+    /// transitively. An opening alone holds nothing (unless read-only or
+    /// listed).
     holds: [bool; 2],
+}
+
+impl NsInfo {
+    /// WP-144 amendment 3: the namespace's own view (`owned && !stays`):
+    /// `true` for the mapped view, `false` for the unmapped (dependency)
+    /// view.
+    fn own_view(self) -> bool {
+        self.owned && !self.stays
+    }
 }
 
 /// Where a using-directive (or a namespace) is, at namespace scope.
@@ -246,11 +260,34 @@ impl Walk<'_> {
         !self.rules.is_empty() && self.rules.rules().iter().any(|r| r.kind == KeyKind::Namespace)
     }
 
+    /// The own view of namespace `ns` (WP-144 amendment 3): `true`
+    /// (mapped) when owned and not staying, `false` (unmapped/dependency)
+    /// otherwise. Without `existing` entries, identical to `Walk::owned`.
+    pub(crate) fn ns_own_view(&mut self, ns: DeclId) -> bool {
+        let ns = self.entity(ns);
+        if !self.has_existing() || !self.ns_rules() {
+            return self.owned(ns);
+        }
+        let table = self.ns_table();
+        table.info.get(&ns).map_or_else(|| self.owned(ns), |i| i.own_view())
+    }
+
+    /// Whether namespace `ns` stays (WP-144 amendment 3): listed whole, or
+    /// holds an existing member or a nested namespace that stays.
+    pub(crate) fn ns_stays(&mut self, ns: DeclId) -> bool {
+        if !self.has_existing() || !self.ns_rules() {
+            return false;
+        }
+        let ns = self.entity(ns);
+        let table = self.ns_table();
+        table.info.get(&ns).is_some_and(|i| i.stays)
+    }
+
     /// The key of namespace `ns` in `view`: its own key in its own view,
     /// else `Walk::view_key` (rule 2, from the point of view of a member
-    /// of that ownership).
+    /// of that view).
     fn ns_view_key(&mut self, ns: DeclId, view: bool) -> KeyRes {
-        if self.owned(ns) == view { self.key(ns) } else { self.view_key(ns, view) }
+        if self.ns_own_view(ns) == view { self.key(ns) } else { self.view_key(ns, view) }
     }
 
     /// R1: `ns` named to find members, `found` what the lookup found
@@ -265,7 +302,7 @@ impl Walk<'_> {
     /// counted. The keys sorted, duplicates removed: one is `Ref::unit`,
     /// two `Ref::views`.
     pub(crate) fn write_ns_found(&mut self, s: &mut Stream, ns: DeclId, found: &[DeclId]) {
-        if crate::local::numbering_mode(self) {
+        if self.probe > 0 || crate::local::numbering_mode(self) {
             self.write_ref(s, ns);
             return;
         }
@@ -338,7 +375,7 @@ impl Walk<'_> {
         let e = self.entity(ast.strip_shadow(f));
         let Some(c) = self.enclosing_namespace(e) else { return Route::Unknown };
         if set.contains(&c) {
-            return Route::Views(vec![self.owned(e)]);
+            return Route::Views(vec![self.entity_view(e)]);
         }
         let mut views = Vec::new();
         for &n in set {
@@ -379,7 +416,7 @@ impl Walk<'_> {
     /// R2: namespace `target` named whole by `d` (a using-directive at
     /// namespace scope, or a namespace alias) (`spec/digest.md` §3.4).
     pub(crate) fn write_ns_whole(&mut self, s: &mut Stream, d: DeclId, target: DeclId) {
-        if !self.ns_rules() || crate::local::numbering_mode(self) {
+        if self.probe > 0 || !self.ns_rules() || crate::local::numbering_mode(self) {
             self.write_ref(s, target);
             return;
         }
@@ -420,7 +457,7 @@ impl Walk<'_> {
         if self.read_only_by_path(d) {
             // One reading, the dependency view's (its one view key if it
             // has no dependency part); never `part`.
-            if ni.owned && ni.exists(false) {
+            if ni.own_view() && ni.exists(false) {
                 return match self.view_key(ns, false) {
                     KeyRes::Key { id, cause, .. } => Reading::Unit(id, cause),
                     KeyRes::None(c) => Reading::None(c.unwrap_or(NO_VIEW_KEY)),
@@ -438,7 +475,7 @@ impl Walk<'_> {
         if missing(&by_key, &id, &named).next().is_none() {
             Reading::Unit(id, cause.or(by_key.cause))
         } else {
-            Reading::Part(id, ni.owned, cause.or(by_key.cause))
+            Reading::Part(id, ni.own_view(), cause.or(by_key.cause))
         }
     }
 
@@ -520,12 +557,17 @@ impl Walk<'_> {
         None
     }
 
-    /// The table, made on first need from every declaration of the AST.
-    #[allow(clippy::too_many_lines, reason = "one pass over the declarations, for every table")]
+    /// The table, made on first need from every declaration of the AST,
+    /// in two passes that never re-enter it (WP-144 amendment 2):
+    /// 1. Namespaces (`owned`, `listed`, read-only openings).
+    /// 2. Members and using-directives (probes).
+    #[allow(clippy::too_many_lines, reason = "two passes over the declarations, for every table")]
     fn ns_table(&mut self) -> Arc<Table> {
         if let Some(t) = &self.ns_refs.table {
             return Arc::clone(t);
         }
+        assert!(!self.ns_refs.building, "ns_table re-entered during construction");
+        self.ns_refs.building = true;
         let ast = self.ast;
         let mut info_of: HashMap<DeclId, NsInfo> = HashMap::new();
         let mut order = Vec::new();
@@ -533,6 +575,7 @@ impl Walk<'_> {
         let mut dirs: HashMap<DeclId, Vec<(DeclId, bool)>> = HashMap::new();
         let mut seen: HashSet<DeclId> = HashSet::new();
         let ids: Vec<DeclId> = ast.decls.ids().collect();
+        // Pass 1: namespaces (`owned`, `listed`, from chains alone).
         for &d in &ids {
             if ast.decls.get(d).kind() != DeclKind::Namespace {
                 continue;
@@ -542,6 +585,7 @@ impl Walk<'_> {
                 continue;
             }
             let owned = self.owned(e);
+            let listed = owned && self.listed(e);
             let chain = self.chain(e);
             let mut inline = false;
             if chain.len() <= REDECL_LIMIT {
@@ -552,21 +596,34 @@ impl Walk<'_> {
                 }
             }
             let parent = self.directive_scope(e).and_then(NsScope::ns);
-            info_of
-                .insert(e, NsInfo { owned, inline, parent, member: [false; 2], holds: [false; 2] });
+            // WP-144 amendment 4: a listed namespace holds in the
+            // dependency view even when empty, as a read-only opening does.
+            info_of.insert(
+                e,
+                NsInfo {
+                    owned,
+                    stays: listed,
+                    inline,
+                    parent,
+                    member: [listed, false],
+                    holds: [false; 2],
+                },
+            );
             order.push(e);
         }
-        // Addendum A4: a read-only opening holds, even when empty (an
-        // empty owned opening is what a transform leaves behind, and holds
-        // nothing).
+        // Addendum A4 / WP-144: a read-only opening holds, even when empty
+        // (an empty owned opening is what a transform leaves behind, and
+        // holds nothing). Decided per inclusion (`in_owned_file`), as
+        // entity ownership is.
         for &d in &ids {
-            if ast.decls.get(d).kind() == DeclKind::Namespace && self.read_only_by_path(d) {
+            if ast.decls.get(d).kind() == DeclKind::Namespace && !self.in_owned_file(d) {
                 let e = self.entity(d);
                 if let Some(i) = info_of.get_mut(&e) {
                     i.member[0] = true;
                 }
             }
         }
+        // Pass 2: members and using-directives (probes).
         for &d in &ids {
             let kind = ast.decls.get(d).kind();
             if kind == DeclKind::UsingDirective
@@ -577,13 +634,13 @@ impl Walk<'_> {
                 let t = self.entity(ast.resolve_alias(t));
                 named.entry((scope, file)).or_default().insert(t);
                 if let Some(n) = scope {
-                    let own = !self.read_only_by_path(d);
-                    if own {
+                    if self.in_owned_file(d) {
                         self.rebuilt_reference(d, t);
                     }
+                    let view = self.mapped(d);
                     let v = dirs.entry(n).or_default();
-                    if !v.contains(&(t, own)) {
-                        v.push((t, own));
+                    if !v.contains(&(t, view)) {
+                        v.push((t, view));
                     }
                 }
             }
@@ -610,14 +667,13 @@ impl Walk<'_> {
             // keyed under `c_linkage`, but lookup finds it as a member of
             // every namespace a declaration of it is in ([dcl.link],
             // [namespace.udir]). Counted there, per declaration, in the
-            // ownership of the declaration's file: the entity may be the
-            // dependency's (it declares it too, `owned/c-function-dependency-declares`)
-            // while an owned opening is what makes it a member here.
+            // ownership of the declaration's file (or unmapped if the
+            // namespace is listed whole, WP-144 limit 5).
             if info(kind).c_linkage && self.in_c_linkage(e) {
                 if let Some(n) = self.enclosing_namespace(d)
                     && info_of.contains_key(&n)
                 {
-                    let b = self.in_owned_file(d);
+                    let b = self.in_owned_file(d) && !self.listed(n);
                     if let Some(i) = info_of.get_mut(&n) {
                         i.member[usize::from(b)] = true;
                     }
@@ -631,14 +687,20 @@ impl Walk<'_> {
             if !info_of.contains_key(&n) {
                 continue;
             }
-            let b = self.owned(e);
+            let owned_e = self.owned(e);
+            let ex_e = owned_e && self.existing(e);
+            let b = owned_e && !ex_e;
             if let Some(i) = info_of.get_mut(&n) {
                 i.member[usize::from(b)] = true;
+                if ex_e {
+                    i.stays = true;
+                }
             }
         }
         order.sort();
-        // A4: what a namespace holds, deepest first, so that a nested
-        // namespace's answer is known before its parent's.
+        // A4 / WP-144 amendment 3: what a namespace holds and whether it
+        // stays, deepest first, so that a nested namespace's answer is
+        // known before its parent's.
         let depth = |n: DeclId| {
             let mut k = 0usize;
             let mut at = info_of.get(&n).and_then(|i| i.parent);
@@ -664,6 +726,7 @@ impl Walk<'_> {
             {
                 pi.holds[0] |= i.holds[0];
                 pi.holds[1] |= i.holds[1];
+                pi.stays |= i.stays;
                 if i.inline {
                     inline_children.entry(p).or_default().push(n);
                 }
@@ -674,6 +737,7 @@ impl Walk<'_> {
         }
         let t = Arc::new(Table { info: info_of, order, named, dirs, inline_children });
         self.ns_refs.table = Some(Arc::clone(&t));
+        self.ns_refs.building = false;
         t
     }
 
@@ -754,18 +818,18 @@ impl Walk<'_> {
             KeyRes::Key { id, cause: None, .. } => id,
             KeyRes::Key { .. } | KeyRes::None(_) => return Vec::new(),
         };
-        let mine = self.owned(ns);
+        let mine = self.ns_own_view(ns);
         if !self.ns_rules() {
             return vec![(mine, own)];
         }
         let table = self.ns_table();
         let Some(&ni) = table.info.get(&ns) else { return vec![(mine, own)] };
-        let mut out = vec![(ni.owned, own)];
-        if ni.exists(!ni.owned)
-            && let KeyRes::Key { id, cause: None, .. } = self.view_key(ns, !ni.owned)
+        let mut out = vec![(ni.own_view(), own)];
+        if ni.exists(!ni.own_view())
+            && let KeyRes::Key { id, cause: None, .. } = self.view_key(ns, !ni.own_view())
             && id != own
         {
-            out.push((!ni.owned, id));
+            out.push((!ni.own_view(), id));
         }
         out
     }
@@ -881,7 +945,7 @@ pub(crate) fn notes(w: &mut Walk<'_>, written: &[crate::units::Written]) -> Vec<
             }
             let written_reading = Some(k) == own;
             if written_reading {
-                w.ns_refs.part.insert(d, ni.owned);
+                w.ns_refs.part.insert(d, ni.own_view());
             }
             let mut miss: Vec<(String, Vec<u8>)> = gone
                 .into_iter()

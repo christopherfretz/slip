@@ -223,7 +223,13 @@ fn records_of(source: &str, rules: &RuleTable) -> Vec<slip_digest::records::Reco
                         sm,
                         subject_path: &|file| paths.get(file.index()).cloned().unwrap_or_default(),
                     };
-                    slip_digest::records::records(&input, rules, slip_digest::ReadOnly::NO_FILE)
+                    slip_digest::records::records(
+                        &input,
+                        rules,
+                        slip_digest::ReadOnly::NO_FILE,
+                        &[],
+                        &[],
+                    )
                 })
                 .expect("a thread for the walk")
                 .join()

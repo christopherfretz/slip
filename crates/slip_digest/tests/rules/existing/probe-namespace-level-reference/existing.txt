@@ -1,0 +1,3 @@
+acme::h(int)
+acme::h(double)
+template <class> decltype(acme::h(t)) acme::f(type-parameter-0-0)

@@ -37,6 +37,8 @@ fn digest_with(src: &str, std: &str, rules: RuleTable) -> (Output, u64) {
                     &Options {
                         rules: &rules,
                         read_only: crate::ReadOnly::NO_FILE,
+                        existing: &[],
+                        existing_local: &[],
                         detail: Detail::All,
                         names: true,
                         rule_use: false,

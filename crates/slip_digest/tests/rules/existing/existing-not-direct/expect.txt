@@ -1,0 +1,2 @@
+# Counts: existing entity is neither via nor direct for legacy => acme.
+use 1 via 1 direct 0

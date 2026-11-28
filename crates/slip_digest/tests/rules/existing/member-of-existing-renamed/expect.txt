@@ -1,0 +1,8 @@
+# Limit 1 (widened, WP-172): a rule on a member of an existing entity has its
+# parent written in mapped terms without the existing lists (`legacy::C`), so it
+# cannot match `acme::C::m2()` and fails closed.
+changed acme::C
+added acme::C::m2()
+removed acme::C::m()
+use 1 via 1 direct 0
+use 2 via 0 direct 0

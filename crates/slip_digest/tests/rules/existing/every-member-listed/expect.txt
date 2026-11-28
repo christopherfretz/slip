@@ -1,0 +1,2 @@
+# Amendment 3: namespace whose every member is listed has one unit acme::newlib -> equal.
+use 1 via 1 direct 0

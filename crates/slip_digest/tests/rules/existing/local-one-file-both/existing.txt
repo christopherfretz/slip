@@ -1,0 +1,2 @@
+acme::<using other::v> @ main.cpp
+acme::<shadow other::v> @ main.cpp
