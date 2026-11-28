@@ -1372,4 +1372,70 @@ mod tests {
             texts.len()
         );
     }
+
+    // WP-173 fix round 1 (item 2): the transform-session path refuses
+    // `-fkiln-static-init-facts` in `TransformCommand::new` and keeps
+    // `Ast::static_init_facts` off when compiling a transform unit through
+    // `with_eval_session`.
+    #[test]
+    fn wp173_session_static_init_facts_is_off_and_flag_refused() {
+        struct Guard(std::path::PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let root = std::env::var_os("SLIP_TEST_ROOT")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = root.join(format!("slip-kiln-session-wp173-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = Guard(std::fs::canonicalize(&dir).unwrap());
+        let file = guard.0.join("t.cpp");
+        std::fs::write(
+            &file,
+            "static int g = 42;\nint helper() { static int s = g; return s; }\nconsteval void transform() {}\n",
+        )
+        .unwrap();
+        let resource = std::fs::canonicalize(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resource/include"),
+        )
+        .unwrap();
+
+        let refused = super::TransformCommand::new(
+            resource.clone(),
+            &["-fkiln-static-init-facts".to_owned()],
+            file.clone(),
+        )
+        .expect_err("TransformCommand::new must refuse -fkiln-static-init-facts");
+        assert_eq!(refused.word, "-fkiln-static-init-facts");
+
+        let cmd = super::TransformCommand::new(resource, &[], file).expect("valid command");
+        let line = cmd.command_line();
+        let (flag, any_fact) = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn_scoped(s, || {
+                    kiln_sema::stack_guard::StackGuard::install(63 << 20);
+                    let io = kiln_driver::Io {
+                        stdout: Box::new(std::io::sink()),
+                        stderr: kiln_driver::SharedWriter::new(std::io::sink()),
+                        stdin: Box::new(std::io::empty()),
+                    };
+                    kiln_driver::session::with_eval_session("kiln", &line, io, |opened| {
+                        let fe = opened.expect("transform compiles");
+                        let ast = &fe.session.sema().ast;
+                        let any_fact = (1..=ast.decls.len() as u32)
+                            .map(kiln_ast::DeclId::new)
+                            .any(|d| ast.static_init_fact(d).is_some());
+                        (ast.static_init_facts, any_fact)
+                    })
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!((flag, any_fact), (false, false));
+    }
 }

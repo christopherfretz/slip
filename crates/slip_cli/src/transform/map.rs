@@ -210,7 +210,7 @@ pub(crate) fn plan_of(
             Ok(built)
         }
         PlanSource::Plan(x) => {
-            let (plan, id) = commands::load_plan(store, x)?;
+            let (plan, id) = commands::load_plan_for_kiln(store, x)?;
             Ok((plan, id, status::OK))
         }
     }

@@ -822,7 +822,7 @@ impl InProcess {
         let store = commands::open_store(&absolute(store)?, Access::Shared)?;
         // A plan given as a file is read here, before any parse changes the
         // current directory.
-        let (plan, _) = commands::load_plan(&store, plan)?;
+        let (plan, _) = commands::load_plan_for_kiln(&store, plan)?;
         let image =
             Image::from_args(image).map_err(|e| Failure::Input(format!("{command}: {e}")))?;
         let observers = commands::select(&plan.observers, only, limit);

@@ -2345,3 +2345,118 @@ fn s2_1_declared_files_spelled_on_disk() {
         assert_eq!(published(), before, "nothing published");
     }
 }
+
+// WP-173 fix round 1 (item 1): `tool_kiln` carries the pinned Kiln commit
+// (`MAJOR.MINOR.PATCH+<9-hex-pin>`), so plans from another Kiln pin have a
+// different plan id, and `slip verify` (and the other Kiln-running commands)
+// refuse both an old-pin plan and an old-pin map run record, naming BOTH pins.
+#[test]
+fn wp173_old_kiln_pin_plan_and_map_run_are_refused() {
+    use slip_model::Phase;
+
+    let f = two_units("old-kiln-pin");
+    let cur_plan_hex = f.parse();
+    let cur_plan_id = Digest::from_hex(&cur_plan_hex).unwrap();
+    let cur_plan = f.plan(&cur_plan_hex);
+    let cur_kiln = slip_kiln::kiln_version();
+    let cur_pin = slip_kiln::kiln_pin().expect("kiln pin embedded at build time");
+    assert_eq!(cur_plan.tool_kiln, cur_kiln);
+    assert!(cur_kiln.ends_with(&format!("+{cur_pin}")), "unexpected tool_kiln {cur_kiln:?}");
+
+    // Control: current-pin plan + current-pin map run verifies cleanly.
+    let mut s = Vec::new();
+    let img = image(&f, &mut s);
+    let (ok_out, ok_report) = f.verify_report(&cur_plan_hex, &img);
+    assert_verdict(&ok_out, &ok_report, "verified");
+
+    // Read the real map run record and shards produced at the current pin.
+    let store = Store::open(&f.path("store"), Access::Shared).unwrap();
+    let real_map_bytes = store.latest_run(&cur_plan_id, Phase::Map).unwrap().unwrap();
+    let real_map_run = RunRecord::from_bytes(&real_map_bytes).unwrap();
+    assert_eq!(real_map_run.run.tool_kiln, cur_kiln);
+    let real_shards: Vec<(Digest, Vec<u8>)> = cur_plan
+        .observers
+        .iter()
+        .map(|o| (o.id, store.read_shard(&cur_plan_id, Phase::Map, 0, &o.id).unwrap().unwrap()))
+        .collect();
+
+    // Case 1: plans made at another Kiln pin (both pinned `1.3.0+60fb5ab9d`
+    // and pre-FR1 unpinned `1.3.0`), complete with their own map run record
+    // and map shards in the store.
+    for old_kiln in ["1.3.0+60fb5ab9d", "1.3.0"] {
+        let mut old_plan = cur_plan.clone();
+        old_plan.tool_kiln = old_kiln.to_owned();
+        let old_plan_id = store.publish_plan(&old_plan.to_bytes()).unwrap();
+        assert_ne!(
+            old_plan_id, cur_plan_id,
+            "different tool_kiln ({old_kiln} vs {cur_kiln}) must produce a distinct plan id"
+        );
+        for (obs_id, bytes) in &real_shards {
+            store.publish_shard(&old_plan_id, Phase::Map, 0, obs_id, bytes).unwrap();
+        }
+        let mut old_run = real_map_run.clone();
+        old_run.run.plan = old_plan_id;
+        old_run.run.tool_kiln = old_kiln.to_owned();
+        store
+            .publish_run(
+                &old_plan_id,
+                Phase::Map,
+                0,
+                old_run.run.started_unix_ns,
+                &old_run.to_bytes(),
+            )
+            .unwrap();
+
+        let old_plan_hex = old_plan_id.to_string();
+        let out = f.verify(&old_plan_hex, &img);
+        assert_eq!(out.code(), Some(3), "old plan {old_kiln} must be refused: {out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        assert!(
+            out.stderr.contains(old_kiln) && out.stderr.contains(cur_kiln),
+            "refusal must name both {old_kiln:?} and {cur_kiln:?}: {out:?}"
+        );
+        assert_eq!(f.verify_runs(&old_plan_hex), 0, "no verify run on refusal");
+
+        // Other Kiln-running commands taking `--plan` also refuse the old plan.
+        let parse_out = f.slip(&["parse", "--plan", &old_plan_hex, "--store", "store"]);
+        assert_eq!(parse_out.code(), Some(3), "{parse_out:?}");
+        assert!(
+            parse_out.stderr.contains(old_kiln) && parse_out.stderr.contains(cur_kiln),
+            "{parse_out:?}"
+        );
+        let units_out = f.slip(&["units", "--plan", &old_plan_hex, "--store", "store"]);
+        assert_eq!(units_out.code(), Some(3), "{units_out:?}");
+        assert!(
+            units_out.stderr.contains(old_kiln) && units_out.stderr.contains(cur_kiln),
+            "{units_out:?}"
+        );
+    }
+
+    // Case 2: current-pin plan whose latest map run record in the store was
+    // made at an old Kiln pin (`1.3.0+60fb5ab9d`) is ALSO refused by
+    // `slip verify`, naming BOTH pins.
+    let old_kiln = "1.3.0+60fb5ab9d";
+    let mut stale_run = real_map_run.clone();
+    stale_run.run.tool_kiln = old_kiln.to_owned();
+    stale_run.run.started_unix_ns += 1_000_000;
+    store
+        .publish_run(
+            &cur_plan_id,
+            Phase::Map,
+            0,
+            stale_run.run.started_unix_ns,
+            &stale_run.to_bytes(),
+        )
+        .unwrap();
+    drop(store);
+
+    let before_verify_runs = f.verify_runs(&cur_plan_hex);
+    let out = f.verify(&cur_plan_hex, &img);
+    assert_eq!(out.code(), Some(3), "stale map run must be refused: {out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        out.stderr.contains(old_kiln) && out.stderr.contains(cur_kiln),
+        "refusal must name both {old_kiln:?} and {cur_kiln:?}: {out:?}"
+    );
+    assert_eq!(f.verify_runs(&cur_plan_hex), before_verify_runs, "no verify run on refusal");
+}

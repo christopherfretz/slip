@@ -672,8 +672,18 @@ pub(crate) fn main(
     let store = open_store(&a.run.store, Access::Exclusive)?;
     let published = install_signals(&store, || {});
     let mut record = Record::new();
-    let (plan, plan_id) = commands::load_plan(&store, &a.plan)?;
+    let (plan, plan_id) = commands::load_plan_for_kiln(&store, &a.plan)?;
     let selected = selected_of_round(&store, plan_id, &plan, a.round).map_err(failure)?;
+    if let Some(map_bytes) = store
+        .latest_run_of_round(&plan_id, Phase::Map, a.round)
+        .map_err(|e| commands::store_failure(store.root(), &e))?
+        && let Ok(map_run) = slip_model::RunRecord::from_bytes(&map_bytes)
+    {
+        commands::check_kiln_version(
+            &format!("plan {plan_id} round {}'s map run", a.round),
+            &map_run.run.tool_kiln,
+        )?;
+    }
     let shards = StoreShards::new(&store, plan_id, &plan, a.round, &selected);
     let (transform_id, transform) =
         request_of_round(&store, plan_id, a.round, &shards).map_err(failure)?;

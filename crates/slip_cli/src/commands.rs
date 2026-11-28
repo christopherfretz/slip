@@ -186,7 +186,7 @@ fn parse(a: &ParseArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> 
     let (plan, id, plan_code) = match &a.source {
         PlanSource::Db(dbs) => build_and_publish(dbs, a.run.jobs, &store, out)?,
         PlanSource::Plan(x) => {
-            let (plan, id) = load_plan(&store, x)?;
+            let (plan, id) = load_plan_for_kiln(&store, x)?;
             let _ = writeln!(out, "plan {id}");
             (plan, id, status::OK)
         }
@@ -379,6 +379,28 @@ pub(crate) fn load_plan(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
     let plan =
         Plan::from_bytes(&bytes).map_err(|e| Failure::Input(format!("{}: {e}", path.display())))?;
     let id = store.publish_plan(&bytes).map_err(|e| store_failure(store.root(), &e))?;
+    Ok((plan, id))
+}
+
+/// Checks that `recorded` (a stored plan's or map run record's `tool_kiln`)
+/// matches this binary's [`slip_kiln::kiln_version`], refusing with an input
+/// error that names both Kiln identities when they differ.
+pub(crate) fn check_kiln_version(what: &str, recorded: &str) -> Result<()> {
+    let current = slip_kiln::kiln_version();
+    if recorded != current {
+        return Err(Failure::Input(format!(
+            "{what} was made with kiln {recorded}, but this slip links kiln {current}; \
+             rebuild the plan and map run with this slip"
+        )));
+    }
+    Ok(())
+}
+
+/// [`load_plan`], refusing any plan whose `tool_kiln` does not match the Kiln
+/// front end linked into this binary (naming both Kiln identities).
+pub(crate) fn load_plan_for_kiln(store: &Store, x: &OsString) -> Result<(Plan, Digest)> {
+    let (plan, id) = load_plan(store, x)?;
+    check_kiln_version(&format!("plan {id}"), &plan.tool_kiln)?;
     Ok((plan, id))
 }
 

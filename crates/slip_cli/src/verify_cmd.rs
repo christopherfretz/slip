@@ -39,27 +39,44 @@ fn input(message: impl std::fmt::Display) -> Failure {
     Failure::Input(format!("verify: {message}"))
 }
 
+/// Checks that `plan_id` has a map run record in `store` and that its
+/// `tool_kiln` matches this binary's [`slip_kiln::kiln_version`] (naming both
+/// Kiln identities on mismatch).
+fn check_map_run(store: &Store, plan_id: &Digest) -> Result<()> {
+    let Some(map_bytes) = store
+        .latest_run(plan_id, Phase::Map)
+        .map_err(|e| commands::store_failure(store.root(), &e))?
+    else {
+        return Err(input(format!(
+            "plan {plan_id} has no map run in the store {}; run slip parse first",
+            store.root().display()
+        )));
+    };
+    let map_run = RunRecord::from_bytes(&map_bytes)
+        .map_err(|e| input(format!("plan {plan_id}'s latest map run record: {e}")))?;
+    let current_kiln = slip_kiln::kiln_version();
+    if map_run.run.tool_kiln != current_kiln {
+        return Err(input(format!(
+            "plan {plan_id}'s latest map run was made with kiln {}, but this slip links \
+             kiln {current_kiln}; run slip parse again with this slip",
+            map_run.run.tool_kiln,
+        )));
+    }
+    Ok(())
+}
+
 fn verify(a: &VerifyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<u8> {
     // The store, exclusively, and at once the signal handling (§8.2).
     let store = commands::open_store(&a.run.store, Access::Exclusive)?;
     signals::install(Box::new(pool::cleanup_on_signal(&store)));
 
-    let (plan, plan_id) = commands::load_plan(&store, &a.plan)?;
+    let (plan, plan_id) = commands::load_plan_for_kiln(&store, &a.plan)?;
 
     let (declared_id, declared) = publish_declared(&store, a.declared.as_deref())?;
 
     let image = Image::from_args(&a.image).map_err(input)?;
 
-    if store
-        .latest_run(&plan_id, Phase::Map)
-        .map_err(|e| commands::store_failure(store.root(), &e))?
-        .is_none()
-    {
-        return Err(input(format!(
-            "plan {plan_id} has no map run in the store {}; run slip parse first",
-            store.root().display()
-        )));
-    }
+    check_map_run(&store, &plan_id)?;
     if store
         .is_transform_round(&plan_id, a.round)
         .map_err(|e| commands::store_failure(store.root(), &e))?

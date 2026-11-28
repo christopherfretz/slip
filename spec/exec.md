@@ -1201,7 +1201,10 @@ theirs (§8.2, §8.7); what they do is specified in `spec/edits.md` §10.
 
 `slip --help` (or `-h`) prints the usage text on standard output and
 exits with status 0. `slip --version` prints `slip <version> (kiln
-<version>)`; the same string is the `tool` of the worker's `Ready`.
+<version>+<9-hex-pin>)` (or `slip <version> (kiln <version>)` without a git
+pin); the same string is the `tool` of the worker's `Ready`, and
+`<version>+<9-hex-pin>` is written to `Plan.tool_kiln`, `Run.tool_kiln`, and
+`TransformRun.tool_kiln`.
 
 An option's value is the next argument, or follows `=` for a long option
 (`--store=x`) and directly for `-j` (`-j4`). An option given twice is a
@@ -1272,6 +1275,10 @@ observers of a plan: each `ok` shard carries the observer's `digests`.
   match exactly one plan (none, or several: `Input` error naming them);
   otherwise `x` is the path of a plan file, which is read, validated and
   published to the store (`Store::publish_plan`, which validates it again).
+  Commands that run Kiln against the loaded plan (`parse`, `verify`,
+  `declare`, `units`, `map`, `rename`, `check`) refuse a plan whose
+  `tool_kiln` differs from this binary's Kiln identity (`Input` error naming
+  both Kiln identities).
 - `--db …`: the plan is built and published as by `plan`, with the same
   output, and then parsed. Exactly one of `--plan` and `--db` is given.
 - `--only` keeps the observers whose main file path contains the substring
@@ -1623,6 +1630,7 @@ Input errors (status 3), each `slip: verify: <message>` unless a form of
 | a `--root` or `--post` cannot be made a real path | `image: <path as given>: <error>` |
 | the image is refused | `image: <ImageError>` |
 | the store has no run record of phase `map` for the plan | `plan <id> has no map run in the store <root>; run slip parse first` |
+| the plan or its latest map run record was made with another Kiln identity (`tool_kiln`) | names both the recorded `tool_kiln` and the running binary's `tool_kiln` (`plan <id> was made with kiln <recorded>, but this slip links kiln <current>; ...` or `plan <id>'s latest map run was made with kiln <recorded>, but this slip links kiln <current>; ...`) |
 | the store has a transform run record of the plan and this round | `round <n> of plan <id> is the round of a transform's run; slip verify does not replace its shards` |
 
 The worker command is that of `parse` followed by `--findings <n>` and

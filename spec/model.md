@@ -474,7 +474,7 @@ The plan, kind `PLAN`, version 1. All sections are required.
 
 | Id | Section | Payload |
 |---|---|---|
-| 1 | tool | `slip: str`, `kiln: str` — versions of Slip and of the Kiln front end it links |
+| 1 | tool | `slip: str`, `kiln: str` — versions of Slip and of the Kiln front end it links (`MAJOR.MINOR.PATCH[-PRE]+<9-hex-pin>` when the `kiln` submodule commit pin is known, e.g. `1.3.0+040bc36bf`, so moving the Kiln pin changes the plan's identity) |
 | 2 | configurations | `list<Configuration>` in the order given on the command line |
 | 3 | observers | `list<Observer>` in plan order (below) |
 | 4 | excluded | `list<Excluded>` sorted by (`configuration`, `entry`) |

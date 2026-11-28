@@ -1048,7 +1048,28 @@ mod tests {
 
     use super::{ParseOptions, merge_inputs, parse_observer_hooked, path_bytes, read_consulted};
 
-    fn test_dir(name: &str) -> PathBuf {
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<std::path::Path> for TempDir {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_dir(name: &str) -> TempDir {
         static N: AtomicU64 = AtomicU64::new(0);
         let root =
             std::env::var_os("SLIP_TEST_ROOT").map_or_else(std::env::temp_dir, PathBuf::from);
@@ -1059,7 +1080,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::canonicalize(&dir).unwrap()
+        TempDir(std::fs::canonicalize(&dir).unwrap())
     }
 
     fn test_observer(dir: &std::path::Path, argv: &[&str]) -> Observer {
@@ -1115,12 +1136,8 @@ mod tests {
         use std::io;
 
         use kiln_driver::{Io, SharedWriter};
-        use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
 
-        let base = std::env::temp_dir().join(format!("slip-kiln-old-image-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let base = std::fs::canonicalize(&base).unwrap();
+        let base = test_dir("old-image");
         let iface = base.join("m.cppm");
         let user = base.join("u.cpp");
         let pcm = base.join("m.pcm");
@@ -1158,24 +1175,8 @@ mod tests {
 
         let parse_with_pcm = |pcm_path: &std::path::Path| {
             let fmod = format!("-fmodule-file=m={}", pcm_path.display());
-            let obs = Observer {
-                id: Digest([9; 32]),
-                command: Command {
-                    directory: path_bytes(&base),
-                    argv: vec![
-                        b"c++".to_vec(),
-                        b"-std=c++20".to_vec(),
-                        b"-fkiln-bmi-image".to_vec(),
-                        fmod.into_bytes(),
-                        b"u.cpp".to_vec(),
-                    ],
-                    env: Vec::new(),
-                },
-                language: Language::Cxx,
-                main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
-                cost_hint: 1,
-                origins: vec![Origin { configuration: 0, entry: 0 }],
-            };
+            let obs =
+                test_observer(&base, &["c++", "-std=c++20", "-fkiln-bmi-image", &fmod, "u.cpp"]);
             super::parse_observer(&obs, Phase::Map, 3).expect("parse_observer")
         };
 
@@ -1195,8 +1196,6 @@ mod tests {
             "expected unsupported version refusal, got {:?}",
             bad.outcome
         );
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     // WP-148 item 2 (F9): modifying an included header on disk between the

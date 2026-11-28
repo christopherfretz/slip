@@ -337,7 +337,7 @@ impl Fx {
         observers.sort_by_key(|o| o.id);
         let plan = Plan {
             tool_slip: "s".into(),
-            tool_kiln: "k".into(),
+            tool_kiln: slip_kiln::kiln_version().into(),
             configurations: vec![Configuration {
                 name: "default".into(),
                 database: FileRef {
@@ -524,7 +524,7 @@ impl Fx {
         let record = RunRecord {
             run: Run {
                 tool_slip: "s".into(),
-                tool_kiln: "k".into(),
+                tool_kiln: slip_kiln::kiln_version().into(),
                 plan: plan.1,
                 phase: Phase::Map,
                 round,
@@ -541,7 +541,7 @@ impl Fx {
         if round != 0 {
             let runt = TransformRun {
                 tool_slip: "s".into(),
-                tool_kiln: "k".into(),
+                tool_kiln: slip_kiln::kiln_version().into(),
                 plan: plan.1,
                 round,
                 transform: request_id,

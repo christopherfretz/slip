@@ -99,7 +99,7 @@ pub(crate) fn not_modelled(args: &Args) -> Option<&'static str> {
 /// Slip does not model, if one is set as Kiln reads it. Kiln reads two
 /// such variables since the pin of WP-163 (`60fb5ab9d`), on every parse
 /// Slip asks for (`run_front_end`, `with_eval_session`, both through
-/// `SyntaxJob::parse_options`, `kiln_driver/src/syntax_cmd.rs:400`, `:412`):
+/// `SyntaxJob::parse_options`, `kiln_driver/src/syntax_cmd.rs:401`, `:413`):
 ///
 /// - `KILN_VERIFY_SUBST_FAILED` (not empty, not `0`;
 ///   `kiln_driver/src/args.rs:2974`, WP-3281), read from the process

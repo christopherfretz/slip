@@ -1984,4 +1984,34 @@ mod tests {
             assert!(!normalised(bad), "{bad:?}");
         }
     }
+
+    // WP-173 fix round 1 (item 2, kills M2 & M4): `snippet` keeps
+    // `static_init_facts` off in `Language::parse_options` and refuses
+    // `-fkiln-static-init-facts` through `io_change`.
+    #[test]
+    fn wp173_snippet_static_init_facts_is_off_and_flag_refused() {
+        let extra = Extra { args: &["-fkiln-static-init-facts"], target: None };
+        let Err(err) = Language::new("c++20", &extra) else {
+            panic!("-fkiln-static-init-facts must be refused by io_change");
+        };
+        assert!(err.contains("static_init_facts"), "expected static_init_facts refusal, got {err}");
+
+        let files = [("main.cpp", "static int g = 42;\nint f() { static int s = g; return s; }\n")];
+        let parse_err = parse_with(&one(&files, "c++20"), &extra, |_| ())
+            .expect_err("parse_with must refuse -fkiln-static-init-facts");
+        assert!(parse_err.contains("static_init_facts"), "{parse_err}");
+
+        let lang = Language::new("c++20", &Extra::default())
+            .unwrap_or_else(|e| panic!("default language: {e}"));
+        assert!(!lang.parse_options().static_init_facts, "parse_options must keep it off");
+
+        let (flag, any_fact, errors) = parse(&one(&files, "c++20"), |p| {
+            let any_fact = (1..=p.ast.decls.len() as u32)
+                .map(kiln_ast::DeclId::new)
+                .any(|d| p.ast.static_init_fact(d).is_some());
+            (p.ast.static_init_facts, any_fact, p.errors)
+        })
+        .expect("snippet::parse");
+        assert_eq!((flag, any_fact, errors), (false, false, 0));
+    }
 }

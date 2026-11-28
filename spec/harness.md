@@ -1276,6 +1276,10 @@ counts):
   `failed`: 4059 `ok` and the 2 `diagnosed` above.
 - Slip's Kiln pin is `040bc36bf` since WP-173 (PCH format 188, module
   image format 102; `60fb5ab9d` from WP-163, `4a83f6e3c` from WP-066).
+  Since WP-173 fix round 1, `tool_kiln` embeds the 9-hex submodule pin
+  (`1.3.0+040bc36bf`), so plans produced at different Kiln pins have
+  distinct plan ids and Slip refuses plans and map runs from another pin
+  (naming both Kiln identities).
   The numbers of this section are as of `913a490bb`: no corpus run has
   been made at any later pin, so they are not yet its numbers.
 - The counts of `bench/baselines/llvm.json` are those of the map task

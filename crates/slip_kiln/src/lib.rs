@@ -81,10 +81,32 @@ pub use check::KilnCheck;
 pub use lookups::Lookups;
 pub use parse::{ParseOptions, Tokens, Unit, parse_observer, parse_observer_with};
 
-/// The version of the Kiln front end this build of Slip links
-/// (`MAJOR.MINOR.PATCH[-PRE]`).
+/// The 9-hex-digit commit pin of the `kiln` submodule this build of Slip
+/// links (`SLIP_KILN_PIN` from `build.rs`, falling back to the first 9 hex
+/// digits of `kiln_driver::version::GIT_SHA`). `None` only when built outside
+/// a git checkout with neither set.
+pub fn kiln_pin() -> Option<&'static str> {
+    option_env!("SLIP_KILN_PIN").filter(|s| !s.is_empty()).or_else(|| {
+        kiln_driver::version::GIT_SHA.filter(|s| !s.is_empty()).map(|s| &s[..s.len().min(9)])
+    })
+}
+
+/// The identity of the Kiln front end this build of Slip links:
+/// `MAJOR.MINOR.PATCH[-PRE]+<9-hex-pin>` when [`kiln_pin`] is known (e.g.
+/// `1.3.0+040bc36bf`), else `MAJOR.MINOR.PATCH[-PRE]`.
+///
+/// Including the pinned commit ensures that moving the `kiln` submodule
+/// changes the plan's identity (`Plan.tool_kiln`) and lets Slip refuse plans
+/// and map runs created at another Kiln pin even when Kiln's semver does not
+/// change.
 pub fn kiln_version() -> &'static str {
-    kiln_driver::version::VERSION
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| match kiln_pin() {
+            Some(pin) => format!("{}+{pin}", kiln_driver::version::VERSION),
+            None => kiln_driver::version::VERSION.to_owned(),
+        })
+        .as_str()
 }
 
 #[cfg(test)]
@@ -93,5 +115,12 @@ mod tests {
     fn links_kiln() {
         let v = super::kiln_version();
         assert!(v.split('.').count() >= 3, "unexpected Kiln version {v:?}");
+        let pin = super::kiln_pin().expect("kiln submodule pin embedded at build time");
+        assert_eq!(pin.len(), 9, "expected 9-hex Kiln pin, got {pin:?}");
+        assert!(
+            pin.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+            "expected lowercase hex Kiln pin, got {pin:?}"
+        );
+        assert_eq!(v, format!("{}+{pin}", kiln_driver::version::VERSION));
     }
 }

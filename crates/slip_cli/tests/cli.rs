@@ -581,7 +581,13 @@ fn s8_version() {
     let f = Fixture::new("version");
     let out = f.slip(&["--version"]);
     assert_eq!(out.code(), Some(0), "{out:?}");
-    assert!(out.stdout.starts_with(&format!("slip {} (kiln ", env!("CARGO_PKG_VERSION"))));
+    let pin = slip_kiln::kiln_pin().expect("kiln pin embedded at build time");
+    assert_eq!(out.stdout, format!("{}\n", slip_cli::version_line()));
+    assert!(
+        out.stdout.contains(&format!("+{pin})")),
+        "expected Kiln pin +{pin} in --version: {:?}",
+        out.stdout
+    );
 }
 
 // §8: `--help` prints the usage text on standard output with status 0; a
