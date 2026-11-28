@@ -413,7 +413,11 @@ fn s8_5_cause_word_on_every_cause_text() {
                 continue;
             }
             for side in [common::Side::A, common::Side::B] {
-                let Ok(d) = common::digest_side(&dir, side) else { continue };
+                let Some(d) = common::skip_unparsed(common::digest_side(&dir, side))
+                    .unwrap_or_else(|e| panic!("{} {side:?}: {e}", common::rel(&dir)))
+                else {
+                    continue;
+                };
                 let mut want: BTreeMap<String, u64> = BTreeMap::new();
                 for (_, cause) in &d.output.causes {
                     if let Cause::Unsupported(t) | Cause::Unaccounted(t) = cause {

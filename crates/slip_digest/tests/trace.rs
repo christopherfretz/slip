@@ -151,14 +151,32 @@ fn pairs_trace_every_unit() {
     let threads = common::pool_size().unwrap_or_else(|e| panic!("{e}"));
     let outcome = common::run_dirs("pairs", &dirs, threads, |dir| {
         for side in [Side::A, Side::B] {
-            // A side that does not parse is the pair runner's to report.
-            if let Ok(r) = common::with_side(dir, side, |input| check_side(dir, side, input)) {
+            // A side that does not parse is the pair runner's to report; a
+            // panic inside the callback or front end still fails the test.
+            if let Some(r) = common::skip_unparsed(common::with_side(dir, side, |input| {
+                check_side(dir, side, input)
+            }))? {
                 r.map_err(|e| format!("side {side:?}: {e}"))?;
             }
         }
         Ok(Vec::new())
     });
     outcome.finish();
+}
+
+#[test]
+fn wp168_skip_unparsed_propagates_callback_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/differ/_/dependent-decltype-own-lookup-set");
+    let err = common::skip_unparsed(common::with_side(&dir, Side::A, |_| {
+        assert_eq!(1, 2, "wp168 trace sentinel");
+    }))
+    .expect_err("a callback panic must not be skipped");
+    assert!(
+        err.contains("the callback panicked:") && err.contains("wp168 trace sentinel"),
+        "{err}"
+    );
+    assert_eq!(common::skip_unparsed::<()>(Err("side A: has 1 error(s)".into())), Ok(None));
 }
 
 /// The site of a difference on one side: the first differing offset of

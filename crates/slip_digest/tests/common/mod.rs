@@ -562,6 +562,18 @@ pub fn with_side<R: Send>(
     Ok(r)
 }
 
+/// Unwraps a side-helper `Result` for tests that intentionally skip sides the
+/// snippet front end cannot parse: returns `Ok(Some(v))` on `Ok(v)`, `Ok(None)`
+/// on a parse refusal, and `Err(e)` when the callback or front end panicked.
+#[allow(dead_code, reason = "used by tests that tolerate unparsed sides")]
+pub fn skip_unparsed<T>(r: Result<T, String>) -> Result<Option<T>, String> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.contains("panicked:") => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
 /// A side as [`digest_side_with`] gives it, from an `Output` a caller of
 /// [`with_side`] made.
 pub fn digested(output: Output) -> Digested {
@@ -958,6 +970,8 @@ pub fn pool_map_timed<T: Sync, R: Send>(
                         let n = next.fetch_add(1, Ordering::Relaxed);
                         let Some(item) = items.get(n) else { break };
                         let start = std::time::Instant::now();
+                        // Deliberate catch: callers propagate `Err` into test
+                        // failures so other pool items still run and report.
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item)))
                             .map_err(|p| panic_text(&*p));
                         if tx.send((n, (r, start.elapsed()))).is_err() {

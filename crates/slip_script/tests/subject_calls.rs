@@ -2280,6 +2280,37 @@ fn clang_dump(side: &Side, dir: &std::path::Path) -> Dumped {
     }
 }
 
+/// Runs `f` on `side` with Kiln's tables, recording front-end thread failures
+/// in `d.not_parsed`, source diagnostics in `d.kiln_errors`, and propagating
+/// callback or front-end panics.
+fn run_differential_parse(
+    side: &Side,
+    label: &str,
+    d: &mut Diff,
+    f: impl FnOnce(&Parsed<'_>, &mut Diff),
+) {
+    let files: Vec<(&str, &str)> =
+        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
+    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
+    let extra = Extra { args: &args, target: side.target.as_deref() };
+    if let Err(e) = parse_with_tables(&snippet, &extra, |p| f(p, d)) {
+        // `parse_with_tables`' own errors (`slip_kiln::snippet`): a callback
+        // or front-end panic must fail the test rather than being counted as
+        // a source diagnostic (`kiln_errors`).
+        if e.contains("panicked:") {
+            panic!("{label}: {e}");
+        } else if e.starts_with("cannot start the front end's thread") {
+            d.not_parsed.push(format!("{label}: {e}"));
+        } else {
+            d.kiln_errors = 1;
+            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
+                eprintln!("TRACE kiln-error {label}: {e}");
+            }
+        }
+    }
+}
+
 /// The differential of one side.
 #[allow(
     clippy::too_many_lines,
@@ -2314,12 +2345,7 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
     let mut cx = ClangContext { texts: &texts, kinds: Kinds::new(), instances: HashSet::new() };
     clang_decls(&tree, &mut cx.kinds, &mut cx.instances);
     clang_calls(&tree, "", false, &cx, &mut clang, &mut sites);
-    let files: Vec<(&str, &str)> =
-        side.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
-    let snippet = Snippet { files: &files, main: "main.cpp", include: &[""], std: &side.std };
-    let args: Vec<&str> = side.args.iter().map(String::as_str).collect();
-    let extra = Extra { args: &args, target: side.target.as_deref() };
-    let parsed = parse_with_tables(&snippet, &extra, |p| {
+    run_differential_parse(side, label, &mut d, |p, d| {
         if p.errors > 0 {
             d.kiln_errors = 1;
             if std::env::var_os("SLIP_WP086_TRACE").is_some() {
@@ -2433,21 +2459,22 @@ fn differential(side: &Side, dir: &std::path::Path, label: &str) -> Diff {
             }
         }
     });
-    if let Err(e) = parsed {
-        // `parse_with_tables`' own errors (`slip_kiln::snippet`): a thread
-        // that cannot start or a panic is not a diagnosis of the source.
-        if e.starts_with("cannot start the front end's thread")
-            || e.starts_with("the front end panicked")
-        {
-            d.not_parsed.push(format!("{label}: {e}"));
-        } else {
-            d.kiln_errors = 1;
-            if std::env::var_os("SLIP_WP086_TRACE").is_some() {
-                eprintln!("TRACE kiln-error {label}: {e}");
-            }
-        }
-    }
     d
+}
+
+#[test]
+#[should_panic(expected = "the callback panicked:")]
+fn wp168_differential_parse_propagates_callback_panic() {
+    let side = Side {
+        files: vec![("main.cpp".to_owned(), "int x = 1;\n".to_owned())],
+        std: "c++20".to_owned(),
+        args: Vec::new(),
+        target: None,
+    };
+    let mut d = Diff::default();
+    run_differential_parse(&side, "wp168-sentinel", &mut d, |_, _| {
+        assert_eq!(1, 2, "wp168 subject_calls sentinel");
+    });
 }
 
 /// Kiln's own C++ tests as sides: every `*.cpp` directly under `dir`, as

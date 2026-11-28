@@ -136,6 +136,9 @@ pub enum Finding {
 /// The finding for side `side` of directory `rel`, which did not digest
 /// (`error`: why).
 pub fn unparsed(rel: &str, side: Side, error: &str) -> Finding {
+    if error.contains("panicked:") {
+        return Finding::Problem(format!("{rel} side {side:?} panicked: {error}"));
+    }
     match UNPARSED.iter().position(|(r, s, _)| *r == rel && *s == side) {
         Some(i) => Finding::KnownUnparsed(i),
         None => Finding::Problem(format!(
