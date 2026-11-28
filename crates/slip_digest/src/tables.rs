@@ -2162,7 +2162,7 @@ pub(crate) mod cold_decl_data {
         ("written_ns", Decision::Out),
         ("shadow_named", Decision::Out),
         ("friend_form", Decision::Out),
-        ("subst_failed", Decision::Unsupported),
+        ("subst_failed", Decision::Out),
     ];
 }
 

@@ -1,0 +1,3 @@
+# `v<int>` is invalid by a real error (no `subst_failed` mark): stays a unit and indeterminate.
+indeterminate v<int>
+indeterminate x

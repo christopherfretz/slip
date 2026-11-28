@@ -1,0 +1,5 @@
+added Trait<int>::value
+changed <order>
+changed Trait<int>
+changed u(C)
+derived-added C::operator int<int>() const

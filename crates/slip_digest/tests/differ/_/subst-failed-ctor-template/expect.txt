@@ -1,0 +1,4 @@
+added Trait<long>::type
+changed Trait<long>
+changed u()
+derived-added R::R<long>(long, int *)
