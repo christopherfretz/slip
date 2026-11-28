@@ -105,19 +105,33 @@ fn clang_written(ctx: &Ctx<'_>, clang: &Path, got: &Files) -> Vec<String> {
 /// `Err` names the first that does not. With `deps`, each also writes the
 /// files it read (`-MD -MF <deps>/<n>.d -MT dep`), and the paths it read
 /// are returned, resolved against the command's directory.
+///
+/// Every invocation gets a `TMPDIR` under `<work>/clang/tmp` (removed with
+/// the case) and `-fno-crash-diagnostics` so compiler temporaries and crash
+/// reproducers never leak into the system temporary directory (`WP-167`).
 pub fn clang(ctx: &Ctx<'_>, clang: &Path, deps: Option<&Path>) -> Result<Vec<PathBuf>, String> {
     let mut read = Vec::new();
+    let tmp = ctx.work.join("clang").join("tmp");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     if let Some(d) = deps {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
     for (i, (dir, argv)) in ctx.commands.iter().enumerate() {
         let mut cmd = Command::new(clang);
-        cmd.args(&argv[1..]).arg("-fsyntax-only").current_dir(dir);
+        cmd.args(&argv[1..])
+            .arg("-fsyntax-only")
+            .arg("-fno-crash-diagnostics")
+            .env("TMPDIR", &tmp)
+            .current_dir(dir);
         let depfile = deps.map(|d| d.join(format!("{i}.d")));
         if let Some(f) = &depfile {
             cmd.arg("-MD").arg("-MF").arg(f).arg("-MT").arg("dep");
         }
-        let shown = format!("`{} {} -fsyntax-only`", clang.display(), argv[1..].join(" "));
+        let shown = format!(
+            "`{} {} -fsyntax-only -fno-crash-diagnostics`",
+            clang.display(),
+            argv[1..].join(" ")
+        );
         let out = match run_bounded(cmd, ctx.timeout()) {
             Ok(o) => o,
             Err(Bounded::Spawn(e)) => return Err(format!("cannot run `{}`: {e}", clang.display())),

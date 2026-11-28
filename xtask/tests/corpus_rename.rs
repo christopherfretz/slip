@@ -101,15 +101,22 @@ D=@DIR@
 vfs=
 file=
 syntax=
+no_crash=
 while [ $# -gt 0 ]; do
   case "$1" in
     -ivfsoverlay) vfs=$2; shift ;;
     -fsyntax-only) syntax=1 ;;
+    -fno-crash-diagnostics) no_crash=1 ;;
     *.cpp) file=$(basename "$1") ;;
   esac
   shift
 done
 [ -n "$syntax" ] || exit 8
+[ -n "$no_crash" ] || exit 9
+case "$TMPDIR" in
+  */rename/accept-tmp) ;;
+  *) exit 10 ;;
+esac
 [ -n "$vfs" ] && [ ! -f "$vfs" ] && exit 7
 echo "$file ${vfs:+post}" >> "$D/clang.log"
 if grep -qx "$file" "$D/reject" 2>/dev/null; then echo "$file:1:1: error: always" >&2; exit 1; fi
