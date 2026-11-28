@@ -1168,3 +1168,56 @@ fn s8_4_run_editable_ranges_and_token_end_through_slip_kiln() {
     assert_eq!(ident, Some(3), "an identifier");
     assert_eq!(literal, Some(6), "a string literal with its suffix");
 }
+
+// WP-173 item 5 (Kiln WP-3685, commit `42bee5e1b`, merged at `040bc36bf`,
+// Kiln PR #947): inheriting constructors from `std::pair<K, V>` in a
+// `DenseMapPair`-like class whose value type is a nested class with default
+// member initializers must parse with no error diagnostic at both C++17 and
+// C++20. Adapted from Kiln's regression tests
+// `kiln/tests/conformance/namespace.udecl/inherited-ctor-std-pair-nested-nsdmi-cxx17-run.cpp`
+// and `inherited-ctor-std-pair-nested-nsdmi-cxx20-run.cpp` (which failed at
+// the old pin `60fb5ab9d`, regression since `1f2951a7b`).
+#[test]
+fn wp173_inherited_ctor_std_pair_nested_nsdmi_parses_cleanly() {
+    let f = Fixture::new("wp3685");
+    f.write(
+        "main.cpp",
+        "#include <utility>\n\
+         template <class K, class V> struct DP : std::pair<K, V> { using std::pair<K, V>::pair; };\n\
+         template <class K, class V> struct Map { char s[sizeof(DP<K, V>)]; };\n\
+         struct M {\n\
+           struct Data { bool H = false; unsigned ID = 0; };\n\
+           Map<const int *, Data> Info;\n\
+         };\n\
+         int main() {\n\
+           M m;\n\
+           M::Data d;\n\
+           return (d.H || d.ID != 0) ? 1 : 0;\n\
+         }\n",
+    );
+    for std in ["-std=c++17", "-std=c++20"] {
+        let s = f.parse(".", &["clang++", std, "main.cpp"]);
+        assert_eq!(s.outcome.status, Status::Ok, "{std}: {:?}", s.outcome);
+        assert_eq!((s.outcome.errors, s.outcome.warnings), (0, 0), "{std}: {:?}", s.outcome);
+    }
+}
+
+// WP-173 (Kiln WP-3650, `332560efa`): `FrontEndOptions::static_init_facts`
+// stays off by default everywhere in Slip, so `Ast::static_init_facts` is
+// false and `Ast::static_init_fact` is `None` for every static variable.
+#[test]
+fn wp173_static_init_facts_is_off() {
+    let f = Fixture::new("static-init-off");
+    f.write("main.cpp", "static int g = 42;\nint f() { static int s = g; return s; }\n");
+    let o = f.observer(".", &["c++", "-std=c++20", "main.cpp"]);
+    let (shard, seen) = parse_observer_with(&o, Phase::Map, 3, ParseOptions::default(), |unit| {
+        let ast = unit.ast();
+        let any_fact = (1..=ast.decls.len() as u32)
+            .map(slip_kiln::kiln::ast::DeclId::new)
+            .any(|d| ast.static_init_fact(d).is_some());
+        (ast.static_init_facts, any_fact)
+    })
+    .unwrap();
+    assert_eq!(shard.outcome.status, Status::Ok, "{:?}", shard.outcome);
+    assert_eq!(seen, Some((false, false)));
+}

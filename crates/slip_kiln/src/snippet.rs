@@ -1216,6 +1216,7 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         iprefix,
         prefixed_dirs,
         verify_subst_failed,
+        static_init_facts,
     } = a;
     macro_rules! io {
         ($($field:ident),* $(,)?) => {
@@ -1334,6 +1335,9 @@ fn io_change(base: &Args, a: &Args) -> Option<&'static str> {
         imacros,
         iprefix,
         prefixed_dirs,
+        // Kiln 040bc36bf: static-initialization facts recorded for a tooling
+        // client (`-fkiln-static-init-facts`, WP-3650).
+        static_init_facts,
     );
     // The parts of three option groups that are files or reports; their
     // limits and the sanitizer set are the language's.

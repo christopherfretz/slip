@@ -7,8 +7,8 @@ payload, side record and cold map it says whether the fact enters the
 digest and how. `digest.md` defines everything the tables plug into (units,
 keys, streams, references); section numbers written "digest §N" are
 sections of that file. The Kiln revision described is the one the `kiln`
-submodule pins (`60fb5ab9d`, Kiln's `main`, since WP-163,
-`spec/landed/digest-kinds/WP-163.md`; before it `4a83f6e3c`, WP-066; first written against `4bfd999da`); the facts were first collected in
+submodule pins (`040bc36bf`, Kiln's `main`, since WP-173,
+`spec/landed/digest-kinds/WP-173.md`; before it `60fb5ab9d`, WP-163; `4a83f6e3c`, WP-066; first written against `4bfd999da`); the facts were first collected in
 `research/kiln-ast-inventory.md` of the context repository and then checked
 against the Kiln source, which wins where the two differ (§13).
 
@@ -2616,6 +2616,7 @@ A variable's stream also holds its language linkage (`ScopeData`,
 | `0-cxx-for-range` | flag | in | bit |  |
 | `0-inline-implied` | flag | in | bit | as `0-inline` |
 | `0-placeholder` | written | out | - | bits 14-15: the placeholder (`auto`, `decltype(auto)`, `__auto_type`) the type was deduced from (Kiln WP-3583, `kiln_ast/src/decl.rs:1102`, `VarPlaceholder`): the deduced type is the fact (the declaration's type row), and an undeduced placeholder is in the type (`TypeView` `Auto`). Reading it is `docs/wp/WP-156.md`'s |
+| `0-static-init-fact` | flag | out | - | bits 16-23: the static-initialization fact (`Ast::static_init_fact`, Kiln WP-3650, `kiln_ast/src/decl.rs:1047`, `:1132`): recorded only when `FrontEndOptions::static_init_facts` / `-fkiln-static-init-facts` is on, which Slip keeps off (`slip_kiln::check::not_modelled`), so these bits are always 0 (`rebuild_var_spec` leaves them unaccounted so any set bit flags `VarSpec/0`) |
 
 ### `kiln_ast::decl::VarStorage`
 
@@ -3066,6 +3067,7 @@ map keyed by `DeclId`, and its row says what an entry's value is.
 | `shadow_named` | entity | out | - | the using-shadow a using-declaration's lookup found when it found one (Kiln WP-3401, `kiln_ast/src/decl.rs:1889`): the declaration the using-declaration introduces is its target, which each shadow's key holds (§5.2); the shadow it was found through is how the name was reached (digest §1 rule 2), as `oper_lookups`' `found` |
 | `friend_form` | bookkeeping | out | - | index of the friend's written form in `DeclArena` `friend_forms` (Kiln WP-3164, `decl.rs:1921`); the form's rows are `FriendForm`'s |
 | `subst_failed` | flag | unsupported | - | what failed to form, silently, in an invalid declaration (Kiln WP-3281, `decl.rs:1925`): read by `docs/wp/WP-136.md`. Kiln sets it only on a declaration with `DeclFlags` `0-invalid` (`decl.rs:393-400`), which makes the walk indeterminate (`Cause::Error`) wherever it is read, so it needs no reading of its own |
+| `written_decl_type` | written | unsupported | - | the declared type as written (sugar and placeholder included) of a deduced-placeholder variable or deduced-return function when the deduced part contains a written expression (Kiln WP-3640, `kiln_ast/src/decl.rs:1945`): read by `docs/wp/WP-156.md` (not read here; parity with the old pin) |
 
 `lexical_ctx` is written as `ref*sorted`: for each declaration counted,
 a `Ref` to the nearest context that encloses the place it was written
@@ -6546,7 +6548,9 @@ not written: a digest is relative to its command (digest §1 rule 8).
 
 `Ast` `written_refs`, the table of references as written, is transient
 and has no descriptor; like `decl_extents` it records positions only and
-is off unless a client turns it on, so neither is written.
+is off unless a client turns it on, so neither is written. `Ast`
+`static_init_facts` (Kiln WP-3650, `kiln_ast/src/ast.rs:137`) is likewise
+transient and off by default.
 
 ### `kiln_ast::decl_extents::DeclExtents`
 

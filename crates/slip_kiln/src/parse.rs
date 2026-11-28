@@ -931,4 +931,97 @@ mod tests {
         let e = read_consulted(&path_bytes(&gone)).unwrap_err();
         assert!(e.starts_with("cannot read "), "{e}");
     }
+
+    // WP-173 item 4 (Kiln WP-3640, image format 101 -> 102): a module
+    // declaration image written at the old pin's format version (101) is
+    // refused by Kiln's reader and never read, while one at the current
+    // format version (102) imports cleanly.
+    #[test]
+    fn wp173_old_module_image_version_is_refused() {
+        use std::io;
+
+        use kiln_driver::{Io, SharedWriter};
+        use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Status};
+
+        let base = std::env::temp_dir().join(format!("slip-kiln-old-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let base = std::fs::canonicalize(&base).unwrap();
+        let iface = base.join("m.cppm");
+        let user = base.join("u.cpp");
+        let pcm = base.join("m.pcm");
+        let old_pcm = base.join("m_old.pcm");
+        std::fs::write(&iface, "export module m;\nexport int v = 42;\n").unwrap();
+        std::fs::write(&user, "import m;\nint f() { return v; }\n").unwrap();
+
+        let precompile_args: Vec<String> = [
+            "-std=c++20",
+            "-fkiln-bmi-image",
+            "-fkiln-reproducible-time",
+            "--precompile",
+            iface.to_str().unwrap(),
+            "-o",
+            pcm.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let io = Io {
+            stdout: Box::new(io::sink()),
+            stderr: SharedWriter::new(io::sink()),
+            stdin: Box::new(io::empty()),
+        };
+        let code = kiln_driver::run_as("kiln++", &precompile_args, io);
+        assert_eq!(code, 0, "precompiling module interface failed");
+
+        let mut capsule = kiln_pp::bmi::read(&std::fs::read(&pcm).unwrap()).unwrap();
+        let img = capsule
+            .sections
+            .iter_mut()
+            .find(|s| s.tag == kiln_pp::bmi::SECTION_IMAGE)
+            .expect("precompiled module carries SECTION_IMAGE");
+        assert_eq!(&img.bytes[..4], &102u32.to_le_bytes(), "expected current image format 102");
+
+        let parse_with_pcm = |pcm_path: &std::path::Path| {
+            let fmod = format!("-fmodule-file=m={}", pcm_path.display());
+            let obs = Observer {
+                id: Digest([9; 32]),
+                command: Command {
+                    directory: path_bytes(&base),
+                    argv: vec![
+                        b"c++".to_vec(),
+                        b"-std=c++20".to_vec(),
+                        b"-fkiln-bmi-image".to_vec(),
+                        fmod.into_bytes(),
+                        b"u.cpp".to_vec(),
+                    ],
+                    env: Vec::new(),
+                },
+                language: Language::Cxx,
+                main: FileRef { path: Vec::new(), size: 0, content: Digest([0; 32]) },
+                cost_hint: 1,
+                origins: vec![Origin { configuration: 0, entry: 0 }],
+            };
+            super::parse_observer(&obs, Phase::Map, 3).expect("parse_observer")
+        };
+
+        // Current format (102) imports cleanly.
+        let good = parse_with_pcm(&pcm);
+        assert_eq!(good.outcome.status, Status::Ok, "{:?}", good.outcome);
+        assert_eq!(good.outcome.errors, 0, "{:?}", good.outcome);
+
+        // Old pin's format (101) is refused as unsupported, never read.
+        img.bytes[..4].copy_from_slice(&101u32.to_le_bytes());
+        std::fs::write(&old_pcm, kiln_pp::bmi::write(&capsule)).unwrap();
+        let bad = parse_with_pcm(&old_pcm);
+        assert_eq!(bad.outcome.status, Status::Diagnosed, "{:?}", bad.outcome);
+        assert!(bad.outcome.errors >= 1, "{:?}", bad.outcome);
+        assert!(
+            bad.outcome.message.contains("unsupported version"),
+            "expected unsupported version refusal, got {:?}",
+            bad.outcome
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

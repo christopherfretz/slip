@@ -238,8 +238,10 @@ fn s6_unknown_flag_refused() {
             "--include-with-prefix-before",
         ),
         // Tables, checks and dumps Kiln added for a tooling client
-        // (fix round 1 of WP-163): refused at the old pin, accepted now.
+        // (fix round 1 of WP-163; `-fkiln-static-init-facts`, WP-173 /
+        // Kiln WP-3650): refused at the old pin, accepted now.
         (&["clang++", "-fkiln-written-ref-keys", "a.cpp"][..], "-fkiln-written-ref-keys"),
+        (&["clang++", "-fkiln-static-init-facts", "a.cpp"][..], "-fkiln-static-init-facts"),
         (&["clang++", "-fkiln-fn-names", "a.cpp"][..], "-fkiln-fn-names"),
         (&["clang++", "-fkiln-builtin-literals", "a.cpp"][..], "-fkiln-builtin-literals"),
         (&["clang++", "-fkiln-verify-subst-failed", "a.cpp"][..], "-fkiln-verify-subst-failed"),

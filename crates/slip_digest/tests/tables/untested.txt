@@ -20,6 +20,8 @@
 # error (an ambiguous partial specialisation, a failed substitution, Kiln WP-3281), and
 # no unit of a valid source writes that declaration's record, so no pair flags it
 # (WP-163).
+# ColdDeclData/written_decl_type: unsupported for WP-156 (Kiln WP-3640); not read
+# here (WP-173).
 AddrSpace/0
 ArgView/Null
 ArgView/Pack
@@ -59,6 +61,7 @@ ColdDeclData/conversion_spec_target
 ColdDeclData/deprecation
 ColdDeclData/gnu_lib_twin
 ColdDeclData/subst_failed
+ColdDeclData/written_decl_type
 ColdExprData/member_extra-record
 ConstArray/size_expr
 DeclNode/ConstevalBlock.data

@@ -181,6 +181,10 @@ pub(crate) fn cold(w: &mut Walk<'_>, s: &mut Stream, d: DeclId) {
         // invalid declaration, which `decl_node` makes indeterminate
         // (`Cause::Error`) wherever the walk meets it.
         subst_failed: _,
+        // `unsupported` (§5.7, WP-156 reads it; Kiln WP-3640): not read
+        // here (parity with the old pin, which did not keep expressions
+        // around a deduced placeholder).
+        written_decl_type: _,
     } = &ast.decls.cold;
     let e = w.entity(d);
     // The chain of `d`'s declarations, the first first (§2.3).
