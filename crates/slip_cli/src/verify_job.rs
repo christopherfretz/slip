@@ -16,7 +16,9 @@
 //! in an `unverifiable` verdict, a shard without a verdict (the
 //! post-image does not parse), or the job's `Err`.
 
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
+use std::hash::BuildHasher;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -31,11 +33,12 @@ use slip_kiln::Lookups;
 use slip_model::agreement::{Binding, Declares, RebuiltUse, RuleUse};
 use slip_model::declared::Declared;
 use slip_model::digests::{Digests, Group, GroupClass, GroupSum};
-use slip_model::formats::content_id;
+use slip_model::formats::{clip_message, content_id};
 use slip_model::hash::content_digest;
 use slip_model::keys::RuleTable;
 use slip_model::names::{NameNote, Names, NamesEntry};
 use slip_model::overlay::Overlay;
+use slip_model::ownership::{FixedAs, FixedEntry, MadeEntry, OwnershipList};
 use slip_model::spellings::{Failed, Span, Spellings};
 use slip_model::transform::{FileClass, Ownership, covers};
 use slip_model::verdict::{FindingKind, Verdict, VerdictKind};
@@ -100,6 +103,24 @@ type Compared = (Result<Comparison, CompareError>, Option<locate::Side>);
 /// `CompareError` (step 5), with the observer's main file.
 #[allow(clippy::too_many_lines, reason = "the steps of §5.2 in their order, one guard each")]
 pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String> {
+    verify_caching(store, job, params, &mut HashSet::new())
+}
+
+/// [`verify`], remembering the content ids of ownership list blobs already
+/// published to `store` in `published` so a worker skips redundant
+/// `Store::publish_blob` calls across observers (`spec/model.md` §8.9,
+/// WP-150 stage 2).
+///
+/// # Errors
+///
+/// As [`verify`], plus a failure publishing an ownership list blob.
+#[allow(clippy::too_many_lines, reason = "the steps of §5.2 in their order, one guard each")]
+pub fn verify_caching<S: BuildHasher>(
+    store: &Store,
+    job: &Job,
+    params: &Params,
+    published: &mut HashSet<Digest, S>,
+) -> Result<Shard, String> {
     if job.phase != Phase::Verify {
         return Err("the verify task runs phase verify only; the job is of phase map".to_owned());
     }
@@ -139,9 +160,19 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
     // WP-118: what the walk says of the rebuilt files: section 33 from it
     // (R6.4, R1.3), and guard RB below.
     let walked_rebuilt = std::mem::take(&mut output.rebuilt);
+    // WP-150 stage 2: section 35 (ownership list blobs) and its counters,
+    // on every `ok` verify shard under non-empty rules (inert for verdicts).
+    let ownership = if rules.is_empty() {
+        None
+    } else {
+        let made = std::mem::take(&mut output.made);
+        let fixed = std::mem::take(&mut output.fixed);
+        Some(publish_ownership_lists(store, &made, &fixed, published)?)
+    };
     let mut post = Post::new(&mut shard, output, rules_id, !rules.is_empty());
     post.rebuilt_use = rebuilt_section(&walked_rebuilt, files, &observer.command.directory);
     post.spellings = through.as_mut().and_then(|t| t.spellings.take());
+    post.ownership = ownership;
     let unverifiable_now = |post: Post, mut shard: Shard, reason: &str| -> Result<Shard, String> {
         Ok(post.finish(&mut shard, unverifiable(reason, pre_id, rules_id)))
     };
@@ -657,6 +688,10 @@ struct Post {
     spellings: Option<(Spellings, Vec<Counter>)>,
     /// Section 33 (WP-118), when it is not empty.
     rebuilt_use: Option<RebuiltUse>,
+    /// Section 35 (WP-150 stage 2): the sorted ownership list blob ids and
+    /// their four `verify.ownership.*` counters, when the rule table is not
+    /// empty.
+    ownership: Option<(Vec<Digest>, Vec<Counter>)>,
 }
 
 impl Post {
@@ -693,6 +728,7 @@ impl Post {
             pre_unmarked: 0,
             spellings: None,
             rebuilt_use: None,
+            ownership: None,
         }
     }
 
@@ -728,6 +764,7 @@ impl Post {
             pre_unmarked,
             spellings,
             rebuilt_use,
+            ownership,
         } = self;
         let by_name = [
             ("verify.groups.differing", differing),
@@ -760,6 +797,10 @@ impl Post {
             counters.extend(spelling_counters);
             section
         });
+        let ownership = ownership.map(|(lists, ownership_counters)| {
+            counters.extend(ownership_counters);
+            lists
+        });
         counters.sort_by(|a, b| a.name.cmp(&b.name));
         for grp in &mut digests.groups {
             grp.units = None;
@@ -776,8 +817,93 @@ impl Post {
         out.rule_use = rule_use;
         out.spellings = spellings;
         out.rebuilt_use = rebuilt_use;
+        out.ownership = ownership;
         out
     }
+}
+
+/// Groups the walk's `made` and `fixed` entries by `(file, through)`,
+/// encodes each non-empty group as an [`OwnershipList`] blob, publishes it
+/// via [`Store::publish_blob`] unless its content id is already in
+/// `published`, and returns `(list_ids, counters)` (`spec/model.md` §8.9,
+/// WP-150 stage 2).
+///
+/// The returned `list_ids` are strictly ascending (empty when there are no
+/// entries). The counters (`verify.ownership.made`, `.fixed`, `.lists`,
+/// `.bytes`) are a deterministic function of this observer's lists, never
+/// of `published`.
+#[derive(Default)]
+struct OwnershipGroup {
+    made: Vec<MadeEntry>,
+    fixed: Vec<FixedEntry>,
+}
+
+fn publish_ownership_lists<S: BuildHasher>(
+    store: &Store,
+    made: &[slip_digest::Made],
+    fixed: &[slip_digest::Fixed],
+    published: &mut HashSet<Digest, S>,
+) -> Result<(Vec<Digest>, Vec<Counter>), String> {
+    let mut groups: BTreeMap<(Vec<u8>, Vec<u8>), OwnershipGroup> = BTreeMap::new();
+    for m in made {
+        let entry =
+            MadeEntry { key: m.key, post: m.post, rule: m.rule, line: m.line, column: m.column };
+        groups.entry((m.file.clone(), Vec::new())).or_default().made.push(entry);
+    }
+    for f in fixed {
+        let entry = FixedEntry {
+            key: f.key,
+            as_: match f.as_ {
+                slip_digest::FixedAs::T => FixedAs::T,
+                slip_digest::FixedAs::M => FixedAs::M,
+            },
+            line: f.line,
+            column: f.column,
+            name: clip_message(&f.name).to_owned(),
+        };
+        groups.entry((f.file.clone(), f.through.clone())).or_default().fixed.push(entry);
+    }
+    let mut ids: Vec<Digest> = Vec::with_capacity(groups.len());
+    let mut made_total: u64 = 0;
+    let mut fixed_total: u64 = 0;
+    let mut bytes_total: u64 = 0;
+    for ((file, through), OwnershipGroup { made: mut made_entries, fixed: mut fixed_entries }) in
+        groups
+    {
+        made_entries.sort_by_key(|m| (m.key, m.post, m.rule, m.line, m.column));
+        made_entries.dedup_by_key(|m| (m.key, m.post));
+        fixed_entries.sort_by(|a, b| {
+            (a.key, a.as_, a.line, a.column, &a.name)
+                .cmp(&(b.key, b.as_, b.line, b.column, &b.name))
+        });
+        fixed_entries.dedup_by_key(|f| (f.key, f.as_));
+        let list = OwnershipList { file, through, made: made_entries, fixed: fixed_entries };
+        let bytes = list.to_bytes();
+        let id = content_digest(&bytes);
+        if !published.contains(&id) {
+            let stored = store
+                .publish_blob(&bytes)
+                .map_err(|e| format!("cannot publish ownership list {id}: {e}"))?;
+            debug_assert_eq!(stored, id);
+            published.insert(id);
+        }
+        made_total += list.made.len() as u64;
+        fixed_total += list.fixed.len() as u64;
+        bytes_total += bytes.len() as u64;
+        ids.push(id);
+    }
+    ids.sort();
+    ids.dedup();
+    let counters = [
+        ("verify.ownership.bytes", bytes_total),
+        ("verify.ownership.fixed", fixed_total),
+        ("verify.ownership.lists", ids.len() as u64),
+        ("verify.ownership.made", made_total),
+    ]
+    .iter()
+    .map(|&(name, value)| Counter { name: name.to_owned(), value })
+    .collect();
+    Ok((ids, counters))
 }
 
 /// Section 33 (WP-118 §4.4) of an `ok` verify shard, from the walk's

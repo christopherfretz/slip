@@ -33,6 +33,7 @@ fn map_shard(found: Option<Found>) -> Shard {
         negatives: None,
         found,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

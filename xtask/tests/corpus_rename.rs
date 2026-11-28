@@ -483,6 +483,7 @@ impl World {
                             negatives: None,
                             found: None,
                             rebuilt_use: None,
+                            ownership: None,
                         };
                         let sh_bytes = sh.to_bytes();
                         let sh_id = id(&sh_bytes);
@@ -639,6 +640,7 @@ impl World {
                 negatives: Some(Vec::new()),
                 found: None,
                 rebuilt_use: None,
+                ownership: None,
             };
             let bytes = sh.to_bytes();
             let sid = id(&bytes);
@@ -1637,6 +1639,7 @@ fn s6_5_coverage_lists_at_most_ten() {
             negatives: None,
             found: None,
             rebuilt_use: None,
+            ownership: None,
         };
         let bytes = sh.to_bytes();
         let sid = id(&bytes);
@@ -1932,6 +1935,7 @@ fn ok_shard(observer: Digest, warnings: u64) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

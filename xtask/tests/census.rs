@@ -116,6 +116,7 @@ fn shard_with(observer: Digest, status: Status, counters: Vec<(&str, u64)>) -> S
         negatives: (status != Status::Failed).then(Vec::new),
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 

@@ -1073,6 +1073,28 @@ fn wp146_list_entries() {
         }
     }
     assert_eq!(got, ENTRIES, "\n{}", got.join("\n"));
+
+    // WP-150 stage 2 (additive `Fixed.through`): S9's owned header entered
+    // through a read-only includer names that includer; direct read-only
+    // declarations (S1) and dependency-macro declarations (S18) leave it empty.
+    let s9 = observer(&observers_dir("s9-u0"));
+    assert_eq!(s9.fixed.len(), 1);
+    assert!(
+        s9.fixed[0].through.ends_with(b"ro_inc.h"),
+        "expected ro_inc.h, got {:?}",
+        String::from_utf8_lossy(&s9.fixed[0].through)
+    );
+    for case in ["s1-u0", "s18-dep-macro"] {
+        let o = observer(&observers_dir(case));
+        assert!(!o.fixed.is_empty(), "{case}");
+        for f in &o.fixed {
+            assert!(
+                f.through.is_empty(),
+                "{case}: unexpected through {:?}",
+                String::from_utf8_lossy(&f.through)
+            );
+        }
+    }
 }
 
 const ENTRIES_CASES: &[&str] = &["places", "f1-rename-x"];

@@ -487,6 +487,7 @@ impl Fx {
             negatives: None,
             found: None,
             rebuilt_use: None,
+            ownership: None,
         }
     }
 

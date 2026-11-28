@@ -96,6 +96,11 @@ pub struct Shard {
     /// package WP-118); only for phase `Verify` and status `Ok`, and
     /// absent when it would be empty.
     pub rebuilt_use: Option<RebuiltUse>,
+    /// Section 35: the content ids of the observer's ownership list blobs,
+    /// strictly ascending (`spec/model.md` §8.9, work package WP-150);
+    /// only for phase `Verify` and status `Ok`, always present (empty when
+    /// the observer has no entries) in a run with rules.
+    pub ownership: Option<Vec<Digest>>,
 }
 
 /// The `found` section (`spec/model.md` §8.8): each place where the map

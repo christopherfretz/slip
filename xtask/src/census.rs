@@ -919,6 +919,7 @@ mod tests {
             negatives: has_negatives.then(Vec::new),
             found: None,
             rebuilt_use: None,
+            ownership: None,
         };
         Loaded {
             path: RunPath {

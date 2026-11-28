@@ -574,6 +574,8 @@ the same bytes.
 | 31 | found | no | `Found` (§8.8): each place where the map parse found a file, with the input it led to, and the classes of `inputs` that were one file; phase `map` |
 | 32 | edits | no | `Edits` (`edits.md` §4): what a transform's run over this observer produced (claims, groups, reports, declarations, instances, or its failure); phase `map` |
 | 33 | rebuilt_use | no | `RebuiltUse` (`verify.md` §9.1): what the walk said of the run's rebuilt entries, and the files that cut an include chain (WP-118); phase `verify`, status `ok` |
+| 34 | existing_use | — | reserved (WP-144) |
+| 35 | ownership | no | `list<digest>` (§8.9): the content ids of the observer's ownership list blobs, strictly ascending (WP-150); phase `verify`, status `ok` |
 
 ```
 Phase   := map = 1 | verify = 2
@@ -602,30 +604,31 @@ harness gates on counters exactly (`spec/harness.md`).
 A shard with status `failed` has no `inputs` section and an empty `counters`
 list: nothing about a failed observer is deterministic.
 
-A reserved id (16, 18, 20) or a retired one (17, 25) is a critical id no
+A reserved id (16, 18, 20, 34) or a retired one (17, 25) is a critical id no
 reader knows: a file with one is `UnknownSection`. Ids 22, 23 and 30 are
 not assigned. Sections 17, 24, 25 and 26 were added by M2, 28 by work
-package WP-117, 29 by WP-111, 31 by WP-135, 32 by WP-139 and 33 by WP-118, without a change of the
+package WP-117, 29 by WP-111, 31 by WP-135, 32 by WP-139, 33 by WP-118 and 35 by WP-150, without a change of the
 shard's version: a reader that predates one refuses a shard that has it
 (the ids are critical), and a shard without them reads as before (a map
 shard without `negatives` is then refused by the verify task's guard N1,
 one without `found` by its guard N2, `verify.md` §5.3: it is made again
-by `slip parse`). A
+by `slip parse`; a verify shard without `ownership` in a run with rules
+is refused by `verify.md` §9.3 as not this run's). A
 section whose payload changes takes a new id and the old one is retired,
 so that a reader never meets a payload it does not know under an id it
 knows (WP-111: 25 to 29; WP-139: 17 to 32, when `Edits` gained
 `instances`, `edits.md` §4.5). An `edits` section
-in a shard of phase `verify`, or a `binding`, `rule_use`, `spellings`
-or `rebuilt_use` section in a shard of phase `map`, is `Malformed` at
+in a shard of phase `verify`, or a `binding`, `rule_use`, `spellings`,
+`rebuilt_use` or `ownership` section in a shard of phase `map`, is `Malformed` at
 the first byte of the section's payload, JSON path `sections.<name>`.
-So are `edits`, `rule_use`, `spellings` and `rebuilt_use` in a shard
+So are `edits`, `rule_use`, `spellings`, `rebuilt_use` and `ownership` in a shard
 whose status is not `ok`, and
 `binding` in one whose status is `failed` (only). The phase is checked
 before the status. Their own invariants are `edits.md` §4.7 and
 `verify.md` §9.1 and §10.4, checked after those of §8.1 to §8.3 in the
 order of the section ids, each section's phase and status first.
 `negatives`'s own are §8.6's, then `found`'s, §8.8's, then `edits`'s
-(32), last.
+(32), then `ownership`'s (35, §8.9), last.
 
 Section 27 (`names`, WP-112) changed the version to 2 (above): every
 shard a reader of version 2 reads, of either phase, is one that could
@@ -1256,6 +1259,86 @@ encoding's own rules are `negatives`'s, at the place's `shared` field.
 `negatives`'s; the inputs they lead to and the classes are a function of
 the tree, as `inputs` is.
 
+### 8.9 The `ownership` section and `OwnershipList` blobs
+
+Section **35, `ownership`** (work package WP-150 stage 2; `spec/landed/verify/WP-146.md`
+§3.1 "The carrier"): the content ids of one observer's per-file ownership
+lists (`list<digest>`, strictly ascending), phase `verify`, status `ok`.
+
+An `ok` verify shard of a run with a non-empty rule table **always**
+carries section 35 — empty (`[]`) when the observer has no `made` or
+`fixed` entry — and an `ok` verify shard of a run with an empty rule table
+never carries it (`verify.md` §9.3). Making the section mandatory (even
+empty) under rules fails closed: a shard written by a build that predates
+section 35 has no section 35 and is rejected as not this run's, rather than
+silently read as "no entries" when it had some.
+
+**Section 35 invariants**, checked last among the shard's sections:
+
+| # | Rule | Offset | JSON path |
+|---|---|---|---|
+| 1 | phase is `verify`: "an ownership section in a shard whose phase is not verify" | first byte of payload | `sections.ownership` |
+| 2 | status is `ok`: "an ownership section in a shard whose status is not ok" | first byte of payload | `sections.ownership` |
+| 3 | list ids strictly ascending: "ownership list ids are not strictly ascending" | element `i`'s first byte | `sections.ownership[i]` |
+
+**`OwnershipList` blobs.** Each digest in section 35 names a raw
+wire-encoded blob published via `Store::publish_blob` under
+`blobs/<BLAKE3(bytes)>` (no `SLIP` container: the blob address already
+authenticates every byte). One blob is written per `(file, through)` group
+that has at least one entry. A worker remembers the blob ids it has already
+published to the store to skip redundant `publish_blob` calls across
+observers.
+
+```
+OwnershipList := version: uv             1 (`OwnershipList::VERSION`)
+                 file:    bytes          subject path (empty only when the declaration has no location)
+                 through: bytes          empty; else the read-only file through which `file` was entered
+                                         when `file` is read-only here by the include-chain rule alone
+                 made:    list<Made>     strictly ascending by (key, post)
+                 fixed:   list<Fixed>    strictly ascending by (key, as)
+
+Made          := key:     digest         mapped key id (pre-image key)
+                 post:    opt<digest>    unmapped dependency-view key id (post-image key); absent if unformable
+                 rule:    uv             index in Declared.rules
+                 line:    uv             1-based, or 0 iff column is 0
+                 column:  uv             1-based, or 0 iff line is 0
+
+Fixed         := key:     digest         own key id (unmapped)
+                 as:      FixedAs        t = 0 | m = 1
+                 line:    uv             1-based, or 0 iff column is 0
+                 column:  uv             1-based, or 0 iff line is 0
+                 name:    str            entity display name, at most 4096 bytes
+```
+
+**Version rule.** `version` is checked first at byte 0 (JSON path
+`version`): `0` or any value above `OwnershipList::VERSION` (1) is
+`UnsupportedVersion`. Any future change to the blob layout increments
+`OwnershipList::VERSION`.
+
+**`OwnershipList` reader rows**, checked in order after wire decoding and
+trailing-byte check (`Malformed` at the named offset, JSON path as listed):
+
+| # | Rule | Offset | JSON path |
+|---|---|---|---|
+| 1 | at least one entry (`made` or `fixed` non-empty): "an empty ownership list" | `made` count | *(top level)* |
+| 2 | `through` empty whenever `file` is empty: "through without a file" | `through` field | `through` |
+| 3 | `made` empty whenever `through` is non-empty: "a made entry in a list entered through a read-only file" | `made[0]` | `made[0]` |
+| 4 | `made` strictly ascending by `(key, post)` (`None < Some`): "made entries are not strictly ascending by (key, post)" | `made[i]` | `made[i]` |
+| 5 | each `made` entry has `line == 0` iff `column == 0` | `made[i].line` | `made[i].line` |
+| 6 | `fixed` strictly ascending by `(key, as)` (`t < m`): "fixed entries are not strictly ascending by (key, as)" | `fixed[i]` | `fixed[i]` |
+| 7 | each `fixed` entry has `line == 0` iff `column == 0` | `fixed[i].line` | `fixed[i].line` |
+| 8 | each `fixed` entry's `name` is at most 4096 bytes: "longer than 4096 bytes" | `fixed[i].name` | `fixed[i].name` |
+
+**Counters**, emitted on every `ok` verify shard under a non-empty rule
+table (absent when rules are empty), deterministic per observer regardless
+of worker blob caching:
+
+- `verify.ownership.made`: total `Made` entries across the observer's lists;
+- `verify.ownership.fixed`: total `Fixed` entries across the observer's lists;
+- `verify.ownership.lists`: number of blob ids in section 35;
+- `verify.ownership.bytes`: sum of encoded byte lengths of the observer's
+  `OwnershipList` blobs.
+
 ## 9. The run record
 
 One per invocation of a parallel phase; kind `RUNR`, version 1. Not
@@ -1392,6 +1475,11 @@ form as it has one binary form (§1 rule 1):
   every invariant with its offset and path, goldens
   `crates/slip_model/tests/golden/shard-digests.json` and
   `shard-verdict.json`.
+- `crates/slip_model/tests/ownership.rs` — §8.9: section 35 and
+  `OwnershipList` round trips, version rule, reader rows, goldens
+  `crates/slip_model/tests/golden/ownership-list.bin`,
+  `ownership-list.json` and `shard-ownership.json`, property round-trip
+  test and byte-level corruption/truncation sweep.
 - `crates/slip_kiln/tests/parse.rs` and the unit tests of
   `crates/slip_kiln/src/parse.rs` — §8.4; the parity test's oracle (the
   parse task of WP-010) is `crates/slip_kiln/tests/support/`. Also

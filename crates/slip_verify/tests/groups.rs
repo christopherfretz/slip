@@ -335,6 +335,7 @@ fn check(pre: &Digests, post: &Digests, ex: &Exemptions, cov: &mut Coverage) -> 
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     };
     shard.validate()?;
     cov.used += u64::from(!full.used.is_empty());

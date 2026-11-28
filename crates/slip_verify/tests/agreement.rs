@@ -1211,6 +1211,7 @@ fn map_shard(obs: u8, read: &[&str]) -> slip_model::Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 
@@ -1320,4 +1321,68 @@ fn s7_3_unchanged_at_a_position_twice() {
     let mut r = report_with(&no_rules, Some(ids(&[])));
     r.add_unchanged_at(0, &d(0x10), b"/m/a.cc", &map_shard(0x10, &[]));
     r.add_unchanged_at(0, &d(0x11), b"/m/b.cc", &map_shard(0x11, &[]));
+}
+
+// WP-150 stage 2 (`spec/model.md` §8.9, `spec/verify.md` §9.3): section 35
+// (`ownership`) agreement in `Report::ours`. An `ok` verify shard of a run
+// with rules must carry section 35 (empty when the observer has no entries),
+// and one of a run without rules must not; otherwise the shard is rejected
+// as not this run's (`Failed`). Non-`ok` shards have no section 35.
+#[test]
+fn wp150_stage2_section_35_agreement() {
+    let with_rules = two_rules();
+    // Missing section 35 on Verified, Mismatch and Unverifiable under rules -> Failed.
+    for (label, mut shard) in [
+        ("verified", with_rules.verified(0xa0)),
+        ("mismatch", with_rules.mismatch(0xa1)),
+        ("unverifiable", with_rules.unverifiable(0xa2, "post-image: x")),
+    ] {
+        shard.ownership = None;
+        let mut r = with_rules.report();
+        add(&mut r, &shard);
+        assert_eq!(count(&r, State::Failed), 1, "{label}");
+        assert_eq!(r.verdict(), RunVerdict::Incomplete, "{label}");
+        assert!(
+            r.error_lines().contains("the shard has no ownership"),
+            "{label}: {}",
+            r.error_lines()
+        );
+    }
+
+    // Empty and non-empty section 35 are both accepted under rules, and do
+    // not alter the verdict (stage 2 is inert for verdicts).
+    let mut r = with_rules.report();
+    let s0 = with_rules.verified(0xa0); // ownership: Some(vec![])
+    let mut s1 = with_rules.verified(0xa1);
+    s1.ownership = Some(vec![d(0x11), d(0x22)]);
+    add(&mut r, &s0);
+    add(&mut r, &s1);
+    assert_eq!(count(&r, State::Verified), 2);
+    assert_eq!(r.verdict(), RunVerdict::Verified);
+    assert_eq!(r.error_lines(), "");
+
+    // Non-ok shards (`diagnosed`, `rejected`, `failed`) have no section 35
+    // and remain accepted under rules with their normal states.
+    let mut r = with_rules.report();
+    add(&mut r, &with_rules.unparsed(0xa0, Status::Diagnosed, "err"));
+    add(&mut r, &with_rules.unparsed(0xa1, Status::Rejected, "bad flag"));
+    add(&mut r, &with_rules.unparsed(0xa2, Status::Failed, "crash"));
+    assert_eq!(count(&r, State::NotParsed), 2);
+    assert_eq!(count(&r, State::Failed), 1);
+
+    // Run without rules: section 35 (even empty) is rejected as not this run's.
+    let no_rules = Run::new(vec![], None);
+    for lists in [vec![], vec![d(0x11)]] {
+        let mut s = no_rules.verified(0xa0);
+        s.ownership = Some(lists);
+        let mut r = no_rules.report();
+        add(&mut r, &s);
+        assert_eq!(count(&r, State::Failed), 1);
+        assert_eq!(r.verdict(), RunVerdict::Incomplete);
+        assert!(
+            r.error_lines().contains("the shard has an ownership section and the run has no rule"),
+            "{}",
+            r.error_lines()
+        );
+    }
 }

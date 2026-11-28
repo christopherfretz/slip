@@ -390,6 +390,7 @@ mod tests {
             negatives: None,
             found: None,
             rebuilt_use: None,
+            ownership: None,
         }
         .to_bytes()
     }

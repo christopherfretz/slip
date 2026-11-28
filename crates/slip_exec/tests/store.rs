@@ -100,6 +100,7 @@ fn shard(observer: Digest, phase: Phase, round: u64) -> Shard {
         negatives: None,
         found: None,
         rebuilt_use: None,
+        ownership: None,
     }
 }
 
