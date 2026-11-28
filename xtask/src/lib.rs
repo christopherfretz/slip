@@ -12,6 +12,8 @@
 //! - [`transform`]: `cargo xtask transform` (§6.2 to §6.4),
 //! - [`invariants`]: `cargo xtask invariants a|b <corpus>` (§9), running
 //!   `slip` through [`slip_run`],
+//! - [`census`]: `cargo xtask census <corpus>` (§9.5), counting indeterminate
+//!   causes and non-`ok` shards over a corpus,
 //! - [`demo`]: `cargo xtask demo 1` (§10), Demo 1 on the `llvm` corpus,
 //! - [`fscheck`]: `cargo xtask fscheck <dir>` (§11), the probe of a file
 //!   system that confuses the names of a hard-linked file,
@@ -25,6 +27,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api_table;
+pub mod census;
 pub mod ci;
 pub mod corpus;
 pub mod demo;

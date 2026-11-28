@@ -1,0 +1,3 @@
+exact derived
+added A::operator+(const A::X &, const A::X &)
+derived-changed f<A::X, A::X>(A::X, A::X)::<definition>

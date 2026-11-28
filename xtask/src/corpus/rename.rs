@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>] [--slip <path>]
+//!         [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+//!         [-j <n>] [--slip <path>]
 //! ```
 //!
 //! The command never edits C++ itself: it hands names to `slip rename`,
@@ -25,6 +26,7 @@
 //! ([`result_json`]); `<target>` is `--from` with `::` written `.`
 //! ([`target_name`]).
 
+use crate::census;
 use crate::corpus::rows::{ExpectedExcluded, ExpectedUnparsed};
 use crate::corpus::{self, Corpus, Ctx, Layout, build_tree, rows};
 use crate::invariants::{self, Failure, Side};
@@ -50,8 +52,8 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
 usage: cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-               [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
-               [--slip <path>]";
+               [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+               [-j <n>] [--slip <path>]";
 
 /// The clang runs of `--accept` that take longer than this are a failure
 /// of the check, not a wait without end.
@@ -92,9 +94,20 @@ pub struct Options {
     pub expect: Option<State>,
     pub accept: bool,
     pub build: bool,
+    pub skip_census: bool,
     pub jobs: Option<usize>,
     /// The `slip` executable (as `invariants` and `demo` take it).
     pub slip: Option<PathBuf>,
+}
+
+/// Whether this rename requires a clean census before its map phase
+/// (`spec/harness.md` §6.5): every run whose expected state is `verified` or
+/// `verified_with_residue` — including runs with no `--expect` (since
+/// [`check_state`] defaults to `verified` or `verified_with_residue`). Only
+/// runs whose `--expect` names a non-verified state (`refused`,
+/// `not_verified`, `incomplete`) skip the census.
+pub fn needs_census(o: &Options) -> bool {
+    !matches!(o.expect, Some(State::Refused | State::NotVerified | State::Incomplete))
 }
 
 /// The state named `name` (`spec/edits.md` §8.5).
@@ -130,6 +143,7 @@ pub fn parse_args(args: &[String]) -> Result<(String, Options), String> {
             }
             "--accept" if !o.accept => o.accept = true,
             "--build" if !o.build => o.build = true,
+            "--skip-census" if !o.skip_census => o.skip_census = true,
             "-j" if o.jobs.is_none() => {
                 let v = value()?;
                 let n = v
@@ -140,8 +154,8 @@ pub fn parse_args(args: &[String]) -> Result<(String, Options), String> {
                 o.jobs = Some(n);
             }
             "--slip" if o.slip.is_none() => o.slip = Some(PathBuf::from(value()?)),
-            "--from" | "--to" | "--kind" | "--expect" | "--accept" | "--build" | "-j"
-            | "--slip" => return Err(twice()),
+            "--from" | "--to" | "--kind" | "--expect" | "--accept" | "--build"
+            | "--skip-census" | "-j" | "--slip" => return Err(twice()),
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
@@ -827,6 +841,7 @@ pub fn result_json(h: &Header<'_>, r: &Records, checks: &[Check]) -> Value {
                 ("expect", o.expect.map_or(Value::Null, |e| s(e.name()))),
                 ("accept", Value::Bool(o.accept)),
                 ("build", Value::Bool(o.build)),
+                ("skip_census", Value::Bool(o.skip_census)),
                 ("jobs", o.jobs.map_or(Value::Null, |j| int(j as u64))),
             ]),
         ),
@@ -1465,10 +1480,40 @@ impl Rename<'_> {
         Ok(())
     }
 
+    /// Pre-flight census check (§6.5): returns `Ok(true)` to continue,
+    /// `Ok(false)` when refused because the census is not clean.
+    fn check_census(&self, out: &mut dyn Write) -> Result<bool, String> {
+        if self.opts.skip_census {
+            say(out, "census: skipped (--skip-census)");
+            return Ok(true);
+        }
+        let mut census_opts = census::Options::default();
+        census_opts.common.jobs = self.opts.jobs.map(|j| j.to_string());
+        let outcome = census::execute(self.repo, self.c, &self.layout, &self.slip, &census_opts)
+            .map_err(|e| format!("census: {e}"))?;
+        say(out, &outcome.last_line());
+        if outcome.census.is_clean() {
+            return Ok(true);
+        }
+        say(
+            out,
+            &format!(
+                "corpus rename: refused: census is not clean; run `cargo xtask census {}` to \
+                 inspect, or pass `--skip-census`",
+                self.c.name
+            ),
+        );
+        Ok(false)
+    }
+
     fn execute(&self, out: &mut dyn Write) -> Result<bool, String> {
         say(out, &format!("corpus rename {}: {} to {}", self.c.name, self.opts.from, self.opts.to));
         let owned = self.owned()?;
         check_database(&self.layout.database())?;
+        let check_census = needs_census(self.opts);
+        if check_census && !self.check_census(out)? {
+            return Ok(false);
+        }
         if self.opts.build {
             self.prepare_build(out)?;
         }
@@ -1558,10 +1603,11 @@ impl Rename<'_> {
             .map(|c| c.name)
             .chain((!same).then_some("counters"))
             .collect();
+        let skipped = if check_census && self.opts.skip_census { " (census skipped)" } else { "" };
         if failed.is_empty() {
-            say(out, "corpus rename: ok");
+            say(out, &format!("corpus rename: ok{skipped}"));
         } else {
-            say(out, &format!("corpus rename: FAILED ({})", failed.join(", ")));
+            say(out, &format!("corpus rename: FAILED ({}){skipped}", failed.join(", ")));
         }
         Ok(failed.is_empty())
     }
