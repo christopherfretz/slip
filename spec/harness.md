@@ -628,7 +628,8 @@ nothing observable is turned off per test with `oracle: no-mutation
 
 ```
 cargo xtask corpus rename <corpus> --from <name> --to <identifier> [--kind <k>]
-        [--owned <path>]… [--expect <state>] [--accept] [--build] [-j <n>]
+        [--owned <path>]… [--expect <state>] [--accept] [--build] [--skip-census]
+        [-j <n>] [--slip <path>]
 ```
 
 runs `slip rename` over the corpus's database (§8) with a store under the
@@ -637,19 +638,25 @@ corpus's build directory, `--allow-unparsed`, `--allow-residue`, and
 as fetched). `--owned` defaults to the corpus's source directory. It then
 checks, in order:
 
-1. the state is `--expect` (default `verified_with_residue` or
+1. **coverage**: every database entry excluded by the plan matches the
+   corpus's **expected excluded entries** (§8.1, empty for `llvm`), and
+   every observer of the plan has map outcome `ok`, except the corpus's
+   **expected unparsed observers** (§8.1, §8.7), which must have their
+   listed non-`ok` outcomes (read from the store's map phase run record
+   and its shards);
+2. **state**: the state is `--expect` (default `verified_with_residue` or
    `verified`);
-2. **determinism**: `slip reduce` run again over the same shards gives the
+3. **determinism**: `slip reduce` run again over the same shards gives the
    same edit set id;
-3. with `--accept`: every command of the plan, run by clang with
+4. with `--accept`: every command of the plan, run by clang with
    `-fsyntax-only` and a clang VFS overlay file that maps each overlay
    path to its blob, exits as it does on the pre-image (the two units
    clang rejects in `llvm`, §8.7, must be rejected the same way);
-4. with `--build`: the patch is applied to a copy of the source
+5. with `--build`: the patch is applied to a copy of the source
    directory under the corpus's build directory; the copy is configured
    and generated as the corpus is (§8.3) and built with clang (`all`);
    the build succeeds;
-5. with `--build`, **back**: the inverse rename over the copy's database,
+6. with `--build`, **back**: the inverse rename over the copy's database,
    with `--write`, leaves every file of the copy byte-identical to the
    corpus's source.
 
@@ -676,7 +683,7 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   xtask.
 - **Paths.** "The corpus's build directory" is the corpus directory
   `<root>/<name>/` (§8.2): the store is `slip-store/`, the patch
-  `rename/<target>.patch`, the overlay file of check 3
+  `rename/<target>.patch`, the overlay file of check 4
   `rename/<target>.vfs.json` (both kept), the copy `rename-copy/` and its
   build tree `rename-build/` (with the inverse run's store,
   `rename-build/slip-store/`, and the logs `patch.log`, `configure.log`,
@@ -685,6 +692,44 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   `--relative-to`, so uses in projects the corpus does not configure are
   residue. A given `--owned` must be under `src/` (real paths), or the
   command stops before `slip` runs.
+- **Before `slip` runs.** For every run (not only `--build`), and
+  **before** the census pre-flight below or any `slip` invocation
+  (`slip plan`, `slip parse`, or `slip rename`), the compilation database
+  is read and every entry's `directory` must be a non-empty **absolute**
+  path that exists and is a directory, and its `file` (non-empty; resolved
+  against `directory` when relative) must exist as a regular file.
+  Otherwise the command stops before any `slip` invocation and before
+  writing any store (neither `stores/census` nor `slip-store`), with exit
+  status 2, naming the count and the first 10 (`xtask corpus rename: <n>
+  database entry|entries cannot run: <first>`, with entries 2 to 10 on
+  indented lines). Each entry line has one of three forms: `entry <i>:
+  <reason>` (non-object entry, missing `directory`, or empty `directory`),
+  `<dir>: <reason>` (relative, missing, or non-directory `directory`, or
+  missing/empty `file`), or `<file>: <reason>` (resolved `file` missing or
+  not a regular file).
+- **Census pre-flight.** After the compilation-database check above, every
+  run whose expected state is `verified` or `verified_with_residue` —
+  including runs with no `--expect` (whose check 2 (`state`) defaults to
+  `verified` or `verified_with_residue`) — first runs the census (§9.5)
+  into `<root>/<name>/stores/census` with the same `slip` and `-j`, prints
+  the census's last line, and refuses to start (exit status 1, one line
+  naming `cargo xtask census <corpus>`) if the census is not clean. Only
+  runs whose `--expect` names a non-verified state (`refused`,
+  `not_verified`, or `incomplete`) do not run the census — including when
+  combined with `--accept` (for example, `--accept --expect not_verified`
+  runs no census). A census error inside `corpus rename` (such as a failing
+  `slip parse` or unreadable census store) stops before `slip rename` and
+  exits **2** as a command error (`xtask corpus rename: census: …` on
+  standard error, matching standalone `cargo xtask census`). Passing
+  `--skip-census` bypasses the check, prints `census: skipped
+  (--skip-census)` up front before running `slip rename`, records
+  `options.skip_census: true` in the result file, and appends
+  ` (census skipped)` to the final `corpus rename: ok` or
+  `corpus rename: FAILED (…)` line. The census store holds transform-free
+  round-0 map shards and is not reused as `slip-store/`, which holds
+  round-1+ transform shards. Rebuilding `slip` invalidates the census store
+  and incurs one full map parse on the next verified rename, which is
+  intentional (§9.5: a census belongs to its `slip` binary).
 - **The run.** `slip rename` is given `--kind` and `-j` when the command
   is; its lines are printed as they come. Status 2 or 3, or a run that
   prints no `result` line or a state other than its result's, is an
@@ -693,16 +738,46 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   the phase records it names (by content id) are read from the store.
 - **Checks.** They run in order and the first failure stops them; each
   prints `check <name>: ok|FAIL|skipped|not run (<detail>)`, with
-  `<name>` one of `state`, `determinism`, `accept`, `build`, `back`. Every
+  `<name>` one of `coverage`, `state`, `determinism`, `accept`, `build`,
+  `back`. Every
   step prints `step <step>: started (…)` and `step <step>: done in <s>`.
-  A result with no overlay (`refused`) has no post-image: checks 3 to 5
+  A result with no overlay (`refused`) has no post-image: checks 4 to 6
   are `skipped` even when asked for.
-- **1** also fails a `verified` or `verified_with_residue` run that wrote
-  no patch (its `--patch` refused at apply, `spec/edits.md` §7.2).
-- **2.** `slip reduce --plan <plan> --round <round> --store <store>` (and
+- **1 (`coverage`).** Reads the map phase run record named by the
+  transform run record (`perf::load`, failing if none is named), checks
+  `plan.excluded` against the corpus's `expected_excluded` list (§8.1,
+  paths relative to `src/`), and verifies each plan observer's map shard
+  against the run record (`invariants::side`) and `expected_unparsed`
+  (§8.1, paths relative to `src/`). `ok` when the excluded entries match
+  `expected_excluded` with their exact reasons and the non-`ok` plan
+  observers match `expected_unparsed` with their exact outcomes
+  (`<ok> of <total> observer|observers ok`, with `(<u> expected unparsed)`
+  and/or `(<x> expected excluded)` when those lists are non-empty).
+  `FAIL` otherwise, printing up to 10 failing entries (with a trailing
+  `(+<n> more)` line when more than 10 fail) in precedence order:
+  unexpected excluded entries (`excluded <path>: <reason>[: <detail>]`),
+  mismatched or missing expected excluded entries
+  (`excluded <path>: <actual> (expected <reason>)[: <detail>]`),
+  unexpected non-`ok` observers (`<path>: <outcome>[: <first error>]`),
+  and mismatched or absent expected unparsed observers
+  (`<path>: <outcome> (expected <status>)[: <first error>]`). When more
+  than one kind fails, the check `<detail>` follows the same precedence
+  (first non-empty wins):
+  1. `<k> database entry|entries excluded beyond the expected <e>`;
+  2. `expected excluded entry <path> is <actual>` (suffixed `(+<m> more)`
+     when more than one expected excluded entry mismatches or was not
+     excluded);
+  3. `<k> observer|observers not ok beyond the expected <e>`;
+  4. `expected unparsed observer <path> is <outcome>` (suffixed
+     `(+<m> more)` when more than one expected unparsed observer parsed,
+     changed outcome, or is absent from the plan).
+- **2 (`state`)** also fails a `verified` or `verified_with_residue` run
+  that wrote no patch (its `--patch` refused at apply, `spec/edits.md`
+  §7.2).
+- **3 (`determinism`).** `slip reduce --plan <plan> --round <round> --store <store>` (and
   `-j`); status 0 or 1 with the run's edit set id passes, its lines
   printed after `reduce| `.
-- **3.** The commands are the plan's observers: the corpus's C compiler
+- **4 (`accept`).** The commands are the plan's observers: the corpus's C compiler
   (§8.1 `c_compiler`) for C and Objective-C, its C++ compiler otherwise,
   found on `PATH`, with the observer's arguments after `argv[0]`,
   `-fsyntax-only`, its directory and environment; once as they are and
@@ -713,7 +788,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   pair that does not end within an hour counts as a difference. Exit
   statuses alone are compared; up to 20 differences are printed with the
   first error line.
-- **4.** Before `slip` runs: the tools are found, the file system of the
+- **5 (`build`).** Before `slip` runs (in addition to the always-on
+  database check above): the tools are found, the file system of the
   corpus directory must have at least twice the bytes of `src/`'s
   regular files free (`df -Pk`), and a `rename-copy/` or `rename-build/`
   left by an earlier run is removed. The copy is of `src/` without its
@@ -724,20 +800,27 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   cmake runs with §8.3's arguments over the copy, then `make` of the
   `generate` entries (§8.3, without its promised-file check) and
   `make all`, with no `-j` (the jobserver in `MAKEFLAGS` bounds them).
-- **5.** The inverse is §6.4's (`--from <prefix>::<to> --to <last>`),
-  over `rename-build/compile_commands.json`, `--owned` mapped into the
-  copy, `--allow-unparsed --allow-residue --write`; status 0 or 1 goes
-  on to the comparison. Every entry of `src/` (without `.git`) and of the
-  copy is compared: presence, kind, a regular file's bytes, a link's
-  target; modes and times are not.
+- **6 (`back`).** Runs the same compilation-database pre-flight check as
+  above on `rename-build/compile_commands.json` (failing `back` with
+  `database: …` before `slip` runs if any entry cannot run), then runs
+  the inverse of §6.4 (`--from <prefix>::<to> --to <last>`) over
+  `rename-build/compile_commands.json`, `--owned` mapped into the copy,
+  `--allow-unparsed --allow-residue --write`; status 0 or 1 goes on to
+  the comparison. `back` does not run a separate `coverage` check on the
+  inverse store: the inverse run is guarded by the byte-for-byte
+  comparison of every entry of `src/` (without `.git`) and of the copy
+  (presence, kind, a regular file's bytes, a link's target; modes and
+  times are not).
 - **Removal.** `rename-copy/` and `rename-build/` are removed only by
   their full paths and only when strictly under the corpus directory
   (§9.1's rule); `removed <path>` or `kept <path>` is printed for each.
 - **The result file** holds `corpus`, `pin`, `from`, `to`, `kind`,
   `options` (`owned` relative to `src/`, `expect`, `accept`, `build`,
-  `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
+  `skip_census`, `jobs`), `tool_slip`, `tool_kiln`, the ids `plan`, `round`,
   `transform`, `edits`, `declared`, `overlay` and `result`, `checks`
-  (`check`, `outcome`, `detail`), then the exact members `state`,
+  (`check`, `outcome`, `detail`, for all six checks in order: `coverage`,
+  `state`, `determinism`, `accept`, `build`, `back`), then the exact
+  members `state`,
   `counters` (the edit set's, by name), `tally`, `agreement` (`stale`,
   `unused_rules`), `spellings` (`obligations`, `passed`, `failed`) and
   `residue` (a count per category) and `not_plain_at_macro` (the edit
@@ -746,7 +829,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   spelling that is not plain inside a macro argument), then
   `measured`: the transform run's
   `wall_ns`, per step `wall_ns`, `cpu_ns` and `peak_rss`, per phase
-  record §7.1's measurements, and each check's `wall_ns`. No absolute
+  record §7.1's measurements, and each of the six checks' `wall_ns`
+  (`measured.checks`, in the same order). No absolute
   path is in it. The ids are not compared: every `slip rename` takes the
   store's next round, and the round is in every id after the plan's.
   The exact members are compared with the file there;
@@ -755,7 +839,8 @@ What the command fixes beyond that (`xtask/src/corpus/rename.rs`):
   there was none); otherwise the run's file is `<file>.new` and the file
   stays. The last lines are `counters: …`, `result <file>` and
   `corpus rename: ok` or `corpus rename: FAILED (<checks>[, counters])`;
-  the status is 0 when ok, 1 otherwise, 2 for a usage error.
+  the status is 0 when ok, 1 when a check fails, the census is not clean,
+  or counters differ, 2 for a usage or command error.
 
 ## 7. Performance records
 
@@ -1034,8 +1119,8 @@ cargo xtask corpus path <name> [--db]
 ### 8.1 `bench/corpora.toml`
 
 One table per corpus; the table name is the corpus name (lower-case ASCII
-letters, digits, `-`, `_`). All keys are required; any other key is an
-error.
+letters, digits, `-`, `_`). All keys except `expected_unparsed` and
+`expected_excluded` are required; any other key is an error.
 
 | Key | Value |
 |---|---|
@@ -1045,6 +1130,8 @@ error.
 | `c_compiler`, `cxx_compiler` | strings, compiler names looked up on `PATH`: non-empty, no whitespace, no `/` |
 | `configure` | array of strings, further CMake arguments, in order |
 | `generate` | non-empty array of distinct entries: a build-target name (`[A-Za-z0-9_.+-]`, not starting with `-`), or `<target>:<file>`, one generated file made by a rule of that target's `build.make` (a relative path without `.`, `..` or empty components, without whitespace or `:`, with an extension of §8.6) |
+| `expected_unparsed` | optional array of strings (default empty), each `<outcome>:<path>:<reason>`: `<outcome>` is `diagnosed`, `rejected` or `failed`; `<path>` is a unique relative path under `src/` (no `.`, `..`, empty components, whitespace or `:`); `<reason>` is a non-empty one-line reason. Used by `corpus rename`'s `coverage` check (§6.5) |
+| `expected_excluded` | optional array of strings (default empty), each `<reason>:<path>:<note>`: `<reason>` is a plan exclusion reason (`not_a_compile`, `unsupported_language`, `unsupported_flag`, `missing_file`, `malformed_entry`, or `unsupported_compiler`); `<path>` is a unique relative path under `src/` (no `.`, `..`, empty components, whitespace or `:`); `<note>` is a non-empty one-line note. Used by `corpus rename`'s `coverage` check (§6.5) |
 
 The pin comes from the Kiln row, so Slip and Kiln measure the same code:
 its `url` (a required string: non-empty, not starting with `-`, no
@@ -1235,13 +1322,17 @@ What a parse of it finds, and why (`bench/baselines/llvm.json` holds the
 counts):
 
 - The database has 4069 entries and the plan 4061 observers, none
-  excluded: eight files (seven of `llvm/utils/TableGen`, and
+  excluded (`expected_excluded` is empty for `llvm`): eight files (seven
+  of `llvm/utils/TableGen`, and
   `clang/tools/clang-fuzzer/DummyClangFuzzer.cpp`) are each compiled twice
   with one command, and each pair is one observer (`spec/cdb.md` §7).
 - Two units are `diagnosed`, and clang 19 rejects them with the same
   error at the same place: `clang/tools/clang-fuzzer/ClangFuzzer.cpp` and
-  `ClangObjectiveCFuzzer.cpp` name `uint8_t` without including a header
-  that declares it (no target of the configuration builds them).
+  `clang/tools/clang-fuzzer/ClangObjectiveCFuzzer.cpp` name `uint8_t`
+  without including a header that declares it (no target of the
+  configuration builds them). These two units are `llvm`'s
+  `expected_unparsed` list in `bench/corpora.toml` for `corpus rename`'s
+  `coverage` check (§6.5).
 - With Kiln at `62d190007`, nineteen units were `failed`: the front end
   panicked in three defects of Kiln's constant evaluator. Six were the two
   of `docs/requests/KD1-oven-panics-llvm.md`; thirteen (eleven of
@@ -1435,6 +1526,115 @@ pub fn main(repo: &Path, args: &[String]) -> ExitCode;
 
 `compare_runs` and `check_identity` are pure, so that the tests need no
 `slip` and no corpus.
+
+### 9.5 Census: causes of indeterminate units
+
+```
+cargo xtask census <corpus> [--slip <path>] [--only <substring>]… [--limit <n>] [-j <n>] [--store <dir>]
+```
+
+Counts indeterminate keys, unparsed observers, and unclean non-`ok` shards
+over a configured corpus before a run that needs `verified`
+(`docs/demos/demo-2.md` §1, §6.5). Locating `slip`, checking that `<corpus>`
+is configured, and applying `--only`, `--limit` and `-j` follow §9.
+
+- **Store and reuse.** Default store: `<corpus dir>/stores/census` for a
+  full-corpus run, or `<corpus dir>/stores/census-<hex16>` when `--only` or
+  `--limit` is given without `--store`, where `<hex16>` is the first 16
+  lowercase hex digits of `content_digest` over the compact JSON
+  `{"only":[...],"limit":...}`. Giving a selection its own default store
+  leaves a full-corpus `<corpus dir>/stores/census` untouched and lets
+  repeated runs of the same selection reuse their own store. `--store <dir>`
+  overrides the default store for either kind of run.
+
+  The command reads `<store>/census.json` and reuses the newest round-0 map
+  run of the corpus's current plan in `<store>` without running `slip parse`
+  only when all of the following match:
+  1. `format` is `"slip.census.v1"` and `census.json` parses cleanly;
+  2. `slip_digest` equals the content digest (`slip_model::hash::content_digest`)
+     of the `slip` executable's bytes — after a `slip` rebuild, incurring
+     one extra full map parse is **correct**, because a census belongs to
+     its binary (different binary bytes can walk or classify units
+     differently even with the same `--version` string);
+  3. `tool_slip` and `tool_kiln` match `slip --version` and the run record;
+  4. `kiln_pin` matches the repository's `kiln` submodule `HEAD` (or the
+     corpus row's tag when no `kiln` git checkout exists);
+  5. `selection.only` and `selection.limit` match the current arguments;
+  6. `plan` matches `slip plan --db <database> --store <store>`;
+  7. the newest map run of `plan` in `<store>` is the exact run recorded in
+     `census.json` (`run`), is round 0, has no missing shards, and covers
+     the exact selected observer set (so a newer run written into the store
+     by another `slip` with the same `--version` string is never accepted);
+  8. every reused shard records both positive `inputs` (`Some`) and negative
+     inputs (`negatives: Some`, `spec/model.md` §8.6) — missing either fails
+     closed — every recorded positive input file still exists on disk as a
+     regular file with the exact recorded size and content digest, and every
+     recorded negative path is still confirmed absent on disk
+     (`symlink_metadata` returns `NotFound`, so any newly created file,
+     directory, dangling symlink, or unreadable entry invalidates reuse).
+  When any check fails (or when in doubt), `slip parse` runs afresh. An
+  existing non-reusable `<store>` is removed (via `slip_run::remove_tree`)
+  **only** if it is the current run's default store
+  (`<corpus dir>/stores/census` for full runs, or
+  `<corpus dir>/stores/census-<hex16>` for a selection) or a direct child
+  directory of `<corpus dir>/stores/` containing a regular `census.json`
+  file; for any other existing path (including `<corpus dir>/src`, a sibling
+  store without `census.json`, a nested subdirectory under `stores/`, or a
+  path outside `<corpus dir>`), the command refuses with exit status 2
+  without deleting anything.
+- **Aggregation.** Each selected observer's map shard is read from the store
+  through `perf::load` and verified against the run record via
+  `invariants::side`.
+  - For each `ok` shard with `digests` present: every non-zero
+    `digest.indeterminate.<cause>` counter (including `pending.<area>` and
+    any other dotted sub-cause) is summed into `causes` (keys, observers
+    with at least one, and the first 5 such observers sorted by main file
+    path bytes), and every non-zero `digest.cause.<cause>.<word>` counter
+    is summed into `cause_texts` (keys and observers). To avoid
+    double-counting dotted sub-causes alongside their top-level parent
+    (such as `pending` and `pending.<area>`), total `indeterminate_keys`
+    sums top-level `digest.indeterminate.<cause>` counters plus any dotted
+    `digest.indeterminate.<parent>.<sub>` counter whose `<parent>` is absent
+    in that shard, taking `max` with `digest.indeterminate` when present.
+  - An `ok` map shard with `digests` absent (`spec/verify.md` §5.3 P3) is
+    counted in `not_ok` under status `no_digests` and makes the census
+    unclean.
+  - `diagnosed` and `rejected` shards (unparsed observers) are counted in
+    `unparsed` and grouped in `unparsed_by_status` (`diagnosed`,
+    `rejected`); they are listed with their counts and noted in the last
+    line, but do **not** make the census unclean (`corpus rename` passes
+    `--allow-unparsed`, and unparsed coverage is a separate check).
+  - `failed` shards and missing/mismatched shards (`NoJob`, `NoShard`,
+    `Absent`, `Other`, grouped as `incomplete`) are counted in `not_ok` and
+    `not_ok_by_status` and make the census unclean.
+- **Cleanliness.** A census is clean iff `observers > 0`, `not_ok == 0`,
+  `indeterminate_keys == 0`, `indeterminate_observers == 0`, and
+  `causes.is_empty()`.
+- **Output.** Standard output prints `census <corpus>`, `plan <id>`,
+  `observers`, `omitted` (printed when `--only` or `--limit` was given: the
+  count of plan entries left out by the selection), `ok`, `unparsed` (and
+  per-status counts), `not_ok` (and per-status counts),
+  `indeterminate_keys`, `indeterminate_observers`, `causes` (sorted by keys
+  descending, name ascending; up to 5 observer paths each), `cause_texts`
+  (keys descending, name ascending), `run <path>`, `json <path>`, and the
+  last line:
+  - `census: clean (<n> observers)` when clean and `unparsed == 0`, or
+    `census: clean (<n> observers; <u> unparsed (not counted))` when clean
+    and `unparsed > 0`;
+  - `census: <k> indeterminate keys in <m> of <n> observers, <c> causes; <f> not ok`
+    when not clean (with `; <u> unparsed (not counted)` before any selection
+    suffix when `unparsed > 0`, or `(no observer selected)` when `n == 0`);
+  - suffixed with ` (selection)` when `--only` or `--limit` was given.
+- **JSON (`<store>/census.json`).** Written atomically (`census.json.tmp`
+  renamed into place) with top-level keys `format` (`"slip.census.v1"`),
+  `corpus`, `plan`, `run`, `tool_slip`, `tool_kiln`, `kiln_pin`,
+  `slip_digest`, `selection` (`only`, `limit`), `clean`, `observers`,
+  `omitted`, `ok`, `unparsed`, `unparsed_by_status`, `not_ok`,
+  `not_ok_by_status`, `indeterminate_keys`, `indeterminate_observers`,
+  `causes` (array of `{cause, keys, observers, sample_observers}`), and
+  `cause_texts` (array of `{name, keys, observers}`).
+- **Exit status:** `0` clean, `1` not clean, `2` for any command or usage
+  error.
 
 ## 10. Demo 1
 
@@ -1954,6 +2154,25 @@ such tests prints which kind each root is, and fails in the same case.
   output of `a` and `b` and their exit statuses; `check_identity` for
   each state; a `slip` that exits 3; a corpus that is not configured;
   `remove_tree` refusing a path outside the corpus directory.
+- `xtask/tests/census.rs` — §9.5, over stores the test writes and a fake
+  `slip` with stand-in counters (`xtask` is Kiln-free and does not run the
+  real `slip` binary): `summarize` over clean, indeterminate (including
+  `pending` + `pending.<area>` without double-counting, dotted non-pending
+  causes, total-only `digest.indeterminate`, sample observers capped at 5 by
+  path), unparsed (`diagnosed`, `rejected` listed and not counted toward
+  uncleanliness for both `u == 0` and `u > 0`), unclean shards (`failed`,
+  `no_digests`, `NoJob`, `NoShard`, `Absent`, `Other`), `is_clean` guards,
+  store reuse and invalidation (`slip_digest`, `kiln_pin`, `plan`,
+  `latest_map_run == prev.run` rejecting foreign newer runs, `selection`,
+  round 0, missing shards, observer set, positive `inputs` on disk, negative
+  inputs existence including dangling symlinks, missing `negatives` when
+  `inputs` is present, and missing `inputs`), separate deterministic default
+  stores (`stores/census-<hex16>`) for `--only`/`--limit` selections leaving
+  `stores/census` untouched, `omitted` plan-entry count in stdout and JSON,
+  `--store` deletion guard (refusing `<corpus>/src`, sibling stores without
+  `census.json`, and nested directories; allowing default store and direct
+  children of `stores/` with `census.json`), `--only` `(selection)`, binary
+  exit statuses (0, 1, 2), and usage errors.
 - `xtask/tests/demo.rs` — §10 without a corpus: `demo.toml`; every form
   and every error of `edit.txt`; `plan_edit` and `build_tree` on a tree
   the test makes (§11.3), with the pristine file unchanged and never

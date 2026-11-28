@@ -5,16 +5,11 @@
 //! at its line on each side: a changed callee, a changed literal, a
 //! changed type of a declaration, a changed default argument, a removed
 //! function, an added one, an indeterminate unit.
-//!
-//! A parse changes the process's current directory: every test that
-//! parses holds [`LOCK`], and every path is absolute (as in
-//! `tests/verify_job.rs`, whose harness this is, cut to what it needs).
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cli::image::{Image, RootMap};
 use slip_cli::verify_job::{Params, verify};
@@ -26,8 +21,6 @@ use slip_model::formats::content_id;
 use slip_model::verdict::{Finding, FindingKind, Site};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
 /// A subject tree `s/` and a post tree `post-tree/` holding `a.cpp`, and
 /// a store, in a directory of their own removed on drop.
 struct Tree {
@@ -35,7 +28,6 @@ struct Tree {
     subject: PathBuf,
     post: PathBuf,
     store: Store,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for Tree {
@@ -51,7 +43,6 @@ fn bytes(p: &Path) -> Vec<u8> {
 impl Tree {
     fn new(name: &str, pre: &str, post: &str) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let base = common::work_root().join(format!("wp054-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -64,7 +55,7 @@ impl Tree {
         std::fs::write(subject.join("a.cpp"), pre).unwrap();
         std::fs::write(post_tree.join("a.cpp"), post).unwrap();
         let store = Store::open(&base.join("store"), Access::Shared).unwrap();
-        Tree { base, subject, post: post_tree, store, _lock: lock }
+        Tree { base, subject, post: post_tree, store }
     }
 
     fn observer(&self) -> Observer {

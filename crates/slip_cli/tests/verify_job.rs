@@ -2,15 +2,11 @@
 //! on trees the test writes. The map shard is made by `MapTask` and
 //! published to a store in a temporary directory under the target
 //! directory, then altered or removed as a case needs.
-//!
-//! A parse changes the process's current directory: every test that
-//! parses holds [`LOCK`], and every path is absolute.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use slip_cli::image::{Image, RootMap};
 use slip_cli::verify_job::{Params, verify};
@@ -25,17 +21,14 @@ use slip_model::transform::Ownership;
 use slip_model::verdict::{FindingKind, VerdictKind};
 use slip_model::{Command, Digest, FileRef, Language, Observer, Origin, Phase, Shard, Status};
 
-static LOCK: Mutex<()> = Mutex::new(());
-
 /// A subject tree `s/`, a post tree `post-tree/` (a longer name, so that a
 /// path spelled in either differs in length) and a store, in a directory
-/// of their own that is removed on drop; the lock is held while it lives.
+/// of their own that is removed on drop.
 struct Tree {
     base: PathBuf,
     subject: PathBuf,
     post: PathBuf,
     store: Store,
-    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for Tree {
@@ -69,7 +62,6 @@ impl Tree {
         files: &[(&str, &str)],
     ) -> Tree {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let n = N.fetch_add(1, Ordering::SeqCst);
         let base = root.join(format!("wp052-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -84,7 +76,7 @@ impl Tree {
             write(&post.join(rel), text);
         }
         let store = Store::open(&base.join("store"), Access::Shared).unwrap();
-        Tree { base, subject, post, store, _lock: lock }
+        Tree { base, subject, post, store }
     }
 
     /// The observer compiling `s/a.cpp` from `s/`, by absolute path.
@@ -1356,15 +1348,20 @@ fn l1_includer_directory_only() {
 // F2 (review), §5.3 G4: a response file the driver would read is a word
 // slip cannot examine; refused, the map job unchanged. Relative from a
 // directory outside the roots, and absolute in the subject.
+// Since WP-148 fix round 1 sets `FrontEndOptions::response_files = false`,
+// a bare `@file` word is rejected at parse time as an extra input; passing it
+// as a non-path option value (`-MT @...`) still parses cleanly so G4 is
+// exercised.
 #[test]
 fn g4_response_file() {
-    let tree = Tree::new("g4", &[("a.cpp", "int f() { return V; }\n"), ("flags.rsp", "-DV=1\n")]);
+    let tree = Tree::new("g4", &[("a.cpp", "int f() { return 1; }\n"), ("flags.rsp", "-DV=1\n")]);
     write(&tree.post.join("flags.rsp"), "-DV=2\n");
     for (dir, word) in [
         (tree.base.join("build"), "@../s/flags.rsp".to_owned()),
         (tree.subject.clone(), arg("@", &tree.subject.join("flags.rsp"))),
     ] {
-        let o = tree.observer_in(&dir, std::slice::from_ref(&word));
+        let flags = ["-MT".to_owned(), word.clone()];
+        let o = tree.observer_in(&dir, &flags);
         let m = tree.map(&o);
         assert_eq!(m.outcome.status, Status::Ok, "{:?}", m.outcome);
         let v = tree.verify(&o);

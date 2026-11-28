@@ -142,12 +142,6 @@ fn spelling(sm: &SourceManager, t: &Token) -> String {
     sm.span_text(t.span).unwrap_or("<?>").to_owned()
 }
 
-/// Whether the token `last..end` begins with `>` and is longer than one
-/// byte: `file_range` refuses it (decision 6, interim).
-fn may_be_split(sm: &SourceManager, last: Loc, end: Loc) -> bool {
-    sm.span_text(Span::new(last, end)).is_some_and(|x| x.len() > 1 && x.starts_with('>'))
-}
-
 /// What a test sees: the parsed unit, its token sequence and the snippet
 /// path of each buffer.
 struct Seen<'a, 'r> {
@@ -176,17 +170,18 @@ impl Seen<'_, '_> {
     }
 
     /// `file_range` of tokens `i..=j`, checked against
-    /// `file_range_of_span` of the same tokens (test 6), or against `None`
-    /// when the last token may be a split `>` ([`may_be_split`]).
+    /// `file_range_of_span` of the same tokens (test 6), using a one-byte
+    /// end when `last` is in `Ast::split_greaters` (Kiln WP-2542).
     fn range(&self, i: usize, j: usize) -> Option<FileRange> {
         let (first, last) = (self.toks[i].span.lo, self.toks[j].span.lo);
         let r = file_range(self.p.unit(), first, last);
-        let span = Span::new(first, self.toks[j].span.hi);
-        let s = if may_be_split(self.sm(), last, span.hi) {
-            None
+        let hi = if self.p.ast.split_greaters.contains(&last) {
+            last.with_offset(1)
         } else {
-            file_range_of_span(self.sm(), span)
+            self.toks[j].span.hi
         };
+        let span = Span::new(first, hi);
+        let s = file_range_of_span(self.sm(), span);
         assert_eq!(r, s, "test 6: token_end against the token's own end, tokens {i}..={j}");
         r
     }
@@ -518,36 +513,35 @@ const SPLIT_GREATER: &str = "template <int N> constexpr int vt = N;\n\
      B<vt<1>> y;\nint z = B<vt<B<1>::c>>::c;\n\
      struct Q {};\nint operator>>(Q, int);\nint s = operator>>(Q{}, 4 >> 1);\n";
 
-/// Decision 6, interim (`spec/landed/api/WP-084.md` "Until Kiln
-/// answers"): a span whose last token, as `token_end` lexes it, begins
-/// with `>` and is longer than one byte gets no range, whether or not the
-/// parser split it. The loss: a name ending in `>>`, `>=` or `>>=`
-/// (`operator>>`), and a split `>` that ends a template argument list.
+/// WP-148 item 4 (Kiln WP-2542): `Ast::split_greaters` locates every split
+/// `>` at its first byte, while an unsplit `>>` (`operator>>`) keeps both
+/// bytes.
 #[test]
-fn s5_4_test3_none_a_possibly_split_greater() {
+fn s5_4_test3_split_and_unsplit_greater_tokens() {
     unit(SPLIT_GREATER, &[], |u| {
         let vt: Vec<_> =
             exprs_at(u, "vt").into_iter().filter(|e| e.0 == ExprKind::DeclRefExpr).collect();
         assert_eq!(vt.len(), 2, "{vt:?}");
-        for (_, _, f, l) in vt {
-            assert_eq!(u.sm().span_text(Span::new(l, l.with_offset(2))), Some(">>"));
-            assert_eq!(file_range(u.p.unit(), f, l), None, "split: no range");
+        for (_, _, f, l) in &vt {
+            assert_eq!(u.sm().span_text(Span::new(*l, l.with_offset(2))), Some(">>"));
+            assert!(u.p.ast.split_greaters.contains(l), "recorded as split");
+            let r = file_range(u.p.unit(), *f, *l).expect("split > is located");
+            assert_eq!(u.text(r).chars().last(), Some('>'));
+            assert!(!u.text(r).ends_with(">>"), "must end at first `>`: {}", u.text(r));
         }
-        assert_eq!(u.edit_of(("vt", 1), (">>", 0)), None, "the tokens as lexed");
+        assert_eq!(u.edit_of(("vt", 1), (">>", 0)), some("vt<1>", T0), "split `>>`");
         assert_eq!(
             u.edit_of(("operator", 1), (">>", 3)),
-            None,
-            "`operator>>` as written: the loss"
+            some("operator>>", T0),
+            "unsplit `operator>>` keeps both bytes"
         );
         assert_eq!(u.edit_of(("4", 0), ("1", 2)), some("4 >> 1", T0), "a `>>` inside the span");
     });
 }
 
-/// The right answer for review F1, pending Kiln's record of split `>`
-/// tokens: the range of `vt<1>` is `vt<1>`.
+/// WP-148 item 4 (Kiln WP-2542): a split `>` ends at its first byte (`>>`).
 #[test]
-#[ignore = "pending Kiln: no record of a split `>` (spec/landed/api/WP-084.md \"Until Kiln answers\")"]
-fn s5_4_pending_a_split_greater_ends_at_its_first_byte() {
+fn s5_4_a_split_greater_ends_at_its_first_byte() {
     unit(SPLIT_GREATER, &[], |u| {
         let vt: Vec<_> =
             exprs_at(u, "vt").into_iter().filter(|e| e.0 == ExprKind::DeclRefExpr).collect();
@@ -556,6 +550,72 @@ fn s5_4_pending_a_split_greater_ends_at_its_first_byte() {
             .map(|&(_, _, f, l)| file_range(u.p.unit(), f, l).map(|r| (u.text(r), r.tier)))
             .collect();
         assert_eq!(texts, [some("vt<1>", T0), some("vt<B<1>::c>", T0)]);
+    });
+}
+
+/// WP-148 item 4 (Kiln WP-2542): all three multi-byte tokens split by a
+/// template argument list's close (`>>`, `>>=`, `>=`).
+#[test]
+fn s5_4_split_greater_all_three_forms() {
+    let src = "\
+template <class T> int v = 0;
+template <class T> struct W {};
+template <int N> constexpr int vt = N;
+template <int N> struct B { static constexpr int c = N; };
+int f() {
+  B<vt<1>> y;
+  (void)y;
+  v<int>= 1;
+  v<W<int>>= 2;
+  return v<int> + v<W<int>>;
+}
+";
+    unit(src, &[], |u| {
+        // Form 1: `>>` split in `B<vt<1>>`.
+        assert_eq!(u.edit_of(("vt", 1), (">>", 0)), some("vt<1>", T0), ">> form");
+        // Form 2: `>=` split in `v<int>= 1`.
+        assert_eq!(u.edit_of(("v", 1), (">=", 0)), some("v<int>", T0), ">= form");
+        // Form 3: `>>=` split twice in `v<W<int>>= 2` (first `>` closes
+        // `W<int>`, second `>` closes `v<W<int>>`).
+        let v_lo = u.toks[u.nth("v", 2)].span.lo;
+        let w_lo = u.toks[u.nth("W", 1)].span.lo;
+        let gge_lo = u.toks[u.nth(">>=", 0)].span.lo;
+        let second_gt = gge_lo.with_offset(1);
+        assert!(u.p.ast.split_greaters.contains(&gge_lo), "first > of >>=");
+        assert!(u.p.ast.split_greaters.contains(&second_gt), "second > of >>=");
+        let r_inner = file_range(u.p.unit(), w_lo, gge_lo).expect("W<int> in >>=");
+        assert_eq!((u.text(r_inner), r_inner.tier), ("W<int>".to_owned(), T0));
+        let r_outer = file_range(u.p.unit(), v_lo, second_gt).expect("v<W<int>> in >>=");
+        assert_eq!((u.text(r_outer), r_outer.tier), ("v<W<int>>".to_owned(), T0));
+
+        // Remainder tokens immediately after a split `>` are token starts too
+        // (WP-148 fix round 1, M12): second `>` of `>>` (also in
+        // `split_greaters` per Kiln `parser.rs:1828`), `=` of `>=`, and `=` of
+        // `>>=` (neither `=` is in `split_greaters`, exercising the `prev` check
+        // in `Tokens::is_token_start`).
+        let unit = u.p.unit();
+        let b_lo = u.toks[u.nth("B", 1)].span.lo;
+        let outer_gt = u.toks[u.nth(">>", 0)].span.lo.with_offset(1);
+        assert!(unit.is_token_start(outer_gt), "remainder > of >> is a token start");
+        let r_b = file_range(unit, b_lo, outer_gt).expect("B<vt<1>> ending at remainder >");
+        assert_eq!((u.text(r_b), r_b.tier), ("B<vt<1>>".to_owned(), T0));
+
+        let eq_from_ge = u.toks[u.nth(">=", 0)].span.lo.with_offset(1);
+        let one_lo = u.toks[u.nth("1", 1)].span.lo;
+        assert!(!u.p.ast.split_greaters.contains(&eq_from_ge), "= of >= is not in split_greaters");
+        assert!(unit.is_token_start(eq_from_ge), "remainder = of >= is a token start");
+        let assign_one = file_range(unit, eq_from_ge, one_lo).expect("= 1 after split >=");
+        assert_eq!((u.text(assign_one), assign_one.tier), ("= 1".to_owned(), T0));
+
+        let eq_from_shift = gge_lo.with_offset(2);
+        let two_lo = u.toks[u.nth("2", 0)].span.lo;
+        assert!(
+            !u.p.ast.split_greaters.contains(&eq_from_shift),
+            "= of >>= is not in split_greaters"
+        );
+        assert!(unit.is_token_start(eq_from_shift), "remainder = of >>= is a token start");
+        let assign_two = file_range(unit, eq_from_shift, two_lo).expect("= 2 after split >>=");
+        assert_eq!((u.text(assign_two), assign_two.tier), ("= 2".to_owned(), T0));
     });
 }
 
@@ -1042,9 +1102,6 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
         return "an end inside a token";
     }
     let Some(end) = unit.token_end(last) else { return "no token ends the span" };
-    if may_be_split(u.sm(), last, end) {
-        return "interim: the last token may be a split `>`";
-    }
     // Kiln gave a range that `file_range_of_span` refused.
     if let Some((f, lo, hi)) = u.sm().editable_file_range(Span::new(first, end)) {
         if lo >= hi {
@@ -1063,8 +1120,58 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
     }
 }
 
+/// The token stream as the parser saw it: each `>>`, `>>=` or `>=` token
+/// whose start is in `Ast::split_greaters` is split into its 1-byte `>`
+/// token and the remainder (repeated when `>>=` is split twice). The
+/// second element is the index of the original preprocessor token in
+/// `u.toks`, so [`rejoin_split`] only rejoins pieces of one preprocessor
+/// token and never merges an adjacent unrelated token like `::`.
+fn parsed_tokens(u: &Seen<'_, '_>) -> Vec<(Token, u32)> {
+    let split = &u.p.ast.split_greaters;
+    let mut out = Vec::with_capacity(u.toks.len());
+    for (idx, &t) in u.toks.iter().enumerate() {
+        let pp_idx = u32::try_from(idx).expect("token count fits u32");
+        if split.is_empty() {
+            out.push((t, pp_idx));
+            continue;
+        }
+        let mut cur = t;
+        while split.contains(&cur.span.lo) {
+            let next_lo = cur.span.lo.with_offset(1);
+            if next_lo >= cur.span.hi {
+                break;
+            }
+            let mut head = cur;
+            head.span = Span::new(cur.span.lo, next_lo);
+            out.push((head, pp_idx));
+            cur.span = Span::new(next_lo, cur.span.hi);
+        }
+        out.push((cur, pp_idx));
+    }
+    out
+}
+
+/// Rejoins untouched consecutive tokens that came from splitting one
+/// preprocessor token (`>>`, `>=`, `>>=`), so a slice of parser tokens
+/// compares against a preprocessor token sequence (`marked_by`).
+fn rejoin_split(pp_ids: &[u32], spellings: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(spellings.len());
+    let mut k = 0;
+    while k < pp_ids.len() {
+        let mut text = spellings[k].clone();
+        let mut cur = k;
+        while cur + 1 < pp_ids.len() && pp_ids[cur] == pp_ids[cur + 1] {
+            cur += 1;
+            text.push_str(&spellings[cur]);
+        }
+        out.push(text);
+        k = cur + 1;
+    }
+    out
+}
+
 /// Checks the property of test 4 for one range `r` of tokens `i..=j` of
-/// `u`; `Err` says how it fails. The marked source reports the same
+/// `parsed_toks`; `Err` says how it fails. The marked source reports the same
 /// preprocessing errors; the tokens of every other file are unchanged;
 /// and the property holds in the entry of the file that holds the span
 /// ([`Entry`]). Other entries of the same file are not checked: what an
@@ -1072,6 +1179,7 @@ fn none_reason(u: &Seen<'_, '_>, first: Loc, last: Loc) -> &'static str {
 /// §4.3).
 fn check_range(
     u: &Seen<'_, '_>,
+    parsed_toks: &[(Token, u32)],
     before: &Seq,
     after: &Result<Seq, String>,
     r: FileRange,
@@ -1086,10 +1194,27 @@ fn check_range(
         ));
     }
     let file = u.paths.get(&r.file).map_or("<?>", String::as_str);
-    let outside = |q: &Seq| -> Vec<String> {
-        q.text.iter().zip(&q.entry).filter(|(_, e)| e.0 != file).map(|(t, _)| t.clone()).collect()
-    };
-    let (was, now) = (outside(before), outside(after));
+    let was_outside_ids: Vec<u32> = parsed_toks
+        .iter()
+        .zip(&before.entry)
+        .filter(|(_, e)| e.0 != file)
+        .map(|(&(_, id), _)| id)
+        .collect();
+    let was_outside_text: Vec<String> = before
+        .text
+        .iter()
+        .zip(&before.entry)
+        .filter(|(_, e)| e.0 != file)
+        .map(|(t, _)| t.clone())
+        .collect();
+    let was = rejoin_split(&was_outside_ids, &was_outside_text);
+    let now: Vec<String> = after
+        .text
+        .iter()
+        .zip(&after.entry)
+        .filter(|(_, e)| e.0 != file)
+        .map(|(t, _)| t.clone())
+        .collect();
     if now != was {
         return Err(diff("the tokens of other files", &was, &now));
     }
@@ -1098,7 +1223,8 @@ fn check_range(
         return Err("the span is in two entries".into());
     }
     let sel: Vec<usize> = (0..before.text.len()).filter(|&k| before.entry[k] == *entry).collect();
-    let toks: Vec<Token> = sel.iter().map(|&k| u.toks[k]).collect();
+    let toks: Vec<Token> = sel.iter().map(|&k| parsed_toks[k].0).collect();
+    let pp_ids: Vec<u32> = sel.iter().map(|&k| parsed_toks[k].1).collect();
     let was: Vec<String> = sel.iter().map(|&k| before.text[k].clone()).collect();
     let now: Vec<String> = after
         .text
@@ -1108,19 +1234,22 @@ fn check_range(
         .map(|(t, _)| t.clone())
         .collect();
     let at = |k: usize| sel.binary_search(&k).expect("a token of the entry");
-    check_entry(u, &toks, &was, &now, r, at(i), at(j))
+    check_entry(u, &toks, &pp_ids, &was, &now, r, at(i), at(j))
 }
 
-/// [`check_range`] within one entry: `toks` its tokens, `before` and
-/// `after` their spellings before and after the marking, `i..=j` the span.
+/// [`check_range`] within one entry: `toks` its tokens, `pp_ids` each
+/// token's original preprocessor token index, `before` and `after` their
+/// spellings before and after the marking, `i..=j` the span.
 #[allow(
     clippy::too_many_lines,
     clippy::many_single_char_names,
+    clippy::too_many_arguments,
     reason = "one oracle, tier by tier; `i..=j` the span, `(f, a, b)` its invocation"
 )]
 fn check_entry(
     u: &Seen<'_, '_>,
     toks: &[Token],
+    pp_ids: &[u32],
     before: &[String],
     after: &[String],
     r: FileRange,
@@ -1134,10 +1263,11 @@ fn check_entry(
     };
     match r.tier {
         Tier::File => {
-            // Exactly the span became the marker.
-            let mut want: Vec<String> = before[..i].to_vec();
+            // Exactly the span became the marker; untouched split `>`
+            // pairs elsewhere are lexed joined by the preprocessor.
+            let mut want = rejoin_split(&pp_ids[..i], &before[..i]);
             want.push(name.clone());
-            want.extend_from_slice(&before[j + 1..]);
+            want.extend(rejoin_split(&pp_ids[j + 1..], &before[j + 1..]));
             if after != want.as_slice() {
                 return Err(diff("tier 0", &want, after));
             }
@@ -1184,12 +1314,18 @@ fn check_entry(
             while x1 + 1 < toks.len() && of_v(&toks[x1 + 1]) {
                 x1 += 1;
             }
-            let tail = before.len() - x1 - 1;
-            if after.len() < x0 + tail
-                || after[..x0] != before[..x0]
-                || after[after.len() - tail..] != before[x1 + 1..]
+            let before_head = rejoin_split(&pp_ids[..x0], &before[..x0]);
+            let before_tail = rejoin_split(&pp_ids[x1 + 1..], &before[x1 + 1..]);
+            let head = before_head.len();
+            let tail = before_tail.len();
+            if after.len() < head + tail
+                || after[..head] != before_head
+                || after[after.len() - tail..] != before_tail
             {
-                return Err(diff("tier 1, outside the invocation", before, after));
+                let mut full = before_head;
+                full.extend_from_slice(&before[x0..=x1]);
+                full.extend(before_tail);
+                return Err(diff("tier 1, outside the invocation", &full, after));
             }
             // Inside it: each use of the argument became the marker; a
             // `#` or `##` result may change; nothing else does.
@@ -1197,7 +1333,9 @@ fn check_entry(
             let mut prev: Option<Option<Loc>> = None;
             let mut span_is_a_use = false;
             let key = |t: &Token| use_key(sm, t.span.lo);
-            for (k, t) in toks.iter().enumerate().take(x1 + 1).skip(x0) {
+            let mut k = x0;
+            while k <= x1 {
+                let t = &toks[k];
                 if in_r(t) {
                     let new_use = prev != Some(key(t));
                     if new_use {
@@ -1207,12 +1345,21 @@ fn check_entry(
                         return Err("tier 1: the span begins inside a use of the argument".into());
                     }
                     prev = Some(key(t));
+                    k += 1;
                 } else {
                     prev = None;
                     if sm.is_written_in_scratch_space(sm.spelling_loc(t.span.lo)) {
                         want.push(None);
+                        k += 1;
                     } else {
-                        want.push(Some(before[k].clone()));
+                        let mut text = before[k].clone();
+                        let mut cur = k;
+                        while cur < x1 && !in_r(&toks[cur + 1]) && pp_ids[cur] == pp_ids[cur + 1] {
+                            cur += 1;
+                            text.push_str(&before[cur]);
+                        }
+                        want.push(Some(text));
+                        k = cur + 1;
                     }
                 }
             }
@@ -1222,7 +1369,7 @@ fn check_entry(
             if !span_is_a_use {
                 return Err("tier 1: the span is not one use of the argument".into());
             }
-            let got = &after[x0..after.len() - tail];
+            let got = &after[head..after.len() - tail];
             let fits = got.len() == want.len()
                 && got.iter().zip(&want).all(|(g, w)| w.as_ref().is_none_or(|w| w == g));
             if !fits {
@@ -1269,10 +1416,12 @@ fn property_of(
         let mut t = Tally { errors: u64::from(u.p.errors), ..Tally::default() };
         let ast = u.p.ast;
         let sm = u.sm();
+        let parsed_toks = parsed_tokens(u);
+        let plain_toks: Vec<Token> = parsed_toks.iter().map(|&(t, _)| t).collect();
         let index: HashMap<Loc, usize> =
-            u.toks.iter().enumerate().map(|(k, t)| (t.span.lo, k)).collect();
+            parsed_toks.iter().enumerate().map(|(k, &(t, _))| (t.span.lo, k)).collect();
         let mut seen: HashSet<(Loc, Loc)> = HashSet::new();
-        let before = Seq::of(sm, u.toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
+        let before = Seq::of(sm, &plain_toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
         let progress = only.is_some();
         let mut pending: Vec<(ExprId, FileRange, usize, usize)> = Vec::new();
         let exprs = (1..=ast.exprs.len())
@@ -1329,8 +1478,9 @@ fn property_of(
                 par_map(&edits, threads, |m| marked_by(src, m.as_ref().map_err(Clone::clone)?))
             };
             for (&(e, r, i, j), after) in batch.iter().zip(&afters) {
-                if let Err(why) = check_range(u, &before, after, r, i, j) {
-                    let toks: Vec<String> = u.toks[i..=j].iter().map(|t| spelling(sm, t)).collect();
+                if let Err(why) = check_range(u, &parsed_toks, &before, after, r, i, j) {
+                    let toks: Vec<String> =
+                        parsed_toks[i..=j].iter().map(|&(t, _)| spelling(sm, &t)).collect();
                     t.failures.push(format!(
                         "{label}: expression {} `{}`, range `{}` tier {:?}: {why}",
                         e.index(),
@@ -1351,7 +1501,8 @@ fn property_of(
         }
         // Test 6: file_range against file_range_of_span for every
         // reference and every declaration name.
-        let ends: HashMap<Loc, Loc> = u.toks.iter().map(|t| (t.span.hi, t.span.lo)).collect();
+        let ends: HashMap<Loc, Loc> =
+            parsed_toks.iter().map(|&(t, _)| (t.span.hi, t.span.lo)).collect();
         let spans = ast
             .written_refs
             .iter()
@@ -1370,9 +1521,7 @@ fn property_of(
                 continue;
             };
             let a = file_range(u.p.unit(), s.lo, last);
-            let split = may_be_split(sm, last, s.hi);
-            let b = if split { None } else { file_range_of_span(sm, s) };
-            t.refs_split += u64::from(split);
+            let b = file_range_of_span(sm, s);
             if a != b {
                 t.failures.push(format!("{label}: test 6: {a:?} != {b:?} for {s:?}"));
             }
@@ -1448,9 +1597,10 @@ fn s5_4_test4_property_on_macro_snippets() {
         [8, 2, 2, 4],
         [7, 0, 3, 4],
         // Kiln WP-2543 (a user-defined literal's call begins at its
-        // literal) and WP-2542 (split `>` on the Ast): two spans fewer,
-        // two more ranges (it was [21, 0, 12, 15]).
-        [23, 0, 8, 15],
+        // literal) and WP-2542 (split `>` on the Ast, used here in WP-148):
+        // the two `vt<...>` expressions ending at split `>` now get tier-0
+        // ranges ([23, 0, 8, 15] before WP-148).
+        [25, 0, 6, 15],
         [8, 8, 0, 3],
     ];
     assert_eq!(counts, want, "[tier 0, tier 1, no range, names] per source\n{}", tally.report());
@@ -1504,7 +1654,8 @@ fn s5_4_test4_checker_catches_new_preprocessing_errors() {
             ]),
             "the same tokens"
         );
-        let e = check_range(u, &before, &after, r, i, j).expect_err("a new error");
+        let parsed_toks = parsed_tokens(u);
+        let e = check_range(u, &parsed_toks, &before, &after, r, i, j).expect_err("a new error");
         assert!(e.contains("preprocessing errors"), "{e}");
     })
     .unwrap();
@@ -1516,35 +1667,40 @@ fn s5_4_test4_checker_catches_new_preprocessing_errors() {
 fn s5_4_test4_checker_catches_wrong_ranges() {
     let src = Source::new("#define F(x) (x)\nint a, b;\nint v = F(a + b) + a;\n", &[]);
     with_unit(&src, |u| {
+        let parsed_toks = parsed_tokens(u);
         let before = Seq::of(u.sm(), u.toks, |f| u.paths.get(&f).cloned(), u.pp_errors);
         let (i, j) = (u.nth("a", 1), u.nth("b", 1));
         let r = u.range(i, j).unwrap();
-        assert_eq!(check_range(u, &before, &marked(&src, u, r), r, i, j), Ok(()));
+        assert_eq!(check_range(u, &parsed_toks, &before, &marked(&src, u, r), r, i, j), Ok(()));
         let long = FileRange { hi: r.hi + 1, ..r };
         assert!(
-            check_range(u, &before, &marked(&src, u, long), long, i, j).is_err(),
+            check_range(u, &parsed_toks, &before, &marked(&src, u, long), long, i, j).is_err(),
             "a byte too many"
         );
         let short = FileRange { hi: r.hi - 1, ..r };
         assert!(
-            check_range(u, &before, &marked(&src, u, short), short, i, j).is_err(),
+            check_range(u, &parsed_toks, &before, &marked(&src, u, short), short, i, j).is_err(),
             "a byte short"
         );
         let tier0 = FileRange { tier: Tier::File, ..r };
         assert!(
-            check_range(u, &before, &marked(&src, u, tier0), tier0, i, j).is_err(),
+            check_range(u, &parsed_toks, &before, &marked(&src, u, tier0), tier0, i, j).is_err(),
             "tier 0 inside an argument"
         );
         let k = u.nth("a", 2);
         let plain = u.range(k, k).unwrap();
-        assert_eq!(check_range(u, &before, &marked(&src, u, plain), plain, k, k), Ok(()));
+        assert_eq!(
+            check_range(u, &parsed_toks, &before, &marked(&src, u, plain), plain, k, k),
+            Ok(())
+        );
         let tier1 = FileRange { tier: Tier::MacroArgument, ..plain };
         assert!(
-            check_range(u, &before, &marked(&src, u, tier1), tier1, k, k).is_err(),
+            check_range(u, &parsed_toks, &before, &marked(&src, u, tier1), tier1, k, k).is_err(),
             "tier 1 outside a macro"
         );
         assert!(
-            check_range(u, &before, &marked(&src, u, plain), plain, k - 1, k).is_err(),
+            check_range(u, &parsed_toks, &before, &marked(&src, u, plain), plain, k - 1, k)
+                .is_err(),
             "more tokens"
         );
     })
@@ -1780,7 +1936,6 @@ fn llvm_source(corpus: &Path, unit: &str) -> Result<Source, String> {
         .flatten()
         .find(|e| e.file.ends_with(unit))
         .ok_or_else(|| format!("{unit}: not in the database"))?;
-    std::env::set_current_dir(&entry.directory).map_err(|e| e.to_string())?;
     let mut line = vec!["-fsyntax-only".to_owned()];
     let mut it = entry.arguments[1..].iter();
     while let Some(a) = it.next() {
@@ -1794,6 +1949,7 @@ fn llvm_source(corpus: &Path, unit: &str) -> Result<Source, String> {
     }
     let mut options = FrontEndOptions::default();
     options.record_lookups = true;
+    options.working_directory = Some(PathBuf::from(&entry.directory));
     let report = run_front_end("kiln", &line, options, |fe| {
         let sm = fe.sm;
         let mut files: Vec<(String, String)> = Vec::new();
