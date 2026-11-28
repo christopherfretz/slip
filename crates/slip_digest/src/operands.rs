@@ -2537,6 +2537,15 @@ pub(crate) fn order_names(w: &mut Walk<'_>) {
 /// written). `<order>`'s operand unit is indeterminate with it.
 pub(crate) const UNCLAIMED: Cause = Cause::Unaccounted("operands/unclaimed-name");
 
+/// L5's named over-refusal (WP-156 fix round 3, the coordinator's ruling
+/// on commit 4's STOP): a site-9 entry names a local entity that the
+/// unit's numbering never met, because it is declared inside an
+/// expression no stream walks (a local class declared in a lambda inside
+/// an array bound). Its entry fails closed; a walked bound, or the
+/// lambda's locals numbered in the enclosing function, would make it
+/// determinate (KT1 2.9).
+pub(crate) const UNWALKED_LOCAL: Cause = Cause::Unsupported("operands/unwalked-local");
+
 /// Writes one entry: its stream, whether it is written (S5), and the
 /// operands its walk met (S7).
 fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
@@ -2569,9 +2578,19 @@ fn entry(w: &mut Walk<'_>, op: Op) -> (Stream, bool, Vec<Op>) {
         // L5: the entity, in the unit's state (a parameter or a local has
         // the unit's number); one `write_ref` cannot write is
         // indeterminate.
+        //
+        // A local that no numbering of the unit met (it is declared inside
+        // an expression no stream walks: a local class of a lambda in an
+        // array bound) is the named limit `UNWALKED_LOCAL`.
         Op::Name(d) => {
             es.uv(u64::from(NAME));
-            w.write_ref(&mut es, d);
+            let mut ns = Stream::new();
+            w.write_ref(&mut ns, d);
+            if ns.cause() == Some(Cause::UndeclaredLocal) {
+                es.indeterminate(UNWALKED_LOCAL);
+            } else {
+                es.raw(ns.as_bytes()).absorb(ns.cause());
+            }
             NAME
         }
     };

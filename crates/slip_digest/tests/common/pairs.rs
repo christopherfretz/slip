@@ -63,7 +63,8 @@ fn hard(a: &Digested, b: &Digested) -> Vec<String> {
 /// The `indeterminate` lines of a `differ` test (`spec/digest.md` §14.1
 /// rule 3, WP-124): every unit of either side flagged for a cause other
 /// than `Pending` must be named by one, as `<name>` or as `<name>
-/// (<cause>)`, and every line must name such a unit on both sides. The
+/// (<cause>)`, and every line must name such a unit on both sides (on
+/// side B, by name or by the key the line named on side A). The
 /// keys of the units the lines name are left out of the comparison (an
 /// indeterminate unit equals nothing). Returns the problems and those keys.
 fn held_indeterminate(
@@ -77,6 +78,10 @@ fn held_indeterminate(
         .collect();
     let mut problems = Vec::new();
     let mut held = BTreeSet::new();
+    // The keys side A's lines named: on side B a line also names the
+    // unit of such a key, which a rename of the relocation spells
+    // otherwise (`f()::<operands>` on A is `start()::<operands>` on B).
+    let mut by_key: BTreeMap<Digest, &str> = BTreeMap::new();
     for (side, d) in [("A", a), ("B", b)] {
         let mut named = BTreeSet::new();
         for (k, v) in &d.units {
@@ -86,10 +91,15 @@ fn held_indeterminate(
                 }
                 let with =
                     format!("{} ({})", u.name, u.cause.map(|c| c.to_string()).unwrap_or_default());
-                match lines.iter().find(|l| **l == u.name || **l == with) {
+                let line = lines.iter().find(|l| **l == u.name || **l == with).copied();
+                let line = line.or_else(|| if side == "B" { by_key.get(k).copied() } else { None });
+                match line {
                     Some(l) => {
-                        named.insert(*l);
+                        named.insert(l);
                         held.insert(*k);
+                        if side == "A" {
+                            by_key.insert(*k, l);
+                        }
                     }
                     None => problems.push(format!("side {side}: indeterminate {with}")),
                 }

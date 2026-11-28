@@ -1,1 +1,3 @@
 changed f()
+# WP-156 fix round 3 (the coordinator's ruling on commit 4's STOP): `L::m` is a site-9 entry of `f`'s operand unit, and `L`, declared in a lambda inside the unwalked array bound, is in no numbering of `f`: the named over-refusal `operands/unwalked-local`.
+indeterminate f()::<operands> (unsupported operands/unwalked-local)

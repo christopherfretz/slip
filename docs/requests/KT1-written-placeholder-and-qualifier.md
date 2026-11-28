@@ -235,6 +235,15 @@ worded, or against §18.3:
   (`wv.~decltype(e)()`) has no `member` entry: the `MemberExpr` at the
   `decltype` joins nothing. Its operand's names have entries.
 
+A note from fix round 3's commit 4, not a request (the coordinator's
+ruling): a local class declared in a lambda inside an array bound
+(`void f() { int a[([] { struct L { static constexpr unsigned m(); };
+return L::m(); }())]; }`) is a named over-refusal of the digest,
+`operands/unwalked-local`. The bound is a value only, no stream walks
+it, so `L::m` is written by its entity, and `L` is in no numbering of
+`f`. A walked array bound (the bound as written, KR9 §5.11) or the
+lambda's locals numbered in `f` would make it determinate.
+
 ### 2.10 A lean recording switch (fix round 3)
 
 The digest reads `range.lo`, `entity`, `enclosing`, `role`, `flags`
