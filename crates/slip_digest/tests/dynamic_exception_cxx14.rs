@@ -79,3 +79,21 @@ fn an_own_dynamic_exception_specification_is_written_before_cxx17() {
     assert_ne!(a.0, b.0, "throw(int) against throw(long)");
     assert_eq!(a.0, again.0, "the same specification twice");
 }
+
+/// WP-156 fix round 3, A5 (Layer S): a dynamic exception specification's
+/// types are written types, so `decltype(make(0))` in `throw(...)` is a
+/// site-1 operand of the function's operand unit. `make(0)` binds
+/// `make(int)` when it is declared before `g`, `make(long)` when after;
+/// both are `int`, so only the operand tells them apart (mutation 1 of
+/// the round: the types not passed to a `Type` slot).
+#[test]
+fn a5_a_dynamic_exception_specification_holds_its_operands() {
+    const BEFORE: &str = "int make(long);\nint make(int);\nvoid g() throw(decltype(make(0)));\n";
+    const AFTER: &str = "int make(long);\nvoid g() throw(decltype(make(0)));\nint make(int);\n";
+    let a = unit_of("wp156-a5-before", BEFORE, "g()::<operands>");
+    let b = unit_of("wp156-a5-after", AFTER, "g()::<operands>");
+    let again = unit_of("wp156-a5-before-again", BEFORE, "g()::<operands>");
+    assert!(!a.1 && !b.1, "both determinate: {a:?} {b:?}");
+    assert_ne!(a.0, b.0, "make(int) against make(long)");
+    assert_eq!(a.0, again.0, "the same binding twice");
+}

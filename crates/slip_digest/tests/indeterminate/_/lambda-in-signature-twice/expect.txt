@@ -1,1 +1,3 @@
 indeterminate template <int> void foo(const char (*)[(... , N)])
+# WP-156 fix round 3 (Layer S): the dependent bound is walked for its holders, and its lambda is `operands/dependent-body`.
+indeterminate template <int> void foo(const char (*)[(... , N)])::<operands>

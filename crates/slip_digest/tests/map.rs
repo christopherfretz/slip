@@ -376,9 +376,18 @@ fn s8_5_cause_word() {
 /// from the tables, which the pair tests reach).
 fn literal_texts() -> Vec<String> {
     let mut out = Vec::new();
-    let src = common::manifest().join("src");
-    let mut files: Vec<PathBuf> =
-        std::fs::read_dir(&src).unwrap().flatten().map(|e| e.path()).collect();
+    // `src/` and its module directories (`src/operands/`, WP-156).
+    let mut dirs = vec![common::manifest().join("src")];
+    let mut files: Vec<PathBuf> = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
     files.sort();
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();

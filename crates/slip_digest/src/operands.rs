@@ -64,7 +64,7 @@ use slip_kiln::kiln::ast::expr::{
 };
 use slip_kiln::kiln::ast::friend_form::{FriendFormAnswer, FriendFormKind};
 use slip_kiln::kiln::ast::templates::{Requirement, SpecKind};
-use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, Nns, TemplateArg, TypeOfOperand, TypeView};
+use slip_kiln::kiln::ast::types::{ArgView, ExcSpec, ExprOperand, Nns, TypeOfOperand, TypeView};
 use slip_kiln::kiln::ast::{
     ArgListId, Ast, DeclId, ExprId, NnsId, QualType, TemplateParamListId, TypeId,
 };
@@ -77,6 +77,11 @@ use crate::Cause;
 use crate::stream::{Hashed, Stream, UNIT_TAG};
 use crate::units::{Written, merge};
 use crate::walk::Walk;
+
+pub(crate) mod census;
+mod slots;
+
+pub(crate) use slots::{Part, Slot, slots};
 
 /// The sites (digest-kinds §11.11). 3 (array bound), 5 (pack index) and 7
 /// (`explicit(e)`) are reserved.
@@ -184,6 +189,9 @@ pub(crate) struct State {
     nested: Option<Vec<Op>>,
     /// Above 0 while an entry is walked (`Walk::write_ref`).
     pub(crate) writing: u32,
+    /// The unit read a [`Slot::Folded`] (Layer S): a value Kiln computed
+    /// from an expression it does not keep (L4's trigger T3).
+    pub(crate) folded: bool,
     /// Collected for the numbering of an owner (`local::compute`), whose
     /// streams are no unit's: the entries are walked so that the local
     /// types and objects in them are numbered ([`number`]).
@@ -313,7 +321,16 @@ pub(crate) fn begin(w: &mut Walk<'_>, e: DeclId, from: Option<DeclId>) {
         groups.len() - 1
     });
     let numbering = crate::local::numbering_mode(w);
-    w.unit.operands = State { on: true, covered, groups, own, nested: None, writing: 0, numbering };
+    w.unit.operands = State {
+        on: true,
+        covered,
+        groups,
+        own,
+        nested: None,
+        writing: 0,
+        folded: false,
+        numbering,
+    };
 }
 
 /// Walks the entries [`begin`] and the owner's stream collected while an
@@ -522,6 +539,12 @@ fn signature_of(w: &mut Walk<'_>, d: DeclId, params: bool, out: &mut Vec<Op>) {
         if params && let Some(p) = i.pattern {
             signature(w, p, true, out);
         }
+    }
+    // A partial specialisation's own head (Layer S's census: Kiln keeps it
+    // on `PartialSpecInfo`, not on a template's info).
+    if let Some((_, pi)) = ast.partial_spec_info(d) {
+        let params = pi.params;
+        head(w, params, out, 0);
     }
     if let Some(l) = ast.templates.args_as_written(d) {
         args(w, l, out, 0);
@@ -1588,47 +1611,70 @@ fn param(w: &mut Walk<'_>, p: DeclId, out: &mut Vec<Op>) {
     }
 }
 
-/// The type `q` of function declaration `d` as written: its return type
-/// and `noexcept(e)` (not its parameters, read from their declarations,
-/// S7); nothing when the type is a typedef's (`F f;`).
+/// The type `q` of function declaration `d` as written: its return type,
+/// `noexcept(e)` and the types of a dynamic exception specification (not
+/// its parameters, read from their declarations, S7); nothing when the type
+/// is a typedef's (`F f;`). Read through [`slots`].
+#[allow(clippy::match_same_arms, reason = "the parameters apart from what is not written here")]
 fn function_type(w: &mut Walk<'_>, d: DeclId, q: QualType, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
     }
-    let types = &w.ast.types;
-    match types.view(q.ty()) {
-        TypeView::Paren(x) | TypeView::Attributed { modified: x, .. } => {
-            function_type(w, d, x, out, depth + 1);
-        }
-        TypeView::Function(p) => {
-            scan(w, p.ret(), out, depth + 1);
-            if let ExcSpec::NoexceptExpr { expr, .. } = types.exc_spec(&p) {
-                // S4: the resolved unit `exception_spec` holds it
-                // (`Walk::own_exception_spec`).
-                // A dependent one is walked in full by the declaration's
-                // stream (`Walk::own_exception_spec`), but a local
-                // declaration's, which is written as Kiln holds it (a
-                // profile): its holders are read here.
-                if w.is_local(d) {
-                    push(w, Op::Expr(NOEXCEPT, expr), out, depth);
-                } else if !crate::demand::deferrable(w, d) {
-                    push_own(w, Op::Expr(NOEXCEPT, expr), out);
-                }
+    let ast = w.ast;
+    slots(&ast.types, q, &mut |s| match s {
+        // Sugar around the function type (`Paren`, `Attributed`).
+        Slot::Type(x, Part::Inner) => function_type(w, d, x, out, depth + 1),
+        Slot::Type(r, Part::Result) => scan(w, r, out, depth + 1),
+        Slot::Type(_, Part::Param) => {}
+        // A5: `throw(decltype(make(x)))`; S4 as `noexcept(e)` below.
+        Slot::Type(t, Part::Thrown) => {
+            if w.is_local(d) || !crate::demand::deferrable(w, d) {
+                scan(w, t, out, depth + 1);
             }
         }
-        _ => {}
-    }
+        Slot::Operand(NOEXCEPT, expr) => {
+            // S4: the resolved unit `exception_spec` holds it
+            // (`Walk::own_exception_spec`).
+            // A dependent one is walked in full by the declaration's
+            // stream (`Walk::own_exception_spec`), but a local
+            // declaration's, which is written as Kiln holds it (a
+            // profile): its holders are read here.
+            if w.is_local(d) {
+                push(w, Op::Expr(NOEXCEPT, expr), out, depth);
+            } else if !crate::demand::deferrable(w, d) {
+                push_own(w, Op::Expr(NOEXCEPT, expr), out);
+            }
+        }
+        // The function type is not written here: a `decltype(f)` or a
+        // typedef's type names it (`F f;`), and what a name denotes is
+        // not read.
+        Slot::Operand(..)
+        | Slot::Bound(_)
+        | Slot::Args(_)
+        | Slot::AliasArgs(_)
+        | Slot::Nns(_)
+        | Slot::Folded(_)
+        | Slot::Splice
+        | Slot::Unkept(_)
+        | Slot::Denotes(_)
+        | Slot::Plain(_) => {}
+    });
 }
 
 /// The operands of a resolved unit `exception_spec` (S4): its
-/// `noexcept(e)`.
+/// `noexcept(e)`, and the types of a dynamic specification.
 pub(crate) fn exception_spec(w: &mut Walk<'_>, spec: ExcSpec) {
     if !w.unit.operands.on {
         return;
     }
-    if let ExcSpec::NoexceptExpr { expr, .. } = spec {
-        let mut out = Vec::new();
-        push_own(w, Op::Expr(NOEXCEPT, expr), &mut out);
+    let ast = w.ast;
+    let mut out = Vec::new();
+    slots::exc_spec_slots(&ast.types, spec, &mut |s| match s {
+        Slot::Operand(NOEXCEPT, expr) => push_own(w, Op::Expr(NOEXCEPT, expr), &mut out),
+        Slot::Type(t, _) => scan(w, t, &mut out, 0),
+        _ => {}
+    });
+    if !out.is_empty() {
         target(w).extend(out);
     }
 }
@@ -1724,132 +1770,61 @@ fn dependent(w: &mut Walk<'_>, e: ExprId, out: &mut Vec<Op>, depth: u32) {
 }
 
 /// The operands written in type `q` as written, in pre-order, into `out`
-/// (the module documentation; modelled on Kiln's
-/// `TypeContext::written_exprs`, which also follows a deduced type and
-/// reads array bounds).
-#[allow(clippy::match_same_arms, reason = "one arm per TypeView variant, each with its reason")]
+/// (the module documentation): the consumer of [`slots`] (Layer S, WP-156
+/// fix round 3), the one recursion over a written type.
 pub(crate) fn scan(w: &mut Walk<'_>, q: QualType, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
     }
-    let d = depth + 1;
-    let types = &w.ast.types;
-    match types.view(q.ty()) {
-        TypeView::Pointer(x)
-        | TypeView::LValueRef(x)
-        | TypeView::RValueRef(x)
-        | TypeView::IncompleteArray(x)
-        | TypeView::Paren(x)
-        | TypeView::Complex(x)
-        | TypeView::Atomic(x)
-        | TypeView::Vector { elem: x, .. }
-        | TypeView::ExtQual { base: x, .. }
-        | TypeView::Attributed { modified: x, .. }
-        | TypeView::Decayed { original: x, .. }
-        | TypeView::PackExpansion { pattern: x, .. }
-        | TypeView::UnaryTransform { base: x, .. } => scan(w, x, out, d),
-        // The bound or size (site 3) is not read: Kiln keeps it as a value
-        // only at the pin this was built for (B1; stage e), and a
-        // dependent one is a pattern's. The element type is.
-        TypeView::ConstantArray(a) => scan(w, a.elem, out, d),
-        TypeView::VariableArray { elem: x, .. }
-        | TypeView::DependentSizedArray { elem: x, .. }
-        | TypeView::DependentVector { elem: x, .. }
-        | TypeView::DependentAddrSpace { pointee: x, .. } => scan(w, x, out, d),
-        // The pack index (site 5) is not read (B7); the pattern is.
-        TypeView::PackIndexing { pattern, .. } => scan(w, pattern, out, d),
-        TypeView::QualifiedArray { base, .. } => scan(w, QualType::unqual(base), out, d),
-        TypeView::MemberPointer { pointee, class } => {
-            scan(w, pointee, out, d);
-            scan(w, QualType::unqual(class), out, d);
-        }
-        TypeView::Function(p) => {
-            // A function type that no function declaration holds (a
-            // pointer to function): its parameters are read here (S7).
-            let ret = p.ret();
-            let params: Vec<QualType> = types.params(&p).to_vec();
-            let exc = types.exc_spec(&p);
-            scan(w, ret, out, d);
-            for t in params {
-                scan(w, t, out, d);
-            }
-            if let ExcSpec::NoexceptExpr { expr, .. } = exc {
-                push(w, Op::Expr(NOEXCEPT, expr), out, d);
+    let ast = w.ast;
+    slots(&ast.types, q, &mut |s| consume(w, Some(q), s, out, depth + 1));
+}
+
+/// What [`scan`], [`args`] and [`scan_nns`] do with one slot of a written
+/// type `q` (the type the slot is of; `None` for a list's or a
+/// qualifier's): descend into what is written, push an operand, walk an
+/// instantiation-dependent bound for its holders, mark a folded value.
+#[allow(clippy::many_single_char_names, reason = "w walk, q type, s slot, d depth, as scan")]
+fn consume(w: &mut Walk<'_>, q: Option<QualType>, s: Slot, out: &mut Vec<Op>, d: u32) {
+    match s {
+        Slot::Type(x, _) => scan(w, x, out, d),
+        Slot::Operand(site, e) => push(w, Op::Expr(site, e), out, d),
+        // A bound that is instantiation-dependent: its holders are read,
+        // as for any dependent operand. Otherwise the names in it are the
+        // ledger's (L3); sites 3 and 5 stay reserved.
+        Slot::Bound(ExprOperand::Expr(e)) => {
+            if w.ast.exprs.get(e).deps().contains(ExprDeps::INSTANTIATION) {
+                dependent(w, e, out, d);
             }
         }
-        TypeView::Elaborated { nns, named, .. } => {
-            if let Some(n) = nns {
-                scan_nns(w, n, out, d);
-            }
-            scan(w, named, out, d);
-        }
-        // A dependent name's qualifier and arguments: an operand in them
-        // that is not instantiation-dependent is no pattern's spelling
-        // (`typename Q<sizeof(make(x))>::template In<T>::t`).
-        TypeView::DependentName { nns, .. } => scan_nns(w, nns, out, d),
-        TypeView::DependentTemplateSpecialization { nns, args: l, .. } => {
-            scan_nns(w, nns, out, d);
-            args(w, l, out, d);
-        }
-        TypeView::TemplateSpecialization { args: l, alias, .. } => {
-            if alias {
-                // B5: an alias specialisation's written arguments, then
-                // the operands inside them. Instantiation-dependent: the
-                // list is the pattern's own spelling, but an operand in it
-                // that is not is read ([`push`] drops the others).
-                if types.flags(q.ty()).is_instantiation_dependent() {
-                    if counting(w) {
-                        w.op_counts.dependent += 1;
-                    }
-                } else {
-                    out.push(Op::Alias(l));
+        Slot::Bound(ExprOperand::Profile(_)) | Slot::Denotes(_) | Slot::Plain(_) => {}
+        Slot::Args(l) => args(w, l, out, d),
+        // B5: an alias specialisation's written arguments, then the
+        // operands inside them. Instantiation-dependent: the list is the
+        // pattern's own spelling, but an operand in it that is not is read
+        // ([`push`] drops the others).
+        Slot::AliasArgs(l) => {
+            if q.is_some_and(|q| w.ast.types.flags(q.ty()).is_instantiation_dependent()) {
+                if counting(w) {
+                    w.op_counts.dependent += 1;
                 }
+            } else {
+                out.push(Op::Alias(l));
             }
             args(w, l, out, d);
         }
-        // A placeholder's type-constraint as written (a template
-        // parameter's or an undeduced one's; a deduced declaration's is
-        // not kept, `PLACEHOLDER`).
-        TypeView::Auto { args: Some(l), .. } => args(w, l, out, d),
-        TypeView::Decltype { expr, .. } => push(w, Op::Expr(DECLTYPE, expr), out, d),
-        TypeView::TypeOf { operand: TypeOfOperand::Expr(e), .. } => {
-            push(w, Op::Expr(TYPEOF, e), out, d);
-        }
-        TypeView::TypeOf { operand: TypeOfOperand::Type(t), .. } => scan(w, t, out, d),
-        TypeView::Splice { .. } => out.push(Op::Unkept(SPLICE)),
-        // A bit-precise integer's width as written is not kept: a
-        // pattern's is an expression (it fails closed), another's fails
-        // closed where an expression could have been written
-        // ([`bit_int_unkept`]).
-        TypeView::DependentBitInt { .. } => out.push(Op::Unkept(BIT_INT)),
-        TypeView::BitInt { .. } => {
-            if bit_int_unkept(w) {
+        Slot::Nns(n) => scan_nns(w, n, out, d),
+        Slot::Folded(what) => {
+            w.unit.operands.folded = true;
+            // Until L4 replaces it (T3): a bit-precise integer's width as
+            // written is not kept, and fails closed where an expression
+            // could have been written ([`bit_int_unkept`]).
+            if what == "BitInt.width" && bit_int_unkept(w) {
                 out.push(Op::Unkept(BIT_INT));
             }
         }
-        // What a name denotes (a typedef's, alias's or using-declaration's
-        // type, a class, an enumeration, an injected class name), a
-        // substituted parameter's replacement, a parameter, a placeholder
-        // with no written argument or what one deduced, a dependent
-        // `decltype` or `typeof` (the canonical form of a pattern's, never
-        // a written type: a written one is `Decltype`, whose dependent
-        // operand [`push`] walks), a builtin: nothing is read.
-        TypeView::Invalid
-        | TypeView::Builtin(_)
-        | TypeView::Record(_)
-        | TypeView::Enum(_)
-        | TypeView::UnresolvedUsing(_)
-        | TypeView::Typedef { .. }
-        | TypeView::Using { .. }
-        | TypeView::TemplateTypeParm(_)
-        | TypeView::CanonTemplateTypeParm { .. }
-        | TypeView::SubstTemplateTypeParm { .. }
-        | TypeView::SubstTemplateTypeParmPack { .. }
-        | TypeView::InjectedClassName { .. }
-        | TypeView::Auto { args: None, .. }
-        | TypeView::DependentDecltype(_)
-        | TypeView::TypeOf { operand: TypeOfOperand::Profile(_), .. }
-        | TypeView::DeducedTemplateSpecialization { .. } => {}
+        Slot::Splice => out.push(Op::Unkept(SPLICE)),
+        Slot::Unkept(c) => out.push(Op::Unkept(c)),
     }
 }
 
@@ -1859,27 +1834,8 @@ fn args(w: &mut Walk<'_>, l: ArgListId, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
     }
-    let views: Vec<ArgView> = w.ast.types.args(l).iter().map(TemplateArg::view).collect();
-    for v in views {
-        match v {
-            ArgView::Type(t) => scan(w, t, out, depth + 1),
-            ArgView::Expr { expr, .. } => push(w, Op::Expr(EXPR_ARG, expr), out, depth + 1),
-            // R21: a written list holds no pack (Kiln groups a pack's
-            // arguments in a converted list only); kept for a list that
-            // would. Unreachable at the pin: emptying this arm changes
-            // no unit of `differ/_/operands-scan-arms`, whose `vp`
-            // (`VT<int, Q<…>>`, an alias pack) and `tt` (`Tup<Ts...>`
-            // substituted) are the shapes that could make one.
-            ArgView::Pack(p) => args(w, p, out, depth + 1),
-            // A converted value, a template's name, a dependent
-            // expression's canonical form: nothing written.
-            ArgView::Null
-            | ArgView::Value { .. }
-            | ArgView::Template(_)
-            | ArgView::TemplateExpansion { .. }
-            | ArgView::Profile(_) => {}
-        }
-    }
+    let ast = w.ast;
+    slots::arg_slots(&ast.types, l, &mut |s| consume(w, None, s, out, depth + 1));
 }
 
 /// The operands written in nested-name-specifier `n`: the types it names.
@@ -1887,23 +1843,8 @@ fn scan_nns(w: &mut Walk<'_>, n: NnsId, out: &mut Vec<Op>, depth: u32) {
     if depth > MAX_DEPTH {
         return;
     }
-    match w.ast.types.nns_view(n) {
-        Nns::Type { prefix, ty, .. } => {
-            if let Some(p) = prefix {
-                scan_nns(w, p, out, depth + 1);
-            }
-            scan(w, ty, out, depth + 1);
-        }
-        Nns::Namespace { prefix, .. }
-        | Nns::NamespaceAlias { prefix, .. }
-        | Nns::Identifier { prefix, .. } => {
-            if let Some(p) = prefix {
-                scan_nns(w, p, out, depth + 1);
-            }
-        }
-        Nns::Splice(_) => out.push(Op::Unkept(SPLICE)),
-        Nns::Global => {}
-    }
+    let ast = w.ast;
+    slots::nns_slots(&ast.types, n, &mut |s| consume(w, None, s, out, depth + 1));
 }
 
 /// Where an operand met now goes: the entry being walked's nested list,
@@ -2054,6 +1995,11 @@ fn holders_of(w: &mut Walk<'_>, e: ExprId, sink: &mut Vec<Op>, depth: u32) {
         }
         K::CompoundLiteralExpr => scan(w, x.compound_literal_written_type(e), &mut out, depth),
         K::CXXPseudoDestructorExpr => {
+            // The first type-name of `p->S::F::~Q()` with a dependent `S`
+            // (`TemplateTables` `pseudo_dtor_first`), then the destroyed.
+            if let Some(&(first, _)) = ast.templates.pseudo_dtor_first.get(e) {
+                scan(w, first, &mut out, depth);
+            }
             let (_, _, destroyed) = x.pseudo_destructor(e);
             scan(w, destroyed, &mut out, depth);
         }

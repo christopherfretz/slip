@@ -1,0 +1,6 @@
+# WP-156 fix round 3 (Layer S).
+exact derived
+removed lib::make(lib::X)
+derived-added make<lib::X>(lib::X)
+derived-changed PB::a::<operands>
+derived-changed PI<N, int>::<operands>
