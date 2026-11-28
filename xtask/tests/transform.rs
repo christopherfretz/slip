@@ -2420,7 +2420,8 @@ fn s6_4_clang() {
     assert!(!r.clang_skipped && skips(&r).is_empty(), "{r:?}");
     let (t, w) = (c.tree(), c.work());
     let (t, w) = (t.display(), w.display());
-    let line = format!("{t} -std=c++20 -I{t} -I{t}/dep -c a.cpp -fsyntax-only");
+    let line =
+        format!("{t} -std=c++20 -I{t} -I{t}/dep -c a.cpp -fsyntax-only -fno-crash-diagnostics");
     assert_eq!(
         std::fs::read_to_string(c.root.join("clang.log")).unwrap(),
         format!("{line}\n{line} -MD -MF {w}/clang/0.d -MT dep\n")
@@ -2483,6 +2484,125 @@ fn s6_4_clang() {
     assert!(!r.clang_skipped);
     assert!(!c.root.join("clang.log").exists());
     assert!(r.notes.iter().any(|n| n.oracle == Oracle::Clang && n.off));
+}
+
+// §6.4 / §11.5 / WP-167: clang invocations isolate TMPDIR inside `<work>/clang/tmp`
+// (cleaned up with the case) and pass `-fno-crash-diagnostics`; a crashing clang
+// is reported as ERROR (pre-image) or FAIL (post-image) and leaves zero entries in
+// the inherited TMPDIR given to `cargo xtask transform`.
+#[test]
+fn s6_4_clang_tmp_isolated_and_crash_reported() {
+    let (c, _) = standard("clang-tmp-pass", TEST_TXT, |g| g);
+    let isolated_tmp = c.root.join("isolated-tmp");
+    std::fs::create_dir_all(&isolated_tmp).unwrap();
+
+    // Stand-in clang that requires `-fno-crash-diagnostics`, writes a marker
+    // file into `$TMPDIR`, and succeeds normally.
+    let clang_ok = c.root.join("bin/clang-tmp");
+    std::fs::create_dir_all(clang_ok.parent().unwrap()).unwrap();
+    std::fs::write(
+        &clang_ok,
+        "#!/bin/sh\n\
+         [ \"$1\" = --probe ] && exit 0\n\
+         no_crash=; prev=; mf=; f=\n\
+         for a in \"$@\"; do\n\
+           [ \"$a\" = -fno-crash-diagnostics ] && no_crash=1\n\
+           [ \"$prev\" = -c ] && f=$a\n\
+           [ \"$prev\" = -MF ] && mf=$a\n\
+           prev=$a\n\
+         done\n\
+         [ -n \"$no_crash\" ] || { echo 'missing -fno-crash-diagnostics' >&2; exit 99; }\n\
+         : > \"$TMPDIR/main-deadbe.cpp\"\n\
+         [ -n \"$mf\" ] && printf 'dep: %s\\n' \"$f\" > \"$mf\"\n\
+         exit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&clang_ok, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::wait_executable(&clang_ok);
+
+    let (code, out, err) = xtask_env(
+        &c.root,
+        &["--slip", FAKE],
+        &[("TMPDIR", isolated_tmp.to_str().unwrap()), ("SLIP_CLANG", clang_ok.to_str().unwrap())],
+    );
+    assert_eq!(code, Some(0), "stdout:\n{out}\nstderr:\n{err}");
+    let leaked: Vec<_> = std::fs::read_dir(&isolated_tmp)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    assert!(leaked.is_empty(), "xtask transform leaked into inherited TMPDIR: {leaked:?}");
+    assert!(!c.work().exists(), "passing test work dir should be removed");
+
+    // Stand-in clang that simulates a crash (exit 139) and writes to `$TMPDIR`
+    // when triggered by `CLANG_CRASH` in the source file.
+    let make_crash_clang = |case: &Case| -> PathBuf {
+        let p = case.root.join("bin/clang-crash");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            &p,
+            "#!/bin/sh\n\
+             [ \"$1\" = --probe ] && exit 0\n\
+             prev=; mf=; f=\n\
+             for a in \"$@\"; do\n\
+               [ \"$prev\" = -c ] && f=$a\n\
+               [ \"$prev\" = -MF ] && mf=$a\n\
+               prev=$a\n\
+             done\n\
+             crash=\n\
+             while IFS= read -r line; do\n\
+               case \"$line\" in *CLANG_CRASH*) crash=1 ;; esac\n\
+             done < \"$f\"\n\
+             if [ -n \"$crash\" ]; then\n\
+               : > \"$TMPDIR/main-crash0.cpp\"\n\
+               echo 'clang++-19: error: clang frontend command failed with exit code 139' >&2\n\
+               exit 139\n\
+             fi\n\
+             [ -n \"$mf\" ] && printf 'dep: %s\\n' \"$f\" > \"$mf\"\n\
+             exit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        common::wait_executable(&p);
+        p
+    };
+
+    // Crash on pre-image -> ERROR with exit 139 + stderr, nothing in isolated TMPDIR.
+    let (c_pre, _) = standard("clang-crash-pre", TEST_TXT, |g| g);
+    c_pre.write("pre/a.cpp", &format!("{PRE}// CLANG_CRASH\n"));
+    c_pre.write("post/a.cpp", &format!("{POST}// x\n"));
+    let crash_pre = make_crash_clang(&c_pre);
+    let iso_pre = c_pre.root.join("isolated-tmp");
+    std::fs::create_dir_all(&iso_pre).unwrap();
+    let (code, out, _) = xtask_env(
+        &c_pre.root,
+        &["--slip", FAKE],
+        &[("TMPDIR", iso_pre.to_str().unwrap()), ("SLIP_CLANG", crash_pre.to_str().unwrap())],
+    );
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("ERROR rename/clang-crash-pre:"), "{out}");
+    assert!(out.contains("exit 139"), "{out}");
+    assert!(out.contains("clang frontend command failed"), "{out}");
+    assert!(std::fs::read_dir(&iso_pre).unwrap().next().is_none());
+
+    // Crash on post-image -> FAIL with exit 139 + stderr, nothing in isolated TMPDIR.
+    let post = format!("{POST}// CLANG_CRASH\n");
+    let (c_post, _) = standard_ov("clang-crash-post", TEST_TXT, &[("a.cpp", PRE, &post)], |g| {
+        g.replace(&esc(POST), &esc(&post))
+    });
+    c_post.write("post/a.cpp", &post);
+    let crash_post = make_crash_clang(&c_post);
+    let iso_post = c_post.root.join("isolated-tmp");
+    std::fs::create_dir_all(&iso_post).unwrap();
+    let (code, out, _) = xtask_env(
+        &c_post.root,
+        &["--slip", FAKE],
+        &[("TMPDIR", iso_post.to_str().unwrap()), ("SLIP_CLANG", crash_post.to_str().unwrap())],
+    );
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("FAIL rename/clang-crash-post:"), "{out}");
+    assert!(out.contains("exit 139"), "{out}");
+    assert!(out.contains("clang frontend command failed"), "{out}");
+    assert!(std::fs::read_dir(&iso_post).unwrap().next().is_none());
 }
 
 // §6.4: the compiler is $SLIP_CLANG, else clang++-19, else clang++ on PATH.

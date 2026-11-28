@@ -837,16 +837,33 @@ fn compiler() -> Option<PathBuf> {
 
 /// What the production compiler said of a tree: `Ok(None)` for skipped,
 /// `Ok(Some((accepted, diagnostics)))`.
-fn compile(env: &Env, tree: &Path, std: &str) -> Result<Option<(bool, String)>, String> {
+///
+/// Isolates `TMPDIR` inside `tmp` (under the run's work directory, removed
+/// on pass) and passes `-fno-crash-diagnostics` (`WP-167`).
+fn compile(
+    env: &Env,
+    tree: &Path,
+    std: &str,
+    tmp: &Path,
+) -> Result<Option<(bool, String)>, String> {
     let Some(cc) = &env.cc else {
         if env.require_all {
             return Err("tier T2 was skipped: no clang++ (SLIP_REQUIRE_ALL=1)".to_owned());
         }
         return Ok(None);
     };
+    std::fs::create_dir_all(tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let mut cmd = Command::new(cc);
-    cmd.args([&format!("-std={std}"), "-fsyntax-only", "-I.", "-Idep", "main.cpp"])
-        .current_dir(tree);
+    cmd.args([
+        &format!("-std={std}"),
+        "-fsyntax-only",
+        "-fno-crash-diagnostics",
+        "-I.",
+        "-Idep",
+        "main.cpp",
+    ])
+    .env("TMPDIR", tmp)
+    .current_dir(tree);
     let out = run_bounded(cmd)?;
     Ok(Some((out.code() == Some(0), out.stderr)))
 }
@@ -962,7 +979,7 @@ fn parse_subject<'a>(
 ) -> Result<Parsed<'a>, String> {
     std::fs::create_dir_all(work).map_err(|e| format!("{}: {e}", work.display()))?;
     let real = std::fs::canonicalize(&subject.dir).map_err(|e| e.to_string())?;
-    let t2 = compile(env, &real, std)?;
+    let t2 = compile(env, &real, std, &work.join("clang-tmp"))?;
     if let Some((false, diag)) = &t2 {
         return Err(format!("clang rejects the subject: {}", first_line(diag)));
     }
@@ -1157,7 +1174,7 @@ fn evaluate(
     same_tree(&p.real.join("dep"), &tree.dir.join("dep"))?;
     let real = std::fs::canonicalize(&tree.dir).map_err(|e| e.to_string())?;
     let real_s = real.to_str().ok_or("the tree's path is not UTF-8")?.to_owned();
-    match compile(env, &real, &p.std)? {
+    match compile(env, &real, &p.std, &p.work.join("clang-tmp"))? {
         None => r.t2_skipped = true,
         Some((accepted, diag)) => {
             let want = *line != Line::NotParsed;
@@ -1915,5 +1932,34 @@ fn xfail_covers_a_declare_refusal_only_when_it_quotes_it() {
         assert_eq!(r[0].outcome, want, "{name}: {r:#?}");
         assert!(r[0].found.starts_with(REFUSED), "{name}: {}", r[0].found);
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// WP-167 (`spec/pitfalls.md` §1, tier T2): `compile` isolates `TMPDIR`
+/// inside the caller's scratch directory and passes `-fno-crash-diagnostics`.
+#[test]
+fn wp167_compile_isolates_tmp_and_disables_crash_diagnostics() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = work_dir("wp167-tmp");
+    let tree = root.join("tree");
+    let tmp = root.join("clang-tmp");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("main.cpp"), "int f() { return 0; }\n").unwrap();
+    let fake_cc = root.join("fake-clang");
+    std::fs::write(
+        &fake_cc,
+        "#!/bin/sh\n\
+         no_crash=\n\
+         for a in \"$@\"; do [ \"$a\" = -fno-crash-diagnostics ] && no_crash=1; done\n\
+         [ -n \"$no_crash\" ] || { echo 'missing -fno-crash-diagnostics' >&2; exit 2; }\n\
+         : > \"$TMPDIR/main-abcdef.cpp\"\n\
+         exit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_cc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = Env { cc: Some(fake_cc), require_all: false };
+    let res = compile(&env, &tree, "c++20", &tmp).unwrap();
+    assert_eq!(res, Some((true, String::new())));
+    assert!(tmp.join("main-abcdef.cpp").is_file(), "marker was not written into isolated TMPDIR");
     let _ = std::fs::remove_dir_all(&root);
 }
