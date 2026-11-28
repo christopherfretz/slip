@@ -895,10 +895,11 @@ struct Unit {
     command: slip_model::Command,
 }
 
-fn clang_run(u: &Unit, vfs: Option<&Path>) -> Result<(Exit, String), String> {
+fn clang_run(u: &Unit, vfs: Option<&Path>, tmp: &Path) -> Result<(Exit, String), String> {
     let mut cmd = Command::new(&u.clang);
     cmd.args(u.command.argv.iter().skip(1).map(|a| OsStr::from_bytes(a)))
         .arg("-fsyntax-only")
+        .arg("-fno-crash-diagnostics")
         .current_dir(OsStr::from_bytes(&u.command.directory));
     if let Some(v) = vfs {
         cmd.arg("-ivfsoverlay").arg(v);
@@ -906,6 +907,7 @@ fn clang_run(u: &Unit, vfs: Option<&Path>) -> Result<(Exit, String), String> {
     for e in &u.command.env {
         cmd.env(OsStr::from_bytes(&e.name), OsStr::from_bytes(&e.value));
     }
+    cmd.env("TMPDIR", tmp);
     match run_bounded(cmd, CLANG_TIMEOUT) {
         Ok(f) => {
             let err = String::from_utf8_lossy(&f.stderr);
@@ -1401,7 +1403,12 @@ impl Rename<'_> {
                 self.paths.vfs.display()
             ),
         );
-        let results = run_units(&units, &self.paths.vfs, &pool, jobs, out)?;
+        let accept_tmp = self.paths.files.join("accept-tmp");
+        std::fs::create_dir_all(&accept_tmp)
+            .map_err(|e| format!("cannot create {}: {e}", accept_tmp.display()))?;
+        let results = run_units(&units, &self.paths.vfs, &accept_tmp, &pool, jobs, out);
+        let _ = std::fs::remove_dir_all(&accept_tmp);
+        let results = results?;
         say(out, &format!("step accept: done in {}", secs(t)));
         let mut both = 0u64;
         let mut differ = Vec::new();
@@ -1680,6 +1687,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 fn run_units(
     units: &[Unit],
     vfs: &Path,
+    tmp: &Path,
     pool: &Pool,
     jobs: usize,
     out: &mut dyn Write,
@@ -1696,8 +1704,8 @@ fn run_units(
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(u) = units.get(i) else { break };
                     let token = pool.acquire();
-                    let pair =
-                        clang_run(u, None).and_then(|pre| Ok((pre, clang_run(u, Some(vfs))?)));
+                    let pair = clang_run(u, None, tmp)
+                        .and_then(|pre| Ok((pre, clang_run(u, Some(vfs), tmp)?)));
                     drop(token);
                     if tx.send((i, pair)).is_err() {
                         break;
