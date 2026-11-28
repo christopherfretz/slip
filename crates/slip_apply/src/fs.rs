@@ -37,6 +37,7 @@ impl Tree for DiskTree {
             Err(e) => return Err(e),
         };
         let dir = parent(p);
+        // canonicalize: link check only; apply walks spelling afresh (spec/edits.md §2.1, §7.3)
         let real_dir = fs::canonicalize(path(dir))?;
         let regular = m.file_type().is_file() && real_dir.as_os_str().as_bytes() == dir;
         let dir_writable = !fs::metadata(path(dir))?.permissions().readonly();
@@ -117,6 +118,7 @@ impl Tree for DiskTree {
     /// `canonicalize`: `None` when the path, or a directory on it, is not
     /// there.
     fn real_path(&self, p: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        // canonicalize: first half of apply's real-path check (spec/edits.md §2.1, WP-151)
         match fs::canonicalize(path(p)) {
             Ok(r) => Ok(Some(r.into_os_string().into_vec())),
             Err(e)

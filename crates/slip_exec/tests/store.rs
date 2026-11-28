@@ -4,6 +4,8 @@
 //! `true`; each is killed and reaped on every path.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
@@ -40,7 +42,7 @@ impl Drop for Scratch {
 fn scratch(tag: &str) -> Scratch {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let d = std::env::temp_dir().join(format!("slip-exec-store-{}-{tag}-{n}", std::process::id()));
+    let d = common::work_root().join(format!("slip-exec-store-{}-{tag}-{n}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(&d).unwrap();
     Scratch(d)
@@ -1106,4 +1108,11 @@ fn s2_journal_created_in_place() {
         Err(StoreError::Io { error, .. }) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
         other => panic!("expected NotFound, got {other:?}"),
     }
+}
+
+// spec/harness.md §11.5: this crate's work directories follow the rule.
+#[test]
+fn s11_5_work_root() {
+    common::work_root::self_test(env!("CARGO_TARGET_TMPDIR"));
+    assert_eq!(common::work_root(), common::work_root::work_root_or(env!("CARGO_TARGET_TMPDIR")));
 }
