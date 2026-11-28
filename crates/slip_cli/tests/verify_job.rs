@@ -4839,3 +4839,42 @@ fn wp144_probe_abort_at_depth_limit_is_not_verified() {
     );
     assert_eq!(report.verdict(), RunVerdict::NotVerified);
 }
+
+// WP-136 fix round 1 (item 3): `digest.invalid.unmarked > 0` on the pre-image
+// map shard only (post-image = 0) is carried into the verify shard as
+// `verify.invalid.unmarked.pre` and reported in `Report`'s text and JSON.
+#[test]
+fn wp136_pre_image_unmarked_invalid_reaches_report() {
+    let tree = Tree::new("wp136_pre_unmarked", &[("a.cpp", "int f() { return 1; }\n")]);
+    let o = tree.observer();
+    tree.map(&o);
+    let (mut map, _) = tree.stored_map(&o);
+    if let Some(c) = map.counters.iter_mut().find(|c| c.name == "digest.invalid.unmarked") {
+        c.value = 2;
+    } else {
+        map.counters
+            .push(slip_model::Counter { name: "digest.invalid.unmarked".to_owned(), value: 2 });
+        map.counters.sort();
+    }
+    tree.put_map(&o, &map);
+
+    let params = tree.params(Declared::none());
+    let v = tree.verify_with(&o, &params).unwrap();
+    assert_eq!(kind(&v), VerdictKind::Verified);
+    assert_eq!(counter(&v, "digest.invalid.unmarked"), Some(0));
+    assert_eq!(counter(&v, "verify.invalid.unmarked.pre"), Some(2));
+
+    let r = run_report(&tree, &params, &[(o, v)]);
+    let text = r.to_text();
+    assert!(
+        text.contains("defect: unmarked invalid declarations: 2 in 1 observer(s)\n"),
+        "expected unmarked invalid line in text report:\n{text}"
+    );
+    let j = slip_model::json::write_pretty(&r.to_json()).unwrap();
+    assert!(
+        j.contains("\"unmarked_invalid\"")
+            && j.contains("\"observers\": 1")
+            && j.contains("\"declarations\": 2"),
+        "expected unmarked_invalid in JSON report:\n{j}"
+    );
+}

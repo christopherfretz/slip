@@ -154,6 +154,15 @@ pub fn verify(store: &Store, job: &Job, params: &Params) -> Result<Shard, String
         let reason = format!("pre-image: the map shard is {}", pre.shard.outcome.status.name());
         return unverifiable_now(post, shard, &reason);
     }
+    // WP-136 (`spec/digest.md` §10, §12): carry the pre-image map shard's
+    // `digest.invalid.unmarked` count into the verify shard so `Report`
+    // flags an invariant breach on either side.
+    post.pre_unmarked = pre
+        .shard
+        .counters
+        .iter()
+        .find(|c| c.name == "digest.invalid.unmarked")
+        .map_or(0, |c| c.value);
     let Some(pre_digests) = pre.shard.digests.as_ref() else {
         return unverifiable_now(post, shard, "pre-image: the map shard has no digests");
     };
@@ -665,6 +674,9 @@ struct Post {
     /// `verify.traces.panicked` (§7.2): the images whose second writing
     /// panicked; present only when not 0.
     panicked: u64,
+    /// `verify.invalid.unmarked.pre` (WP-136, §7.2): the pre-image map
+    /// shard's `digest.invalid.unmarked` count; present only when not 0.
+    pre_unmarked: u64,
     /// Step 1's checks of §10.2 (section 26) and their counters of §10.4,
     /// with an overlay image that has obligations.
     spellings: Option<(Spellings, Vec<Counter>)>,
@@ -706,6 +718,7 @@ impl Post {
             name_strings: output.name_strings,
             unstable: 0,
             panicked: 0,
+            pre_unmarked: 0,
             spellings: None,
             rebuilt_use: None,
             existing_use,
@@ -741,6 +754,7 @@ impl Post {
             name_strings: _,
             unstable,
             panicked,
+            pre_unmarked,
             spellings,
             rebuilt_use,
             existing_use,
@@ -757,9 +771,11 @@ impl Post {
             ("verify.reparsed", reparsed),
         ];
         counters.extend(by_name.iter().map(|&(n, value)| Counter { name: n.to_owned(), value }));
-        for (name, value) in
-            [("verify.traces.unstable", unstable), ("verify.traces.panicked", panicked)]
-        {
+        for (name, value) in [
+            ("verify.traces.unstable", unstable),
+            ("verify.traces.panicked", panicked),
+            ("verify.invalid.unmarked.pre", pre_unmarked),
+        ] {
             if value > 0 {
                 counters.push(Counter { name: name.to_owned(), value });
             }

@@ -1,7 +1,8 @@
 //! Which entities are units, and writing one (`spec/digest.md` §2, §3.4,
 //! §11; `spec/digest-kinds.md` §5.2).
 
-use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, TemplLinkKind, VarStorage};
+use slip_kiln::kiln::ast::Ast;
+use slip_kiln::kiln::ast::decl::{DeclFlags, DeclKind, SubstFailedKind, TemplLinkKind, VarStorage};
 use slip_kiln::kiln::ast::ids::DeclId;
 use slip_kiln::kiln::ast::templates::{SpecKind, is_template_kind};
 use slip_model::Digest;
@@ -86,6 +87,22 @@ pub(crate) fn collect(w: &mut Walk<'_>) {
     // declaration.
     let mut seen: std::collections::HashSet<DeclId> = std::collections::HashSet::new();
     for d in ast.decls.ids() {
+        match failed_substitution(ast, d) {
+            FailedSubst::Yes => continue,
+            FailedSubst::DepthLimit => {
+                let scope = match info(ast.decls.get(d).kind()).role {
+                    Role::Entity(_) | Role::Content(_) => Some(w.entity(d)),
+                    Role::Nothing
+                    | Role::Transparent
+                    | Role::Root
+                    | Role::Local
+                    | Role::InParent
+                    | Role::Unsupported(_) => enclosing_entity(w, d),
+                };
+                w.taints.push((scope, Cause::Unaccounted("decl/subst-failed-depth")));
+            }
+            FailedSubst::No => {}
+        }
         if let Role::Unsupported(what) = info(ast.decls.get(d).kind()).role {
             // No key kind at all: the nearest enclosing unit is made
             // indeterminate instead (`spec/landed/digest/WP-024.md`).
@@ -160,9 +177,135 @@ pub(crate) fn hidden_shadow(w: &Walk<'_>, e: DeclId) -> bool {
     })
 }
 
+/// Whether declaration `d` itself carries a `subst_failed` mark saying
+/// that substitution failed and no entity was formed (`spec/digest.md`
+/// §2.1, §8; Kiln WP-3281).
+pub(crate) fn is_no_entity_failed_substitution(ast: &Ast, d: DeclId) -> bool {
+    match ast.decls.subst_failed(d) {
+        Some(
+            SubstFailedKind::FunctionSignature
+            | SubstFailedKind::ExplicitSpecifier
+            | SubstFailedKind::VariablePartialAmbiguity
+            | SubstFailedKind::LocalOfFailedSignature,
+        ) => true,
+        Some(SubstFailedKind::ClassPartialAmbiguity | SubstFailedKind::OtherTrapped) | None => {
+            false
+        }
+    }
+}
+
+/// Maximum parent chain steps walked by [`failed_substitution`], matching
+/// Kiln's `Sema::decl_owner` bound.
+pub(crate) const SUBST_FAILED_LIMIT: usize = 256;
+
+/// Result of checking whether a declaration is, or is owned by, a no-entity
+/// failed substitution (`spec/digest.md` §2.1, §8; Kiln `spec/ast.md` §4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailedSubst {
+    /// Not a failed substitution (or the AST has none).
+    No,
+    /// The declaration itself, or an enclosing `closure_owner` / `ctx` within
+    /// the step bound, is a no-entity failed substitution.
+    Yes,
+    /// The parent chain exceeded the step bound before reaching root or a
+    /// failed substitution: fail closed (`Unaccounted("decl/subst-failed-depth")`).
+    DepthLimit,
+}
+
+/// [`failed_substitution`] with an explicit step bound.
+pub(crate) fn failed_substitution_with_limit(ast: &Ast, d: DeclId, limit: usize) -> FailedSubst {
+    if ast.decls.cold.subst_failed.is_empty() {
+        return FailedSubst::No;
+    }
+    let mut cur = Some(d);
+    for _ in 0..limit {
+        let Some(x) = cur else { return FailedSubst::No };
+        if is_no_entity_failed_substitution(ast, x) {
+            return FailedSubst::Yes;
+        }
+        cur = ast.closure_owner(x).or_else(|| ast.decls.get(x).ctx());
+    }
+    if cur.is_none() { FailedSubst::No } else { FailedSubst::DepthLimit }
+}
+
+/// Whether declaration `d` is a failed substitution that is no entity, or
+/// is owned by one through its `closure_owner` / `ctx` chain (a parameter,
+/// local, or closure created while a failed signature was being formed;
+/// `spec/digest.md` §2.1, §8; Kiln `spec/ast.md` §4.1). Fails closed with
+/// [`FailedSubst::DepthLimit`] past [`SUBST_FAILED_LIMIT`] steps.
+pub(crate) fn failed_substitution(ast: &Ast, d: DeclId) -> FailedSubst {
+    failed_substitution_with_limit(ast, d, subst_failed_limit())
+}
+
+#[cfg(not(test))]
+const fn subst_failed_limit() -> usize {
+    SUBST_FAILED_LIMIT
+}
+
+#[cfg(test)]
+fn subst_failed_limit() -> usize {
+    tests::subst_failed_limit()
+}
+
+/// Whether declaration `d` is known to be inside a no-entity failed
+/// substitution (returning `false` on [`FailedSubst::DepthLimit`] so callers
+/// never silently drop an entity past the step bound; `collect`, `decl_node`
+/// and `write_ref` flag `DepthLimit` indeterminate instead).
+pub(crate) fn in_failed_substitution(ast: &Ast, d: DeclId) -> bool {
+    matches!(failed_substitution(ast, d), FailedSubst::Yes)
+}
+
+/// The indeterminate cause of an invalid declaration `d`, or `None` when
+/// `d` is valid or is a class template specialisation whose partial
+/// specialisation choice was ambiguous under a trap (`ClassPartialAmbiguity`,
+/// written as a specialisation that was never instantiated: no definition,
+/// members or bases; `spec/digest.md` §8, §10; WP-136).
+pub(crate) fn invalid_cause(ast: &Ast, d: DeclId) -> Option<Cause> {
+    if !ast.decls.get(d).has(DeclFlags::INVALID) {
+        return None;
+    }
+    match ast.decls.subst_failed(d) {
+        None => Some(Cause::Error),
+        Some(SubstFailedKind::ClassPartialAmbiguity) => {
+            if ast.definition(d).is_some()
+                || ast.decls.members(d).next().is_some()
+                || ast.decls.bases(d, &ast.lists).next().is_some()
+            {
+                Some(Cause::Unaccounted("decl/class-partial-ambiguity"))
+            } else {
+                None
+            }
+        }
+        Some(SubstFailedKind::OtherTrapped) => Some(Cause::Unaccounted("decl/trapped")),
+        Some(
+            SubstFailedKind::FunctionSignature
+            | SubstFailedKind::ExplicitSpecifier
+            | SubstFailedKind::VariablePartialAmbiguity
+            | SubstFailedKind::LocalOfFailedSignature,
+        ) => Some(Cause::Unaccounted("ref/failed-substitution")),
+    }
+}
+
+/// `digest.invalid.unmarked` (`spec/digest.md` §10, §12; WP-136): how many
+/// declarations in the AST carry `DeclFlags::INVALID` without Kiln's
+/// `subst_failed` mark. In an observer with no error diagnostic this must
+/// be 0 (Kiln `spec/ast.md` §4.1 "The invariant").
+pub(crate) fn unmarked_invalid(ast: &Ast) -> u64 {
+    let mut n = 0u64;
+    for d in ast.decls.ids() {
+        if ast.decls.get(d).has(DeclFlags::INVALID) && ast.decls.subst_failed(d).is_none() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// [`unit_class`] before the rule for entities without a location.
 fn class_of(w: &Walk<'_>, e: DeclId) -> Option<UnitClass> {
     let ast = w.ast;
+    if w.chain(e).iter().all(|&d| in_failed_substitution(ast, d)) {
+        return None;
+    }
     let n = ast.decls.get(e);
     match info(n.kind()).role {
         Role::Entity(_) | Role::Content(_) => {}
@@ -1273,6 +1416,27 @@ mod tests {
     use crate::decl_func::tests::{named, with_walk};
     use crate::walk::Walk;
 
+    thread_local! {
+        static SUBST_FAILED_LIMIT_OVERRIDE: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(super::SUBST_FAILED_LIMIT) };
+    }
+
+    pub(super) fn subst_failed_limit() -> usize {
+        SUBST_FAILED_LIMIT_OVERRIDE.with(std::cell::Cell::get)
+    }
+
+    fn with_subst_failed_limit<R>(limit: usize, f: impl FnOnce() -> R) -> R {
+        struct Reset(usize);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SUBST_FAILED_LIMIT_OVERRIDE.with(|c| c.set(self.0));
+            }
+        }
+        let prev = SUBST_FAILED_LIMIT_OVERRIDE.with(|c| c.replace(limit));
+        let _reset = Reset(prev);
+        f()
+    }
+
     /// `hidden_shadow`: only a hider written in source counts. Since Kiln
     /// WP-3145/WP-3146 (`690711450`, in the pin since WP-163) an implicit
     /// member marks the shadow it hides at the class's closing brace, used
@@ -1695,6 +1859,727 @@ mod tests {
             let (_, read) = CANDIDATES.with(std::cell::Cell::get);
             assert!(read >= 2, "a tie: each candidate's stream read ({read})");
             assert_eq!(recorded, 0);
+        });
+    }
+
+    /// Digests `src` (C++20, `main.cpp`) and returns `(output, errors)`.
+    fn digest_src(src: &str) -> (crate::Output, u32) {
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            let paths: Vec<Vec<u8>> =
+                p.sm.file_ids()
+                    .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                    .collect();
+            let (ast, sm) = (p.ast, p.sm);
+            let out = std::thread::scope(|s| {
+                std::thread::Builder::new()
+                    .stack_size(crate::STACK_SIZE)
+                    .spawn_scoped(s, || {
+                        let path = |f: slip_kiln::kiln::source::FileId| {
+                            paths.get(f.index()).cloned().unwrap_or_default()
+                        };
+                        let input = crate::Input { ast, sm, subject_path: &path };
+                        let options = crate::Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
+                            detail: crate::Detail::All,
+                            names: true,
+                            rule_use: false,
+                        };
+                        crate::digest(&input, &options)
+                    })
+                    .expect("spawn")
+                    .join()
+                    .expect("join")
+            });
+            (out, p.errors)
+        })
+        .expect("parse")
+    }
+
+    fn counter(out: &crate::Output, name: &str) -> u64 {
+        out.counters.iter().find(|c| c.name == name).map_or(0, |c| c.value)
+    }
+
+    // WP-136 items 1–2 (`spec/digest.md` §2.1, §8, §10): kinds 1–5 produce
+    // zero indeterminate units and zero unmarked invalid declarations; kind 4
+    // (class ambiguous partial specialisation) matches an unattempted
+    // specialisation; an unmarked invalid declaration (a real error) stays
+    // `Cause::Error` and increments `digest.invalid.unmarked`.
+    #[test]
+    fn wp136_kinds_1_to_3() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        let cases = [
+            (
+                "trailing-return",
+                "template <class T> auto g(T t) -> decltype(t.size());\n\
+                 int g(...);\n\
+                 int u() { return g(1); }\n",
+                SubstFailedKind::FunctionSignature,
+            ),
+            (
+                "trapped-narrowing",
+                "template <class T> auto h(T t) -> decltype(int{t});\n\
+                 long h(...);\n\
+                 long u() { return h(1.5); }\n",
+                SubstFailedKind::FunctionSignature,
+            ),
+            (
+                "kind2-explicit-specifier",
+                "struct S {\n\
+                   template <class T> explicit(T::value) S(T);\n\
+                   S(...);\n\
+                 };\n\
+                 S s = 1;\n",
+                SubstFailedKind::ExplicitSpecifier,
+            ),
+            (
+                "kind3-var-partial-ambiguity",
+                "template <class T, class U> constexpr int v = 0;\n\
+                 template <class T> constexpr int v<T, int> = 1;\n\
+                 template <class U> constexpr int v<int, U> = 2;\n\
+                 template <class T> auto f(T) -> decltype(v<T, int>);\n\
+                 long f(...);\n\
+                 long x = f(1);\n",
+                SubstFailedKind::VariablePartialAmbiguity,
+            ),
+        ];
+        for (label, src, want_kind) in cases {
+            with_walk(src, |w| {
+                let marks = w.ast.decls.subst_failed_decls();
+                assert!(
+                    marks.iter().any(|&(_, k)| k == want_kind),
+                    "{label}: expected {want_kind:?} in {marks:?}"
+                );
+            });
+            let (out, errors) = digest_src(src);
+            assert_eq!(errors, 0, "{label}");
+            let named_causes: Vec<_> = out
+                .causes
+                .iter()
+                .map(|&(k, c)| {
+                    let n =
+                        out.names.iter().find(|&&(nk, _)| nk == k).map_or("", |(_, s)| s.as_str());
+                    (n, c)
+                })
+                .collect();
+            assert!(named_causes.is_empty(), "{label}: {named_causes:?}");
+            assert_eq!(counter(&out, "digest.invalid.unmarked"), 0, "{label}");
+            assert_eq!(counter(&out, "digest.instantiated.unheld"), 0, "{label}");
+            assert_eq!(counter(&out, "digest.emitted.unplaced"), 0, "{label}");
+        }
+    }
+
+    #[test]
+    fn wp136_lambda_and_kind5() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        // Lambda inside a failed signature: the pattern template itself has
+        // `UndeclaredLocal` (a lambda in a template signature, §4.3), but the
+        // failed specialisation `f<int>` and its valid closure are no units
+        // and leave `digest.instantiated.unheld` and `digest.emitted.unplaced`
+        // at 0.
+        let lambda_sig = "template <class T> auto f(T t) -> decltype([]{ return 1; }(), t.size());\n\
+                          int f(...);\n\
+                          int u() { return f(1); }\n";
+        let (lout, lerr) = digest_src(lambda_sig);
+        assert_eq!(lerr, 0);
+        assert!(
+            !lout.names.iter().any(|(_, n)| n.contains("f<int>")),
+            "failed spec f<int> must not be a unit: {:?}",
+            lout.names
+        );
+        assert_eq!(counter(&lout, "digest.invalid.unmarked"), 0);
+        assert_eq!(counter(&lout, "digest.instantiated.unheld"), 0);
+        assert_eq!(counter(&lout, "digest.emitted.unplaced"), 0);
+
+        // Kind 5 (local of a failed signature): a GNU statement-expression in
+        // a generic lambda's trailing return type. The pattern's own key has
+        // `key/local-ref` (a local variable in a signature), while the failed
+        // specialisation `operator()<int>` and its kind-5 local `x` are no
+        // units and leave zero `Cause::Error`, zero `ref/failed-substitution`,
+        // and zero `digest.invalid.unmarked`.
+        let kind5_src = "template <class L> constexpr bool callable = requires(L l) { l(1); };\n\
+                         void g() {\n\
+                           auto l = [](auto t) -> decltype(({ int x = t.foo(); x; })) { return 0; };\n\
+                           static_assert(!callable<decltype(l)>);\n\
+                         }\n";
+        with_walk(kind5_src, |w| {
+            let marks = w.ast.decls.subst_failed_decls();
+            assert!(
+                marks.iter().any(|&(_, k)| k == SubstFailedKind::LocalOfFailedSignature),
+                "kind5: {marks:?}"
+            );
+        });
+        let (k5out, k5err) = digest_src(kind5_src);
+        assert_eq!(k5err, 0);
+        assert!(
+            !k5out.names.iter().any(|(_, n)| n.contains("operator()<int>")),
+            "failed spec must not be a unit: {:?}",
+            k5out.names
+        );
+        assert!(
+            !k5out.causes.iter().any(|&(_, c)| matches!(
+                c,
+                crate::Cause::Error | crate::Cause::Unaccounted("ref/failed-substitution")
+            )),
+            "unexpected cause: {:?}",
+            k5out.causes
+        );
+        assert_eq!(counter(&k5out, "digest.invalid.unmarked"), 0);
+        assert_eq!(counter(&k5out, "digest.instantiated.unheld"), 0);
+        assert_eq!(counter(&k5out, "digest.emitted.unplaced"), 0);
+    }
+
+    #[test]
+    fn wp136_kind4_and_unmarked_error() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        // Kind 4: class ambiguous partial specialisation vs no attempt.
+        let kind4_tried = "namespace a {\n\
+            struct S {};\n\
+            template <class T, class U> struct X {};\n\
+            template <class T> struct X<T, S> { using t = int; };\n\
+            template <class U> struct X<S, U> { using t = int; };\n\
+            template <class T> auto probe(T) -> typename X<T, S>::t;\n\
+            }\n\
+            int probe(...);\n\
+            a::X<a::S, a::S> *p = nullptr;\n\
+            int u() { return probe(a::S{}); }\n";
+        let kind4_untried = "namespace a {\n\
+            struct S {};\n\
+            template <class T, class U> struct X {};\n\
+            template <class T> struct X<T, S> { using t = int; };\n\
+            template <class U> struct X<S, U> { using t = int; };\n\
+            template <class T> auto probe(T) -> typename X<T, S>::t;\n\
+            }\n\
+            int probe(...);\n\
+            a::X<a::S, a::S> *p = nullptr;\n\
+            int u() { return ::probe(a::S{}); }\n";
+        with_walk(kind4_tried, |w| {
+            let marks = w.ast.decls.subst_failed_decls();
+            assert!(
+                marks.iter().any(|&(_, k)| k == SubstFailedKind::ClassPartialAmbiguity),
+                "kind4: {marks:?}"
+            );
+        });
+        let (a, err_a) = digest_src(kind4_tried);
+        let (b, err_b) = digest_src(kind4_untried);
+        assert_eq!((err_a, err_b), (0, 0));
+        assert!(a.causes.is_empty(), "kind4 tried: {:?}", a.causes);
+        assert!(b.causes.is_empty(), "kind4 untried: {:?}", b.causes);
+        assert_eq!(a.digests, b.digests, "kind4: failed attempt and no attempt must be equal");
+        assert_eq!(counter(&a, "digest.invalid.unmarked"), 0);
+
+        // Kind 4 fail-closed path (M10): a SFINAE ambiguity on `X<int, int>`
+        // followed by an explicit specialisation `template<> struct X<int, int>`
+        // leaves `ClassPartialAmbiguity` on a record with a definition/members,
+        // so `invalid_cause` fails closed with `decl/class-partial-ambiguity`.
+        let kind4_then_spec = "template <class T, class U> struct X {};\n\
+                               template <class T> struct X<T, int> { using t = int; };\n\
+                               template <class U> struct X<int, U> { using t = int; };\n\
+                               template <class T> auto probe(T) -> typename X<T, int>::t;\n\
+                               int probe(...);\n\
+                               int first = probe(1);\n\
+                               template <> struct X<int, int> { using t = int; };\n\
+                               X<int, int>::t after = 0;\n";
+        let (k4_out, k4_err) = digest_src(kind4_then_spec);
+        assert_eq!(k4_err, 0);
+        assert_eq!(counter(&k4_out, "digest.invalid.unmarked"), 0);
+        assert!(
+            k4_out.causes.iter().any(|&(k, c)| {
+                c == crate::Cause::Unaccounted("decl/class-partial-ambiguity")
+                    && k4_out.names.iter().any(|(nk, n)| *nk == k && n == "X<int, int>")
+            }),
+            "expected decl/class-partial-ambiguity on X<int, int>, got: {:?}",
+            k4_out.causes
+        );
+
+        // Real error (unmarked INVALID): stays Cause::Error and counts in
+        // `digest.invalid.unmarked`.
+        let real_err = "template <class T, class U> struct X {};\n\
+                        template <class T> struct X<T, int> {};\n\
+                        template <class U> struct X<int, U> {};\n\
+                        X<int, int> z;\n";
+        let (err_out, errors) = digest_src(real_err);
+        assert!(errors > 0, "expected a real error");
+        assert!(
+            err_out.causes.iter().any(|&(_, c)| c == crate::Cause::Error),
+            "expected Cause::Error: {:?}",
+            err_out.causes
+        );
+        assert!(counter(&err_out, "digest.invalid.unmarked") >= 1);
+    }
+
+    // WP-136 item 2 kind 6 (`spec/digest.md` §10): an `OtherTrapped`
+    // declaration yields `Unaccounted("decl/trapped")`, not `Cause::Error`,
+    // and is not counted as unmarked invalid.
+    #[test]
+    fn wp136_kind6_other_trapped_is_decl_trapped() {
+        use slip_kiln::kiln::ast::Ast;
+        use slip_kiln::kiln::ast::decl::{DeclFlags, SubstFailedKind};
+        let files = [("main.cpp", "int x = 1; struct S;\n")];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        let rules = RuleTable::empty();
+        slip_kiln::snippet::parse(&snippet, |p| {
+            let bytes = slip_kiln::kiln::snap::to_bytes(p.ast);
+            let mut ast: Ast = slip_kiln::kiln::snap::from_bytes(&bytes).expect("decode ast");
+            let x = ast
+                .decls
+                .ids()
+                .find(|&d| {
+                    ast.decls.get(d).kind() == DeclKind::Var
+                        && ast
+                            .decls
+                            .get(d)
+                            .name()
+                            .as_ident()
+                            .is_some_and(|s| ast.symbols().as_str(s) == "x")
+                })
+                .expect("var x");
+            ast.decls.set_flags(x, DeclFlags::INVALID);
+            ast.decls.set_subst_failed(x, SubstFailedKind::OtherTrapped);
+            assert_eq!(
+                super::invalid_cause(&ast, x),
+                Some(crate::Cause::Unaccounted("decl/trapped"))
+            );
+            assert!(!super::is_no_entity_failed_substitution(&ast, x));
+            assert_eq!(super::unmarked_invalid(&ast), 0);
+
+            let paths: Vec<Vec<u8>> =
+                p.sm.file_ids()
+                    .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                    .collect();
+            let sm = p.sm;
+            let out = std::thread::scope(|sc| {
+                std::thread::Builder::new()
+                    .stack_size(crate::STACK_SIZE)
+                    .spawn_scoped(sc, || {
+                        let path = |f: slip_kiln::kiln::source::FileId| {
+                            paths.get(f.index()).cloned().unwrap_or_default()
+                        };
+                        let input = crate::Input { ast: &ast, sm, subject_path: &path };
+                        let options = crate::Options {
+                            rules: &rules,
+                            read_only: crate::ReadOnly::NO_FILE,
+                            existing: &[],
+                            existing_local: &[],
+                            detail: crate::Detail::All,
+                            names: true,
+                            rule_use: false,
+                        };
+                        crate::digest(&input, &options)
+                    })
+                    .expect("spawn")
+                    .join()
+                    .expect("join")
+            });
+            assert_eq!(out.causes.len(), 1, "{:?}", out.causes);
+            assert_eq!(out.causes[0].1, crate::Cause::Unaccounted("decl/trapped"));
+            assert_eq!(counter(&out, "digest.invalid.unmarked"), 0);
+
+            // Kind 4 (`ClassPartialAmbiguity`) on an incomplete record has no
+            // indeterminate cause.
+            let s_decl = ast
+                .decls
+                .ids()
+                .find(|&d| {
+                    ast.decls.get(d).kind() == DeclKind::CXXRecord
+                        && ast
+                            .decls
+                            .get(d)
+                            .name()
+                            .as_ident()
+                            .is_some_and(|sym| ast.symbols().as_str(sym) == "S")
+                })
+                .expect("struct S");
+            ast.decls.set_flags(s_decl, DeclFlags::INVALID);
+            ast.decls.set_subst_failed(s_decl, SubstFailedKind::ClassPartialAmbiguity);
+            assert_eq!(super::invalid_cause(&ast, s_decl), None);
+        })
+        .expect("parse");
+    }
+
+    // WP-136 item 3 (`spec/digest.md` §10): a `Ref` to a failed substitution
+    // (kinds 1, 2, 3, 5, or a closure owned by one) produces
+    // `Unaccounted("ref/failed-substitution")` and does not queue the entity;
+    // a `Ref` to kind 4 (`ClassPartialAmbiguity`) is determinate.
+    #[test]
+    fn wp136_ref_to_failed_substitution_is_unaccounted() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        let cases = [
+            (
+                "kind1",
+                "template <class T> auto g(T t) -> decltype(t.size());\n\
+                 int g(...);\n\
+                 int u() { return g(1); }\n",
+                SubstFailedKind::FunctionSignature,
+            ),
+            (
+                "kind2",
+                "struct S { template <class T> explicit(T::value) S(T) {} S(...) {} };\n\
+                 S s = 1;\n",
+                SubstFailedKind::ExplicitSpecifier,
+            ),
+            (
+                "kind3",
+                "template <class T, class U> constexpr int v = 0;\n\
+                 template <class T> constexpr int v<T, int> = 1;\n\
+                 template <class U> constexpr int v<int, U> = 2;\n\
+                 template <class T> auto f(T) -> decltype(v<T, int>);\n\
+                 long f(...);\n\
+                 long x = f(1);\n",
+                SubstFailedKind::VariablePartialAmbiguity,
+            ),
+            (
+                "kind5",
+                "template <class L> constexpr bool callable = requires(L l) { l(1); };\n\
+                 void g() {\n\
+                   auto l = [](auto t) -> decltype(({ int x = t.foo(); x; })) { return 0; };\n\
+                   static_assert(!callable<decltype(l)>);\n\
+                 }\n",
+                SubstFailedKind::LocalOfFailedSignature,
+            ),
+        ];
+        for (label, src, kind) in cases {
+            with_walk(src, |w| {
+                let target = w
+                    .ast
+                    .decls
+                    .subst_failed_decls()
+                    .into_iter()
+                    .find(|&(_, k)| k == kind)
+                    .map(|(d, _)| d)
+                    .expect(label);
+                let mut s = crate::stream::Stream::new();
+                w.write_ref(&mut s, target);
+                assert_eq!(
+                    s.cause(),
+                    Some(crate::Cause::Unaccounted("ref/failed-substitution")),
+                    "{label}"
+                );
+                assert!(!w.queued.contains(&w.entity(target)), "{label}: must not queue");
+            });
+        }
+
+        // Valid closure owned by a failed signature.
+        let closure_src = "template <class T> auto f(T t) -> decltype([]{ return 1; }(), t.size());\n\
+                           int f(...);\n\
+                           int u() { return f(1); }\n";
+        with_walk(closure_src, |w| {
+            let closure = w
+                .ast
+                .decls
+                .ids()
+                .find(|&d| {
+                    w.ast.decls.record(d).is_some_and(|r| r.lambda.is_some())
+                        && w.ast.closure_owner(d).is_some_and(|o| {
+                            w.ast.decls.subst_failed(o) == Some(SubstFailedKind::FunctionSignature)
+                        })
+                })
+                .expect("closure owned by failed signature");
+            let mut s = crate::stream::Stream::new();
+            w.write_ref(&mut s, closure);
+            assert_eq!(s.cause(), Some(crate::Cause::Unaccounted("ref/failed-substitution")));
+        });
+
+        // Kind 4 (`ClassPartialAmbiguity`): `write_ref` is determinate and
+        // does not queue a unit.
+        let kind4_src = "template <class T, class U> struct X {};\n\
+                         template <class T> struct X<T, int> { using t = int; };\n\
+                         template <class U> struct X<int, U> { using t = int; };\n\
+                         template <class T> auto f(T) -> typename X<T, int>::t;\n\
+                         long f(...);\n\
+                         long y = f(1);\n\
+                         X<int, int>* p = nullptr;\n";
+        with_walk(kind4_src, |w| {
+            let target = w
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::ClassPartialAmbiguity)
+                .map(|(d, _)| d)
+                .expect("kind 4");
+            let mut s = crate::stream::Stream::new();
+            w.write_ref(&mut s, target);
+            assert_eq!(s.cause(), None);
+            assert!(!w.queued.contains(&w.entity(target)));
+        });
+    }
+
+    // WP-136 item 4 ("Its kin"): check what Kiln keeps and what the digest
+    // produces for all seven kin shapes.
+    type KinCase = (
+        &'static str,
+        &'static str,
+        &'static [(DeclKind, slip_kiln::kiln::ast::decl::SubstFailedKind)],
+    );
+
+    const WP136_KIN_CASES: &[KinCase] = {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+        &[
+            (
+                "member-function-template-of-instantiation",
+                "template <class T> struct S {\n\
+                   template <class U> auto m(U u) -> decltype(u.size());\n\
+                   int m(...);\n\
+                 };\n\
+                 int u() { S<int> s; return s.m(1); }\n",
+                &[(DeclKind::CXXMethod, SubstFailedKind::FunctionSignature)],
+            ),
+            (
+                "constructor-template",
+                "struct R {\n\
+                   template <class F> R(F, decltype(F::tag) * = nullptr);\n\
+                   R(int);\n\
+                 };\n\
+                 int u() { R r(1); (void)r; return 0; }\n",
+                &[(DeclKind::CXXConstructor, SubstFailedKind::FunctionSignature)],
+            ),
+            (
+                "conversion-function-template-explicit",
+                "struct D {\n\
+                   template <class T> explicit(T::value) operator T() const;\n\
+                   operator int() const;\n\
+                 };\n\
+                 int u() { D d; return d; }\n",
+                &[(DeclKind::CXXConversion, SubstFailedKind::ExplicitSpecifier)],
+            ),
+            (
+                "conversion-function-template-default-targ",
+                "struct C {\n\
+                   template <class T, class = typename T::type> operator T() const;\n\
+                   operator int() const;\n\
+                 };\n\
+                 int u() { C c; return c; }\n",
+                &[],
+            ),
+            (
+                "deduction-guide",
+                "template <class T> struct A { A(T); };\n\
+                 template <class T> A(T) -> A<typename T::type>;\n\
+                 A a(1);\n",
+                &[(DeclKind::CXXDeductionGuide, SubstFailedKind::FunctionSignature)],
+            ),
+            (
+                "class-template-partial-spec-no-match",
+                "template <class T, class = void> struct P { static constexpr int v = 1; };\n\
+                 template <class T> struct P<T, typename T::type> { static constexpr int v = 2; };\n\
+                 int u() { return P<int>::v; }\n",
+                &[],
+            ),
+            (
+                "variable-template-partial-ambiguity",
+                "template <class T, class U> constexpr int v = 0;\n\
+                 template <class T> constexpr int v<T, int> = 1;\n\
+                 template <class U> constexpr int v<int, U> = 2;\n\
+                 template <class T> auto f(T) -> decltype(v<T, int>);\n\
+                 long f(...);\n\
+                 long x = f(1);\n",
+                &[
+                    (DeclKind::Function, SubstFailedKind::FunctionSignature),
+                    (DeclKind::Var, SubstFailedKind::VariablePartialAmbiguity),
+                ],
+            ),
+            (
+                "alias-template-enable-if-in-return",
+                "template <bool, class T = void> struct enable_if {};\n\
+                 template <class T> struct enable_if<true, T> { using type = T; };\n\
+                 template <bool B, class T = void> using enable_if_t = typename enable_if<B, T>::type;\n\
+                 template <class T> enable_if_t<sizeof(T) == 100, int> f(T);\n\
+                 int f(...);\n\
+                 int u() { return f(1); }\n",
+                &[(DeclKind::Function, SubstFailedKind::FunctionSignature)],
+            ),
+            (
+                "alias-template-enable-if-in-default-targ",
+                "template <bool, class T = void> struct enable_if {};\n\
+                 template <class T> struct enable_if<true, T> { using type = T; };\n\
+                 template <bool B, class T = void> using enable_if_t = typename enable_if<B, T>::type;\n\
+                 template <class T, enable_if_t<sizeof(T) == 100, int> = 0> int f(T);\n\
+                 int f(...);\n\
+                 int u() { return f(1); }\n",
+                &[],
+            ),
+        ]
+    };
+
+    #[test]
+    fn wp136_its_kin_all_seven_cases() {
+        for &(label, src, want_marks) in WP136_KIN_CASES {
+            with_walk(src, |w| {
+                let mut got: Vec<_> = w
+                    .ast
+                    .decls
+                    .subst_failed_decls()
+                    .into_iter()
+                    .map(|(d, k)| (w.ast.decls.get(d).kind(), k))
+                    .collect();
+                got.sort_by_key(|&(_, k)| k.value());
+                assert_eq!(got.as_slice(), want_marks, "{label}");
+            });
+            let (out, errors) = digest_src(src);
+            assert_eq!(errors, 0, "{label}");
+            assert!(out.causes.is_empty(), "{label}: {:?}", out.causes);
+            assert_eq!(counter(&out, "digest.invalid.unmarked"), 0, "{label}");
+            assert_eq!(counter(&out, "digest.instantiated.unheld"), 0, "{label}");
+            assert_eq!(counter(&out, "digest.emitted.unplaced"), 0, "{label}");
+        }
+    }
+
+    // WP-136 fix round 1 (M8): `unit_class` and `query::Keys::unit_of` skip
+    // failed substitutions independently of `units::collect`.
+    #[test]
+    fn wp136_unit_class_and_query_skip_failed_substitution() {
+        use slip_kiln::kiln::ast::decl::SubstFailedKind;
+
+        let src = "template <class T> auto g(T t) -> decltype(t.size());\n\
+                   int g(...);\n\
+                   int u() { return g(1); }\n";
+        with_walk(src, |w| {
+            let failed = w
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                .map(|(d, _)| d)
+                .expect("failed g<int>");
+            assert_eq!(unit_class(w, w.entity(failed)), None);
+        });
+        let files = [("main.cpp", src)];
+        let snippet = slip_kiln::snippet::Snippet {
+            files: &files,
+            main: "main.cpp",
+            include: &[""],
+            std: "c++20",
+        };
+        slip_kiln::snippet::parse(&snippet, |p| {
+            assert_eq!(p.errors, 0, "{}", p.diagnostics);
+            let path = |f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default();
+            let input = crate::Input { ast: p.ast, sm: p.sm, subject_path: &path };
+            let mut keys = crate::query::Keys::new(&input);
+            let failed = p
+                .ast
+                .decls
+                .subst_failed_decls()
+                .into_iter()
+                .find(|&(_, k)| k == SubstFailedKind::FunctionSignature)
+                .map(|(d, _)| d)
+                .expect("failed g<int>");
+            assert_eq!(keys.unit_of(failed), None);
+        })
+        .expect("parse");
+    }
+
+    // WP-136 fix round 1 (item 5): `failed_substitution` has an O(1) empty
+    // fast-path when `ast.decls.cold.subst_failed` is empty, and fails closed
+    // (`FailedSubst::DepthLimit` -> `Unaccounted("decl/subst-failed-depth")`)
+    // past its step bound rather than silently returning `false`.
+    #[test]
+    fn wp136_subst_failed_depth_limit_fails_closed_and_empty_fast_path() {
+        let digest_with_limit = |src: &str, limit: usize| -> crate::Output {
+            let files = [("main.cpp", src)];
+            let snippet = slip_kiln::snippet::Snippet {
+                files: &files,
+                main: "main.cpp",
+                include: &[""],
+                std: "c++20",
+            };
+            let rules = RuleTable::empty();
+            slip_kiln::snippet::parse(&snippet, |p| {
+                assert_eq!(p.errors, 0, "{}", p.diagnostics);
+                let paths: Vec<Vec<u8>> =
+                    p.sm.file_ids()
+                        .map(|f| p.path(f).map(|s: &str| s.as_bytes().to_vec()).unwrap_or_default())
+                        .collect();
+                let (ast, sm) = (p.ast, p.sm);
+                std::thread::scope(|s| {
+                    std::thread::Builder::new()
+                        .stack_size(crate::STACK_SIZE)
+                        .spawn_scoped(s, || {
+                            with_subst_failed_limit(limit, || {
+                                let path = |f: slip_kiln::kiln::source::FileId| {
+                                    paths.get(f.index()).cloned().unwrap_or_default()
+                                };
+                                let input = crate::Input { ast, sm, subject_path: &path };
+                                let options = crate::Options {
+                                    rules: &rules,
+                                    read_only: crate::ReadOnly::NO_FILE,
+                                    existing: &[],
+                                    existing_local: &[],
+                                    detail: crate::Detail::All,
+                                    names: true,
+                                    rule_use: false,
+                                };
+                                crate::digest(&input, &options)
+                            })
+                        })
+                        .expect("spawn")
+                        .join()
+                        .expect("join")
+                })
+            })
+            .expect("parse")
+        };
+
+        // 1. Empty fast-path: no failed substitutions in the TU -> even with
+        // limit=2, a 4-deep declaration (`a::b::c::x`) is determinate.
+        let clean = "namespace a { namespace b { namespace c { int x = 1; } } }\n";
+        let clean_out = digest_with_limit(clean, 2);
+        assert!(clean_out.causes.is_empty(), "{:?}", clean_out.causes);
+
+        // 2. Non-empty `subst_failed` with lowered limit=2: `a::b::c::x`
+        // exceeds the bound and fails closed with `decl/subst-failed-depth`,
+        // staying a unit rather than being silently dropped or treated as clean.
+        let with_sf = "namespace a { namespace b { namespace c { int x = 1; } } }\n\
+                       template <class T> auto g(T t) -> decltype(t.size());\n\
+                       int g(...);\n\
+                       int u() { return g(1); }\n";
+        let normal_out = digest_with_limit(with_sf, super::SUBST_FAILED_LIMIT);
+        assert!(normal_out.causes.is_empty(), "{:?}", normal_out.causes);
+
+        let limited_out = digest_with_limit(with_sf, 2);
+        let x_key = limited_out
+            .names
+            .iter()
+            .find(|(_, n)| n == "a::b::c::x")
+            .map(|&(k, _)| k)
+            .expect("a::b::c::x must remain a unit, not be silently dropped");
+        assert!(
+            limited_out
+                .causes
+                .contains(&(x_key, crate::Cause::Unaccounted("decl/subst-failed-depth"))),
+            "expected decl/subst-failed-depth on a::b::c::x, got: {:?}",
+            limited_out.causes
+        );
+
+        // 3. `write_ref` to a declaration past the bound also fails closed.
+        with_walk(with_sf, |w| {
+            let x = named(w, "x", DeclKind::Var)[0];
+            with_subst_failed_limit(2, || {
+                assert_eq!(super::failed_substitution(w.ast, x), super::FailedSubst::DepthLimit);
+                let mut s = crate::stream::Stream::new();
+                w.write_ref(&mut s, x);
+                assert_eq!(s.cause(), Some(crate::Cause::Unaccounted("decl/subst-failed-depth")));
+            });
         });
     }
 }

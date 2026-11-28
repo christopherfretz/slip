@@ -558,6 +558,14 @@ pub struct Report {
     /// section 34 bounds checks (WP-144; unused reporting lands in 2b).
     existing_len: u64,
     existing_local_len: u64,
+    /// Accepted `ok` observers whose `digest.invalid.unmarked` counter (on the
+    /// post-image, the pre-image via `verify.invalid.unmarked.pre`, or an
+    /// `unchanged` map shard) is non-zero (WP-136, `spec/digest.md` §10): an
+    /// observer with no error diagnostic had an invalid declaration without
+    /// Kiln's `subst_failed` mark (a defect of Kiln or Slip, reported without
+    /// panicking).
+    unmarked_invalid_observers: u64,
+    unmarked_invalid_decls: u64,
 }
 
 impl Report {
@@ -608,6 +616,8 @@ impl Report {
             rebuilt,
             existing_len: declared.existing().len() as u64,
             existing_local_len: declared.existing_local().len() as u64,
+            unmarked_invalid_observers: 0,
+            unmarked_invalid_decls: 0,
         }
     }
 
@@ -939,6 +949,14 @@ impl Report {
         // option; under it, each is a finding.
         let notes: &[NameNote] = match (ours, judged.state) {
             (Some(s), State::Verified | State::Mismatch) => {
+                // WP-136 (`spec/digest.md` §10): an `ok` observer (no error
+                // diagnostic) with an invalid declaration lacking Kiln's
+                // `subst_failed` mark on either side is a defect of Kiln or Slip.
+                self.record_unmarked_invalid(
+                    counter(s, "digest.invalid.unmarked")
+                        .unwrap_or(0)
+                        .saturating_add(counter(s, "verify.invalid.unmarked.pre").unwrap_or(0)),
+                );
                 s.names.as_ref().map_or(&[][..], |n| n.notes.as_slice())
             }
             _ => &[],
@@ -1045,6 +1063,9 @@ impl Report {
         let state = if why.is_none() { State::Unchanged } else { State::Failed };
         self.states[state.index()] += 1;
         self.all_good &= state == State::Unchanged;
+        if state == State::Unchanged {
+            self.record_unmarked_invalid(counter(map, "digest.invalid.unmarked").unwrap_or(0));
+        }
         if let Some(message) = why {
             self.not_verified.insert(
                 position,
@@ -1406,21 +1427,7 @@ impl Report {
             })
             .collect();
         groups.extend(self.strict_names_groups());
-        let not_verified = self
-            .not_verified
-            .values()
-            .map(|n| {
-                obj(vec![
-                    ("observer", digest(&n.observer)),
-                    ("main", bytes(&n.main)),
-                    ("state", Value::Str(n.state.name().to_owned())),
-                    ("message", Value::Str(n.message.clone())),
-                    ("findings", uv(n.findings)),
-                    ("indeterminate", uv(n.indeterminate)),
-                    ("listed", uv(n.listed)),
-                ])
-            })
-            .collect();
+        let not_verified = self.not_verified_json();
         let exemptions = self
             .exemptions()
             .into_iter()
@@ -1471,8 +1478,42 @@ impl Report {
         if self.has_obligations() {
             members.push(("spellings", self.spellings_json()));
         }
+        if self.unmarked_invalid_decls > 0 {
+            members.push(("unmarked_invalid", self.unmarked_invalid_json()));
+        }
         members.push(("run", bytes(&h.run)));
         obj(members)
+    }
+
+    fn unmarked_invalid_json(&self) -> Value {
+        obj(vec![
+            ("observers", uv(self.unmarked_invalid_observers)),
+            ("declarations", uv(self.unmarked_invalid_decls)),
+        ])
+    }
+
+    fn record_unmarked_invalid(&mut self, count: u64) {
+        if count > 0 {
+            self.unmarked_invalid_observers += 1;
+            self.unmarked_invalid_decls = self.unmarked_invalid_decls.saturating_add(count);
+        }
+    }
+
+    fn not_verified_json(&self) -> Vec<Value> {
+        self.not_verified
+            .values()
+            .map(|n| {
+                obj(vec![
+                    ("observer", digest(&n.observer)),
+                    ("main", bytes(&n.main)),
+                    ("state", Value::Str(n.state.name().to_owned())),
+                    ("message", Value::Str(n.message.clone())),
+                    ("findings", uv(n.findings)),
+                    ("indeterminate", uv(n.indeterminate)),
+                    ("listed", uv(n.listed)),
+                ])
+            })
+            .collect()
     }
 
     /// Under `--strict-names`, each noted key is a finding group of kind
@@ -1795,6 +1836,13 @@ impl Report {
         self.agreement_text(&mut out);
         self.rebuilt_text(&mut out);
         self.spellings_text(&mut out);
+        if self.unmarked_invalid_decls > 0 {
+            let _ = writeln!(
+                out,
+                "defect: unmarked invalid declarations: {} in {} observer(s)",
+                self.unmarked_invalid_decls, self.unmarked_invalid_observers
+            );
+        }
         out
     }
 

@@ -945,6 +945,13 @@ pub(crate) fn run_kept<R>(
         name: "digest.instantiated.unheld".to_owned(),
         value: crate::demand::unheld(&w),
     });
+    // Invariant of Kiln WP-3281 (`spec/digest.md` §10, §12; WP-136):
+    // invalid declarations without Kiln's `subst_failed` mark. Must be 0
+    // in an observer with no error diagnostic.
+    counters.push(slip_model::Counter {
+        name: "digest.invalid.unmarked".to_owned(),
+        value: crate::units::unmarked_invalid(w.ast),
+    });
     crate::ns_refs::counters(&w, &mut counters);
     let counting = w.rule_use.take();
     let name_strings = name_strings(&w, &written, &fed);

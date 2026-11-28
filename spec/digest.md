@@ -94,6 +94,22 @@ specialisation that was only named (a class template specialisation used
 as an incomplete type) is not a unit either: nothing is known of it but
 its key.
 
+A specialisation whose substitution failed silently (Kiln's
+`DeclArena::subst_failed`, kinds 1, 2, 3 and 5; §8, WP-136) is not an
+entity of the program ([temp.deduct]/8: deduction fails; no
+specialisation is formed). It is **no unit**, nothing lists it, and
+nothing of its partly built declaration (nor of any parameter, local or
+closure owned by it) is read. What a failed candidate decides is recorded
+where it is decided and is already digested there: the callee an overload
+resolution chose, the declaration the address of an overload set resolved
+to, the partial specialisation an instantiation was made from, the value
+of a requires-expression or a concept-id, the guide class template
+argument deduction chose. A candidate that fails before and after changes
+nothing; one that begins to succeed and wins changes the use's unit; one
+that begins to succeed and loses changes no meaning. Leaving it out loses
+no difference and removes a dependence of a translation unit's units on
+which candidates were tried.
+
 Entities declared inside a function body, a default argument, an
 initialiser or a lambda are **local**: they are digested inside the unit
 that contains them (§4.3) and are not units.
@@ -1275,6 +1291,30 @@ object is unspecified by the language and is not digested.
   that of the instantiated declaration, exactly as for a non-template.
   Dependent lookups resolve at instantiation, so this is where a change in
   what an unqualified call inside a template finds becomes visible.
+- **A specialisation whose substitution failed** (WP-136, Kiln WP-3281).
+  Kiln keeps some failed candidates as `DeclFlags::INVALID` declarations
+  and marks them in `DeclArena::subst_failed(d)` with a `SubstFailedKind`
+  when every error forming them was trapped (a SFINAE context or a
+  discarded diagnostic capture) and printed no error. The walk treats each
+  kind as follows:
+
+  | Kind | `SubstFailedKind` | In the digest |
+  |---|---|---|
+  | 1 | `FunctionSignature` (deduction, explicit arguments, a guide) | no entity: no unit (§2.1), nothing lists it, nothing of it is read |
+  | 2 | `ExplicitSpecifier` (`explicit(expr)` failed) | no entity: no unit |
+  | 3 | `VariablePartialAmbiguity` | no entity: no unit |
+  | 4 | `ClassPartialAmbiguity` | a nameable incomplete type (`X<int>*`), never complete: written exactly as a specialisation that was never instantiated (not a unit when `Undeclared`, and determinate when named); if a later explicit specialisation gives that same declaration a definition, members or bases while `ClassPartialAmbiguity` remains set, it fails closed with `Unaccounted("decl/class-partial-ambiguity")` |
+  | 5 | `LocalOfFailedSignature` (and any valid closure or local owned by a kind 1 or 2 specialisation) | part of a declaration that is no entity: never reached |
+  | 6 | `OtherTrapped` | indeterminate, `Unaccounted("decl/trapped")` |
+  | unmarked | `None` on an `INVALID` declaration | a real error: indeterminate, `Cause::Error` (§10) |
+
+  Any `Ref` that reaches a declaration of kind 1, 2, 3 or 5 (or owned by
+  one through `closure_owner` / `ctx`) makes the referring unit
+  indeterminate with `Unaccounted("ref/failed-substitution")` and does not
+  queue the target. If the `closure_owner` / `ctx` walk exceeds its
+  256-step bound (on a unit whose `subst_failed` table is non-empty), the
+  walk fails closed with `Unaccounted("decl/subst-failed-depth")` rather
+  than silently dropping or accepting the declaration.
 - A specialisation records the template or partial specialisation it was
   instantiated from, as a `Ref`.
 - The guarantee for templates rests on the instantiations. A pattern's
@@ -1530,8 +1570,14 @@ decision are in `spec/landed/verify/WP-112.md`.
 A unit is **indeterminate** when its digest cannot be trusted to mean what
 this spec says:
 
-- it contains an invalid declaration, an error-recovery expression or a
-  type that contains an error;
+- it contains an invalid declaration (other than a silent substitution
+  failure classified by `DeclArena::subst_failed`, §8, WP-136: kind 4
+  `ClassPartialAmbiguity` is written as a never-instantiated
+  specialisation, kind 6 `OtherTrapped` is `Unaccounted("decl/trapped")`,
+  and an unmarked `INVALID` declaration is `Cause::Error`), an
+  error-recovery expression or a type that contains an error;
+- a `Ref` reaches a declaration that failed substitution and is no entity
+  (`Unaccounted("ref/failed-substitution")`, §8, WP-136);
 - it contains a kind or a value that `digest-kinds.md` marks `unsupported`;
 - it holds a type whose sugar meets a typedef whose declarations do not
   all carry the same alignment, or it is that typedef
@@ -1874,6 +1920,7 @@ comparison of unit sets (`verify.md`).
 | `digest.units.derived.emitted` | derived units marked emitted unreferenced (§11, WP-155) |
 | `digest.emitted.unplaced` | local functions with `constructor`, `destructor` or `used` that neither way of the mark placed (§11, "What neither way placed"); always present, 0 over every fixture |
 | `digest.instantiated.unheld` | function bodies, default arguments and default member initialisers Kiln instantiated that no unit's stream holds (§2.2 "Every instantiation has a unit", WP-158); always present, 0 over every fixture |
+| `digest.invalid.unmarked` | declarations carrying `DeclFlags::INVALID` without Kiln's `subst_failed` mark (§8, §10, WP-136); always present, 0 in every observer with no error diagnostic (a non-zero count on either the post-image or the pre-image of an accepted `ok` observer — via `digest.invalid.unmarked`, `verify.invalid.unmarked.pre`, or an `unchanged` map shard — is reported as a defect line in the run's report, `verify.md` §7.1, without panicking) |
 | `digest.groups` | groups |
 | `digest.indeterminate` | indeterminate units |
 | `digest.collisions` | keys shared by different entities; a key shared only by parts is counted unless every two of its parts are parts of two different owners whose shared key collides (§3.4) |

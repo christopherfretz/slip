@@ -1,0 +1,4 @@
+# The `[[gnu::used]]` closure inside failed `f<a::S>` is skipped by `emitted::unplaced` (`digest.emitted.unplaced == 0`).
+exact derived
+changed u()
+indeterminate template <class> decltype(...() , t.size()) a::f(type-parameter-0-0) (undeclared_local)

@@ -432,6 +432,11 @@ const PAIR_CEILINGS: &[(&str, usize)] = &[
     // splice qualifier, 2 of 33 314).
     ("Unsupported(\"Nns/Splice\")", 1),
     ("Unsupported(\"typedef/alignment-by-declaration\")", 1),
+    // WP-136 fix round 1: `differ/_/subst-failed-closure-*` (raw AST
+    // expressions inside a failed signature referencing a closure or its
+    // call operator owned by that failed specialisation, never walked by
+    // any unit; 6 of 79 983).
+    ("Unaccounted(\"ref/failed-substitution\")", 1),
 ];
 
 /// The same for `OWN`.
